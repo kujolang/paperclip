@@ -1,0 +1,212 @@
+# PatchBrief shared utilities.
+# Provides helpers for CLI arg parsing, string formatting, and common operations.
+
+TERMINAL_CONTROLS := parse_json("[\"\\u0007\",\"\\u0008\",\"\\u0009\",\"\\u000a\",\"\\u000b\",\"\\u000c\",\"\\u000d\",\"\\u000e\",\"\\u000f\",\"\\u001b\",\"\\u007f\"]")
+TERMINAL_ESCAPES := ["\\u0007", "\\u0008", "\\u0009", "\\u000a", "\\u000b", "\\u000c", "\\u000d", "\\u000e", "\\u000f", "\\u001b", "\\u007f"]
+MARKDOWN_ESCAPES := ["`", "[", "]", "<", ">", "(", ")", "!"]
+
+export func is_trueish(value) {
+	return value == true || value == 1
+}
+
+export func is_falseish(value) {
+	return value == false || value == 0
+}
+
+# Parse subcommand from CLI args.
+# args() in Kujo returns only user arguments (script name is excluded).
+# Returns argv[0] when it is a non-flag command token.
+# PatchBrief intentionally requires command-first syntax.
+# Check if a string starts with a prefix.
+# Kujo's starts_with() may return int, so compare explicitly.
+export func str_starts_with(s, prefix) {
+	return is_trueish(starts_with(s, prefix))
+}
+
+# Check if a string contains a substring.
+# Kujo's contains() returns int (1 or 0), so compare explicitly.
+export func str_contains(s, substr) {
+	return is_trueish(contains(s, substr))
+}
+
+export func str_ends_with(s, suffix) {
+	return is_trueish(ends_with(s, suffix))
+}
+
+export func dict_has_key(map_obj, key_name) {
+	return is_trueish(has_key(map_obj, key_name))
+}
+
+export func parse_subcommand(argv) {
+	if !is_array(argv) || len(argv) == 0 {
+		return ""
+	}
+	if str_starts_with(to_string(argv[0]), "-") {
+		return ""
+	}
+	return to_string(argv[0])
+}
+
+export func has_flag(argv, name) {
+	if !is_array(argv) {
+		return false
+	}
+	i := 0
+	while i < len(argv) {
+		if to_string(argv[i]) == name {
+			return true
+		}
+		i = i + 1
+	}
+	return false
+}
+
+export func flag_value(argv, name, fallback) {
+	if !is_array(argv) {
+		return fallback
+	}
+	i := 0
+	while i < len(argv) {
+		token := to_string(argv[i])
+		if token == name {
+			next_index := i + 1
+			if next_index < len(argv) {
+				return to_string(argv[next_index])
+			}
+			return fallback
+		}
+		prefix := name + "="
+		if str_starts_with(token, prefix) {
+			return substring(token, len(prefix), len(token))
+		}
+		i = i + 1
+	}
+	return fallback
+}
+
+# Trim whitespace from both ends of a string.
+export func str_trim(s) {
+	return trim(s)
+}
+
+# Convert a string to lowercase.
+export func str_lower(s) {
+	return to_lower(s)
+}
+
+# Join an array of strings with a separator.
+export func str_join(arr, sep) {
+	mut result := ""
+	mut i := 0
+	while i < len(arr) {
+		if i > 0 {
+			result = result + sep
+		}
+		result = result + to_string(arr[i])
+		i = i + 1
+	}
+	return result
+}
+
+export func print_lines(lines) {
+	idx := 0
+	while idx < len(lines) {
+		print(to_string(lines[idx]))
+		idx := idx + 1
+	}
+}
+
+export func print_prefixed_lines(lines, prefix) {
+	idx := 0
+	while idx < len(lines) {
+		print(prefix + to_string(lines[idx]))
+		idx := idx + 1
+	}
+}
+
+export func print_prefixed_or_fallback(lines, prefix, fallback) {
+	if len(lines) > 0 {
+		print_prefixed_lines(lines, prefix)
+		return
+	}
+	print_lines([fallback])
+}
+
+export func print_wrapped_lines(lines, prefix, suffix) {
+	idx := 0
+	while idx < len(lines) {
+		print(prefix + to_string(lines[idx]) + suffix)
+		idx := idx + 1
+	}
+}
+
+export func print_markdown_section(title) {
+	print_lines([
+		"",
+		"## " + title,
+		""
+	])
+}
+
+export func print_markdown_paragraph(text) {
+	print_lines([to_string(text)])
+}
+
+export func print_fenced(text) {
+	print_lines([
+		"```",
+		to_string(text),
+		"```"
+	])
+}
+
+export func print_not_git_repo_error() {
+	print_lines(["Error: Not a git repository. Run patchbrief inside a git repo."])
+}
+
+# Render repository-controlled text safely in Markdown and terminals.
+# JSON output intentionally keeps the original values and relies on JSON escaping.
+export func sanitize_terminal_text(value) {
+	text := to_string(value)
+	idx := 0
+	while idx < len(TERMINAL_CONTROLS) {
+		text = replace(text, to_string(TERMINAL_CONTROLS[idx]), to_string(TERMINAL_ESCAPES[idx]))
+		idx := idx + 1
+	}
+	return text
+}
+
+export func markdown_text(value) {
+	text := sanitize_terminal_text(value)
+	text = replace(text, "\\", "\\\\")
+	idx := 0
+	while idx < len(MARKDOWN_ESCAPES) {
+		char := to_string(MARKDOWN_ESCAPES[idx])
+		text = replace(text, char, "\\" + char)
+		idx := idx + 1
+	}
+	return text
+}
+
+export func markdown_code(value) {
+	text := sanitize_terminal_text(value)
+	text = replace(text, "&", "&amp;")
+	text = replace(text, "<", "&lt;")
+	text = replace(text, ">", "&gt;")
+	return "<code>" + text + "</code>"
+}
+
+# Get the current timestamp as an ISO-like string.
+export func timestamp_now() {
+	try {
+		result := execute("date -u +%Y-%m-%dT%H:%M:%SZ", {"timeout_ms": 3000})
+		return trim(to_string(result))
+	} except err {
+		return "unknown"
+	}
+}
+
+export func shell_quote(value) {
+	text := to_string(value)
+	return "'" + replace(text, "'", "'\"'\"'") + "'"
+}

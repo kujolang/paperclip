@@ -1,0 +1,250 @@
+# Git command wrappers for PatchBrief.
+# Provides safe wrappers around git commands for diff inspection.
+# Uses Kujo's execute built-in for process execution.
+
+from src.common import str_starts_with, str_contains, str_trim, shell_quote
+
+DIFF_ANALYSIS_MAX_BYTES := 1048576
+
+func push_unique(items, value) {
+	text := to_string(value)
+	idx := 0
+	while idx < len(items) {
+		if to_string(items[idx]) == text {
+			return items
+		}
+		idx := idx + 1
+	}
+	return push(items, text)
+}
+
+# Check if the current directory is inside a git repository.
+export func is_git_repo() {
+	try {
+		_ := execute("git rev-parse --git-dir 2>/dev/null", {"timeout_ms": 5000})
+		return true
+	} except err {
+		return false
+	}
+}
+
+# Get the current branch name.
+export func current_branch() {
+	try {
+		result := execute("git symbolic-ref --short HEAD", {"timeout_ms": 5000})
+		branch := trim(to_string(result))
+		if branch != "" {
+			return branch
+		}
+	} except err {
+		try {
+			short := execute("git rev-parse --short HEAD", {"timeout_ms": 5000})
+			return "HEAD@" + trim(to_string(short))
+		} except err2 {
+			return "unknown"
+		}
+	}
+	return "unknown"
+}
+
+# Get the repository name from the remote origin URL or directory name.
+export func repo_name() {
+	try {
+		url := execute("git remote get-url origin 2>/dev/null", {"timeout_ms": 5000})
+		url_str := str_trim(to_string(url))
+		if url_str != "" && str_starts_with(url_str, "fatal") == false {
+			parts := split(url_str, "/")
+			last := str_trim(parts[len(parts) - 1])
+			if str_contains(last, ":") {
+				colon_parts := split(last, ":")
+				last = str_trim(colon_parts[len(colon_parts) - 1])
+			}
+			if ends_with(last, ".git") {
+				last = substring(last, 0, len(last) - 4)
+			}
+			if last != "" {
+				return last
+			}
+		}
+	} except err {}
+	try {
+		root := execute("git rev-parse --show-toplevel", {"timeout_ms": 5000})
+		return basename(str_trim(to_string(root)))
+	} except err2 {
+		return "unknown"
+	}
+}
+
+# Get the diff stat summary (files changed, insertions, deletions).
+export func diff_stat() {
+	try {
+		output := execute("git diff --no-ext-diff --stat HEAD 2>/dev/null", {"timeout_ms": 10000})
+		text := to_string(output)
+		if str_trim(text) == "" {
+			return {"ok": true, "output": "", "files": 0, "added": 0, "removed": 0}
+		}
+		lines := split(text, "\n")
+		summary_line := ""
+		idx := len(lines) - 1
+		while idx >= 0 {
+			line := str_trim(to_string(lines[idx]))
+			if line != "" {
+				summary_line := line
+				idx := -1
+			}
+			idx := idx - 1
+		}
+		files_count := 0
+		added_count := 0
+		removed_count := 0
+		if summary_line != "" && str_contains(summary_line, "changed") {
+			comma_parts := split(summary_line, ",")
+			ci := 0
+			while ci < len(comma_parts) {
+				part := str_trim(to_string(comma_parts[ci]))
+				if str_contains(part, "file") {
+					num_str := replace(replace(part, " files changed", ""), " file changed", "")
+					num_str := str_trim(num_str)
+					files_count := to_int(num_str)
+				}
+				if str_contains(part, "insertion") {
+					num_str := replace(replace(part, " insertions(+)", ""), " insertion(+)", "")
+					num_str := str_trim(num_str)
+					added_count := to_int(num_str)
+				}
+				if str_contains(part, "deletion") {
+					num_str := replace(replace(part, " deletions(-)", ""), " deletion(-)", "")
+					num_str := str_trim(num_str)
+					removed_count := to_int(num_str)
+				}
+				ci := ci + 1
+			}
+		}
+		return {
+			"ok": true,
+			"output": text,
+			"files": files_count,
+			"added": added_count,
+			"removed": removed_count
+		}
+	} except err {
+		return {"ok": false, "output": "", "files": 0, "added": 0, "removed": 0}
+	}
+}
+
+# Get the list of changed files.
+export func changed_files() {
+	return changed_files_result()["files"]
+}
+
+export func changed_files_result() {
+	try {
+		output := execute("git status --porcelain=v1 -z --untracked-files=all 2>/dev/null", {"timeout_ms": 10000})
+		text := to_string(output)
+		if text == "" {
+			return {"ok": true, "files": []}
+		}
+		files := []
+		nul := parse_json("\"\\u0000\"")
+		entries := split(text, nul)
+		idx := 0
+		while idx < len(entries) {
+			entry := to_string(entries[idx])
+			if len(entry) >= 3 {
+				status := substring(entry, 0, 2)
+				path_text := substring(entry, 3, len(entry))
+				if path_text != "" {
+					files := push_unique(files, path_text)
+				}
+				if str_contains(status, "R") || str_contains(status, "C") {
+					idx := idx + 1
+				}
+			}
+			idx := idx + 1
+		}
+		return {"ok": true, "files": files}
+	} except err {
+		return {"ok": false, "files": []}
+	}
+}
+
+# Get the full diff output.
+export func full_diff() {
+	return full_diff_analysis()["text"]
+}
+
+# Read a bounded diff and report whether heuristic analysis may be incomplete.
+export func full_diff_analysis() {
+	return full_diff_analysis_with_limit(DIFF_ANALYSIS_MAX_BYTES)
+}
+
+export func full_diff_analysis_with_limit(max_bytes) {
+	limit := to_int(max_bytes)
+	if limit < 1024 {
+		limit = 1024
+	}
+	if limit > 16777216 {
+		limit = 16777216
+	}
+	try {
+		result := spawn_process(["git", "diff", "--no-ext-diff", "HEAD"], {"timeout_ms": 30000, "max_output_bytes": limit})
+		if result.success == false && result.timed_out == false {
+			# An unborn repository has no HEAD; compare its index with the empty tree.
+			result = spawn_process(["git", "diff", "--no-ext-diff", "--cached"], {"timeout_ms": 30000, "max_output_bytes": limit})
+		}
+		text := to_string(result.stdout)
+		failed := result.success == false || result.timed_out == true
+		return {
+			"text": text,
+			"bytes_analyzed": len(text),
+			"max_bytes": limit,
+			"truncated": result.stdout_truncated,
+			"error": failed
+		}
+	} except err {
+		return {"text": "", "bytes_analyzed": 0, "max_bytes": limit, "truncated": false, "error": true}
+	}
+}
+
+# Get the diff for a specific file.
+export func file_diff(file_path) {
+	try {
+		cmd := "git diff --no-ext-diff HEAD -- " + shell_quote(file_path)
+		output := execute(cmd, {"timeout_ms": 10000})
+		return to_string(output)
+	} except err {
+		return ""
+	}
+}
+
+# Get the shortlog between current state and last commit.
+export func recent_commits(count) {
+	try {
+		safe_count := to_int(count)
+		if safe_count < 1 {
+			safe_count := 1
+		}
+		if safe_count > 100 {
+			safe_count := 100
+		}
+		cmd := "git log --oneline -" + to_string(safe_count) + " 2>/dev/null"
+		output := execute(cmd, {"timeout_ms": 10000})
+		text := str_trim(to_string(output))
+		if text == "" {
+			return []
+		}
+		commits := []
+		lines := split(text, "\n")
+		idx := 0
+		while idx < len(lines) {
+			line := str_trim(to_string(lines[idx]))
+			if line != "" {
+				commits := push(commits, line)
+			}
+			idx := idx + 1
+		}
+		return commits
+	} except err {
+		return []
+	}
+}

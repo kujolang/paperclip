@@ -1,0 +1,240 @@
+# ChangeBucket :: analyze
+#
+# The heart of the tool. It turns read-only git output into the structured
+# analysis model (summary + categories + per-file detail + risk level).
+# Nothing here mutates the repo. All multi-pass logic uses index/`while` loops
+# or single-`for` helpers so the module compiles under the checker.
+
+from src.classify import classify, category_order
+from src.diffsrc import is_repo, repo_root, resolve_refs, validate_diff, numstat_text, namestatus_text, untracked_list, is_binary_path, count_added_lines
+
+# Map a git name-status letter to a human status word.
+func status_word(letter) {
+    if letter == "A" {
+        return "added"
+    }
+    if letter == "D" {
+        return "deleted"
+    }
+    if letter == "R" {
+        return "renamed"
+    }
+    if letter == "C" {
+        return "copied"
+    }
+    return "modified"
+}
+
+# Fresh categories dict with every bucket present and empty.
+func init_cats() {
+    mut cats := {}
+    for name in category_order() {
+        cats[name] := []
+    }
+    return cats
+}
+
+# Record file `path` under each of its categories.
+func add_to_cats(cats, categories, path) {
+    for c in categories {
+        cats[c] := push(cats[c], path)
+    }
+    return cats
+}
+
+# Ingest `git diff --name-status` lines: seed each path with its status.
+func ingest_namestatus(order, info, text) {
+    mut ord := order
+    nul := parse_json("\"\\u0000\"")
+    fields := split(text, nul)
+    mut i := 0
+    while i + 1 < len(fields) {
+        status := fields[i]
+        path := fields[i + 1]
+        if status != "" && path != "" {
+            letter := substring(status, 0, 1)
+            if has_key(info, path) == 0 {
+                info[path] := {"path": path, "status": status_word(letter), "additions": 0, "deletions": 0, "binary": false}
+                ord = push(ord, path)
+            } else {
+                e := info[path]
+                e["status"] := status_word(letter)
+                info[path] := e
+            }
+        }
+        i = i + 2
+    }
+    return {"order": ord, "info": info}
+}
+
+# Ingest `git diff --numstat` lines: attach additions/deletions (or binary).
+func ingest_numstat(order, info, text) {
+    mut ord := order
+    nul := parse_json("\"\\u0000\"")
+    records := split(text, nul)
+    for record in records {
+        if record != "" {
+            cols := split(record, "\t")
+            adds := cols[0]
+            dels := cols[1]
+            # Only the first two tabs are separators; a path may itself contain
+            # tabs, so reconstruct it from all remaining fields.
+            path := join(slice(cols, 2, len(cols)), "\t")
+            binary := adds == "-" || dels == "-"
+            mut a := 0
+            mut d := 0
+            if binary == false {
+                a = parse_int(adds)
+                d = parse_int(dels)
+            }
+            if has_key(info, path) == 0 {
+                info[path] := {"path": path, "status": "modified", "additions": a, "deletions": d, "binary": binary}
+                ord = push(ord, path)
+            } else {
+                e := info[path]
+                e["additions"] := a
+                e["deletions"] := d
+                e["binary"] := binary
+                info[path] := e
+            }
+        }
+    }
+    return {"order": ord, "info": info}
+}
+
+# Ingest untracked files as additions (worktree mode only).
+func ingest_untracked(order, info, files, repo) {
+    mut ord := order
+    for path in files {
+        if path != "" && has_key(info, path) == 0 {
+            binary := is_binary_path(path)
+            mut a := 0
+            if binary == false {
+                a = count_added_lines(repo, path)
+            }
+            info[path] := {"path": path, "status": "added", "additions": a, "deletions": 0, "binary": binary}
+            ord = push(ord, path)
+        }
+    }
+    return {"order": ord, "info": info}
+}
+
+# A simple, documented blast-radius heuristic. This is "risk", not "quality".
+#   high   : >20 files, or >1000 churn, or any deletes, or generated touched
+#   low    : <=5 files, <=200 churn, no deletes, no dep/lock/ci/generated touched
+#   medium : everything in between
+export func risk_level(files_changed, churn, deleted, deps, locks, generated, ci) {
+    if files_changed > 20 || churn > 1000 || deleted > 0 || generated > 0 {
+        return "high"
+    }
+    if files_changed <= 5 && churn <= 200 && deleted == 0 && deps == 0 && locks == 0 && ci == 0 {
+        return "low"
+    }
+    return "medium"
+}
+
+# Walk the ordered file list, classify each, and roll up summary + categories.
+func build_model(repo, refs, order, info) {
+    mut cats := init_cats()
+    mut files := []
+    mut files_added := 0
+    mut files_modified := 0
+    mut files_deleted := 0
+    mut files_renamed := 0
+    mut binary_files := 0
+    mut lines_added := 0
+    mut lines_deleted := 0
+    mut i := 0
+    while i < len(order) {
+        p := order[i]
+        e := info[p]
+        categories := classify(p)
+        e["categories"] := categories
+        e["churn"] := e["additions"] + e["deletions"]
+        files = push(files, e)
+        cats = add_to_cats(cats, categories, p)
+
+        st := e["status"]
+        if st == "added" {
+            files_added = files_added + 1
+        }
+        if st == "modified" {
+            files_modified = files_modified + 1
+        }
+        if st == "deleted" {
+            files_deleted = files_deleted + 1
+        }
+        if st == "renamed" {
+            files_renamed = files_renamed + 1
+        }
+        if e["binary"] == true {
+            binary_files = binary_files + 1
+        }
+        lines_added = lines_added + e["additions"]
+        lines_deleted = lines_deleted + e["deletions"]
+        i = i + 1
+    }
+
+    churn := lines_added + lines_deleted
+    files_changed := len(order)
+    risk := risk_level(files_changed, churn, files_deleted, len(cats["dependency_manifests"]), len(cats["lockfiles"]), len(cats["generated"]), len(cats["ci"]))
+
+    summary := {
+        "files_changed": files_changed,
+        "files_added": files_added,
+        "files_modified": files_modified,
+        "files_deleted": files_deleted,
+        "files_renamed": files_renamed,
+        "binary_files": binary_files,
+        "lines_added": lines_added,
+        "lines_deleted": lines_deleted,
+        "total_churn": churn,
+        "risk_level": risk
+    }
+
+    return {
+        "base": refs["base_label"],
+        "head": refs["head_label"],
+        "generated_at": now_utc(),
+        "summary": summary,
+        "categories": cats,
+        "files": files,
+        "budget": {"checked": false, "passed": true, "failures": []}
+    }
+}
+
+# Top-level: produce the analysis model for `repo` over the requested refs, or
+# {"error": "..."} when the directory is not a git repository.
+export func analyze(repo, base_flag, head_flag) {
+    if is_repo(repo) == false {
+        return {"error": "not a git repository: " + repo}
+    }
+    root := repo_root(repo)
+    refs := resolve_refs(root, base_flag, head_flag)
+    if has_key(refs, "error") == 1 {
+        return {"error": refs["error"]}
+    }
+    diff_error := validate_diff(root, refs)
+    if diff_error != "" {
+        return {"error": diff_error}
+    }
+
+    mut order := []
+    mut info := {}
+
+    ns := ingest_namestatus(order, info, namestatus_text(root, refs))
+    order = ns["order"]
+    info = ns["info"]
+
+    num := ingest_numstat(order, info, numstat_text(root, refs))
+    order = num["order"]
+    info = num["info"]
+
+    if refs["include_untracked"] == true {
+        ut := ingest_untracked(order, info, untracked_list(root), root)
+        order = ut["order"]
+        info = ut["info"]
+    }
+
+    return build_model(root, refs, order, info)
+}

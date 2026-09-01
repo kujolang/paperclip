@@ -1,0 +1,50 @@
+{
+  "schemaVersion": 1,
+  "bundleVersion": "0.1.0",
+  "runtime": { "minimumVersion": "1.2.0" },
+  "components": [
+    {
+      "id": "changebucket",
+      "repository": "https://github.com/kujolang/changebucket",
+      "sourceDirectory": "changebucket",
+      "gitCommit": "6fcaf41e7ca6c317ebb3b3408b4d185e76fb1640",
+      "version": "1.0.0",
+      "entrypoint": "changebucket.kujo",
+      "files": ["LICENSE", "changebucket.kujo", "src/cli.kujo", "src/analyze.kujo", "src/budget.kujo", "src/classify.kujo", "src/diffsrc.kujo", "src/render.kujo", "src/util.kujo"],
+      "outputContracts": [{ "name": "analysis", "format": "json", "schema": "schemas/changebucket-analysis.schema.json" }]
+    },
+    {
+      "id": "patchbrief",
+      "repository": "https://github.com/kujolang/patchbrief",
+      "sourceDirectory": "patchbrief",
+      "gitCommit": "d88397da0d98825191a76fdbce7a68fb9acb9a55",
+      "version": "1.0.1",
+      "entrypoint": "patchbrief.kujo",
+      "files": ["LICENSE", "patchbrief.kujo", "src/common.kujo", "src/git.kujo", "src/summarize.kujo", "src/suggest_tests.kujo", "src/handoff.kujo", "schemas/patchbrief-summary.schema.json", "schemas/patchbrief-handoff.schema.json"],
+      "outputContracts": [
+        { "name": "summary", "format": "json", "schema": "schemas/patchbrief-summary.schema.json" },
+        { "name": "handoff", "format": "json", "schema": "schemas/patchbrief-handoff.schema.json" }
+      ]
+    },
+    {
+      "id": "failure-evidence",
+      "repository": "https://github.com/kujolang/casefile",
+      "sourceDirectory": "casefile",
+      "gitCommit": "6e8a6ded379a9882b2e48b0a8f0bad57e284c3bf",
+      "version": "1.0.0",
+      "entrypoint": "casefile.kujo",
+      "files": ["LICENSE", "casefile.kujo"],
+      "outputContracts": [{ "name": "case", "format": "json", "schema": "schemas/failure-evidence.schema.json" }]
+    },
+    {
+      "id": "context",
+      "repository": "https://github.com/kujolang/scent",
+      "sourceDirectory": "scent",
+      "gitCommit": "6e72cd06bf422a29e93148cf4edaddd98d937392",
+      "version": "1.0.0",
+      "entrypoint": "scent.kujo",
+      "files": ["LICENSE", "scent.kujo"],
+      "outputContracts": [{ "name": "context", "format": "json", "schema": "schemas/context-pack.schema.json" }]
+    }
+  ]
+}

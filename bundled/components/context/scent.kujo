@@ -1,0 +1,3250 @@
+#!/usr/bin/env kujo
+
+VERSION := "1.0.0"
+
+func usage_text() {
+    return "Usage:\n  scent pack --task <text> [--out <path>] [--budget <n>] [--target codex|claude|deepseek|generic] [--include <path>] [--exclude <path>] [--changed] [--staged] [--unstaged] [--max-files <n>] [--max-file-bytes <n>] [--format md|json|both] [--verbose] [--json] [--dry-run]"
+}
+
+func version_text() {
+    return "Scent " + VERSION
+}
+
+func is_help_arg(value) {
+    return value == "help" || value == "--help" || value == "-h"
+}
+
+func is_version_arg(value) {
+    return value == "version" || value == "--version"
+}
+
+func defaults() {
+    return {
+        "task": "",
+        "out": null,
+        "budget": 12000,
+        "target": "codex",
+        "include": [],
+        "exclude": [],
+        "changed": false,
+        "staged": false,
+        "unstaged": false,
+        "max_files": 40,
+        "max_file_bytes": 50000,
+        "format": "both",
+        "verbose": false,
+        "json_stdout": false,
+        "dry_run": false
+    }
+}
+
+func ok(value) {
+    return {"ok": true, "value": value}
+}
+
+func err(message, code) {
+    return {"ok": false, "error": message, "exit_code": code}
+}
+
+func to_int_safe(value, fallback) {
+    try {
+        return to_int(value)
+    } except e {
+        return fallback
+    }
+}
+
+func collect_repeated_flag_values(argv, flag) {
+    values := []
+    i := 0
+    while i < len(argv) {
+        arg := to_string(argv[i])
+        if arg == flag {
+            if i + 1 < len(argv) {
+                next := to_string(argv[i + 1])
+                if !starts_with(next, "-") {
+                    values = push(values, next)
+                    i = i + 2
+                    continue
+                }
+            }
+        } else if starts_with(arg, flag + "=") {
+            values = push(values, substring(arg, len(flag) + 1, len(arg)))
+        }
+        i = i + 1
+    }
+    return values
+}
+
+func shell_quote(arg) {
+    s := to_string(arg)
+    return "'" + replace(s, "'", "'\"'\"'") + "'"
+}
+
+func parse_cli(argv) {
+    if len(argv) == 0 {
+        return err(usage_text(), 2)
+    }
+
+    parser := arg_parser()
+    parser := parser.add_argument("--task", "type", "string", "required", true)
+    parser := parser.add_argument("--out", "type", "string", "default", "")
+    parser := parser.add_argument("--budget", "type", "int", "default", "12000")
+    parser := parser.add_argument("--target", "type", "string", "default", "codex")
+    parser := parser.add_argument("--include", "type", "string", "default", "")
+    parser := parser.add_argument("--exclude", "type", "string", "default", "")
+    parser := parser.add_argument("--changed", "type", "bool")
+    parser := parser.add_argument("--staged", "type", "bool")
+    parser := parser.add_argument("--unstaged", "type", "bool")
+    parser := parser.add_argument("--max-files", "type", "int", "default", "40")
+    parser := parser.add_argument("--max-file-bytes", "type", "int", "default", "50000")
+    parser := parser.add_argument("--format", "type", "string", "default", "both")
+    parser := parser.add_argument("--verbose", "type", "bool")
+    parser := parser.add_argument("--json", "type", "bool")
+    parser := parser.add_argument("--dry-run", "type", "bool")
+
+    parsed := null
+    try {
+        parsed = parser.parse()
+    } except parse_error {
+        return err(usage_text() + "\n\n" + to_string(parse_error), 2)
+    }
+
+    positionals := []
+    if has_key(parsed, "_positional") && parsed["_positional"] != null {
+        positionals = parsed["_positional"]
+    }
+
+    if len(positionals) > 1 {
+        return err("expected a single subcommand: pack", 2)
+    }
+    if len(positionals) == 0 {
+        return err("expected subcommand: pack\n\n" + usage_text(), 2)
+    }
+    if len(positionals) == 1 {
+        cmd := positionals[0]
+        if is_help_arg(cmd) {
+            return err(usage_text(), 2)
+        }
+        if cmd != "pack" {
+            return err("unknown command: " + cmd + "\n\n" + usage_text(), 2)
+        }
+    }
+
+    opts := defaults()
+    opts["task"] = to_string(parsed["task"])
+    out_raw := to_string(parsed["out"])
+    if trim(out_raw) == "" {
+        opts["out"] = null
+    } else {
+        opts["out"] = out_raw
+    }
+    opts["budget"] = to_int(parsed["budget"])
+    opts["target"] = to_string(parsed["target"])
+    opts["changed"] = parsed["changed"]
+    opts["staged"] = parsed["staged"]
+    opts["unstaged"] = parsed["unstaged"]
+    opts["max_files"] = to_int(parsed["max-files"])
+    opts["max_file_bytes"] = to_int(parsed["max-file-bytes"])
+    opts["format"] = to_string(parsed["format"])
+    opts["verbose"] = parsed["verbose"]
+    opts["json_stdout"] = parsed["json"]
+    opts["dry_run"] = parsed["dry-run"]
+
+    repeated_includes := collect_repeated_flag_values(argv, "--include")
+    if len(repeated_includes) > 0 {
+        opts["include"] = repeated_includes
+    } else {
+        include_raw := to_string(parsed["include"])
+        if trim(include_raw) != "" {
+            opts["include"] = push(opts["include"], include_raw)
+        }
+    }
+
+    repeated_excludes := collect_repeated_flag_values(argv, "--exclude")
+    if len(repeated_excludes) > 0 {
+        opts["exclude"] = repeated_excludes
+    } else {
+        exclude_raw := to_string(parsed["exclude"])
+        if trim(exclude_raw) != "" {
+            opts["exclude"] = push(opts["exclude"], exclude_raw)
+        }
+    }
+
+    if trim(to_string(opts["task"])) == "" {
+        return err("--task is required", 2)
+    }
+    budget_value := to_int(opts["budget"])
+    max_files_value := to_int(opts["max_files"])
+    max_file_bytes_value := to_int(opts["max_file_bytes"])
+    opts["budget"] = budget_value
+    opts["max_files"] = max_files_value
+    opts["max_file_bytes"] = max_file_bytes_value
+
+    if budget_value <= 0 {
+        return err("--budget must be greater than 0", 2)
+    }
+    if max_files_value <= 0 {
+        return err("--max-files must be greater than 0", 2)
+    }
+    if max_file_bytes_value <= 0 {
+        return err("--max-file-bytes must be greater than 0", 2)
+    }
+
+    allowed_targets := {"codex": 1, "claude": 1, "deepseek": 1, "generic": 1}
+    if has_key(allowed_targets, opts["target"]) == 0 {
+        return err("--target must be one of: codex, claude, deepseek, generic", 2)
+    }
+
+    allowed_formats := {"md": 1, "json": 1, "both": 1}
+    if has_key(allowed_formats, opts["format"]) == 0 {
+        return err("--format must be one of: md, json, both", 2)
+    }
+
+    return ok(opts)
+}
+
+func is_absolute(path) {
+    return starts_with(path, "/")
+}
+
+func resolve_path(base, path) {
+    if is_absolute(path) {
+        return path
+    }
+    if path == "." {
+        return base
+    }
+    return path_join(base, path)
+}
+
+func path_rel(root, full) {
+    prefix := root + "/"
+    if starts_with(full, prefix) {
+        return substring(full, len(prefix), len(full))
+    }
+    if full == root {
+        return "."
+    }
+    return full
+}
+
+func has_parent_path_segment(path) {
+    parts := split(to_string(path), "/")
+    i := 0
+    while i < len(parts) {
+        if parts[i] == ".." {
+            return true
+        }
+        i = i + 1
+    }
+    return false
+}
+
+func strip_trailing_slashes(path) {
+    out := to_string(path)
+    while len(out) > 1 && ends_with(out, "/") {
+        out = substring(out, 0, len(out) - 1)
+    }
+    return out
+}
+
+func normalize_selector(repo_root, path) {
+    raw := strip_trailing_slashes(trim(to_string(path)))
+    if is_absolute(raw) {
+        return path_rel(repo_root, raw)
+    }
+    while starts_with(raw, "./") {
+        raw = substring(raw, 2, len(raw))
+    }
+    raw = strip_trailing_slashes(raw)
+    if raw == "" || raw == "." {
+        return "."
+    }
+    return raw
+}
+
+func path_has_symlink_segment(path) {
+    full := to_string(path)
+    parts := split(full, "/")
+    current := "/"
+    i := 0
+    while i < len(parts) {
+        part := parts[i]
+        i = i + 1
+        if part == "" {
+            continue
+        }
+        current = path_join(current, part)
+        if path_exists(current) && path_is_symlink(current) {
+            return true
+        }
+    }
+    return false
+}
+
+func validate_scoped_paths(repo_root, paths, flag_name) {
+    normalized := []
+    i := 0
+    while i < len(paths) {
+        raw := trim(to_string(paths[i]))
+        if raw == "" {
+            i = i + 1
+            continue
+        }
+        if has_parent_path_segment(raw) {
+            return err(flag_name + " path cannot contain '..': " + raw, 2)
+        }
+        full := resolve_path(repo_root, raw)
+        root_prefix := repo_root + "/"
+        if full != repo_root && !starts_with(full, root_prefix) {
+            return err(flag_name + " path must stay inside the repository: " + raw, 2)
+        }
+        if path_has_symlink_segment(full) {
+            return err(flag_name + " path cannot contain a symlink: " + raw, 2)
+        }
+        normalized = push(normalized, normalize_selector(repo_root, raw))
+        i = i + 1
+    }
+    return ok(normalized)
+}
+
+func detect_repo_root(start) {
+    current := start
+    previous := ""
+
+    while current != previous {
+        git_dir := path_join(current, ".git")
+        if path_exists(git_dir) {
+            return current
+        }
+        previous = current
+        current = dirname(current)
+    }
+
+    return start
+}
+
+func estimate_tokens(text) {
+    chars := len(text)
+    return (chars + 3) / 4
+}
+
+func tokenize_task(task) {
+    tokens := []
+    seen := {}
+
+    parts := regex_split(lower(task), "[^a-z0-9_-]+")
+    i := 0
+    while i < len(parts) {
+        part := parts[i]
+        p := trim(part)
+        if len(p) > 2 && has_key(seen, p) == 0 {
+            seen[p] = 1
+            tokens = push(tokens, p)
+        }
+        i = i + 1
+    }
+
+    return tokens
+}
+
+func discover_instruction_files(repo_root) {
+    candidates := [
+        "AGENTS.md",
+        "AGENTS.override.md",
+        "CLAUDE.md",
+        "README.md",
+        "CONTRIBUTING.md",
+        "docs/README.md"
+    ]
+    found := []
+
+    i := 0
+    while i < len(candidates) {
+        rel := candidates[i]
+        full := path_join(repo_root, rel)
+        if path_exists(full) && path_is_file(full) {
+            found = push(found, full)
+        }
+        i = i + 1
+    }
+
+    return found
+}
+
+func run_process(args) {
+    parts := []
+    i := 0
+    while i < len(args) {
+        parts = push(parts, shell_quote(args[i]))
+        i = i + 1
+    }
+    cmd := join(parts, " ")
+
+    try {
+        return execute_status(cmd)
+    } except e {
+        return {
+            "success": false,
+            "exitcode": 127,
+            "stdout": "",
+            "stderr": to_string(e),
+            "timed_out": false,
+            "stdout_truncated": false,
+            "stderr_truncated": false
+        }
+    }
+}
+
+func canonical_path_for_scope(path) {
+    raw := strip_trailing_slashes(to_string(path))
+    if path_exists(raw) {
+        resolved := run_process(["realpath", raw])
+        if resolved.success {
+            return strip_trailing_slashes(trim(to_string(resolved.stdout)))
+        }
+    }
+
+    parent := dirname(raw)
+    if path_exists(parent) {
+        resolved_parent := run_process(["realpath", parent])
+        if resolved_parent.success {
+            return path_join(strip_trailing_slashes(trim(to_string(resolved_parent.stdout))), basename(raw))
+        }
+    }
+    return raw
+}
+
+func split_lines(text) {
+    lines := split(text, "\n")
+    out := []
+    i := 0
+    while i < len(lines) {
+        line := lines[i]
+        t := trim(line)
+        if len(t) > 0 {
+            out = push(out, t)
+        }
+        i = i + 1
+    }
+    return out
+}
+
+func split_nul_records(text) {
+    nul := parse_json("\"\\u0000\"")
+    records := split(to_string(text), nul)
+    out := []
+    i := 0
+    while i < len(records) {
+        record := records[i]
+        if record != "" {
+            out = push(out, record)
+        }
+        i = i + 1
+    }
+    return out
+}
+
+func inspect_git(repo_root) {
+    result := {
+        "available": false,
+        "branch": "unknown",
+        "commit": "unknown",
+        "dirty": false,
+        "staged_files": [],
+        "unstaged_files": [],
+        "untracked_files": [],
+        "changed_files": [],
+        "diff_summary": []
+    }
+
+    staged_res := run_process(["git", "-C", repo_root, "diff", "--name-only", "--cached", "-z"])
+    if !staged_res.success {
+        return result
+    }
+
+    unstaged_res := run_process(["git", "-C", repo_root, "diff", "--name-only", "-z"])
+    if !unstaged_res.success {
+        return result
+    }
+
+    untracked_res := run_process(["git", "-C", repo_root, "ls-files", "--others", "--exclude-standard", "-z"])
+    if !untracked_res.success {
+        return result
+    }
+
+    result["available"] = true
+
+    branch_res := run_process(["git", "-C", repo_root, "rev-parse", "--abbrev-ref", "HEAD"])
+    if branch_res.success {
+        branch := trim(to_string(branch_res.stdout))
+        if branch != "" {
+            result["branch"] = branch
+        }
+    }
+
+    commit_res := run_process(["git", "-C", repo_root, "rev-parse", "--short", "HEAD"])
+    if commit_res.success {
+        commit := trim(to_string(commit_res.stdout))
+        if commit != "" {
+            result["commit"] = commit
+        }
+    }
+
+    staged_seen := {}
+    unstaged_seen := {}
+    untracked_seen := {}
+    changed_seen := {}
+
+    staged_files := split_nul_records(to_string(staged_res.stdout))
+    unstaged_files := split_nul_records(to_string(unstaged_res.stdout))
+    untracked_files := split_nul_records(to_string(untracked_res.stdout))
+
+    idx := 0
+    while idx < len(staged_files) {
+        path := staged_files[idx]
+        idx = idx + 1
+        if path == "" {
+            continue
+        }
+        if has_key(staged_seen, path) == 0 {
+            staged_seen[path] = 1
+            result["staged_files"] = push(result["staged_files"], path)
+        }
+        if has_key(changed_seen, path) == 0 {
+            changed_seen[path] = 1
+            result["changed_files"] = push(result["changed_files"], path)
+        }
+        result["diff_summary"] = push(result["diff_summary"], "staged: " + path)
+    }
+
+    idx := 0
+    while idx < len(unstaged_files) {
+        path := unstaged_files[idx]
+        idx = idx + 1
+        if path == "" {
+            continue
+        }
+        if has_key(unstaged_seen, path) == 0 {
+            unstaged_seen[path] = 1
+            result["unstaged_files"] = push(result["unstaged_files"], path)
+        }
+        if has_key(changed_seen, path) == 0 {
+            changed_seen[path] = 1
+            result["changed_files"] = push(result["changed_files"], path)
+        }
+        result["diff_summary"] = push(result["diff_summary"], "unstaged: " + path)
+    }
+
+    idx = 0
+    while idx < len(untracked_files) {
+        path := untracked_files[idx]
+        idx = idx + 1
+        if path == "" {
+            continue
+        }
+        if has_key(untracked_seen, path) == 0 {
+            untracked_seen[path] = 1
+            result["untracked_files"] = push(result["untracked_files"], path)
+        }
+        if has_key(changed_seen, path) == 0 {
+            changed_seen[path] = 1
+            result["changed_files"] = push(result["changed_files"], path)
+        }
+        result["diff_summary"] = push(result["diff_summary"], "untracked: " + path)
+    }
+
+    if len(result["staged_files"]) > 0 || len(result["unstaged_files"]) > 0 || len(result["untracked_files"]) > 0 {
+        result["dirty"] = true
+    }
+
+    return result
+}
+
+func is_ignored_dir(name) {
+    ignored := {
+        ".git": 1,
+        ".scent": 1,
+        "node_modules": 1,
+        "vendor": 1,
+        "out": 1,
+        "dist": 1,
+        "build": 1,
+        "target": 1
+    }
+    return has_key(ignored, name)
+}
+
+func is_binary_extension(path) {
+    ext := lower(path_extension(path))
+    binary_exts := {
+        "png": 1,
+        "jpg": 1,
+        "jpeg": 1,
+        "gif": 1,
+        "webp": 1,
+        "pdf": 1,
+        "zip": 1,
+        "gz": 1,
+        "tar": 1,
+        "bz2": 1,
+        "xz": 1,
+        "mp3": 1,
+        "mp4": 1,
+        "mov": 1,
+        "avi": 1,
+        "so": 1,
+        "dll": 1,
+        "dylib": 1,
+        "exe": 1,
+        "bin": 1,
+        "db": 1,
+        "sqlite": 1,
+        "class": 1
+    }
+    return has_key(binary_exts, ext)
+}
+
+func should_skip_file(path) {
+    name := basename(path)
+    if starts_with(name, ".env") {
+        return true
+    }
+    return is_binary_extension(path)
+}
+
+func contains_nul(text) {
+    nul := parse_json("\"\\u0000\"")
+    return contains(to_string(text), nul)
+}
+
+func is_instruction_rel(rel) {
+    return rel == "AGENTS.md" || rel == "AGENTS.override.md" || rel == "CLAUDE.md" || rel == "README.md" || rel == "CONTRIBUTING.md" || rel == "docs/README.md"
+}
+
+func is_doc_rel(rel) {
+    return ends_with(lower(rel), ".md") || starts_with(lower(rel), "docs/")
+}
+
+func is_test_rel(rel) {
+    lower_rel := lower(rel)
+    return starts_with(lower_rel, "tests/") || contains(lower_rel, "/tests/") || ends_with(lower_rel, "_test.rs") || ends_with(lower_rel, "_test.py") || ends_with(lower_rel, ".test.ts") || ends_with(lower_rel, ".spec.ts") || ends_with(lower_rel, "_test.kujo")
+}
+
+func is_config_rel(rel) {
+    exact := {
+        "Cargo.toml": 1,
+        "Cargo.lock": 1,
+        "package.json": 1,
+        "pnpm-lock.yaml": 1,
+        "yarn.lock": 1,
+        "package-lock.json": 1,
+        "pyproject.toml": 1,
+        "setup.cfg": 1,
+        "setup.py": 1,
+        "Makefile": 1,
+        "justfile": 1,
+        "Justfile": 1,
+        "tsconfig.json": 1,
+        "kujo.toml": 1
+    }
+    if has_key(exact, rel) {
+        return true
+    }
+    lower_rel := lower(rel)
+    return ends_with(lower_rel, ".toml") || ends_with(lower_rel, ".yaml") || ends_with(lower_rel, ".yml") || ends_with(lower_rel, ".json")
+}
+
+func path_is_excluded(full, exclude_abs) {
+    i := 0
+    while i < len(exclude_abs) {
+        ex := exclude_abs[i]
+        if full == ex || starts_with(full, ex + "/") {
+            return true
+        }
+        i = i + 1
+    }
+    return false
+}
+
+func read_text_file(path) {
+    try {
+        content := read_file(path)
+        if contains_nul(content) {
+            return {"ok": false, "error": "binary file"}
+        }
+        return {"ok": true, "content": content}
+    } except e {
+        return {"ok": false, "error": to_string(e)}
+    }
+}
+
+func walk_collect(repo_root, current, max_candidates, visited_dirs, depth) {
+    files := []
+    if max_candidates <= 0 {
+        return files
+    }
+    if depth > 20 {
+        return files
+    }
+
+    if has_key(visited_dirs, current) == 1 {
+        return files
+    }
+    visited_dirs[current] = 1
+
+    entries := []
+    try {
+        entries = list_dir(current)
+    } except e {
+        return files
+    }
+    entries = sort(entries)
+
+    idx := 0
+    while idx < len(entries) {
+        name := entries[idx]
+        idx = idx + 1
+
+        if len(files) >= max_candidates {
+            break
+        }
+
+        if name == "." {
+            continue
+        }
+        if name == ".." {
+            continue
+        }
+
+        if is_ignored_dir(name) {
+            continue
+        }
+
+        full := path_join(current, name)
+        if path_is_symlink(full) {
+            continue
+        }
+        if path_is_dir(full) {
+            remaining := max_candidates - len(files)
+            child_files := walk_collect(repo_root, full, remaining, visited_dirs, depth + 1)
+            child_idx := 0
+            while child_idx < len(child_files) {
+                files = push(files, child_files[child_idx])
+                child_idx = child_idx + 1
+                if len(files) >= max_candidates {
+                    break
+                }
+            }
+        } else if path_is_file(full) {
+            files = push(files, full)
+        }
+    }
+
+    return files
+}
+
+func collect_candidates(repo_root, git_info, instruction_files, includes, excludes, task_terms) {
+    visited_dirs := {}
+    all_paths := walk_collect(repo_root, repo_root, 2000, visited_dirs, 0)
+
+    i := 0
+    while i < len(includes) {
+        inc := includes[i]
+        inc_abs := resolve_path(repo_root, inc)
+        if path_exists(inc_abs) {
+            if path_is_file(inc_abs) {
+                all_paths = push(all_paths, inc_abs)
+            } else if path_is_dir(inc_abs) {
+                include_visited := {}
+                include_paths := walk_collect(repo_root, inc_abs, 2000, include_visited, 0)
+                add_idx := 0
+                while add_idx < len(include_paths) {
+                    all_paths = push(all_paths, include_paths[add_idx])
+                    add_idx = add_idx + 1
+                }
+            }
+        }
+        i = i + 1
+    }
+
+    instruction_rel := {}
+    i = 0
+    while i < len(instruction_files) {
+        inst := instruction_files[i]
+        instruction_rel[path_rel(repo_root, inst)] = 1
+        i = i + 1
+    }
+
+    changed_map := {}
+    i = 0
+    while i < len(git_info["changed_files"]) {
+        p := git_info["changed_files"][i]
+        changed_map[p] = 1
+        i = i + 1
+    }
+    staged_map := {}
+    i = 0
+    while i < len(git_info["staged_files"]) {
+        p := git_info["staged_files"][i]
+        staged_map[p] = 1
+        i = i + 1
+    }
+    unstaged_map := {}
+    i = 0
+    while i < len(git_info["unstaged_files"]) {
+        p := git_info["unstaged_files"][i]
+        unstaged_map[p] = 1
+        i = i + 1
+    }
+
+    exclude_abs := []
+    i = 0
+    while i < len(excludes) {
+        ex := excludes[i]
+        exclude_abs = push(exclude_abs, resolve_path(repo_root, ex))
+        i = i + 1
+    }
+
+    seen := {}
+    candidates := []
+
+    i = 0
+    while i < len(all_paths) {
+        full := all_paths[i]
+        i = i + 1
+
+        if !path_is_file(full) {
+            continue
+        }
+        if should_skip_file(full) {
+            continue
+        }
+        if path_is_excluded(full, exclude_abs) {
+            continue
+        }
+
+        rel := path_rel(repo_root, full)
+        if has_key(seen, rel) {
+            continue
+        }
+        seen[rel] = 1
+
+        matched_terms := []
+        rel_lower := lower(rel)
+        j := 0
+        while j < len(task_terms) {
+            term := task_terms[j]
+            if contains(rel_lower, term) {
+                matched_terms = push(matched_terms, term)
+            }
+            j = j + 1
+        }
+
+        size := to_int_safe(file_size(full), 0)
+
+        candidates = push(candidates, {
+            "path": full,
+            "rel_path": rel,
+            "size_bytes": size,
+            "is_changed": has_key(changed_map, rel),
+            "is_staged": has_key(staged_map, rel),
+            "is_unstaged": has_key(unstaged_map, rel),
+            "is_instruction": has_key(instruction_rel, rel),
+            "is_doc": is_doc_rel(rel),
+            "is_test": is_test_rel(rel),
+            "is_config": is_config_rel(rel),
+            "matched_terms": matched_terms,
+            "selected": false,
+            "selection_reason": ""
+        })
+    }
+
+    return candidates
+}
+
+func explicit_include_match(rel, includes, repo_root) {
+    i := 0
+    while i < len(includes) {
+        inc := includes[i]
+        inc_rel := inc
+        if is_absolute(inc_rel) {
+            inc_rel = path_rel(repo_root, inc_rel)
+        }
+
+        if inc_rel == "." || rel == inc_rel || starts_with(rel, inc_rel + "/") {
+            return true
+        }
+        i = i + 1
+    }
+    return false
+}
+
+func score_candidate(c, opts, repo_root) {
+    score := 0
+    reasons := []
+
+    if c["is_instruction"] {
+        score = score + 120
+        reasons = push(reasons, "instruction file")
+    }
+
+    if explicit_include_match(c["rel_path"], opts["include"], repo_root) {
+        score = score + 200
+        reasons = push(reasons, "explicit include")
+    }
+
+    if opts["changed"] && c["is_changed"] {
+        score = score + 110
+        reasons = push(reasons, "changed file")
+    }
+
+    if opts["staged"] && c["is_staged"] {
+        score = score + 95
+        reasons = push(reasons, "staged file")
+    }
+
+    if opts["unstaged"] && c["is_unstaged"] {
+        score = score + 90
+        reasons = push(reasons, "unstaged file")
+    }
+
+    if len(c["matched_terms"]) > 0 {
+        score = score + (len(c["matched_terms"]) * 20)
+        reasons = push(reasons, "task-term match")
+    }
+
+    if c["is_config"] {
+        score = score + 12
+        reasons = push(reasons, "config/build file")
+    }
+
+    if c["is_doc"] {
+        score = score + 10
+        reasons = push(reasons, "docs/readme")
+    }
+
+    if c["is_test"] {
+        score = score + 15
+        reasons = push(reasons, "test file")
+    }
+
+    reason := ""
+    if len(reasons) > 0 {
+        reason = join(reasons, ", ")
+    } else {
+        reason = "did not meet selection threshold"
+    }
+
+    return {"score": score, "reason": reason}
+}
+
+func sort_scored(scored) {
+    n := len(scored)
+    i := 0
+    while i < n {
+        j := i + 1
+        while j < n {
+            left := scored[i]
+            right := scored[j]
+            swap := false
+            if right["score"] > left["score"] {
+                swap = true
+            } else if right["score"] == left["score"] && right["candidate"]["rel_path"] < left["candidate"]["rel_path"] {
+                swap = true
+            }
+
+            if swap {
+                tmp := scored[i]
+                scored[i] = scored[j]
+                scored[j] = tmp
+            }
+            j = j + 1
+        }
+        i = i + 1
+    }
+    return scored
+}
+
+func file_stem(path) {
+    name := basename(path)
+    if contains(name, ".") {
+        parts := split(name, ".")
+        if len(parts) > 1 {
+            return parts[0]
+        }
+    }
+    return name
+}
+
+func looks_like_pair(source_rel, test_rel) {
+    lhs := lower(file_stem(source_rel))
+    rhs := lower(file_stem(test_rel))
+    if lhs == rhs {
+        return true
+    }
+    if contains(rhs, lhs) || contains(lhs, rhs) {
+        return true
+    }
+    if contains(test_rel, "tests") {
+        lhs2 := replace(lhs, "_test", "")
+        rhs2 := replace(rhs, "_test", "")
+        if contains(rhs, lhs2) || contains(lhs, rhs2) {
+            return true
+        }
+    }
+    return false
+}
+
+func select_candidates(opts, repo_root, candidates) {
+    scored := []
+    i := 0
+    while i < len(candidates) {
+        c := candidates[i]
+        sr := score_candidate(c, opts, repo_root)
+        if sr["score"] > 0 {
+            scored = push(scored, {"score": sr["score"], "reason": sr["reason"], "candidate": c})
+        }
+        i = i + 1
+    }
+
+    scored = sort_scored(scored)
+
+    selected := []
+    seen := {}
+    max_files := to_int(opts["max_files"])
+
+    i = 0
+    while i < len(scored) {
+        if to_int(len(selected)) >= to_int(max_files) {
+            break
+        }
+        s := scored[i]
+        c := s["candidate"]
+        rel := c["rel_path"]
+        if has_key(seen, rel) {
+            i = i + 1
+            continue
+        }
+        seen[rel] = 1
+        c["selected"] = true
+        c["selection_reason"] = s["reason"]
+        selected = push(selected, c)
+        i = i + 1
+    }
+
+    sources := []
+    i = 0
+    while i < len(selected) {
+        c := selected[i]
+        if !c["is_test"] {
+            sources = push(sources, c["rel_path"])
+        }
+        i = i + 1
+    }
+
+    i = 0
+    while i < len(candidates) {
+        if to_int(len(selected)) >= to_int(max_files) {
+            break
+        }
+        c := candidates[i]
+        if !c["is_test"] {
+            i = i + 1
+            continue
+        }
+        if has_key(seen, c["rel_path"]) {
+            i = i + 1
+            continue
+        }
+
+        matched := false
+        j := 0
+        while j < len(sources) {
+            src := sources[j]
+            if looks_like_pair(src, c["rel_path"]) {
+                matched = true
+                break
+            }
+            j = j + 1
+        }
+
+        if matched {
+            seen[c["rel_path"]] = 1
+            c["selected"] = true
+            c["selection_reason"] = "nearby test for selected source"
+            selected = push(selected, c)
+        }
+        i = i + 1
+    }
+
+    if len(selected) == 0 {
+        i = 0
+        while i < len(candidates) {
+            if to_int(len(selected)) >= to_int(max_files) || to_int(len(selected)) >= 3 {
+                break
+            }
+            c := candidates[i]
+            rel := c["rel_path"]
+            if has_key(seen, rel) {
+                i = i + 1
+                continue
+            }
+            seen[rel] = 1
+            c["selected"] = true
+            c["selection_reason"] = "fallback baseline selection"
+            selected = push(selected, c)
+            i = i + 1
+        }
+    }
+
+    return selected
+}
+
+func utf8_byte_len(content) {
+    encoded := encode_base64(to_string(content))
+    padding := 0
+    if ends_with(encoded, "==") {
+        padding = 2
+    } else if ends_with(encoded, "=") {
+        padding = 1
+    }
+    return (len(encoded) / 4) * 3 - padding
+}
+
+func clip_text(content, limit_bytes) {
+    if utf8_byte_len(content) <= limit_bytes {
+        return {"content": content, "truncated": false}
+    }
+
+    low := 0
+    high := len(content)
+    while low < high {
+        middle := (low + high + 1) / 2
+        prefix := substring(content, 0, middle)
+        if utf8_byte_len(prefix) <= limit_bytes {
+            low = middle
+        } else {
+            high = middle - 1
+        }
+    }
+    return {"content": substring(content, 0, low), "truncated": true}
+}
+
+func normalize_credential_key(raw_key) {
+    key := trim(lower(to_string(raw_key)))
+    prefixes := ["export ", "let ", "const ", "var "]
+    prefix_idx := 0
+    while prefix_idx < len(prefixes) {
+        prefix := prefixes[prefix_idx]
+        if starts_with(key, prefix) {
+            key = trim(substring(key, len(prefix), len(key)))
+        }
+        prefix_idx = prefix_idx + 1
+    }
+
+    if len(key) > 1 && ((starts_with(key, "\"") && ends_with(key, "\"")) || (starts_with(key, "'") && ends_with(key, "'"))) {
+        key = substring(key, 1, len(key) - 1)
+    }
+    if key == "" || contains(key, " ") || contains(key, "\t") {
+        return ""
+    }
+
+    if !regex_match(key, "^[a-z0-9_.-]+$") {
+        return ""
+    }
+    return key
+}
+
+func contains_credential_key_term(text) {
+    terms := ["api_key", "apikey", "access_token", "refresh_token", "session_token", "password", "passwd", "secret", "token", "cookie", "webhook"]
+    i := 0
+    lower_text := lower(to_string(text))
+    while i < len(terms) {
+        if contains(lower_text, terms[i]) {
+            return true
+        }
+        i = i + 1
+    }
+    return false
+}
+
+func credential_key_matches(key, term) {
+    return regex_match(key, "(^|[._-])" + term + "($|[._-])")
+}
+
+func credential_assignment(line) {
+    separators := ["=", ":"]
+    separator_idx := 0
+    while separator_idx < len(separators) {
+        separator := separators[separator_idx]
+        if contains(line, separator) {
+            parts := split(line, separator)
+            if contains_credential_key_term(parts[0]) {
+                key := normalize_credential_key(parts[0])
+                if key != "" {
+                    return {"ok": true, "key": key, "prefix": parts[0] + separator, "separator": separator}
+                }
+            }
+        }
+        separator_idx = separator_idx + 1
+    }
+    return {"ok": false, "key": "", "prefix": "", "separator": ""}
+}
+
+func redact_text(file, content) {
+    redactions := []
+    text := to_string(content)
+    lines := split(text, "\n")
+    out := []
+    in_private_key := false
+
+    idx := 0
+    while idx < len(lines) {
+        line := lines[idx]
+        line_no := idx + 1
+        lower_line := lower(line)
+
+        if contains(line, "-----BEGIN") && contains(line, "PRIVATE KEY-----") {
+            in_private_key = true
+            out = push(out, "[REDACTED:PRIVATE_KEY]")
+            redactions = push(redactions, {"file": file, "line": line_no, "redaction_type": "private_key", "placeholder": "[REDACTED:PRIVATE_KEY]"})
+            idx = idx + 1
+            continue
+        }
+
+        if in_private_key {
+            if contains(line, "-----END") && contains(line, "PRIVATE KEY-----") {
+                in_private_key = false
+            }
+            idx = idx + 1
+            continue
+        }
+
+        if contains(lower_line, "authorization:") {
+            out = push(out, "authorization: [REDACTED:TOKEN]")
+            redactions = push(redactions, {"file": file, "line": line_no, "redaction_type": "authorization_header", "placeholder": "[REDACTED:TOKEN]"})
+            idx = idx + 1
+            continue
+        }
+
+        secret_line := false
+        placeholder := ""
+        redaction_type := ""
+        assignment := credential_assignment(line)
+
+        patterns := [
+            ["api_key", "[REDACTED:API_KEY]", "api_key"],
+            ["apikey", "[REDACTED:API_KEY]", "api_key"],
+            ["access_token", "[REDACTED:TOKEN]", "access_token"],
+            ["refresh_token", "[REDACTED:TOKEN]", "refresh_token"],
+            ["session_token", "[REDACTED:TOKEN]", "session_token"],
+            ["password", "[REDACTED:PASSWORD]", "password"],
+            ["passwd", "[REDACTED:PASSWORD]", "password"],
+            ["secret", "[REDACTED:SECRET]", "secret"],
+            ["token", "[REDACTED:TOKEN]", "token"],
+            ["cookie", "[REDACTED:TOKEN]", "cookie"],
+            ["webhook", "[REDACTED:SECRET]", "webhook"]
+        ]
+
+        p_idx := 0
+        while p_idx < len(patterns) {
+            p := patterns[p_idx]
+            if assignment["ok"] && credential_key_matches(assignment["key"], p[0]) {
+                secret_line = true
+                placeholder = p[1]
+                redaction_type = p[2]
+                break
+            }
+            p_idx = p_idx + 1
+        }
+
+        if secret_line {
+            separator_space := ""
+            if assignment["separator"] == ":" {
+                separator_space = " "
+            }
+            out = push(out, assignment["prefix"] + separator_space + placeholder)
+            redactions = push(redactions, {"file": file, "line": line_no, "redaction_type": redaction_type, "placeholder": placeholder})
+            idx = idx + 1
+            continue
+        }
+
+        token_patterns := [
+            ["sk-[A-Za-z0-9_-]{20,}", "[REDACTED:TOKEN]", "openai_token"],
+            ["ghp_[A-Za-z0-9_]{20,}", "[REDACTED:TOKEN]", "github_token"],
+            ["github_pat_[A-Za-z0-9_]{20,}", "[REDACTED:TOKEN]", "github_token"],
+            ["AKIA[0-9A-Z]{16}", "[REDACTED:ACCESS_KEY]", "aws_access_key"],
+            ["sk_live_[A-Za-z0-9]{16,}", "[REDACTED:TOKEN]", "stripe_token"]
+        ]
+        token_line := line
+        token_found := false
+        token_idx := 0
+        while token_idx < len(token_patterns) {
+            tp := token_patterns[token_idx]
+            if regex_match(token_line, tp[0]) {
+                token_line = regex_replace(token_line, tp[0], tp[1])
+                redactions = push(redactions, {"file": file, "line": line_no, "redaction_type": tp[2], "placeholder": tp[1]})
+                token_found = true
+            }
+            token_idx = token_idx + 1
+        }
+        if token_found {
+            out = push(out, token_line)
+            idx = idx + 1
+            continue
+        }
+
+        if regex_match(line, "[A-Za-z0-9_-]{8,}[.][A-Za-z0-9_-]{8,}[.][A-Za-z0-9_-]{8,}") {
+            redacted_line := regex_replace(line, "[A-Za-z0-9_-]{8,}[.][A-Za-z0-9_-]{8,}[.][A-Za-z0-9_-]{8,}", "[REDACTED:TOKEN]")
+            out = push(out, redacted_line)
+            redactions = push(redactions, {"file": file, "line": line_no, "redaction_type": "jwt", "placeholder": "[REDACTED:TOKEN]"})
+            idx = idx + 1
+            continue
+        }
+
+        out = push(out, line)
+        idx = idx + 1
+    }
+
+    return {"content": join(out, "\n"), "redactions": redactions}
+}
+
+func reserved_tokens(task) {
+    return 1400 + estimate_tokens(task)
+}
+
+func apply_budget(budget, reserved, selected_files) {
+    budget_for_files := budget - reserved
+    if budget_for_files < 0 {
+        budget_for_files = 0
+    }
+
+    manifest := []
+    included := []
+    used := 0
+
+    i := 0
+    while i < len(selected_files) {
+        item := selected_files[i]
+        if used + item["estimated_tokens"] <= budget_for_files {
+            decision := "include"
+            if item["truncated"] {
+                decision = "truncate"
+            }
+            manifest = push(manifest, {
+                "path": item["path"],
+                "type": "file",
+                "decision": decision,
+                "reason": item["reason"],
+                "score": item["score"],
+                "size_bytes": item["size_bytes"],
+                "estimated_tokens": item["estimated_tokens"]
+            })
+            used = used + item["estimated_tokens"]
+            included = push(included, item)
+            i = i + 1
+            continue
+        }
+
+        remaining := budget_for_files - used
+        if remaining > 120 {
+            char_budget := remaining * 4
+            if char_budget < 0 {
+                char_budget = 0
+            }
+            item["content"] = substring(item["content"], 0, char_budget)
+            item["truncated"] = true
+            item["estimated_tokens"] = estimate_tokens(item["content"])
+            item["content_hash"] = sha256(item["content"])
+
+            if item["estimated_tokens"] <= remaining {
+                used = used + item["estimated_tokens"]
+                manifest = push(manifest, {
+                    "path": item["path"],
+                    "type": "file",
+                    "decision": "truncate",
+                    "reason": "truncated to fit budget; " + item["reason"],
+                    "score": item["score"],
+                    "size_bytes": item["size_bytes"],
+                    "estimated_tokens": item["estimated_tokens"]
+                })
+                included = push(included, item)
+                i = i + 1
+                continue
+            }
+        }
+
+        manifest = push(manifest, {
+            "path": item["path"],
+            "type": "file",
+            "decision": "exclude",
+            "reason": "excluded due to budget; " + item["reason"],
+            "score": item["score"],
+            "size_bytes": item["size_bytes"],
+            "estimated_tokens": item["estimated_tokens"]
+        })
+        i = i + 1
+    }
+
+    return {"files": included, "manifest": manifest}
+}
+
+func discover_commands(repo_root) {
+    commands := []
+
+    cargo_path := path_join(repo_root, "Cargo.toml")
+    if path_exists(cargo_path) {
+        cargo_read := read_text_file(cargo_path)
+        cargo_valid := false
+        if cargo_read["ok"] {
+            try {
+                cargo_doc := parse_toml(cargo_read["content"])
+                cargo_valid = type(cargo_doc) == "dict"
+            } except cargo_parse_error {
+                cargo_valid = false
+            }
+        }
+        if cargo_valid {
+            commands = push(commands, "cargo test")
+            commands = push(commands, "cargo fmt -- --check")
+        }
+    }
+
+    package_path := path_join(repo_root, "package.json")
+    if path_exists(package_path) {
+        pkg_read := read_text_file(package_path)
+        if pkg_read["ok"] {
+            parsed := null
+            parse_ok := false
+            try {
+                parsed = parse_json(pkg_read["content"])
+                parse_ok = true
+            } except parse_error {
+                parse_ok = false
+            }
+
+            if parse_ok && type(parsed) == "dict" && has_key(parsed, "scripts") {
+                scripts := parsed["scripts"]
+                if type(scripts) == "dict" {
+                    if has_key(scripts, "test") {
+                        commands = push(commands, "npm test")
+                    }
+                    if has_key(scripts, "lint") {
+                        commands = push(commands, "npm run lint")
+                    }
+                    if has_key(scripts, "build") {
+                        commands = push(commands, "npm run build")
+                    }
+                }
+            }
+        }
+    }
+
+    makefile_path := path_join(repo_root, "Makefile")
+    if path_exists(makefile_path) {
+        mf := read_text_file(makefile_path)
+        if mf["ok"] {
+            make_lines := split(mf["content"], "\n")
+            i := 0
+            while i < len(make_lines) {
+                make_line := make_lines[i]
+                if starts_with(make_line, "test:") {
+                    commands = push(commands, "make test")
+                }
+                if starts_with(make_line, "build:") {
+                    commands = push(commands, "make build")
+                }
+                if starts_with(make_line, "lint:") {
+                    commands = push(commands, "make lint")
+                }
+                i = i + 1
+            }
+        }
+    }
+
+    justfile_path := path_join(repo_root, "justfile")
+    if !path_exists(justfile_path) {
+        justfile_path = path_join(repo_root, "Justfile")
+    }
+    if path_exists(justfile_path) {
+        jf := read_text_file(justfile_path)
+        if jf["ok"] {
+            just_lines := split(jf["content"], "\n")
+            j := 0
+            while j < len(just_lines) {
+                just_line := just_lines[j]
+                if starts_with(just_line, "test:") {
+                    commands = push(commands, "just test")
+                }
+                if starts_with(just_line, "build:") {
+                    commands = push(commands, "just build")
+                }
+                if starts_with(just_line, "lint:") {
+                    commands = push(commands, "just lint")
+                }
+                j = j + 1
+            }
+        }
+    }
+
+    # dedupe + sort
+    seen := {}
+    uniq := []
+    k := 0
+    while k < len(commands) {
+        c := commands[k]
+        if has_key(seen, c) == 0 {
+            seen[c] = 1
+            uniq = push(uniq, c)
+        }
+        k = k + 1
+    }
+    return sort(uniq)
+}
+
+func target_notes(target) {
+    if target == "codex" {
+        return "Codex usage notes:\n- Follow AGENTS.md/project instructions first.\n- Use this pack as bounded context.\n- Run detected tests after changes.\n- Do not modify files outside the task scope unless necessary."
+    }
+    if target == "claude" {
+        return "Usage notes:\n- Follow project instructions first.\n- Use this pack as bounded context.\n- Run detected tests after changes.\n- Avoid changes outside task scope unless needed."
+    }
+    if target == "deepseek" {
+        return "Implementation notes:\n- Treat this as bounded task context.\n- Prefer minimal diff and deterministic changes.\n- Run detected tests before handoff."
+    }
+    return "Usage notes:\n- Use this pack as bounded task context.\n- Follow project instructions and constraints.\n- Validate with detected commands before handoff."
+}
+
+func markdown_fence(content) {
+    fence := "```"
+    while contains(content, fence) {
+        fence = fence + "`"
+    }
+    return fence
+}
+
+func markdown_section_list(title, items, empty_line) {
+    out := "## " + title + "\n\n"
+    if len(items) == 0 {
+        out = out + empty_line + "\n\n"
+        return out
+    }
+    i := 0
+    while i < len(items) {
+        item := items[i]
+        out = out + "- " + item + "\n"
+        i = i + 1
+    }
+    out = out + "\n"
+    return out
+}
+
+func build_markdown(task, target, budget, generated_at, repo_root, git_info, instruction_files, selected_files, changed_files, commands, constraints, excluded_manifest, redactions, manifest, estimated_tokens) {
+    out := "# Scent Context Pack\n\n"
+    out = out + "Task: " + task + "\n\n"
+    out = out + "Target Agent: " + target + "\n\n"
+    out = out + "Budget: " + to_string(budget) + "\n\n"
+    out = out + "Generated: " + generated_at + "\n\n"
+    out = out + "Repository: " + repo_root + "\n\n"
+    out = out + "Git Branch: " + git_info["branch"] + "\n\n"
+
+    status_summary := "dirty=" + to_string(git_info["dirty"]) + " staged=" + to_string(len(git_info["staged_files"])) + " unstaged=" + to_string(len(git_info["unstaged_files"])) + " untracked=" + to_string(len(git_info["untracked_files"]))
+    out = out + "Git Status Summary: " + status_summary + "\n\n"
+
+    out = out + "## How To Use This Pack\n\n"
+    out = out + "Use this context as the bounded task context.\n"
+    out = out + "Do not assume omitted files are irrelevant if tests or errors point elsewhere.\n"
+    out = out + "Follow project instructions first.\n"
+    out = out + "Respect the constraints and guardrails.\n"
+    out = out + "Run the listed validation commands when making changes.\n\n"
+    out = out + target_notes(target) + "\n\n"
+
+    inst_rel := []
+    idx := 0
+    while idx < len(instruction_files) {
+        inst_path := instruction_files[idx]
+        inst_rel = push(inst_rel, path_rel(repo_root, inst_path))
+        idx = idx + 1
+    }
+    out = out + markdown_section_list("Project Instructions", inst_rel, "No instruction files discovered.")
+
+    out = out + "## Task-Relevant Files\n\n"
+    idx = 0
+    while idx < len(selected_files) {
+        f := selected_files[idx]
+        out = out + "- " + f["path"] + " (" + f["reason"] + ", " + to_string(f["estimated_tokens"]) + " tokens)\n"
+        idx = idx + 1
+    }
+    out = out + "\n"
+
+    out = out + markdown_section_list("Changed Files", changed_files, "No changed files detected.")
+
+    test_commands := []
+    build_commands := []
+    idx = 0
+    while idx < len(commands) {
+        c := commands[idx]
+        if contains(c, "test") {
+            test_commands = push(test_commands, "`" + c + "`")
+        } else {
+            build_commands = push(build_commands, "`" + c + "`")
+        }
+        idx = idx + 1
+    }
+    out = out + markdown_section_list("Tests And Validation Commands", test_commands, "No validation commands were confidently detected.")
+    out = out + markdown_section_list("Build/Run Commands", build_commands, "No build/run commands were confidently detected.")
+
+    out = out + "## Constraints And Guardrails\n\n"
+    idx = 0
+    while idx < len(constraints) {
+        c := constraints[idx]
+        out = out + "- " + c + "\n"
+        idx = idx + 1
+    }
+    out = out + "\n"
+
+    out = out + "## Included File Summaries\n\n"
+    idx = 0
+    while idx < len(selected_files) {
+        f := selected_files[idx]
+        out = out + "- " + f["path"] + ": reason=" + f["reason"] + ", size_bytes=" + to_string(f["size_bytes"]) + ", estimated_tokens=" + to_string(f["estimated_tokens"]) + "\n"
+        idx = idx + 1
+    }
+    out = out + "\n"
+
+    out = out + "## Included File Contents\n\n"
+    idx = 0
+    while idx < len(selected_files) {
+        f := selected_files[idx]
+        out = out + "### " + f["path"] + "\n\n"
+        fence := markdown_fence(f["content"])
+        out = out + fence + "text\n"
+        out = out + f["content"]
+        if !ends_with(f["content"], "\n") {
+            out = out + "\n"
+        }
+        out = out + fence + "\n\n"
+        idx = idx + 1
+    }
+
+    out = out + "## Excluded Or Truncated Content\n\n"
+    if len(excluded_manifest) == 0 {
+        out = out + "None.\n\n"
+    } else {
+        idx = 0
+        while idx < len(excluded_manifest) {
+            e := excluded_manifest[idx]
+            out = out + "- " + e["path"] + " [" + e["decision"] + "] reason=" + e["reason"] + "\n"
+            idx = idx + 1
+        }
+        out = out + "\n"
+    }
+
+    out = out + "## Redactions\n\n"
+    if len(redactions) == 0 {
+        out = out + "No redactions were required.\n\n"
+    } else {
+        idx = 0
+        while idx < len(redactions) {
+            r := redactions[idx]
+            line_text := "n/a"
+            if has_key(r, "line") {
+                line_text = to_string(r["line"])
+            }
+            out = out + "- file=" + r["file"] + " line=" + line_text + " type=" + r["redaction_type"] + " placeholder=" + r["placeholder"] + "\n"
+            idx = idx + 1
+        }
+        out = out + "\n"
+    }
+
+    out = out + "## Manifest Summary\n\n"
+    out = out + "Included files: " + to_string(len(selected_files)) + "\n\n"
+    out = out + "Estimated tokens: " + to_string(estimated_tokens) + " / " + to_string(budget) + "\n\n"
+
+    idx = 0
+    while idx < len(manifest) {
+        m := manifest[idx]
+        out = out + "- " + m["path"] + " => " + m["decision"] + " (" + m["reason"] + ", score=" + to_string(m["score"]) + ", tokens=" + to_string(m["estimated_tokens"]) + ")\n"
+        idx = idx + 1
+    }
+
+    return out
+}
+
+func ensure_dir(path) {
+    if path_exists(path) {
+        return true
+    }
+
+    parent := dirname(path)
+    if parent != path && !path_exists(parent) {
+        ensure_dir(parent)
+    }
+
+    result := create_dir(path)
+    if !result {
+        return false
+    }
+    return true
+}
+
+func path_entry_exists(path) {
+    parent := dirname(path)
+    if !path_exists(parent) || !path_is_dir(parent) {
+        return false
+    }
+    try {
+        return contains(list_dir(parent), basename(path))
+    } except e {
+        return false
+    }
+}
+
+func write_text(path, content) {
+    if path_entry_exists(path) && path_is_symlink(path) {
+        try {
+            removed := delete_file(path)
+            if !removed {
+                return err("failed to replace symlink artifact: " + path, 4)
+            }
+        } except e {
+            return err("failed to replace symlink artifact " + path + ": " + to_string(e), 4)
+        }
+    }
+
+    parent := dirname(path)
+    if !ensure_dir(parent) {
+        return err("failed to create parent directory for " + path, 4)
+    }
+
+    wr := write_file(path, content, true)
+    if !wr {
+        return err("failed to write " + path, 4)
+    }
+    return ok(true)
+}
+
+func delete_stale_file(path) {
+    if !path_entry_exists(path) {
+        return ok(true)
+    }
+    if !path_is_file(path) && !path_is_symlink(path) {
+        return err("cannot replace stale artifact because it is not a file: " + path, 4)
+    }
+
+    try {
+        removed := delete_file(path)
+        if removed {
+            return ok(true)
+        }
+        return err("failed to delete stale artifact: " + path, 4)
+    } except e {
+        return err("failed to delete stale artifact " + path + ": " + to_string(e), 4)
+    }
+}
+
+func summary_payload(result) {
+    return {
+        "output_dir": result["output_dir"],
+        "context_md": result["context_md"],
+        "context_json": result["context_json"],
+        "estimated_tokens": result["estimated_tokens"],
+        "budget": result["budget"],
+        "included_files": result["included_files"],
+        "warnings": result["warnings"]
+    }
+}
+
+func run_pack(opts, raw_flags) {
+    started := now()
+    cwd := os_getcwd()
+    repo_root := detect_repo_root(cwd)
+    git_info := inspect_git(repo_root)
+    instruction_files := discover_instruction_files(repo_root)
+    task_redacted := redact_text("[task]", to_string(opts["task"]))
+    task_text := task_redacted["content"]
+    budget_value := to_int(opts["budget"])
+    max_file_bytes_value := to_int(opts["max_file_bytes"])
+    target_value := to_string(opts["target"])
+    format_value := to_string(opts["format"])
+
+    include_scope := validate_scoped_paths(repo_root, opts["include"], "--include")
+    if !include_scope["ok"] {
+        return include_scope
+    }
+    opts["include"] = include_scope["value"]
+    exclude_scope := validate_scoped_paths(repo_root, opts["exclude"], "--exclude")
+    if !exclude_scope["ok"] {
+        return exclude_scope
+    }
+    opts["exclude"] = exclude_scope["value"]
+
+    stamp := "unix-" + to_string(to_int(now() * 1000))
+    out_dir := opts["out"]
+    if out_dir == null {
+        out_dir = path_join(path_join(path_join(repo_root, ".scent"), "packs"), stamp)
+    } else {
+        out_dir = resolve_path(cwd, out_dir)
+    }
+
+    candidate_excludes := opts["exclude"]
+    normalized_out_dir := canonical_path_for_scope(out_dir)
+    if normalized_out_dir != repo_root && starts_with(normalized_out_dir, repo_root + "/") {
+        candidate_excludes = push(candidate_excludes, normalized_out_dir)
+    }
+
+    task_terms := tokenize_task(task_text)
+
+    reserve := reserved_tokens(task_text)
+    if budget_value <= reserve {
+        return err("budget too small: " + to_string(budget_value) + ". minimum required is " + to_string(reserve + 1), 5)
+    }
+
+    warnings := []
+    if !git_info["available"] {
+        warnings = push(warnings, "git unavailable; running in degraded mode")
+    }
+
+    candidates := collect_candidates(repo_root, git_info, instruction_files, opts["include"], candidate_excludes, task_terms)
+    selected_candidates := select_candidates(opts, repo_root, candidates)
+
+    selected_files := []
+    redactions_by_path := {}
+    read_failures := {}
+
+    loop_idx := 0
+    while loop_idx < len(selected_candidates) {
+        selected_candidate := selected_candidates[loop_idx]
+        read_res := read_text_file(selected_candidate["path"])
+        if !read_res["ok"] {
+            read_failures[selected_candidate["rel_path"]] = read_res["error"]
+            loop_idx = loop_idx + 1
+            continue
+        }
+
+        redacted := redact_text(selected_candidate["rel_path"], read_res["content"])
+        clipped := clip_text(redacted["content"], max_file_bytes_value)
+
+        redactions_by_path[selected_candidate["rel_path"]] = redacted["redactions"]
+
+        content := clipped["content"]
+        selected_files = push(selected_files, {
+            "path": selected_candidate["rel_path"],
+            "reason": selected_candidate["selection_reason"],
+            "score": score_candidate(selected_candidate, opts, repo_root)["score"],
+            "size_bytes": selected_candidate["size_bytes"],
+            "estimated_tokens": estimate_tokens(content),
+            "included": true,
+            "truncated": clipped["truncated"],
+            "content": content,
+            "content_hash": sha256(content)
+        })
+        loop_idx = loop_idx + 1
+    }
+
+    budget_result := apply_budget(budget_value, reserve, selected_files)
+    included_files := budget_result["files"]
+    manifest := budget_result["manifest"]
+
+    redactions := task_redacted["redactions"]
+    loop_idx = 0
+    while loop_idx < len(included_files) {
+        final_file := included_files[loop_idx]
+        final_lines := split(final_file["content"], "\n")
+        if has_key(redactions_by_path, final_file["path"]) {
+            file_redactions := redactions_by_path[final_file["path"]]
+            red_idx := 0
+            while red_idx < len(file_redactions) {
+                redaction_item := file_redactions[red_idx]
+                line_index := to_int(redaction_item["line"]) - 1
+                if line_index >= 0 && line_index < len(final_lines) && contains(final_lines[line_index], redaction_item["placeholder"]) {
+                    redactions = push(redactions, redaction_item)
+                }
+                red_idx = red_idx + 1
+            }
+        }
+        loop_idx = loop_idx + 1
+    }
+
+    if len(included_files) == 0 {
+        warnings = push(warnings, "no relevant files selected; output contains metadata only")
+    }
+
+    selected_map := {}
+    selected_reason_map := {}
+    loop_idx = 0
+    while loop_idx < len(included_files) {
+        included_file := included_files[loop_idx]
+        selected_map[included_file["path"]] = 1
+        selected_reason_map[included_file["path"]] = included_file["reason"]
+        loop_idx = loop_idx + 1
+    }
+
+    manifested_file_map := {}
+    loop_idx = 0
+    while loop_idx < len(manifest) {
+        existing_manifest := manifest[loop_idx]
+        if existing_manifest["type"] == "file" {
+            manifested_file_map[existing_manifest["path"]] = 1
+        }
+        loop_idx = loop_idx + 1
+    }
+
+    loop_idx = 0
+    while loop_idx < len(candidates) {
+        candidate_item := candidates[loop_idx]
+        if has_key(selected_map, candidate_item["rel_path"]) {
+            candidate_item["selected"] = true
+            candidate_item["selection_reason"] = selected_reason_map[candidate_item["rel_path"]]
+        } else {
+            candidate_item["selected"] = false
+            if has_key(read_failures, candidate_item["rel_path"]) {
+                candidate_item["selection_reason"] = "excluded because file could not be read: " + to_string(read_failures[candidate_item["rel_path"]])
+            } else if candidate_item["selection_reason"] == "" {
+                candidate_item["selection_reason"] = "not selected by deterministic relevance"
+            }
+            if has_key(manifested_file_map, candidate_item["rel_path"]) == 0 {
+                manifest = push(manifest, {
+                    "path": candidate_item["rel_path"],
+                    "type": "file",
+                    "decision": "exclude",
+                    "reason": candidate_item["selection_reason"],
+                    "score": 0,
+                    "size_bytes": candidate_item["size_bytes"],
+                    "estimated_tokens": 0
+                })
+            }
+        }
+        candidates[loop_idx] = candidate_item
+        loop_idx = loop_idx + 1
+    }
+
+    commands := discover_commands(repo_root)
+
+    constraints := [
+        "Keep scope tight and deterministic.",
+        "Do not assume omitted files are irrelevant if errors point elsewhere.",
+        "Avoid touching files outside the task scope unless necessary.",
+        "Do not include secrets in output artifacts."
+    ]
+
+    estimated_tokens := estimate_tokens(task_text) + 2
+    loop_idx = 0
+    while loop_idx < len(included_files) {
+        estimated_tokens = estimated_tokens + included_files[loop_idx]["estimated_tokens"]
+        loop_idx = loop_idx + 1
+    }
+
+    generated_at := "unix-" + to_string(to_int(now()))
+
+    artifact_names := []
+    if format_value == "md" || format_value == "both" {
+        artifact_names = push(artifact_names, "context.md")
+    }
+    if format_value == "json" || format_value == "both" {
+        artifact_names = push(artifact_names, "context.json")
+    }
+    artifact_names = push(artifact_names, "manifest.json")
+    artifact_names = push(artifact_names, "files.json")
+    artifact_names = push(artifact_names, "redactions.json")
+    artifact_names = push(artifact_names, "metadata.json")
+
+    loop_idx = 0
+    while loop_idx < len(artifact_names) {
+        art := artifact_names[loop_idx]
+        decision := "include"
+        reason := "generated artifact"
+        if opts["dry_run"] {
+            decision = "exclude"
+            reason = "dry-run; artifact not written"
+        }
+
+        manifest = push(manifest, {
+            "path": art,
+            "type": "artifact",
+            "decision": decision,
+            "reason": reason,
+            "score": 0,
+            "size_bytes": 0,
+            "estimated_tokens": 0
+        })
+        loop_idx = loop_idx + 1
+    }
+
+    excluded_manifest := []
+    loop_idx = 0
+    while loop_idx < len(manifest) {
+        manifest_item := manifest[loop_idx]
+        if manifest_item["decision"] == "exclude" || manifest_item["decision"] == "truncate" {
+            excluded_manifest = push(excluded_manifest, manifest_item)
+        }
+        loop_idx = loop_idx + 1
+    }
+
+    markdown := build_markdown(
+        task_text,
+        target_value,
+        budget_value,
+        generated_at,
+        repo_root,
+        git_info,
+        instruction_files,
+        included_files,
+        git_info["changed_files"],
+        commands,
+        constraints,
+        excluded_manifest,
+        redactions,
+        manifest,
+        estimated_tokens
+    )
+
+    instruction_rels := []
+    loop_idx = 0
+    while loop_idx < len(instruction_files) {
+        instruction_rels = push(instruction_rels, path_rel(repo_root, instruction_files[loop_idx]))
+        loop_idx = loop_idx + 1
+    }
+
+    context_json_obj := {
+        "schema_version": "1.0.0",
+        "task": task_text,
+        "target": target_value,
+        "budget": budget_value,
+        "estimated_tokens": estimated_tokens,
+        "generated_at": generated_at,
+        "repo": repo_root,
+        "git": git_info,
+        "instructions": instruction_rels,
+        "selected_files": included_files,
+        "changed_files": git_info["changed_files"],
+        "commands": commands,
+        "constraints": constraints,
+        "redactions": redactions,
+        "excluded": excluded_manifest,
+        "artifacts": artifact_names
+    }
+
+    files_json := []
+    loop_idx = 0
+    while loop_idx < len(candidates) {
+        cand := candidates[loop_idx]
+        files_json = push(files_json, {
+            "path": cand["rel_path"],
+            "size_bytes": cand["size_bytes"],
+            "is_changed": cand["is_changed"],
+            "is_staged": cand["is_staged"],
+            "is_unstaged": cand["is_unstaged"],
+            "is_instruction": cand["is_instruction"],
+            "is_doc": cand["is_doc"],
+            "is_test": cand["is_test"],
+            "is_config": cand["is_config"],
+            "matched_terms": cand["matched_terms"],
+            "selected": cand["selected"],
+            "selection_reason": cand["selection_reason"]
+        })
+        loop_idx = loop_idx + 1
+    }
+
+    exit_code := 0
+    if len(warnings) > 0 {
+        exit_code = 1
+    }
+
+    sanitized_flags := []
+    loop_idx = 0
+    while loop_idx < len(raw_flags) {
+        sanitized_flag := redact_text("[command]", to_string(raw_flags[loop_idx]))
+        sanitized_flags = push(sanitized_flags, sanitized_flag["content"])
+        loop_idx = loop_idx + 1
+    }
+
+    metadata := {
+        "tool": "scent",
+        "version": VERSION,
+        "generated_at": generated_at,
+        "duration_ms": to_int((now() - started) * 1000),
+        "repo_root": repo_root,
+        "git_branch": git_info["branch"],
+        "git_commit": git_info["commit"],
+        "dirty": git_info["dirty"],
+        "command": "scent pack",
+        "flags": sanitized_flags,
+        "exit_code": exit_code
+    }
+
+    context_md_path := null
+    context_json_path := null
+
+    if !opts["dry_run"] {
+        if format_value == "md" {
+            stale_json := delete_stale_file(path_join(out_dir, "context.json"))
+            if !stale_json["ok"] {
+                return stale_json
+            }
+        } else if format_value == "json" {
+            stale_markdown := delete_stale_file(path_join(out_dir, "context.md"))
+            if !stale_markdown["ok"] {
+                return stale_markdown
+            }
+        }
+
+        if format_value == "md" || format_value == "both" {
+            context_md_path = path_join(out_dir, "context.md")
+            w1 := write_text(context_md_path, markdown)
+            if !w1["ok"] {
+                return w1
+            }
+        }
+        if format_value == "json" || format_value == "both" {
+            context_json_path = path_join(out_dir, "context.json")
+            w2 := write_text(context_json_path, to_json_pretty(context_json_obj))
+            if !w2["ok"] {
+                return w2
+            }
+        }
+
+        w3 := write_text(path_join(out_dir, "manifest.json"), to_json_pretty(manifest))
+        if !w3["ok"] {
+            return w3
+        }
+
+        w4 := write_text(path_join(out_dir, "files.json"), to_json_pretty(files_json))
+        if !w4["ok"] {
+            return w4
+        }
+
+        w5 := write_text(path_join(out_dir, "redactions.json"), to_json_pretty(redactions))
+        if !w5["ok"] {
+            return w5
+        }
+
+        w6 := write_text(path_join(out_dir, "metadata.json"), to_json_pretty(metadata))
+        if !w6["ok"] {
+            return w6
+        }
+    }
+
+    return ok({
+        "output_dir": out_dir,
+        "context_md": context_md_path,
+        "context_json": context_json_path,
+        "estimated_tokens": estimated_tokens,
+        "budget": budget_value,
+        "included_files": len(included_files),
+        "warnings": warnings,
+        "selected_files": included_files,
+        "manifest": manifest,
+        "redactions": redactions,
+        "exit_code": exit_code
+    })
+}
+
+func print_lines(lines) {
+    i := 0
+    while i < len(lines) {
+        print(lines[i])
+        i = i + 1
+    }
+    return null
+}
+
+func print_kv(label, value) {
+    print(label + ": " + to_string(value))
+    return null
+}
+
+func print_human_result(result, opts) {
+    payload := summary_payload(result)
+
+    if opts["json_stdout"] {
+        print(to_json(payload))
+        return null
+    }
+
+    print("scent pack complete")
+    print_kv("output_dir", result["output_dir"])
+    print_kv("included_files", result["included_files"])
+    print_kv("estimated_tokens", to_string(result["estimated_tokens"]) + " / " + to_string(result["budget"]))
+    if len(result["warnings"]) > 0 {
+        warning_lines := ["warnings:"]
+        i := 0
+        while i < len(result["warnings"]) {
+            warning_lines = push(warning_lines, "- " + result["warnings"][i])
+            i = i + 1
+        }
+        print_lines(warning_lines)
+    }
+
+    if opts["verbose"] {
+        print(to_json(payload))
+    }
+    return null
+}
+
+func main() {
+    argv := args()
+
+    if len(argv) > 0 {
+        first := argv[0]
+        if is_help_arg(first) {
+            print(usage_text())
+            exit(0)
+        }
+        if is_version_arg(first) {
+            print(version_text())
+            exit(0)
+        }
+        if first == "pack" && len(argv) > 1 {
+            second := argv[1]
+            if is_help_arg(second) {
+                print(usage_text())
+                exit(0)
+            }
+            if is_version_arg(second) {
+                print(version_text())
+                exit(0)
+            }
+        }
+    }
+
+    parsed := parse_cli(argv)
+
+    if !parsed["ok"] {
+        if parsed["exit_code"] == 2 {
+            print(parsed["error"])
+        } else {
+            print("error: " + parsed["error"])
+        }
+        exit(parsed["exit_code"])
+    }
+
+    result := run_pack(parsed["value"], argv)
+    if !result["ok"] {
+        print("error: " + result["error"])
+        exit(result["exit_code"])
+    }
+
+    print_human_result(result["value"], parsed["value"])
+    exit(result["value"]["exit_code"])
+}
+
+# =============================
+# Tests (kujo test-run scent.kujo)
+# =============================
+
+test "help and version surface" {
+    cwd := os_getcwd()
+    kujo_bin := env_or("KUJO_BIN", path_join(cwd, "../kujo/target/release/kujo"))
+    scent_script := env_or("SCENT_SCRIPT", path_join(cwd, "scent.kujo"))
+
+    func shq(value) {
+        text := to_string(value)
+        return "'" + replace(text, "'", "'\"'\"'") + "'"
+    }
+
+    func run_cmd(command) {
+        res := execute_status(command, {"timeout_ms": 120000})
+        if type(res) == "struct" {
+            return res
+        }
+        return {"success": false, "exitcode": 1, "stdout": "", "stderr": "invalid execute_status result"}
+    }
+
+    func run_scent(args) {
+        command := shq(kujo_bin) + " run " + shq(scent_script)
+        i := 0
+        while i < len(args) {
+            command = command + " " + shq(args[i])
+            i = i + 1
+        }
+        return run_cmd(command)
+    }
+
+    help_res := run_scent(["help"])
+    assert_equal(help_res.exitcode, 0)
+    assert_equal(contains(help_res.stdout, "Usage:"), 1)
+    assert_equal(contains(help_res.stdout, "Unknown argument"), 0)
+    assert_equal(contains(help_res.stderr, "Unknown argument"), 0)
+
+    top_help_res := run_scent(["--help"])
+    assert_equal(top_help_res.exitcode, 0)
+    assert_equal(contains(top_help_res.stdout, "Usage:"), 1)
+
+    pack_help_res := run_scent(["pack", "--help"])
+    assert_equal(pack_help_res.exitcode, 0)
+    assert_equal(contains(pack_help_res.stdout, "Usage:"), 1)
+    assert_equal(contains(pack_help_res.stdout, "Unknown argument"), 0)
+
+    pack_version_res := run_scent(["pack", "--version"])
+    assert_equal(pack_version_res.exitcode, 0)
+    assert_equal(contains(pack_version_res.stdout, "Scent "), 1)
+
+    version_res := run_scent(["version"])
+    assert_equal(version_res.exitcode, 0)
+    assert_equal(contains(version_res.stdout, "Scent "), 1)
+
+    flag_version_res := run_scent(["--version"])
+    assert_equal(flag_version_res.exitcode, 0)
+    assert_equal(contains(flag_version_res.stdout, "Scent "), 1)
+}
+
+test "pack and dry-run smoke" {
+    cwd := os_getcwd()
+    kujo_bin := env_or("KUJO_BIN", path_join(cwd, "../kujo/target/release/kujo"))
+    scent_script := env_or("SCENT_SCRIPT", path_join(cwd, "scent.kujo"))
+    smoke_root := "/tmp/scent_phase8_fix"
+    smoke_repo := smoke_root + "/repo"
+    smoke_out := smoke_root + "/out"
+    smoke_dry_out := smoke_root + "/dry-run-out"
+    smoke_human_out := smoke_root + "/dry-run-human-out"
+
+    func shq(value) {
+        text := to_string(value)
+        return "'" + replace(text, "'", "'\"'\"'") + "'"
+    }
+
+    func run_cmd(command) {
+        res := execute_status(command, {"timeout_ms": 120000})
+        if type(res) == "struct" {
+            return res
+        }
+        return {"success": false, "exitcode": 1, "stdout": "", "stderr": "invalid execute_status result"}
+    }
+
+    func run_scent_in_repo(args) {
+        command := "cd " + shq(smoke_repo) + " && " + shq(kujo_bin) + " run " + shq(scent_script)
+        i := 0
+        while i < len(args) {
+            command = command + " " + shq(args[i])
+            i = i + 1
+        }
+        return run_cmd(command)
+    }
+
+    func parse_json_safe(text) {
+        try {
+            return {"ok": true, "value": parse_json(text)}
+        } except err {
+            return {"ok": false, "error": to_string(err), "value": {}}
+        }
+    }
+
+    func require_truthy(value, label) {
+        if value == false || value == 0 {
+            print("Assertion failed: " + label)
+            exit(1)
+        }
+    }
+
+    func require_files_exist(root, files) {
+        i := 0
+        while i < len(files) {
+            file := files[i]
+            require_truthy(file_exists(root + "/" + file), file + " exists")
+            i = i + 1
+        }
+        return null
+    }
+
+    func smoke_pack_args(task, out_dir, json_stdout, dry_run) {
+        values := [
+            "pack",
+            "--task", task,
+            "--out", out_dir,
+            "--changed",
+            "--staged",
+            "--unstaged",
+            "--include", "docs",
+            "--include", "src",
+            "--include", "tests",
+            "--include", "logs",
+            "--include", "reports",
+            "--include", "notes",
+            "--max-files", "10",
+            "--max-file-bytes", "2000",
+            "--format", "both"
+        ]
+
+        if json_stdout {
+            values = push(values, "--json")
+        }
+        if dry_run {
+            values = push(values, "--dry-run")
+        }
+        return values
+    }
+
+    _ = run_cmd("rm -rf " + shq(smoke_root))
+    _ = run_cmd("mkdir -p " + shq(smoke_repo + "/docs") + " " + shq(smoke_repo + "/src") + " " + shq(smoke_repo + "/tests") + " " + shq(smoke_repo + "/logs") + " " + shq(smoke_repo + "/reports") + " " + shq(smoke_repo + "/notes"))
+    _ = run_cmd("cd " + shq(smoke_repo) + " && git init -q")
+    _ = run_cmd("cd " + shq(smoke_repo) + " && git config user.name " + shq("Scent Test"))
+    _ = run_cmd("cd " + shq(smoke_repo) + " && git config user.email " + shq("scent@example.com"))
+    _ = run_cmd("cd " + shq(smoke_repo) + " && printf '%s\\n%s\\n' '# Smoke repo' 'Initial content' > README.md")
+    _ = run_cmd("cd " + shq(smoke_repo) + " && printf '%s\\n%s\\n' 'Initial instructions' 'Follow local cues only.' > AGENTS.md")
+    _ = run_cmd("cd " + shq(smoke_repo) + " && printf '%s\\n%s\\n' '# Architecture' 'Deterministic paths only.' > docs/architecture.md")
+    _ = run_cmd("cd " + shq(smoke_repo) + " && printf '%s\\n%s\\n' 'Potential risk' 'API_KEY=abc123' > docs/security.md")
+    _ = run_cmd("cd " + shq(smoke_repo) + " && printf '%s\\n%s\\n' 'print(\"hello\")' > src/main.kujo")
+    _ = run_cmd("cd " + shq(smoke_repo) + " && printf '%s\\n%s\\n' 'workflow notes' > src/workflow.kujo")
+    _ = run_cmd("cd " + shq(smoke_repo) + " && printf '%s\\n%s\\n' 'assert true' > tests/sample_test.kujo")
+    _ = run_cmd("cd " + shq(smoke_repo) + " && printf '%s\\n%s\\n' 'sample log' > logs/sample.log")
+    _ = run_cmd("cd " + shq(smoke_repo) + " && printf '%s\\n%s\\n' '{\"score\": 7}' > reports/eval.json")
+    _ = run_cmd("cd " + shq(smoke_repo) + " && printf '%s\\n%s\\n' 'context notes' > notes/context.md")
+    _ = run_cmd("cd " + shq(smoke_repo) + " && git add . && git commit -q -m " + shq("seed"))
+    _ = run_cmd("cd " + shq(smoke_repo) + " && printf '%s\\n' 'Unstaged task context.' >> README.md")
+    _ = run_cmd("cd " + shq(smoke_repo) + " && printf '%s\\n' 'Staged security note.' >> docs/security.md")
+    _ = run_cmd("cd " + shq(smoke_repo) + " && git add docs/security.md")
+
+    task := "review workflow cues and risks"
+    pack_res := run_scent_in_repo(smoke_pack_args(task, smoke_out, true, false))
+    assert_equal(pack_res.exitcode, 0)
+
+    pack_out := parse_json_safe(to_string(pack_res.stdout))
+    require_truthy(pack_out["ok"], "pack output ok")
+    pack_data := pack_out["value"]
+    assert_equal(pack_data["estimated_tokens"], 85)
+    assert_equal(pack_data["included_files"], 10)
+    assert_equal(len(pack_data["warnings"]), 0)
+    require_files_exist(smoke_out, ["context.json", "context.md", "files.json", "manifest.json", "metadata.json", "redactions.json"])
+
+    context := read_file(smoke_out + "/context.json")
+    context_json := parse_json_safe(context)
+    require_truthy(context_json["ok"], "context json parses")
+    context_data := context_json["value"]
+    assert_equal(context_data["git"]["dirty"], true)
+    require_truthy(len(context_data["changed_files"]) > 0, "changed files captured")
+    require_truthy(contains(to_json(context_data["changed_files"]), "README.md"), "README.md captured as changed")
+    require_truthy(contains(to_json(context_data["changed_files"]), "docs/security.md"), "docs/security.md captured as changed")
+    require_truthy(contains(to_json(context_data["git"]["staged_files"]), "docs/security.md"), "staged metadata captured")
+    require_truthy(contains(to_json(context_data["git"]["unstaged_files"]), "README.md"), "unstaged metadata captured")
+    assert_equal(contains(context, "No changed files detected."), 0)
+    require_truthy(contains(context, "[REDACTED:API_KEY]"), "redaction marker present")
+    require_truthy(contains(context, "\"schema_version\""), "schema version present")
+    files_json := parse_json_safe(read_file(smoke_out + "/files.json"))
+    require_truthy(files_json["ok"], "files json parses")
+    files_data := files_json["value"]
+    files_by_path := {}
+    idx := 0
+    while idx < len(files_data) {
+        item := files_data[idx]
+        files_by_path[item["path"]] = item
+        idx = idx + 1
+    }
+    require_truthy(files_by_path["README.md"]["is_changed"], "README.md marked changed")
+    require_truthy(files_by_path["README.md"]["is_unstaged"], "README.md marked unstaged")
+    require_truthy(files_by_path["docs/security.md"]["is_changed"], "docs/security.md marked changed")
+    require_truthy(files_by_path["docs/security.md"]["is_staged"], "docs/security.md marked staged")
+
+    dry_res := run_scent_in_repo(smoke_pack_args(task, smoke_dry_out, true, true))
+    assert_equal(dry_res.exitcode, 0)
+
+    dry_out := parse_json_safe(to_string(dry_res.stdout))
+    require_truthy(dry_out["ok"], "dry-run output ok")
+    dry_data := dry_out["value"]
+    assert_equal(type(dry_data["context_json"]), "null")
+    assert_equal(type(dry_data["context_md"]), "null")
+    assert_equal(dry_data["estimated_tokens"], 85)
+    assert_equal(dry_data["included_files"], 10)
+    assert_equal(len(dry_data["warnings"]), 0)
+    assert_equal(file_exists(smoke_dry_out + "/context.json"), false)
+    assert_equal(file_exists(smoke_dry_out + "/context.md"), false)
+
+    human_res := run_scent_in_repo(smoke_pack_args(task, smoke_human_out, false, true))
+    assert_equal(human_res.exitcode, 0)
+    expected_human := "scent pack complete\noutput_dir: " + smoke_human_out + "\nincluded_files: 10\nestimated_tokens: 85 / 12000\n"
+    assert_equal(to_string(human_res.stdout), expected_human)
+    assert_equal(file_exists(smoke_human_out + "/context.json"), false)
+    assert_equal(file_exists(smoke_human_out + "/context.md"), false)
+}
+
+test "redaction and scoped include hardening" {
+    cwd := os_getcwd()
+    kujo_bin := env_or("KUJO_BIN", path_join(cwd, "../kujo/target/release/kujo"))
+    scent_script := env_or("SCENT_SCRIPT", path_join(cwd, "scent.kujo"))
+    smoke_root := "/tmp/scent_hardening"
+    smoke_repo := smoke_root + "/repo"
+    smoke_out := smoke_root + "/out"
+
+    func shq(value) {
+        text := to_string(value)
+        return "'" + replace(text, "'", "'\"'\"'") + "'"
+    }
+
+    func run_cmd(command) {
+        res := execute_status(command, {"timeout_ms": 120000})
+        if type(res) == "struct" {
+            return res
+        }
+        return {"success": false, "exitcode": 1, "stdout": "", "stderr": "invalid execute_status result"}
+    }
+
+    func run_scent_in_repo(args) {
+        command := "cd " + shq(smoke_repo) + " && " + shq(kujo_bin) + " run " + shq(scent_script)
+        i := 0
+        while i < len(args) {
+            command = command + " " + shq(args[i])
+            i = i + 1
+        }
+        return run_cmd(command)
+    }
+
+    func parse_json_safe(text) {
+        try {
+            return {"ok": true, "value": parse_json(text)}
+        } except err {
+            return {"ok": false, "error": to_string(err), "value": {}}
+        }
+    }
+
+    func require_truthy(value, label) {
+        if value == false || value == 0 {
+            print("Assertion failed: " + label)
+            exit(1)
+        }
+    }
+
+    _ = run_cmd("rm -rf " + shq(smoke_root))
+    _ = run_cmd("mkdir -p " + shq(smoke_repo + "/docs") + " " + shq(smoke_repo + "/src"))
+    _ = run_cmd("cd " + shq(smoke_repo) + " && git init -q")
+    _ = run_cmd("cd " + shq(smoke_repo) + " && printf '%s\\n' '# Hardening repo' > README.md")
+    _ = run_cmd("cd " + shq(smoke_repo) + " && printf '%s\\n' 'openai leak sk-12345678901234567890' > docs/security.md")
+    _ = run_cmd("cd " + shq(smoke_repo) + " && printf '%s\\n%s\\n' 'github ghp_123456789012345678901234567890123456' 'aws AKIA1234567890ABCDEF' > src/app.kujo")
+
+    pack_res := run_scent_in_repo([
+        "pack",
+        "--task", "review hardening",
+        "--out", smoke_out,
+        "--include", "docs",
+        "--include", "src",
+        "--max-files", "5",
+        "--format", "both",
+        "--json"
+    ])
+    assert_equal(pack_res.exitcode, 0)
+
+    pack_out := parse_json_safe(to_string(pack_res.stdout))
+    require_truthy(pack_out["ok"], "hardening pack output parses")
+    context := read_file(smoke_out + "/context.json")
+    require_truthy(contains(context, "[REDACTED:TOKEN]"), "token placeholder present")
+    require_truthy(contains(context, "[REDACTED:ACCESS_KEY]"), "access key placeholder present")
+    assert_equal(contains(context, "sk-12345678901234567890"), 0)
+    assert_equal(contains(context, "ghp_123456789012345678901234567890123456"), 0)
+    assert_equal(contains(context, "AKIA1234567890ABCDEF"), 0)
+    require_truthy(contains(context, "\"docs/security.md\""), "first repeated include selected")
+    require_truthy(contains(context, "\"src/app.kujo\""), "second repeated include selected")
+
+    escape_res := run_scent_in_repo([
+        "pack",
+        "--task", "escape",
+        "--include", "../outside",
+        "--dry-run",
+        "--json"
+    ])
+    assert_equal(escape_res.exitcode, 2)
+    require_truthy(contains(escape_res.stdout, "--include path cannot contain '..'"), "parent path rejected")
+
+    absolute_res := run_scent_in_repo([
+        "pack",
+        "--task", "absolute escape",
+        "--include", "/tmp",
+        "--dry-run",
+        "--json"
+    ])
+    assert_equal(absolute_res.exitcode, 2)
+    require_truthy(contains(absolute_res.stdout, "--include path must stay inside the repository"), "absolute outside path rejected")
+}
+
+test "ten bug regressions" {
+    cwd := os_getcwd()
+    kujo_bin := env_or("KUJO_BIN", path_join(cwd, "../kujo/target/release/kujo"))
+    scent_script := env_or("SCENT_SCRIPT", path_join(cwd, "scent.kujo"))
+    bug_root := "/tmp/scent_bug_regressions"
+    bug_repo := bug_root + "/repo"
+    bug_out := bug_repo + "/pack"
+    budget_out := bug_root + "/budget-out"
+    late_out := bug_root + "/late-out"
+
+    func shq(value) {
+        text := to_string(value)
+        return "'" + replace(text, "'", "'\"'\"'") + "'"
+    }
+
+    func run_cmd(command) {
+        res := execute_status(command, {"timeout_ms": 120000})
+        if type(res) == "struct" {
+            return res
+        }
+        return {"success": false, "exitcode": 1, "stdout": "", "stderr": "invalid execute_status result"}
+    }
+
+    func run_scent_in_repo(args) {
+        command := "cd " + shq(bug_repo) + " && " + shq(kujo_bin) + " run " + shq(scent_script)
+        i := 0
+        while i < len(args) {
+            command = command + " " + shq(args[i])
+            i = i + 1
+        }
+        return run_cmd(command)
+    }
+
+    func require_truthy(value, label) {
+        if value == false || value == 0 {
+            print("Assertion failed: " + label)
+            exit(1)
+        }
+    }
+
+    _ = run_cmd("rm -rf " + shq(bug_root))
+    _ = run_cmd("mkdir -p " + shq(bug_repo + "/docs") + " " + shq(bug_repo + "/src") + " " + shq(bug_repo + "/focus") + " " + shq(bug_out))
+    _ = run_cmd("cd " + shq(bug_repo) + " && git init -q")
+    _ = run_cmd("cd " + shq(bug_repo) + " && printf '%s\\n' '# Regression repo' > README.md")
+    _ = run_cmd("cd " + shq(bug_repo) + " && printf '%s\\n' 'EXCLUDED_DOC_MARKER' > docs/excluded.md")
+    _ = run_cmd("cd " + shq(bug_repo) + " && printf '%s\\n%s\\n%s\\n%s\\n%s\\n%s\\n%s\\n' 'password=supersecret # not redacted' 'print(\"token\", value == 3)' '\"estimated_tokens\": 5' '\"password\": \"abc=def\"' '```' '# injected heading' '```' > src/sample.txt")
+    _ = run_cmd("cd " + shq(bug_repo) + " && printf 'safe\\000BINARY_SECRET_MARKER' > src/blob")
+    _ = run_cmd("printf '%s\\n' 'SYMLINK_SECRET_MARKER' > " + shq(bug_root + "/outside.txt"))
+    _ = run_cmd("ln -s " + shq(bug_root + "/outside.txt") + " " + shq(bug_repo + "/src/outside-link"))
+    _ = run_cmd("printf '%s\\n' 'STALE_OUTPUT_MARKER' > " + shq(bug_out + "/context.md"))
+
+    pack_res := run_scent_in_repo([
+        "pack", "--task", "review regression markers", "--out", bug_out,
+        "--include", ".", "--exclude", "docs/", "--max-files", "20",
+        "--format", "both", "--json"
+    ])
+    assert_equal(pack_res.exitcode, 0)
+    context := read_file(bug_out + "/context.json")
+    context_md := read_file(bug_out + "/context.md")
+
+    # 1: credential lines cannot bypass redaction by containing the word "redacted".
+    assert_equal(contains(context, "supersecret"), 0)
+    # 2: ordinary code mentioning a token is not corrupted.
+    require_truthy(contains(context, "print(\\\"token\\\", value == 3)"), "benign token code preserved")
+    require_truthy(contains(context, "\\\"estimated_tokens\\\": 5"), "non-secret token metadata preserved")
+    # 3: separators in credential values do not corrupt the preserved key prefix.
+    require_truthy(contains(context, "\\\"password\\\": [REDACTED:PASSWORD]"), "credential key prefix preserved")
+    # 4: embedded Markdown fences receive a strictly longer outer fence.
+    require_truthy(contains(context_md, "````text"), "longer Markdown fence emitted")
+    # 5: extensionless files containing NUL bytes are not packed.
+    assert_equal(contains(context, "BINARY_SECRET_MARKER"), 0)
+
+    # 6: root and trailing-slash selectors work as documented.
+    assert_equal(contains(context, "EXCLUDED_DOC_MARKER"), 0)
+    require_truthy(contains(context, "src/sample.txt"), "root include selects nested source")
+    # 7: traversal never follows repository symlinks.
+    assert_equal(contains(context, "SYMLINK_SECRET_MARKER"), 0)
+    symlink_res := run_scent_in_repo(["pack", "--task", "symlink", "--include", "src/outside-link", "--dry-run", "--json"])
+    assert_equal(symlink_res.exitcode, 2)
+    require_truthy(contains(symlink_res.stdout, "cannot contain a symlink"), "explicit symlink selector rejected")
+    # 8: an existing output directory is excluded from the next pack.
+    assert_equal(contains(context, "STALE_OUTPUT_MARKER"), 0)
+    # 9: pack is mandatory instead of silently accepting a flag-only invocation.
+    missing_pack_res := run_scent_in_repo(["--task", "missing subcommand", "--dry-run", "--json"])
+    assert_equal(missing_pack_res.exitcode, 2)
+    require_truthy(contains(missing_pack_res.stdout, "expected subcommand: pack"), "missing subcommand rejected")
+
+    # 10: budget-excluded files have one manifest decision and no stale redaction audit.
+    _ = run_cmd("cd " + shq(bug_repo) + " && printf '%0600d' 0 | tr '0' 'a' > focus/a.txt")
+    _ = run_cmd("cd " + shq(bug_repo) + " && printf '%s\\n' 'password=budget-secret' > focus/b.txt")
+    budget_res := run_scent_in_repo([
+        "pack", "--task", "budget audit", "--out", budget_out,
+        "--include", "focus", "--budget", "1555", "--max-files", "3",
+        "--format", "json", "--json"
+    ])
+    assert_equal(budget_res.exitcode, 0)
+    budget_manifest := read_file(budget_out + "/manifest.json")
+    budget_redactions := read_file(budget_out + "/redactions.json")
+    assert_equal(len(split(budget_manifest, "\"path\": \"focus/b.txt\"")) - 1, 1)
+    assert_equal(contains(budget_redactions, "focus/b.txt"), 0)
+
+    # Explicit directories are rescanned even if the bounded baseline traversal saw them.
+    _ = run_cmd("mkdir -p " + shq(bug_repo + "/a_bulk") + " " + shq(bug_repo + "/z_focus"))
+    _ = run_cmd("printf '%s\\n' 'a_bulk/' > " + shq(bug_repo + "/.gitignore"))
+    _ = run_cmd("i=1; while [ $i -le 2001 ]; do : > " + shq(bug_repo + "/a_bulk") + "/file-$i.txt; i=$((i + 1)); done")
+    _ = run_cmd("printf '%s\\n' 'LATE_INCLUDE_MARKER' > " + shq(bug_repo + "/z_focus/wanted.txt"))
+    late_res := run_scent_in_repo([
+        "pack", "--task", "late include", "--out", late_out,
+        "--include", "z_focus", "--exclude", "a_bulk", "--max-files", "1", "--format", "json", "--json"
+    ])
+    assert_equal(late_res.exitcode, 0)
+    late_context := read_file(late_out + "/context.json")
+    require_truthy(contains(late_context, "LATE_INCLUDE_MARKER"), "explicit include survives baseline traversal cap")
+}
+
+test "redaction runs before file-size clipping" {
+    audit_scope := true
+    func audit_shq(value) {
+        text := to_string(value)
+        return "'" + replace(text, "'", "'\"'\"'") + "'"
+    }
+
+    func audit_run(command) {
+        result := execute_status(command, {"timeout_ms": 120000})
+        if type(result) == "struct" {
+            return result
+        }
+        return {"success": false, "exitcode": 1, "stdout": "", "stderr": "invalid execute_status result"}
+    }
+
+    func audit_run_scent(repo, argv) {
+        cwd := os_getcwd()
+        kujo_bin := env_or("KUJO_BIN", path_join(cwd, "../kujo/target/release/kujo"))
+        scent_script := env_or("SCENT_SCRIPT", path_join(cwd, "scent.kujo"))
+        command := "cd " + audit_shq(repo) + " && " + audit_shq(kujo_bin) + " run " + audit_shq(scent_script)
+        i := 0
+        while i < len(argv) {
+            command = command + " " + audit_shq(argv[i])
+            i = i + 1
+        }
+        return audit_run(command)
+    }
+    root := "/tmp/scent_regression_redact_clip"
+    repo := root + "/repo"
+    out := root + "/out"
+    _ = audit_run("rm -rf " + audit_shq(root) + " && mkdir -p " + audit_shq(repo) + " && cd " + audit_shq(repo) + " && git init -q")
+    _ = write_file(repo + "/secret.txt", "sk-ABCDEFGHIJKLMNOPQRSTUVWXYZ123456\n", true)
+
+    result := audit_run_scent(repo, [
+        "pack", "--task", "secret clipping", "--include", "secret.txt",
+        "--out", out, "--max-files", "1", "--max-file-bytes", "10",
+        "--format", "both", "--json"
+    ])
+    assert_equal(result.exitcode, 0)
+    context := read_file(out + "/context.json")
+    assert_equal(contains(context, "sk-ABCDEFG"), 0)
+}
+
+test "max-file-bytes is a UTF-8 byte limit" {
+    audit_scope := true
+    func audit_shq(value) {
+        text := to_string(value)
+        return "'" + replace(text, "'", "'\"'\"'") + "'"
+    }
+
+    func audit_run(command) {
+        result := execute_status(command, {"timeout_ms": 120000})
+        if type(result) == "struct" {
+            return result
+        }
+        return {"success": false, "exitcode": 1, "stdout": "", "stderr": "invalid execute_status result"}
+    }
+
+    func audit_run_scent(repo, argv) {
+        cwd := os_getcwd()
+        kujo_bin := env_or("KUJO_BIN", path_join(cwd, "../kujo/target/release/kujo"))
+        scent_script := env_or("SCENT_SCRIPT", path_join(cwd, "scent.kujo"))
+        command := "cd " + audit_shq(repo) + " && " + audit_shq(kujo_bin) + " run " + audit_shq(scent_script)
+        i := 0
+        while i < len(argv) {
+            command = command + " " + audit_shq(argv[i])
+            i = i + 1
+        }
+        return audit_run(command)
+    }
+    root := "/tmp/scent_regression_utf8_bytes"
+    repo := root + "/repo"
+    out := root + "/out"
+    _ = audit_run("rm -rf " + audit_shq(root) + " && mkdir -p " + audit_shq(repo) + " && cd " + audit_shq(repo) + " && git init -q")
+    _ = write_file(repo + "/unicode.txt", "12345678éZ", true)
+
+    result := audit_run_scent(repo, [
+        "pack", "--task", "unicode bytes", "--include", "unicode.txt",
+        "--out", out, "--max-files", "1", "--max-file-bytes", "10",
+        "--format", "json", "--json"
+    ])
+    assert_equal(result.exitcode, 0)
+    context := parse_json(read_file(out + "/context.json"))
+    assert_equal(context["selected_files"][0]["content"], "12345678é")
+    assert_equal(context["selected_files"][0]["truncated"], true)
+}
+
+test "output reuse removes stale optional context artifacts" {
+    audit_scope := true
+    func audit_shq(value) {
+        text := to_string(value)
+        return "'" + replace(text, "'", "'\"'\"'") + "'"
+    }
+
+    func audit_run(command) {
+        result := execute_status(command, {"timeout_ms": 120000})
+        if type(result) == "struct" {
+            return result
+        }
+        return {"success": false, "exitcode": 1, "stdout": "", "stderr": "invalid execute_status result"}
+    }
+
+    func audit_run_scent(repo, argv) {
+        cwd := os_getcwd()
+        kujo_bin := env_or("KUJO_BIN", path_join(cwd, "../kujo/target/release/kujo"))
+        scent_script := env_or("SCENT_SCRIPT", path_join(cwd, "scent.kujo"))
+        command := "cd " + audit_shq(repo) + " && " + audit_shq(kujo_bin) + " run " + audit_shq(scent_script)
+        i := 0
+        while i < len(argv) {
+            command = command + " " + audit_shq(argv[i])
+            i = i + 1
+        }
+        return audit_run(command)
+    }
+    root := "/tmp/scent_regression_output_reuse"
+    repo := root + "/repo"
+    out := root + "/out"
+    _ = audit_run("rm -rf " + audit_shq(root) + " && mkdir -p " + audit_shq(repo) + " && cd " + audit_shq(repo) + " && git init -q")
+    _ = write_file(repo + "/README.md", "# fixture\n", true)
+
+    both_result := audit_run_scent(repo, [
+        "pack", "--task", "reuse", "--include", "README.md", "--out", out,
+        "--max-files", "1", "--format", "both", "--json"
+    ])
+    assert_equal(both_result.exitcode, 0)
+    assert_equal(file_exists(out + "/context.md"), true)
+    assert_equal(file_exists(out + "/context.json"), true)
+
+    md_result := audit_run_scent(repo, [
+        "pack", "--task", "reuse", "--include", "README.md", "--out", out,
+        "--max-files", "1", "--format", "md", "--json"
+    ])
+    assert_equal(md_result.exitcode, 0)
+    assert_equal(file_exists(out + "/context.md"), true)
+    assert_equal(file_exists(out + "/context.json"), false)
+
+    json_result := audit_run_scent(repo, [
+        "pack", "--task", "reuse", "--include", "README.md", "--out", out,
+        "--max-files", "1", "--format", "json", "--json"
+    ])
+    assert_equal(json_result.exitcode, 0)
+    assert_equal(file_exists(out + "/context.md"), false)
+    assert_equal(file_exists(out + "/context.json"), true)
+}
+
+test "git metadata preserves unusual path names exactly" {
+    audit_scope := true
+    func audit_shq(value) {
+        text := to_string(value)
+        return "'" + replace(text, "'", "'\"'\"'") + "'"
+    }
+
+    func audit_run(command) {
+        result := execute_status(command, {"timeout_ms": 120000})
+        if type(result) == "struct" {
+            return result
+        }
+        return {"success": false, "exitcode": 1, "stdout": "", "stderr": "invalid execute_status result"}
+    }
+
+    func audit_run_scent(repo, argv) {
+        cwd := os_getcwd()
+        kujo_bin := env_or("KUJO_BIN", path_join(cwd, "../kujo/target/release/kujo"))
+        scent_script := env_or("SCENT_SCRIPT", path_join(cwd, "scent.kujo"))
+        command := "cd " + audit_shq(repo) + " && " + audit_shq(kujo_bin) + " run " + audit_shq(scent_script)
+        i := 0
+        while i < len(argv) {
+            command = command + " " + audit_shq(argv[i])
+            i = i + 1
+        }
+        return audit_run(command)
+    }
+    root := "/tmp/scent_regression_git_names"
+    repo := root + "/repo"
+    out := root + "/out"
+    newline_name := "odd\nname.txt"
+    spaced_name := " leading and trailing .txt "
+    _ = audit_run("rm -rf " + audit_shq(root) + " && mkdir -p " + audit_shq(repo) + " && cd " + audit_shq(repo) + " && git init -q && git config user.name Test && git config user.email test@example.com")
+    _ = write_file(repo + "/" + newline_name, "seed", true)
+    _ = write_file(repo + "/" + spaced_name, "seed", true)
+    commit_result := audit_run("cd " + audit_shq(repo) + " && git add . && git commit -q -m seed")
+    assert_equal(commit_result.exitcode, 0)
+    _ = write_file(repo + "/" + newline_name, "changed", true)
+    _ = write_file(repo + "/" + spaced_name, "changed", true)
+
+    result := audit_run_scent(repo, [
+        "pack", "--task", "git paths", "--changed", "--out", out,
+        "--max-files", "3", "--format", "json", "--json"
+    ])
+    assert_equal(result.exitcode, 0)
+    context := parse_json(read_file(out + "/context.json"))
+    assert_equal(contains(context["changed_files"], newline_name), true)
+    assert_equal(contains(context["changed_files"], spaced_name), true)
+    files := parse_json(read_file(out + "/files.json"))
+    assert_equal(files[0]["path"], spaced_name)
+    assert_equal(files[1]["path"], newline_name)
+    assert_equal(files[0]["is_changed"], 1)
+    assert_equal(files[1]["is_changed"], 1)
+}
+
+test "recognized secrets in task text are redacted from artifacts" {
+    audit_scope := true
+    func audit_shq(value) {
+        text := to_string(value)
+        return "'" + replace(text, "'", "'\"'\"'") + "'"
+    }
+
+    func audit_run(command) {
+        result := execute_status(command, {"timeout_ms": 120000})
+        if type(result) == "struct" {
+            return result
+        }
+        return {"success": false, "exitcode": 1, "stdout": "", "stderr": "invalid execute_status result"}
+    }
+
+    func audit_run_scent(repo, argv) {
+        cwd := os_getcwd()
+        kujo_bin := env_or("KUJO_BIN", path_join(cwd, "../kujo/target/release/kujo"))
+        scent_script := env_or("SCENT_SCRIPT", path_join(cwd, "scent.kujo"))
+        command := "cd " + audit_shq(repo) + " && " + audit_shq(kujo_bin) + " run " + audit_shq(scent_script)
+        i := 0
+        while i < len(argv) {
+            command = command + " " + audit_shq(argv[i])
+            i = i + 1
+        }
+        return audit_run(command)
+    }
+    root := "/tmp/scent_regression_task_secret"
+    repo := root + "/repo"
+    out := root + "/out"
+    secret := "sk-ABCDEFGHIJKLMNOPQRSTUVWXYZ123456"
+    _ = audit_run("rm -rf " + audit_shq(root) + " && mkdir -p " + audit_shq(repo) + " && cd " + audit_shq(repo) + " && git init -q")
+    _ = write_file(repo + "/README.md", "# fixture\n", true)
+
+    result := audit_run_scent(repo, [
+        "pack", "--task", "audit " + secret, "--include", "README.md", "--out", out,
+        "--max-files", "1", "--format", "both", "--json"
+    ])
+    assert_equal(result.exitcode, 0)
+    artifacts := ["context.md", "context.json", "manifest.json", "files.json", "redactions.json", "metadata.json"]
+    i := 0
+    while i < len(artifacts) {
+        assert_equal(contains(read_file(out + "/" + artifacts[i]), secret), 0)
+        i = i + 1
+    }
+    assert_equal(contains(read_file(out + "/context.json"), "[REDACTED:TOKEN]"), 1)
+}
+
+test "files inventory agrees with selected context files" {
+    audit_scope := true
+    func audit_shq(value) {
+        text := to_string(value)
+        return "'" + replace(text, "'", "'\"'\"'") + "'"
+    }
+
+    func audit_run(command) {
+        result := execute_status(command, {"timeout_ms": 120000})
+        if type(result) == "struct" {
+            return result
+        }
+        return {"success": false, "exitcode": 1, "stdout": "", "stderr": "invalid execute_status result"}
+    }
+
+    func audit_run_scent(repo, argv) {
+        cwd := os_getcwd()
+        kujo_bin := env_or("KUJO_BIN", path_join(cwd, "../kujo/target/release/kujo"))
+        scent_script := env_or("SCENT_SCRIPT", path_join(cwd, "scent.kujo"))
+        command := "cd " + audit_shq(repo) + " && " + audit_shq(kujo_bin) + " run " + audit_shq(scent_script)
+        i := 0
+        while i < len(argv) {
+            command = command + " " + audit_shq(argv[i])
+            i = i + 1
+        }
+        return audit_run(command)
+    }
+    root := "/tmp/scent_regression_files_selected"
+    repo := root + "/repo"
+    out := root + "/out"
+    _ = audit_run("rm -rf " + audit_shq(root) + " && mkdir -p " + audit_shq(repo) + " && cd " + audit_shq(repo) + " && git init -q")
+    _ = write_file(repo + "/app.txt", "selected content\n", true)
+
+    result := audit_run_scent(repo, [
+        "pack", "--task", "app", "--include", "app.txt", "--out", out,
+        "--max-files", "1", "--format", "json", "--json"
+    ])
+    assert_equal(result.exitcode, 0)
+    context := parse_json(read_file(out + "/context.json"))
+    files := parse_json(read_file(out + "/files.json"))
+    assert_equal(len(context["selected_files"]), 1)
+    assert_equal(files[0]["path"], context["selected_files"][0]["path"])
+    assert_equal(files[0]["selected"], true)
+    assert_equal(files[0]["selection_reason"], context["selected_files"][0]["reason"])
+}
+
+test "selected unreadable files receive an accurate exclusion reason" {
+    audit_scope := true
+    func audit_shq(value) {
+        text := to_string(value)
+        return "'" + replace(text, "'", "'\"'\"'") + "'"
+    }
+
+    func audit_run(command) {
+        result := execute_status(command, {"timeout_ms": 120000})
+        if type(result) == "struct" {
+            return result
+        }
+        return {"success": false, "exitcode": 1, "stdout": "", "stderr": "invalid execute_status result"}
+    }
+
+    func audit_run_scent(repo, argv) {
+        cwd := os_getcwd()
+        kujo_bin := env_or("KUJO_BIN", path_join(cwd, "../kujo/target/release/kujo"))
+        scent_script := env_or("SCENT_SCRIPT", path_join(cwd, "scent.kujo"))
+        command := "cd " + audit_shq(repo) + " && " + audit_shq(kujo_bin) + " run " + audit_shq(scent_script)
+        i := 0
+        while i < len(argv) {
+            command = command + " " + audit_shq(argv[i])
+            i = i + 1
+        }
+        return audit_run(command)
+    }
+    root := "/tmp/scent_regression_unreadable"
+    repo := root + "/repo"
+    out := root + "/out"
+    _ = audit_run("rm -rf " + audit_shq(root) + " && mkdir -p " + audit_shq(repo) + " && cd " + audit_shq(repo) + " && git init -q")
+    _ = write_file(repo + "/locked.txt", "private", true)
+    _ = audit_run("chmod 000 " + audit_shq(repo + "/locked.txt"))
+
+    result := audit_run_scent(repo, [
+        "pack", "--task", "locked", "--include", "locked.txt", "--out", out,
+        "--max-files", "1", "--format", "json", "--json"
+    ])
+    _ = audit_run("chmod 600 " + audit_shq(repo + "/locked.txt"))
+    metadata := parse_json(read_file(out + "/metadata.json"))
+    assert_equal(metadata["exit_code"], 1)
+    manifest := parse_json(read_file(out + "/manifest.json"))
+    assert_equal(manifest[0]["path"], "locked.txt")
+    assert_equal(manifest[0]["decision"], "exclude")
+    assert_equal(contains(manifest[0]["reason"], "could not be read"), 1)
+}
+
+test "package scripts produce justified validation commands" {
+    audit_scope := true
+    func audit_shq(value) {
+        text := to_string(value)
+        return "'" + replace(text, "'", "'\"'\"'") + "'"
+    }
+
+    func audit_run(command) {
+        result := execute_status(command, {"timeout_ms": 120000})
+        if type(result) == "struct" {
+            return result
+        }
+        return {"success": false, "exitcode": 1, "stdout": "", "stderr": "invalid execute_status result"}
+    }
+
+    func audit_run_scent(repo, argv) {
+        cwd := os_getcwd()
+        kujo_bin := env_or("KUJO_BIN", path_join(cwd, "../kujo/target/release/kujo"))
+        scent_script := env_or("SCENT_SCRIPT", path_join(cwd, "scent.kujo"))
+        command := "cd " + audit_shq(repo) + " && " + audit_shq(kujo_bin) + " run " + audit_shq(scent_script)
+        i := 0
+        while i < len(argv) {
+            command = command + " " + audit_shq(argv[i])
+            i = i + 1
+        }
+        return audit_run(command)
+    }
+
+    root := "/tmp/scent_regression_package_commands"
+    repo := root + "/repo"
+    out := root + "/out"
+    _ = audit_run("rm -rf " + audit_shq(root) + " && mkdir -p " + audit_shq(repo) + " && cd " + audit_shq(repo) + " && git init -q")
+    _ = write_file(repo + "/package.json", "{\"scripts\":{\"test\":\"run-tests\",\"lint\":\"run-lint\",\"build\":\"run-build\"}}", true)
+
+    result := audit_run_scent(repo, [
+        "pack", "--task", "commands", "--include", "package.json", "--out", out,
+        "--max-files", "1", "--format", "json", "--json"
+    ])
+    assert_equal(result.exitcode, 0)
+    context := parse_json(read_file(out + "/context.json"))
+    assert_equal(context["commands"], ["npm run build", "npm run lint", "npm test"])
+}
+
+test "changed-file union deduplicates staged and unstaged paths" {
+    audit_scope := true
+    func audit_shq(value) {
+        text := to_string(value)
+        return "'" + replace(text, "'", "'\"'\"'") + "'"
+    }
+
+    func audit_run(command) {
+        result := execute_status(command, {"timeout_ms": 120000})
+        if type(result) == "struct" {
+            return result
+        }
+        return {"success": false, "exitcode": 1, "stdout": "", "stderr": "invalid execute_status result"}
+    }
+
+    func audit_run_scent(repo, argv) {
+        cwd := os_getcwd()
+        kujo_bin := env_or("KUJO_BIN", path_join(cwd, "../kujo/target/release/kujo"))
+        scent_script := env_or("SCENT_SCRIPT", path_join(cwd, "scent.kujo"))
+        command := "cd " + audit_shq(repo) + " && " + audit_shq(kujo_bin) + " run " + audit_shq(scent_script)
+        i := 0
+        while i < len(argv) {
+            command = command + " " + audit_shq(argv[i])
+            i = i + 1
+        }
+        return audit_run(command)
+    }
+
+    root := "/tmp/scent_regression_changed_union"
+    repo := root + "/repo"
+    out := root + "/out"
+    _ = audit_run("rm -rf " + audit_shq(root) + " && mkdir -p " + audit_shq(repo) + " && cd " + audit_shq(repo) + " && git init -q && git config user.name Test && git config user.email test@example.com")
+    _ = write_file(repo + "/both.txt", "seed", true)
+    _ = audit_run("cd " + audit_shq(repo) + " && git add both.txt && git commit -q -m seed")
+    _ = write_file(repo + "/both.txt", "staged", true)
+    _ = audit_run("cd " + audit_shq(repo) + " && git add both.txt")
+    _ = write_file(repo + "/both.txt", "unstaged", true)
+
+    result := audit_run_scent(repo, [
+        "pack", "--task", "git", "--changed", "--out", out,
+        "--max-files", "2", "--format", "json", "--json"
+    ])
+    assert_equal(result.exitcode, 0)
+    context := parse_json(read_file(out + "/context.json"))
+    assert_equal(context["git"]["staged_files"], ["both.txt"])
+    assert_equal(context["git"]["unstaged_files"], ["both.txt"])
+    assert_equal(context["changed_files"], ["both.txt"])
+}
+
+test "artifact writes replace symlinks instead of following them" {
+    audit_scope := true
+    func audit_shq(value) {
+        text := to_string(value)
+        return "'" + replace(text, "'", "'\"'\"'") + "'"
+    }
+
+    func audit_run(command) {
+        result := execute_status(command, {"timeout_ms": 120000})
+        if type(result) == "struct" {
+            return result
+        }
+        return {"success": false, "exitcode": 1, "stdout": "", "stderr": "invalid execute_status result"}
+    }
+
+    func audit_run_scent(repo, argv) {
+        cwd := os_getcwd()
+        kujo_bin := env_or("KUJO_BIN", path_join(cwd, "../kujo/target/release/kujo"))
+        scent_script := env_or("SCENT_SCRIPT", path_join(cwd, "scent.kujo"))
+        command := "cd " + audit_shq(repo) + " && " + audit_shq(kujo_bin) + " run " + audit_shq(scent_script)
+        i := 0
+        while i < len(argv) {
+            command = command + " " + audit_shq(argv[i])
+            i = i + 1
+        }
+        return audit_run(command)
+    }
+
+    root := "/tmp/scent_regression_artifact_symlink"
+    repo := root + "/repo"
+    out := root + "/out"
+    victim := root + "/victim.json"
+    _ = audit_run("rm -rf " + audit_shq(root) + " && mkdir -p " + audit_shq(repo) + " " + audit_shq(out) + " && cd " + audit_shq(repo) + " && git init -q")
+    _ = write_file(repo + "/app.txt", "safe", true)
+    _ = write_file(victim, "VICTIM_SENTINEL", true)
+    link_result := audit_run("ln -s " + audit_shq(victim) + " " + audit_shq(out + "/context.json"))
+    assert_equal(link_result.exitcode, 0)
+
+    result := audit_run_scent(repo, [
+        "pack", "--task", "safe", "--include", "app.txt", "--out", out,
+        "--max-files", "1", "--format", "json", "--json"
+    ])
+    assert_equal(result.exitcode, 0)
+    assert_equal(read_file(victim), "VICTIM_SENTINEL")
+    assert_equal(path_is_symlink(out + "/context.json"), false)
+    context := parse_json(read_file(out + "/context.json"))
+    assert_equal(context["selected_files"][0]["path"], "app.txt")
+}
+
+test "fallback traversal uses alphabetical directory order" {
+    audit_scope := true
+    func audit_shq(value) {
+        text := to_string(value)
+        return "'" + replace(text, "'", "'\"'\"'") + "'"
+    }
+
+    func audit_run(command) {
+        result := execute_status(command, {"timeout_ms": 120000})
+        if type(result) == "struct" {
+            return result
+        }
+        return {"success": false, "exitcode": 1, "stdout": "", "stderr": "invalid execute_status result"}
+    }
+
+    func audit_run_scent(repo, argv) {
+        cwd := os_getcwd()
+        kujo_bin := env_or("KUJO_BIN", path_join(cwd, "../kujo/target/release/kujo"))
+        scent_script := env_or("SCENT_SCRIPT", path_join(cwd, "scent.kujo"))
+        command := "cd " + audit_shq(repo) + " && " + audit_shq(kujo_bin) + " run " + audit_shq(scent_script)
+        i := 0
+        while i < len(argv) {
+            command = command + " " + audit_shq(argv[i])
+            i = i + 1
+        }
+        return audit_run(command)
+    }
+
+    root := "/tmp/scent_regression_fallback_sort"
+    repo := root + "/repo"
+    out := root + "/out"
+    _ = audit_run("rm -rf " + audit_shq(root) + " && mkdir -p " + audit_shq(repo) + " && cd " + audit_shq(repo) + " && git init -q")
+    _ = write_file(repo + "/z.txt", "z", true)
+    _ = write_file(repo + "/a.txt", "a", true)
+    _ = write_file(repo + "/m.txt", "m", true)
+
+    result := audit_run_scent(repo, [
+        "pack", "--task", "unrelated", "--out", out,
+        "--max-files", "3", "--format", "json", "--json"
+    ])
+    assert_equal(result.exitcode, 0)
+    context := parse_json(read_file(out + "/context.json"))
+    selected_paths := []
+    i := 0
+    while i < len(context["selected_files"]) {
+        selected_paths = push(selected_paths, context["selected_files"][i]["path"])
+        i = i + 1
+    }
+    assert_equal(selected_paths, ["a.txt", "m.txt", "z.txt"])
+}
+
+test "malformed Cargo metadata does not suggest Cargo commands" {
+    audit_scope := true
+    func audit_shq(value) {
+        text := to_string(value)
+        return "'" + replace(text, "'", "'\"'\"'") + "'"
+    }
+
+    func audit_run(command) {
+        result := execute_status(command, {"timeout_ms": 120000})
+        if type(result) == "struct" {
+            return result
+        }
+        return {"success": false, "exitcode": 1, "stdout": "", "stderr": "invalid execute_status result"}
+    }
+
+    func audit_run_scent(repo, argv) {
+        cwd := os_getcwd()
+        kujo_bin := env_or("KUJO_BIN", path_join(cwd, "../kujo/target/release/kujo"))
+        scent_script := env_or("SCENT_SCRIPT", path_join(cwd, "scent.kujo"))
+        command := "cd " + audit_shq(repo) + " && " + audit_shq(kujo_bin) + " run " + audit_shq(scent_script)
+        i := 0
+        while i < len(argv) {
+            command = command + " " + audit_shq(argv[i])
+            i = i + 1
+        }
+        return audit_run(command)
+    }
+
+    root := "/tmp/scent_regression_malformed_cargo"
+    repo := root + "/repo"
+    out := root + "/out"
+    _ = audit_run("rm -rf " + audit_shq(root) + " && mkdir -p " + audit_shq(repo) + " && cd " + audit_shq(repo) + " && git init -q")
+    _ = write_file(repo + "/Cargo.toml", "not = [valid", true)
+
+    result := audit_run_scent(repo, [
+        "pack", "--task", "commands", "--include", "Cargo.toml", "--out", out,
+        "--max-files", "1", "--format", "json", "--json"
+    ])
+    assert_equal(result.exitcode, 0)
+    context := parse_json(read_file(out + "/context.json"))
+    assert_equal(context["commands"], [])
+}
+
+main()

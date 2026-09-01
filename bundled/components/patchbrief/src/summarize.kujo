@@ -1,0 +1,309 @@
+# Summarize module — analyzes git diff and generates structured summaries.
+
+from src.git import is_git_repo, current_branch, repo_name, diff_stat, changed_files_result, full_diff_analysis, recent_commits
+from src.common import str_trim, str_contains, str_lower, str_join, str_starts_with, str_ends_with, markdown_text, markdown_code, print_lines, print_prefixed_lines, print_prefixed_or_fallback, print_markdown_section, print_markdown_paragraph, print_fenced, print_not_git_repo_error
+
+# Language/extension to type mapping for summary descriptions.
+LANG_MAP := {
+	".kujo": "Kujo",
+	".rs": "Rust",
+	".py": "Python",
+	".js": "JavaScript",
+	".ts": "TypeScript",
+	".jsx": "React JSX",
+	".tsx": "React TSX",
+	".php": "PHP",
+	".rb": "Ruby",
+	".go": "Go",
+	".java": "Java",
+	".kt": "Kotlin",
+	".swift": "Swift",
+	".c": "C",
+	".cpp": "C++",
+	".h": "C/C++ Header",
+	".css": "CSS",
+	".html": "HTML",
+	".md": "Markdown",
+	".json": "JSON",
+	".yaml": "YAML",
+	".yml": "YAML",
+	".toml": "TOML",
+	".sql": "SQL",
+	".sh": "Shell",
+	".bash": "Bash",
+	".dockerfile": "Docker",
+	".tf": "Terraform",
+	".xml": "XML"
+}
+
+# Get the language label for a file extension.
+export func lang_for_file(file_path) {
+	lower := str_lower(file_path)
+	if lower == "dockerfile" || str_ends_with(lower, "/dockerfile") || str_ends_with(lower, ".dockerfile") {
+		return "Docker"
+	}
+	# Check each extension
+	extensions := [".kujo", ".rs", ".py", ".js", ".tsx", ".ts", ".jsx", ".php", ".rb", ".go", ".java", ".kt", ".swift", ".cpp", ".c", ".h", ".css", ".html", ".md", ".json", ".yaml", ".yml", ".toml", ".sql", ".sh", ".bash", ".tf", ".xml"]
+	ei := 0
+	while ei < len(extensions) {
+		ext := to_string(extensions[ei])
+		if str_ends_with(lower, ext) {
+			return LANG_MAP[ext]
+		}
+		ei := ei + 1
+	}
+	return "Unknown"
+}
+
+func file_detail_lines(files_list) {
+	lines := []
+	fi_idx := 0
+	while fi_idx < len(files_list) {
+		f := to_string(files_list[fi_idx])
+		lang := lang_for_file(f)
+		lines := push(lines, "- " + markdown_code(f) + " (" + lang + ")")
+		fi_idx := fi_idx + 1
+	}
+	return lines
+}
+
+func push_unique_text(items, value) {
+	text := to_string(value)
+	idx := 0
+	while idx < len(items) {
+		if to_string(items[idx]) == text {
+			return items
+		}
+		idx := idx + 1
+	}
+	return push(items, text)
+}
+
+# Analyze changed files and infer likely purpose.
+export func infer_purpose(files_list, diff_text) {
+	if len(files_list) == 0 {
+		return "No changes detected"
+	}
+	lower_diff := str_lower(diff_text)
+	purposes := []
+	# Check for common change patterns
+	if str_contains(lower_diff, "test") || str_contains(lower_diff, "spec") {
+		purposes := push(purposes, "Testing")
+	}
+	if str_contains(lower_diff, "fix") || str_contains(lower_diff, "bug") {
+		purposes := push(purposes, "Bug fix")
+	}
+	if str_contains(lower_diff, "feature") || str_contains(lower_diff, "add") {
+		purposes := push(purposes, "Feature addition")
+	}
+	if str_contains(lower_diff, "refactor") || str_contains(lower_diff, "cleanup") {
+		purposes := push(purposes, "Refactoring")
+	}
+	if str_contains(lower_diff, "doc") || str_contains(lower_diff, "readme") {
+		purposes := push(purposes, "Documentation")
+	}
+	if str_contains(lower_diff, "security") || str_contains(lower_diff, "auth") || str_contains(lower_diff, "vuln") {
+		purposes := push(purposes, "Security")
+	}
+	if str_contains(lower_diff, "perf") || str_contains(lower_diff, "optimiz") || str_contains(lower_diff, "speed") {
+		purposes := push(purposes, "Performance")
+	}
+	if str_contains(lower_diff, "config") || str_contains(lower_diff, "setting") {
+		purposes := push(purposes, "Configuration")
+	}
+	if str_contains(lower_diff, "deprecat") || str_contains(lower_diff, "remov") {
+		purposes := push(purposes, "Deprecation/Removal")
+	}
+	if len(purposes) == 0 {
+		purposes := push(purposes, "General changes")
+	}
+	return str_join(purposes, ", ")
+}
+
+# Identify risk areas based on changed files.
+export func identify_risks(files_list, diff_text) {
+	risks := []
+	added_lines := []
+	diff_lines := split(to_string(diff_text), "\n")
+	di := 0
+	while di < len(diff_lines) {
+		line := to_string(diff_lines[di])
+		if str_starts_with(line, "+") && str_starts_with(line, "+++") == false {
+			added_lines := push(added_lines, substring(line, 1, len(line)))
+		}
+		di := di + 1
+	}
+	lower_diff := str_lower(str_join(added_lines, "\n"))
+	# Check for risky patterns
+	fi := 0
+	while fi < len(files_list) {
+		f := str_lower(to_string(files_list[fi]))
+		if str_contains(f, "auth") || str_contains(f, "login") || str_contains(f, "password") || str_contains(f, "token") || str_contains(f, "secret") {
+			risks := push_unique_text(risks, "Authentication/authorization changes — review for security implications")
+		}
+		if str_contains(f, "database") || str_contains(f, "migration") || str_contains(f, "schema") {
+			risks := push_unique_text(risks, "Database schema or query changes — verify migration safety")
+		}
+		if str_contains(f, "api") || str_contains(f, "route") || str_contains(f, "endpoint") || str_contains(f, "handler") {
+			risks := push_unique_text(risks, "API/route changes — verify backward compatibility")
+		}
+		if str_contains(f, "config") || str_contains(f, ".env") || str_contains(f, "setting") {
+			risks := push_unique_text(risks, "Configuration changes — verify environment-specific values")
+		}
+		if str_contains(f, "test") || str_contains(f, "spec") {
+			risks := push_unique_text(risks, "Test changes — ensure tests actually validate the intended behavior")
+		}
+		fi := fi + 1
+	}
+	if str_contains(lower_diff, "eval(") || str_contains(lower_diff, "exec(") || str_contains(lower_diff, "system(") {
+		risks := push(risks, "Dangerous function calls detected (eval/exec/system) — security review required")
+	}
+	if str_contains(lower_diff, "todo") || str_contains(lower_diff, "fixme") || str_contains(lower_diff, "hack") {
+		risks := push(risks, "Unresolved TODO/FIXME/HACK comments — review before merge")
+	}
+	if len(risks) == 0 {
+		risks := push(risks, "No high-risk patterns detected (heuristic check only)")
+	}
+	return risks
+}
+
+# Generate a Markdown summary.
+export func summarize_markdown() {
+	if is_git_repo() == false {
+		print_not_git_repo_error()
+		exit(1)
+	}
+	branch := current_branch()
+	repo := repo_name()
+	stat := diff_stat()
+	files_result := changed_files_result()
+	if files_result["ok"] == false {
+		print_lines(["Error: Failed to inspect git working tree."])
+		exit(1)
+	}
+	files := files_result["files"]
+	diff_analysis := full_diff_analysis()
+	diff_text := diff_analysis["text"]
+	if len(files) == 0 && stat["files"] == 0 {
+		print_lines([
+			"# PatchBrief Summary",
+			"",
+			"**Repo:** " + markdown_text(repo),
+			"**Branch:** " + markdown_text(branch),
+			"",
+			"No uncommitted changes detected."
+		])
+		return
+	}
+	purpose := infer_purpose(files, diff_text)
+	risks := identify_risks(files, diff_text)
+	if diff_analysis["error"] == true {
+		risks := push_unique_text(risks, "Diff content analysis failed — purpose and content-based risk hints may be incomplete")
+	} else if diff_analysis["truncated"] == true {
+		risks := push_unique_text(risks, "Diff analysis was truncated at " + to_string(diff_analysis["max_bytes"]) + " bytes — purpose and content-based risk hints may be incomplete")
+	}
+	print_lines([
+		"# PatchBrief Summary",
+		"",
+		"**Repo:** " + markdown_text(repo),
+		"**Branch:** " + markdown_text(branch),
+		"**Changed Files:** " + to_string(len(files)),
+		"**Lines Added:** +" + to_string(stat["added"]),
+		"**Lines Removed:** -" + to_string(stat["removed"])
+	])
+	print_markdown_section("Likely Purpose")
+	print_markdown_paragraph(purpose)
+	print_markdown_section("Changed Files")
+	# Show the git diff --stat output
+	if str_trim(stat["output"]) == "" {
+		print_fenced("No tracked diff stat available. Untracked files are listed below.")
+	} else {
+		print_fenced(str_trim(stat["output"]))
+	}
+	print_markdown_section("File Details")
+	print_lines(file_detail_lines(files))
+	print_markdown_section("Risk Areas")
+	print_prefixed_lines(risks, "- ")
+	print_markdown_section("Recent Commits")
+	commits_raw := recent_commits(5)
+	commits := []
+	ci := 0
+	while ci < len(commits_raw) {
+		commits := push(commits, markdown_text(commits_raw[ci]))
+		ci := ci + 1
+	}
+	print_prefixed_or_fallback(commits, "- ", "No recent commits found.")
+	print_lines([
+		"",
+		"---",
+		"*Generated by PatchBrief v1.0.1*"
+	])
+}
+
+
+# Generate a JSON summary.
+export func summarize_json(pretty_json) {
+	if is_git_repo() == false {
+		error_obj := {
+			"error": true,
+			"message": "Not a git repository. Run patchbrief inside a git repo."
+		}
+		if pretty_json == true { print(to_json_pretty(error_obj)) } else { print(to_json(error_obj)) }
+		exit(1)
+	}
+	branch := current_branch()
+	repo := repo_name()
+	stat := diff_stat()
+	files_result := changed_files_result()
+	if files_result["ok"] == false {
+		error_obj := {"error": true, "message": "Failed to inspect git working tree."}
+		if pretty_json == true { print(to_json_pretty(error_obj)) } else { print(to_json(error_obj)) }
+		exit(1)
+	}
+	files := files_result["files"]
+	diff_analysis := full_diff_analysis()
+	diff_text := diff_analysis["text"]
+	purpose := infer_purpose(files, diff_text)
+	risks := identify_risks(files, diff_text)
+	if diff_analysis["error"] == true {
+		risks := push_unique_text(risks, "Diff content analysis failed — purpose and content-based risk hints may be incomplete")
+	} else if diff_analysis["truncated"] == true {
+		risks := push_unique_text(risks, "Diff analysis was truncated at " + to_string(diff_analysis["max_bytes"]) + " bytes — purpose and content-based risk hints may be incomplete")
+	}
+	commits := recent_commits(5)
+	# Build file details array
+	file_details := []
+	fi_idx := 0
+	while fi_idx < len(files) {
+		f := to_string(files[fi_idx])
+		lang := lang_for_file(f)
+		entry := {
+			"path": f,
+			"language": lang
+		}
+		file_details := push(file_details, entry)
+		fi_idx := fi_idx + 1
+	}
+	output := {
+		"tool": "patchbrief",
+		"version": "1.0.1",
+		"repo": repo,
+		"branch": branch,
+		"summary": {
+			"files_changed": len(files),
+			"lines_added": stat["added"],
+			"lines_removed": stat["removed"]
+		},
+		"analysis": {
+			"diff_bytes_analyzed": diff_analysis["bytes_analyzed"],
+			"diff_error": diff_analysis["error"],
+			"diff_max_bytes": diff_analysis["max_bytes"],
+			"diff_truncated": diff_analysis["truncated"]
+		},
+		"likely_purpose": purpose,
+		"files": file_details,
+		"risk_areas": risks,
+		"recent_commits": commits
+	}
+	if pretty_json == true { print(to_json_pretty(output)) } else { print(to_json(output)) }
+}

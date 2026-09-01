@@ -1,0 +1,2061 @@
+#!/usr/bin/env kujo
+
+VERSION := "1.0.0"
+
+DEFAULT_REDACTION_PATTERNS := [
+	"(?i)(api[_-]?key|secret|token|password|private[_-]?key)\\s*[:=]\\s*[^\\s]+",
+	"(?i)Authorization\\s*:\\s*(Bearer\\s+)?[^\\s]+",
+	"(?i)Bearer\\s+[A-Za-z0-9._~+/-]+=*",
+	"AKIA[0-9A-Z]{16}",
+	"-----BEGIN [A-Z ]*PRIVATE KEY-----",
+	"api[_-]?key",
+	"secret",
+	"token",
+	"password",
+	"private[_-]?key",
+	"authorization"
+]
+
+FAILURE_KEYWORDS := [
+	"error",
+	"failed",
+	"failure",
+	"exception",
+	"traceback",
+	"panic",
+	"segmentation fault",
+	"fatal",
+	"assertion",
+	"expected",
+	"actual",
+	"timeout",
+	"permission denied",
+	"not found",
+	"cannot find module",
+	"syntax error",
+	"type error",
+	"undefined",
+	"null reference"
+]
+
+PROJECT_HINT_FILES := [
+	"package.json",
+	"pnpm-lock.yaml",
+	"yarn.lock",
+	"package-lock.json",
+	"pyproject.toml",
+	"requirements.txt",
+	"composer.json",
+	"go.mod"
+]
+
+func safe_to_string(value) {
+	try {
+		return to_string(value)
+	} except err {
+		return "<unprintable>"
+	}
+}
+
+func print_lines(lines) {
+	for line in lines {
+		print(line)
+	}
+}
+
+func print_kv_lines(prefix, pairs) {
+	for pair in pairs {
+		print(prefix + safe_to_string(pair[0]) + ": " + safe_to_string(pair[1]))
+	}
+}
+
+func print_capture_error(message) {
+	print("capture error: " + safe_to_string(message))
+}
+
+func print_validation_error(message) {
+	print("Validation failed: " + safe_to_string(message))
+}
+
+func is_truthy(value) {
+	value_type := type(value)
+	if value_type == "bool" {
+		return value
+	}
+	if value_type == "int" {
+		return value != 0
+	}
+	if value_type == "float" {
+		return value != 0.0
+	}
+	if value_type == "string" {
+		v := to_lower(trim(value))
+		if v == "true" || v == "1" || v == "yes" || v == "on" {
+			return true
+		}
+		return false
+	}
+	if value == null {
+		return false
+	}
+	return true
+}
+
+func dict_has_key(dict_value, key) {
+	if type(dict_value) != "dict" {
+		return false
+	}
+	return is_truthy(has_key(dict_value, key))
+}
+
+func failed_process_result(message) {
+	return {
+		"exitcode": 127,
+		"stdout": "",
+		"stderr": message,
+		"success": false,
+		"timed_out": false,
+		"stdout_truncated": false,
+		"stderr_truncated": false
+	}
+}
+
+func safe_spawn(argv) {
+	try {
+		return spawn_process(argv)
+	} except err {
+		return failed_process_result(safe_to_string(err))
+	}
+}
+
+func safe_spawn_with_options(argv, options) {
+	try {
+		return spawn_process(argv, options)
+	} except err {
+		return failed_process_result(safe_to_string(err))
+	}
+}
+
+func proc_success(proc) {
+	if type(proc) == "dict" {
+		if dict_has_key(proc, "success") {
+			return is_truthy(proc["success"])
+		}
+		return false
+	}
+	try {
+		return is_truthy(proc.success)
+	} except err {
+		return false
+	}
+}
+
+func proc_exitcode(proc) {
+	if type(proc) == "dict" {
+		if dict_has_key(proc, "exitcode") {
+			return parse_int_value(proc["exitcode"], 127)
+		}
+		return 127
+	}
+	try {
+		return parse_int_value(proc.exitcode, 127)
+	} except err {
+		return 127
+	}
+}
+
+func proc_stdout(proc) {
+	if type(proc) == "dict" {
+		if dict_has_key(proc, "stdout") {
+			return safe_to_string(proc["stdout"])
+		}
+		return ""
+	}
+	try {
+		return safe_to_string(proc.stdout)
+	} except err {
+		return ""
+	}
+}
+
+func proc_stderr(proc) {
+	if type(proc) == "dict" {
+		if dict_has_key(proc, "stderr") {
+			return safe_to_string(proc["stderr"])
+		}
+		return ""
+	}
+	try {
+		return safe_to_string(proc.stderr)
+	} except err {
+		return ""
+	}
+}
+
+func proc_stdout_truncated(proc) {
+	if type(proc) == "dict" {
+		if dict_has_key(proc, "stdout_truncated") {
+			return is_truthy(proc["stdout_truncated"])
+		}
+		return false
+	}
+	try {
+		return is_truthy(proc.stdout_truncated)
+	} except err {
+		return false
+	}
+}
+
+func proc_stderr_truncated(proc) {
+	if type(proc) == "dict" {
+		if dict_has_key(proc, "stderr_truncated") {
+			return is_truthy(proc["stderr_truncated"])
+		}
+		return false
+	}
+	try {
+		return is_truthy(proc.stderr_truncated)
+	} except err {
+		return false
+	}
+}
+
+func proc_timed_out(proc) {
+	if type(proc) == "dict" {
+		if dict_has_key(proc, "timed_out") {
+			return is_truthy(proc["timed_out"])
+		}
+		return false
+	}
+	try {
+		return is_truthy(proc.timed_out)
+	} except err {
+		return false
+	}
+}
+
+func clone_array(values) {
+	copy := []
+	for value in values {
+		copy = push(copy, value)
+	}
+	return copy
+}
+
+func default_config() {
+	return {
+		"output_dir": ".casefile",
+		"default_format": "markdown",
+		"max_log_bytes": 250000,
+		"redact": true,
+		"git": {
+			"include_status": true,
+			"include_diff_stat": true,
+			"include_recent_commits": 5,
+			"include_untracked": true
+		},
+		"environment": {
+			"include_os": true,
+			"include_runtime_versions": true,
+			"include_package_manager": true,
+			"include_ci_context": true
+		},
+		"redaction": {
+			"patterns": clone_array(DEFAULT_REDACTION_PATTERNS)
+		},
+		"paths": {
+			"include_globs": [],
+			"exclude_globs": [
+				".git/**",
+				"node_modules/**",
+				"vendor/**",
+				"dist/**",
+				"build/**",
+				"coverage/**",
+				".env",
+				".env.*"
+			]
+		}
+	}
+}
+
+func default_config_toml() {
+	return "# CaseFile Configuration\n"
+		+ "output_dir = \".casefile\"\n"
+		+ "default_format = \"markdown\"\n"
+		+ "max_log_bytes = 250000\n"
+		+ "redact = true\n\n"
+		+ "[git]\n"
+		+ "include_status = true\n"
+		+ "include_diff_stat = true\n"
+		+ "include_recent_commits = 5\n"
+		+ "include_untracked = true\n\n"
+		+ "[environment]\n"
+		+ "include_os = true\n"
+		+ "include_runtime_versions = true\n"
+		+ "include_package_manager = true\n"
+		+ "include_ci_context = true\n\n"
+		+ "[redaction]\n"
+		+ "patterns = [\n"
+		+ "  \"api[_-]?key\",\n"
+		+ "  \"secret\",\n"
+		+ "  \"token\",\n"
+		+ "  \"password\",\n"
+		+ "  \"private[_-]?key\",\n"
+		+ "  \"authorization\"\n"
+		+ "]\n\n"
+		+ "[paths]\n"
+		+ "include_globs = []\n"
+		+ "exclude_globs = [\".git/**\", \"node_modules/**\", \"vendor/**\", \"dist/**\", \"build/**\", \"coverage/**\", \".env\", \".env.*\"]\n"
+}
+
+func merge_section(base, incoming) {
+	if type(base) != "dict" || type(incoming) != "dict" {
+		return base
+	}
+	for key in keys(incoming) {
+		base[key] = incoming[key]
+	}
+	return base
+}
+
+func merge_config(defaults, parsed) {
+	if type(parsed) != "dict" {
+		return defaults
+	}
+
+	if dict_has_key(parsed, "output_dir") {
+		defaults["output_dir"] = parsed["output_dir"]
+	}
+	if dict_has_key(parsed, "default_format") {
+		defaults["default_format"] = parsed["default_format"]
+	}
+	if dict_has_key(parsed, "max_log_bytes") {
+		defaults["max_log_bytes"] = parsed["max_log_bytes"]
+	}
+	if dict_has_key(parsed, "redact") {
+		defaults["redact"] = parsed["redact"]
+	}
+	if dict_has_key(parsed, "git") {
+		git_cfg := defaults["git"]
+		defaults["git"] = merge_section(git_cfg, parsed["git"])
+	}
+	if dict_has_key(parsed, "environment") {
+		env_cfg := defaults["environment"]
+		defaults["environment"] = merge_section(env_cfg, parsed["environment"])
+	}
+	if dict_has_key(parsed, "redaction") {
+		redaction_cfg := defaults["redaction"]
+		defaults["redaction"] = merge_section(redaction_cfg, parsed["redaction"])
+	}
+	if dict_has_key(parsed, "paths") {
+		paths_cfg := defaults["paths"]
+		defaults["paths"] = merge_section(paths_cfg, parsed["paths"])
+	}
+
+	return defaults
+}
+
+func load_config(config_path) {
+	cfg := default_config()
+	if !is_truthy(file_exists(config_path)) {
+		return {"ok": true, "config": cfg}
+	}
+
+	try {
+		raw := read_file(config_path)
+		parsed := parse_toml(raw)
+		cfg = merge_config(cfg, parsed)
+		return {"ok": true, "config": cfg}
+	} except err {
+		return {"ok": false, "error": "Invalid casefile.toml: " + safe_to_string(err)}
+	}
+}
+
+func get_repo_root() {
+	probe := safe_spawn(["git", "rev-parse", "--show-toplevel"])
+	if proc_success(probe) && proc_exitcode(probe) == 0 {
+		return trim(proc_stdout(probe))
+	}
+	try {
+		return os_getcwd()
+	} except err {
+		return "."
+	}
+}
+
+func is_absolute_path(path_value) {
+	if starts_with(path_value, "/") {
+		return true
+	}
+	if regex_match(path_value, "^[A-Za-z]:[\\\\/]") {
+		return true
+	}
+	return false
+}
+
+func normalize_path_components(path_value) {
+	normalized := replace(safe_to_string(path_value), "\\", "/")
+	parts := split(normalized, "/")
+	components := []
+	i := 0
+	while i < len(parts) {
+		part := trim(parts[i])
+		if len(part) == 0 || part == "." {
+			i = i + 1
+			continue
+		}
+		if part == ".." {
+			return {"ok": false, "error": "path contains unsafe '..' segments"}
+		}
+		components = push(components, part)
+		i = i + 1
+	}
+	return {"ok": true, "components": components}
+}
+
+func path_within_root(candidate_path, root_path, label) {
+	candidate_result := normalize_path_components(candidate_path)
+	if !candidate_result["ok"] {
+		return candidate_result
+	}
+	root_result := normalize_path_components(root_path)
+	if !root_result["ok"] {
+		return root_result
+	}
+
+	candidate_components := candidate_result["components"]
+	root_components := root_result["components"]
+	if len(root_components) == 0 {
+		return {"ok": false, "error": label + " resolves outside repository root"}
+	}
+	if len(root_components) > len(candidate_components) {
+		return {"ok": false, "error": label + " resolves outside repository root"}
+	}
+
+	i := 0
+	while i < len(root_components) {
+		if candidate_components[i] != root_components[i] {
+			return {"ok": false, "error": label + " resolves outside repository root"}
+		}
+		i = i + 1
+	}
+
+	return {"ok": true, "path": candidate_path}
+}
+
+func resolve_output_dir(repo_root, output_dir) {
+	normalized_output := normalize_path_components(output_dir)
+	if !normalized_output["ok"] {
+		return normalized_output
+	}
+
+	resolved := output_dir
+	if !is_absolute_path(output_dir) {
+		resolved = path_join(repo_root, output_dir)
+	}
+
+	outside_check := path_within_root(resolved, repo_root, "output_dir")
+	if !outside_check["ok"] {
+		return outside_check
+	}
+
+	return {"ok": true, "path": resolved}
+}
+
+func ensure_directory(path_value) {
+	result := safe_spawn(["mkdir", "-p", path_value])
+	if !(proc_success(result) && proc_exitcode(result) == 0) {
+		return {"ok": false, "error": "Failed to create directory: " + safe_to_string(proc_stderr(result))}
+	}
+	return {"ok": true}
+}
+
+func safe_write(path_value, content) {
+	try {
+		write_file(path_value, content, true)
+		return {"ok": true}
+	} except err {
+		return {"ok": false, "error": "write failed for " + path_value + ": " + safe_to_string(err)}
+	}
+}
+
+func require_writes(file_pairs) {
+	for pair in file_pairs {
+		write_result := safe_write(pair[0], pair[1])
+		if !write_result["ok"] {
+			return write_result
+		}
+	}
+	return {"ok": true}
+}
+
+func now_case_stamp() {
+	probe := safe_spawn(["date", "+%Y-%m-%d-%H%M%S"])
+	if proc_success(probe) && proc_exitcode(probe) == 0 {
+		return trim(proc_stdout(probe))
+	}
+	fallback := current_timestamp()
+	fallback = replace(fallback, "T", "-")
+	fallback = replace(fallback, ":", "")
+	fallback = replace(fallback, "+", "-")
+	fallback = replace(fallback, "Z", "")
+	if len(fallback) >= 17 {
+		return substring(fallback, 0, 17)
+	}
+	return "1970-01-01-000000"
+}
+
+func sanitize_case_name(name_value) {
+	if name_value == null || len(trim(name_value)) == 0 {
+		return "manual-case"
+	}
+	slug := slugify(name_value)
+	if len(trim(slug)) == 0 {
+		return "manual-case"
+	}
+	return slug
+}
+
+func create_case_dir(repo_root, cfg, case_name, force) {
+	out_result := resolve_output_dir(repo_root, safe_to_string(cfg["output_dir"]))
+	if !out_result["ok"] {
+		return out_result
+	}
+	output_root := out_result["path"]
+	mk_root := ensure_directory(output_root)
+	if !mk_root["ok"] {
+		return mk_root
+	}
+
+	case_id := now_case_stamp() + "-" + sanitize_case_name(case_name)
+	case_path := path_join(output_root, case_id)
+
+	if is_truthy(path_exists(case_path)) && !force {
+		return {"ok": false, "error": "case directory already exists: " + case_path}
+	}
+
+	mk_case := ensure_directory(case_path)
+	if !mk_case["ok"] {
+		return mk_case
+	}
+
+	return {
+		"ok": true,
+		"case_id": case_id,
+		"case_path": case_path,
+		"output_root": output_root
+	}
+}
+
+func split_command(command_value) {
+	parts := split(trim(command_value), " ")
+	argv := []
+	for part in parts {
+		if len(trim(part)) > 0 {
+			argv = push(argv, trim(part))
+		}
+	}
+	return argv
+}
+
+func parse_int_value(raw_value, fallback) {
+	try {
+		return to_int(raw_value)
+	} except err {
+		return fallback
+	}
+}
+
+func parse_capture_options(subargs, cfg) {
+	options := {
+		"name": null,
+		"output_dir": null,
+		"format": "human",
+		"from_log": null,
+		"notes": "",
+		"include": [],
+		"exclude": [],
+		"max_log_bytes": parse_int_value(cfg["max_log_bytes"], 250000),
+		"mirror_exit_code": false,
+		"no_redact": false,
+		"force": false,
+		"manual": false,
+		"command_str": null,
+		"raw_argv": [],
+		"mode": "manual"
+	}
+
+	separator_index := -1
+	for i in range(0, len(subargs)) {
+		if subargs[i] == "--" {
+			separator_index = i
+			break
+		}
+	}
+
+	flag_args := subargs
+	if separator_index >= 0 {
+		flag_args = slice(subargs, 0, separator_index)
+		cmd_args := slice(subargs, separator_index + 1, len(subargs))
+		for value in cmd_args {
+			raw_argv := options["raw_argv"]
+			raw_argv = push(raw_argv, value)
+			options["raw_argv"] = raw_argv
+		}
+		if len(options["raw_argv"]) > 0 {
+			options["mode"] = "command"
+		}
+	}
+
+	i := 0
+	while i < len(flag_args) {
+		arg := flag_args[i]
+		if arg == "--name" {
+			i = i + 1
+			if i >= len(flag_args) {
+				return {"ok": false, "code": 2, "error": "missing value for --name"}
+			}
+			options["name"] = flag_args[i]
+		} else if arg == "--output-dir" {
+			i = i + 1
+			if i >= len(flag_args) {
+				return {"ok": false, "code": 2, "error": "missing value for --output-dir"}
+			}
+			options["output_dir"] = flag_args[i]
+		} else if arg == "--format" {
+			i = i + 1
+			if i >= len(flag_args) {
+				return {"ok": false, "code": 2, "error": "missing value for --format"}
+			}
+			fmt := to_lower(flag_args[i])
+			if fmt != "human" && fmt != "markdown" && fmt != "json" {
+				return {"ok": false, "code": 2, "error": "invalid format: " + fmt}
+			}
+			options["format"] = fmt
+		} else if arg == "--from-log" {
+			i = i + 1
+			if i >= len(flag_args) {
+				return {"ok": false, "code": 2, "error": "missing value for --from-log"}
+			}
+			options["from_log"] = flag_args[i]
+			options["mode"] = "log"
+		} else if arg == "--notes" {
+			i = i + 1
+			if i >= len(flag_args) {
+				return {"ok": false, "code": 2, "error": "missing value for --notes"}
+			}
+			options["notes"] = flag_args[i]
+		} else if arg == "--include" {
+			i = i + 1
+			if i >= len(flag_args) {
+				return {"ok": false, "code": 2, "error": "missing value for --include"}
+			}
+			includes := options["include"]
+			includes = push(includes, flag_args[i])
+			options["include"] = includes
+		} else if arg == "--exclude" {
+			i = i + 1
+			if i >= len(flag_args) {
+				return {"ok": false, "code": 2, "error": "missing value for --exclude"}
+			}
+			excludes := options["exclude"]
+			excludes = push(excludes, flag_args[i])
+			options["exclude"] = excludes
+		} else if arg == "--max-log-bytes" {
+			i = i + 1
+			if i >= len(flag_args) {
+				return {"ok": false, "code": 2, "error": "missing value for --max-log-bytes"}
+			}
+			bytes_value := parse_int_value(flag_args[i], -1)
+			if bytes_value < 0 {
+				return {"ok": false, "code": 2, "error": "invalid --max-log-bytes value"}
+			}
+			options["max_log_bytes"] = bytes_value
+		} else if arg == "--mirror-exit-code" {
+			options["mirror_exit_code"] = true
+		} else if arg == "--no-redact" {
+			options["no_redact"] = true
+		} else if arg == "--force" {
+			options["force"] = true
+		} else if arg == "--manual" {
+			options["manual"] = true
+			options["mode"] = "manual"
+		} else if arg == "--command" {
+			i = i + 1
+			if i >= len(flag_args) {
+				return {"ok": false, "code": 2, "error": "missing value for --command"}
+			}
+			options["command_str"] = flag_args[i]
+		} else {
+			return {"ok": false, "code": 2, "error": "unknown capture flag: " + arg}
+		}
+		i = i + 1
+	}
+
+	if options["from_log"] != null && !options["manual"] {
+		options["mode"] = "log"
+	}
+
+	if !options["manual"] && len(options["raw_argv"]) == 0 && options["command_str"] != null {
+		argv := split_command(options["command_str"])
+		if len(argv) == 0 {
+			return {"ok": false, "code": 2, "error": "--command value was empty"}
+		}
+		options["raw_argv"] = argv
+		options["mode"] = "command"
+	}
+
+	if !options["manual"] && len(options["raw_argv"]) > 0 && options["mode"] == "manual" {
+		options["mode"] = "command"
+	}
+
+	return {"ok": true, "options": options}
+}
+
+func detect_command_version(argv) {
+	result := safe_spawn(argv)
+	if proc_success(result) && proc_exitcode(result) == 0 {
+		output := trim(proc_stdout(result))
+		if len(output) == 0 {
+			return null
+		}
+		lines_out := split(output, "\n")
+		return trim(lines_out[0])
+	}
+	if proc_exitcode(result) == 127 {
+		return null
+	}
+	output_err := trim(proc_stderr(result))
+	if len(output_err) > 0 {
+		lines_err := split(output_err, "\n")
+		return trim(lines_err[0])
+	}
+	return null
+}
+
+func detect_environment(repo_root) {
+	env_data := {
+		"os": "unknown",
+		"arch": "unknown",
+		"shell": "unknown",
+		"cwd": repo_root,
+		"ci": null,
+		"node": null,
+		"npm": null,
+		"pnpm": null,
+		"yarn": null,
+		"python": null,
+		"pytest": null,
+		"php": null,
+		"composer": null,
+		"go": null,
+		"package_manager": null,
+		"project_hints": []
+	}
+
+	uname_s := safe_spawn(["uname", "-s"])
+	if proc_success(uname_s) && proc_exitcode(uname_s) == 0 {
+		env_data["os"] = trim(proc_stdout(uname_s))
+	}
+	uname_m := safe_spawn(["uname", "-m"])
+	if proc_success(uname_m) && proc_exitcode(uname_m) == 0 {
+		env_data["arch"] = trim(proc_stdout(uname_m))
+	}
+
+	shell_value := env_or("SHELL", "unknown")
+	if len(trim(shell_value)) > 0 {
+		env_data["shell"] = basename(shell_value)
+	}
+
+	ci_value := env_or("CI", "")
+	if len(trim(ci_value)) > 0 {
+		env_data["ci"] = ci_value
+	}
+
+	env_data["node"] = detect_command_version(["node", "--version"])
+	env_data["npm"] = detect_command_version(["npm", "--version"])
+	env_data["pnpm"] = detect_command_version(["pnpm", "--version"])
+	env_data["yarn"] = detect_command_version(["yarn", "--version"])
+	env_data["python"] = detect_command_version(["python3", "--version"])
+	env_data["pytest"] = detect_command_version(["pytest", "--version"])
+	env_data["php"] = detect_command_version(["php", "--version"])
+	env_data["composer"] = detect_command_version(["composer", "--version"])
+	env_data["go"] = detect_command_version(["go", "version"])
+
+	if is_truthy(file_exists(path_join(repo_root, "pnpm-lock.yaml"))) {
+		env_data["package_manager"] = "pnpm"
+	}
+	if is_truthy(file_exists(path_join(repo_root, "yarn.lock"))) {
+		env_data["package_manager"] = "yarn"
+	}
+	if is_truthy(file_exists(path_join(repo_root, "package-lock.json"))) {
+		env_data["package_manager"] = "npm"
+	}
+	if is_truthy(file_exists(path_join(repo_root, "composer.json"))) {
+		env_data["package_manager"] = "composer"
+	}
+
+	for hint_file in PROJECT_HINT_FILES {
+		if is_truthy(file_exists(path_join(repo_root, hint_file))) {
+			hints := env_data["project_hints"]
+			hints = push(hints, hint_file)
+			env_data["project_hints"] = hints
+		}
+	}
+
+	return env_data
+}
+
+func parse_git_changed_files(status_text) {
+	files := []
+	lines_text := split(status_text, "\n")
+	for line in lines_text {
+		if len(trim(line)) < 3 {
+			continue
+		}
+		status_code := trim(substring(line, 0, 2))
+		path_value := trim(substring(line, 3, len(line)))
+		if len(path_value) == 0 {
+			continue
+		}
+		files = push(files, {"path": path_value, "status": status_code})
+	}
+	return files
+}
+
+func collect_git_context(include_recent_commits) {
+	ctx := {
+		"is_git_repo": false,
+		"root": null,
+		"branch": null,
+		"head": null,
+		"status_summary": "",
+		"diff_stat": "",
+		"recent_commits": [],
+		"changed_files": []
+	}
+
+	inside := safe_spawn(["git", "rev-parse", "--is-inside-work-tree"])
+	if !(proc_success(inside) && proc_exitcode(inside) == 0 && trim(proc_stdout(inside)) == "true") {
+		return ctx
+	}
+
+	ctx["is_git_repo"] = true
+
+	root_result := safe_spawn(["git", "rev-parse", "--show-toplevel"])
+	if proc_success(root_result) && proc_exitcode(root_result) == 0 {
+		ctx["root"] = trim(proc_stdout(root_result))
+	}
+
+	branch_result := safe_spawn(["git", "rev-parse", "--abbrev-ref", "HEAD"])
+	if proc_success(branch_result) && proc_exitcode(branch_result) == 0 {
+		ctx["branch"] = trim(proc_stdout(branch_result))
+	}
+
+	head_result := safe_spawn(["git", "rev-parse", "HEAD"])
+	if proc_success(head_result) && proc_exitcode(head_result) == 0 {
+		ctx["head"] = trim(proc_stdout(head_result))
+	}
+
+	status_result := safe_spawn(["git", "status", "--porcelain"])
+	if proc_success(status_result) && proc_exitcode(status_result) == 0 {
+		ctx["status_summary"] = proc_stdout(status_result)
+		ctx["changed_files"] = parse_git_changed_files(proc_stdout(status_result))
+	}
+
+	diff_result := safe_spawn(["git", "diff", "--stat"])
+	if proc_success(diff_result) && proc_exitcode(diff_result) == 0 {
+		ctx["diff_stat"] = proc_stdout(diff_result)
+	}
+
+	recent_count := to_string(include_recent_commits)
+	commits_result := safe_spawn(["git", "log", "-n", recent_count, "--oneline"])
+	if proc_success(commits_result) && proc_exitcode(commits_result) == 0 {
+		lines_commits := split(trim(proc_stdout(commits_result)), "\n")
+		for commit_line in lines_commits {
+			if len(trim(commit_line)) > 0 {
+				recent := ctx["recent_commits"]
+				recent = push(recent, commit_line)
+				ctx["recent_commits"] = recent
+			}
+		}
+	}
+
+	return ctx
+}
+
+func write_git_files(case_path, git_ctx) {
+	if !git_ctx["is_git_repo"] {
+		return
+	}
+	if len(trim(git_ctx["status_summary"])) > 0 {
+		safe_write(path_join(case_path, "git-status.txt"), git_ctx["status_summary"])
+	}
+	if len(trim(git_ctx["diff_stat"])) > 0 {
+		safe_write(path_join(case_path, "git-diff-stat.txt"), git_ctx["diff_stat"])
+	}
+	if len(git_ctx["recent_commits"]) > 0 {
+		safe_write(path_join(case_path, "git-recent-commits.txt"), join(git_ctx["recent_commits"], "\n"))
+	}
+}
+
+func get_redaction_patterns(cfg) {
+	patterns := clone_array(DEFAULT_REDACTION_PATTERNS)
+	if dict_has_key(cfg, "redaction") {
+		redaction_cfg := cfg["redaction"]
+		if dict_has_key(redaction_cfg, "patterns") {
+			for pattern in redaction_cfg["patterns"] {
+				if len(trim(safe_to_string(pattern))) > 0 {
+					patterns = push(patterns, safe_to_string(pattern))
+				}
+			}
+		}
+	}
+	return patterns
+}
+
+func redact_text(input_text, enabled, patterns) {
+	if !enabled {
+		return {"text": input_text, "count": 0}
+	}
+
+	result := input_text
+	redacted_count := 0
+
+	for pattern in patterns {
+		before := result
+		try {
+			result = regex_replace(result, pattern, "[REDACTED]")
+		} except err {
+			# Ignore invalid pattern and continue with deterministic defaults.
+		}
+		if before != result {
+			redacted_count = redacted_count + 1
+		}
+	}
+
+	return {"text": result, "count": redacted_count}
+}
+
+func is_sensitive_arg_name(value) {
+	arg := to_lower(trim(safe_to_string(value)))
+	while starts_with(arg, "-") {
+		arg = substring(arg, 1, len(arg))
+	}
+	arg = replace(arg, "_", "-")
+	if arg == "p" || arg == "password" || arg == "passwd" || arg == "pwd" {
+		return true
+	}
+	if arg == "token" || arg == "access-token" || arg == "refresh-token" || arg == "bearer-token" {
+		return true
+	}
+	if arg == "secret" || arg == "client-secret" || arg == "api-secret" {
+		return true
+	}
+	if arg == "api-key" || arg == "apikey" || arg == "key" {
+		return true
+	}
+	if arg == "authorization" || arg == "auth-token" {
+		return true
+	}
+	return false
+}
+
+func redact_embedded_arg_secrets(value, enabled) {
+	if !enabled {
+		return {"text": safe_to_string(value), "count": 0}
+	}
+	result := safe_to_string(value)
+	redacted_count := 0
+	patterns := [
+		"api[_-]?key\\s*[:=]\\s*[^\\s'\";]+",
+		"apikey\\s*[:=]\\s*[^\\s'\";]+",
+		"secret\\s*[:=]\\s*[^\\s'\";]+",
+		"token\\s*[:=]\\s*[^\\s'\";]+",
+		"password\\s*[:=]\\s*[^\\s'\";]+",
+		"passwd\\s*[:=]\\s*[^\\s'\";]+",
+		"pwd\\s*[:=]\\s*[^\\s'\";]+",
+		"private[_-]?key\\s*[:=]\\s*[^\\s'\";]+",
+		"Authorization\\s*:\\s*(Bearer\\s+)?[^\\s'\";]+",
+		"authorization\\s*:\\s*(Bearer\\s+)?[^\\s'\";]+"
+	]
+	for pattern in patterns {
+		before := result
+		try {
+			result = regex_replace(result, pattern, "[REDACTED]")
+		} except err {
+		}
+		if before != result {
+			redacted_count = redacted_count + 1
+		}
+	}
+	return {"text": result, "count": redacted_count}
+}
+
+func redact_argv(argv, enabled, patterns) {
+	redacted := []
+	redaction_count := 0
+	redact_next := false
+
+	for arg_value in argv {
+		arg := safe_to_string(arg_value)
+		rendered := arg
+
+		if enabled && redact_next {
+			rendered = "[REDACTED]"
+			redaction_count = redaction_count + 1
+			redact_next = false
+			redacted = push(redacted, rendered)
+			continue
+		}
+
+		if enabled {
+			if is_sensitive_arg_name(arg) && index_of(arg, "=") < 0 {
+				redact_next = true
+				redacted = push(redacted, rendered)
+				continue
+			}
+
+			eq_index := index_of(arg, "=")
+			if eq_index > 0 {
+				key_part := substring(arg, 0, eq_index)
+				if is_sensitive_arg_name(key_part) {
+					rendered = key_part + "=[REDACTED]"
+					redaction_count = redaction_count + 1
+				}
+			}
+
+			if rendered == arg {
+				embedded_redacted := redact_embedded_arg_secrets(arg, enabled)
+				rendered = embedded_redacted["text"]
+				redaction_count = redaction_count + embedded_redacted["count"]
+			}
+
+			if rendered == arg {
+				text_redacted := redact_text(arg, enabled, patterns)
+				rendered = text_redacted["text"]
+				redaction_count = redaction_count + text_redacted["count"]
+			}
+		}
+
+		redacted = push(redacted, rendered)
+	}
+
+	return {"argv": redacted, "display": join(redacted, " "), "count": redaction_count}
+}
+
+func detect_failure_keywords(log_text) {
+	lowered := to_lower(log_text)
+	found := []
+	for keyword in FAILURE_KEYWORDS {
+		if index_of(lowered, keyword) >= 0 {
+			found = push(found, keyword)
+		}
+	}
+	return found
+}
+
+func capture_command(case_path, options, redact_enabled, patterns) {
+	argv := options["raw_argv"]
+	if len(argv) == 0 {
+		return {"ok": false, "error": "no command provided for command capture"}
+	}
+
+	start := performance_now()
+	proc := safe_spawn_with_options(argv, {"max_output_bytes": options["max_log_bytes"]})
+	duration_ms := to_int(performance_now() - start)
+	command_redacted := redact_argv(argv, redact_enabled, patterns)
+	stored_argv := []
+	command_extra_redactions := 0
+	for stored_arg in command_redacted["argv"] {
+		arg_redacted := redact_embedded_arg_secrets(stored_arg, redact_enabled)
+		stored_argv = push(stored_argv, arg_redacted["text"])
+		command_extra_redactions = command_extra_redactions + arg_redacted["count"]
+	}
+	stored_display_result := redact_embedded_arg_secrets(join(stored_argv, " "), redact_enabled)
+	stored_display := stored_display_result["text"]
+	command_extra_redactions = command_extra_redactions + stored_display_result["count"]
+
+	raw_stdout := safe_to_string(proc_stdout(proc))
+	raw_stderr := safe_to_string(proc_stderr(proc))
+	raw_combined := raw_stdout
+	if len(raw_combined) > 0 && len(raw_stderr) > 0 {
+		raw_combined = raw_combined + "\n"
+	}
+	raw_combined = raw_combined + raw_stderr
+
+	stdout_redacted := redact_text(raw_stdout, redact_enabled, patterns)
+	stderr_redacted := redact_text(raw_stderr, redact_enabled, patterns)
+	combined_redacted := redact_text(raw_combined, redact_enabled, patterns)
+	was_truncated := is_truthy(proc_stdout_truncated(proc)) || is_truthy(proc_stderr_truncated(proc))
+
+	write_result := require_writes([
+		[path_join(case_path, "stdout.log"), stdout_redacted["text"]],
+		[path_join(case_path, "stderr.log"), stderr_redacted["text"]],
+		[path_join(case_path, "combined.log"), combined_redacted["text"]],
+		[path_join(case_path, "command.txt"), stored_display]
+	])
+	if !write_result["ok"] {
+		return write_result
+	}
+
+	return {
+		"ok": true,
+		"mode": "command",
+		"argv": stored_argv,
+		"display": stored_display,
+		"exit_code": proc_exitcode(proc),
+		"duration_ms": duration_ms,
+		"stdout": stdout_redacted["text"],
+		"stderr": stderr_redacted["text"],
+		"combined": combined_redacted["text"],
+		"truncated": was_truncated,
+		"timed_out": is_truthy(proc_timed_out(proc)),
+		"success": proc_success(proc),
+		"redaction_enabled": redact_enabled,
+		"redaction_count": stdout_redacted["count"] + stderr_redacted["count"] + combined_redacted["count"] + command_redacted["count"] + command_extra_redactions
+	}
+}
+
+func capture_from_log(case_path, log_path, redact_enabled, patterns) {
+	if !is_truthy(file_exists(log_path)) {
+		return {"ok": false, "error": "log file not found: " + log_path}
+	}
+
+	try {
+		raw_log := read_file(log_path)
+		redacted := redact_text(raw_log, redact_enabled, patterns)
+		display_redacted := redact_text("<from-log> " + log_path, redact_enabled, patterns)
+		write_result := require_writes([
+			[path_join(case_path, "combined.log"), redacted["text"]],
+			[path_join(case_path, "command.txt"), display_redacted["text"]]
+		])
+		if !write_result["ok"] {
+			return write_result
+		}
+		return {
+			"ok": true,
+			"mode": "log",
+			"argv": [],
+			"display": display_redacted["text"],
+			"exit_code": null,
+			"duration_ms": 0,
+			"stdout": "",
+			"stderr": "",
+			"combined": redacted["text"],
+			"truncated": false,
+			"timed_out": false,
+			"success": true,
+			"redaction_enabled": redact_enabled,
+			"redaction_count": redacted["count"] + display_redacted["count"]
+		}
+	} except err {
+		return {"ok": false, "error": "failed to read log file: " + safe_to_string(err)}
+	}
+}
+
+func create_manual_case(case_path) {
+	write_result := safe_write(path_join(case_path, "command.txt"), "<manual>")
+	if !write_result["ok"] {
+		return write_result
+	}
+	return {
+		"ok": true,
+		"mode": "manual",
+		"argv": [],
+		"display": "<manual>",
+		"exit_code": null,
+		"duration_ms": 0,
+		"stdout": "",
+		"stderr": "",
+		"combined": "",
+		"truncated": false,
+		"timed_out": false,
+		"success": true,
+		"redaction_enabled": false,
+		"redaction_count": 0
+	}
+}
+
+func classify_case(capture_data, git_ctx, env_data) {
+	signals := []
+	severity_score := 0
+	status := "unknown"
+
+	if capture_data["mode"] == "manual" {
+		status = "manual"
+	} else if capture_data["exit_code"] == null {
+		status = "unknown"
+	} else if capture_data["exit_code"] == 0 {
+		status = "passed"
+	} else {
+		status = "failed"
+		signals = concat(signals, ["command-exit-nonzero"])
+		severity_score = severity_score + 2
+	}
+
+	keywords := detect_failure_keywords(capture_data["combined"])
+	if len(keywords) > 0 {
+		signals = concat(signals, ["failure-keywords-detected"])
+		severity_score = severity_score + 1
+	}
+
+	if git_ctx["is_git_repo"] {
+		changed_count := len(git_ctx["changed_files"])
+		if changed_count > 0 {
+			signals = concat(signals, ["source-files-changed"])
+			severity_score = severity_score + 1
+		}
+		if changed_count >= 10 {
+			signals = concat(signals, ["many-files-changed"])
+			severity_score = severity_score + 2
+		}
+		for file_entry in git_ctx["changed_files"] {
+			path_value := to_lower(file_entry["path"])
+			if index_of(path_value, "lock") >= 0 || index_of(path_value, "lockfile") >= 0 {
+				signals = concat(signals, ["lockfile-or-deps-changed"])
+				severity_score = severity_score + 1
+			}
+			if index_of(path_value, "migration") >= 0 || index_of(path_value, "schema") >= 0 || index_of(path_value, "auth") >= 0 || index_of(path_value, "security") >= 0 {
+				signals = concat(signals, ["sensitive-files-changed"])
+				severity_score = severity_score + 2
+			}
+			if index_of(path_value, ".env") >= 0 {
+				signals = concat(signals, ["environment-files-changed"])
+				severity_score = severity_score + 2
+			}
+			if starts_with(path_value, ".github/") || starts_with(path_value, ".gitlab") || index_of(path_value, "ci") >= 0 {
+				signals = concat(signals, ["ci-config-changed"])
+				severity_score = severity_score + 1
+			}
+		}
+	}
+
+	if capture_data["mode"] == "log" && capture_data["display"] != "" {
+		signals = concat(signals, ["from-log-only"])
+		severity_score = severity_score + 2
+	}
+
+	if capture_data["redaction_count"] > 0 {
+		signals = concat(signals, ["redaction-triggered"])
+		severity_score = severity_score + 2
+	}
+
+	if capture_data["truncated"] {
+		signals = concat(signals, ["logs-truncated"])
+		severity_score = severity_score + 1
+	}
+
+	if capture_data["mode"] == "manual" {
+		severity_score = 0
+	}
+
+	severity := "low"
+	if severity_score >= 6 {
+		severity = "high"
+	} else if severity_score >= 3 {
+		severity = "medium"
+	}
+
+	if status == "failed" && severity == "low" {
+		severity = "medium"
+	}
+
+	return {
+		"status": status,
+		"severity": severity,
+		"signals": unique(signals),
+		"keywords": keywords
+	}
+}
+
+func build_recommendations(capture_data, git_ctx, env_data) {
+	next_checks := []
+	if capture_data["mode"] == "command" {
+		next_checks = push(next_checks, "Re-run the captured command: " + safe_to_string(capture_data["display"]))
+	} else {
+		next_checks = push(next_checks, "Review the captured logs in combined.log")
+	}
+
+	if len(git_ctx["changed_files"]) > 0 {
+		next_checks = push(next_checks, "Review changed files listed in git-diff-stat.txt and case.md")
+	}
+
+	if is_truthy(file_exists("package.json")) {
+		next_checks = push(next_checks, "Run npm test (or your project test script)")
+	}
+	if is_truthy(file_exists("pyproject.toml")) || is_truthy(file_exists("requirements.txt")) {
+		next_checks = push(next_checks, "Run pytest for Python test coverage")
+	}
+	if is_truthy(file_exists("composer.json")) {
+		next_checks = push(next_checks, "Run composer test or composer validate")
+	}
+	if is_truthy(file_exists("go.mod")) {
+		next_checks = push(next_checks, "Run go test ./... for Go packages")
+	}
+
+	return {"next_checks": unique(next_checks)}
+}
+
+func render_reproduction(capture_data) {
+	if capture_data["mode"] != "command" {
+		return "# Reproduction Steps\n\nThis case was not captured from a direct command.\nReview combined.log and case.json for details.\n"
+	}
+	return "# Reproduction Steps\n\n"
+		+ "## Command\n\n"
+		+ "```bash\n" + safe_to_string(capture_data["display"]) + "\n```\n\n"
+		+ "## Steps\n\n"
+		+ "1. Navigate to the repository root.\n"
+		+ "2. Run the command above.\n"
+		+ "3. Compare output with combined.log and case.json.\n"
+		+ "4. Validate only the likely failure source before broader changes.\n"
+}
+
+func render_handoff(capture_data, classification, git_ctx) {
+	changed_files := []
+	for entry in git_ctx["changed_files"] {
+		changed_files = push(changed_files, entry["path"])
+	}
+	if len(changed_files) > 8 {
+		changed_files = slice(changed_files, 0, 8)
+	}
+
+	changed_line := ""
+	if len(changed_files) > 0 {
+		changed_line = "- Changed files: " + join(changed_files, ", ") + "\n"
+	}
+
+	return "You are debugging a local failure captured by CaseFile.\n\n"
+		+ "Failure summary:\n"
+		+ "- Command: " + safe_to_string(capture_data["display"]) + "\n"
+		+ "- Exit code: " + safe_to_string(capture_data["exit_code"]) + "\n"
+		+ "- Main failing area: review failure keywords and git context\n"
+		+ changed_line
+		+ "\nStart by:\n"
+		+ "1. Reading case.json.\n"
+		+ "2. Reviewing combined.log.\n"
+		+ "3. Checking files listed in git-diff-stat.txt.\n"
+		+ "4. Re-running the reproduction command when available.\n"
+		+ "5. Fixing only the likely failure source unless evidence points broader.\n\n"
+		+ "Do not assume the previous agent completed the work correctly.\n"
+}
+
+func render_case_markdown(case_id, case_path, options, capture_data, git_ctx, env_data, classification, recommendations) {
+	exit_value := "N/A"
+	if capture_data["exit_code"] != null {
+		exit_value = safe_to_string(capture_data["exit_code"])
+	}
+
+	git_block := "Not inside a Git repository."
+	if git_ctx["is_git_repo"] {
+		git_block = "- Branch: " + safe_to_string(git_ctx["branch"]) + "\n"
+			+ "- HEAD: " + safe_to_string(git_ctx["head"]) + "\n"
+			+ "- Changed files: " + to_string(len(git_ctx["changed_files"]))
+	}
+
+	relevant_lines := []
+	for file_entry in git_ctx["changed_files"] {
+		relevant_lines = push(relevant_lines, "- " + safe_to_string(file_entry["path"]) + " (" + safe_to_string(file_entry["status"]) + ")")
+	}
+	if len(relevant_lines) == 0 {
+		relevant_lines = push(relevant_lines, "No changed files detected.")
+	}
+
+	signal_lines := []
+	for signal in classification["signals"] {
+		signal_lines = push(signal_lines, "- " + safe_to_string(signal))
+	}
+	if len(signal_lines) == 0 {
+		signal_lines = push(signal_lines, "- No automatic signals detected")
+	}
+
+	reco_lines := []
+	idx := 1
+	for recommendation in recommendations["next_checks"] {
+		reco_lines = push(reco_lines, to_string(idx) + ". " + safe_to_string(recommendation))
+		idx = idx + 1
+	}
+
+	notes_section := ""
+	if len(trim(options["notes"])) > 0 {
+		notes_section = safe_to_string(options["notes"]) + "\n\n"
+	}
+
+	return "# CaseFile: " + safe_to_string(case_id) + "\n\n"
+		+ "## Summary\n\n"
+		+ notes_section
+		+ "Case captured in **" + safe_to_string(capture_data["mode"]) + "** mode with status **" + safe_to_string(classification["status"]) + "** and severity **" + safe_to_string(classification["severity"]) + "**.\n\n"
+		+ "## Command\n\n"
+		+ "```\n" + safe_to_string(capture_data["display"]) + "\n```\n\n"
+		+ "## Result\n\n"
+		+ "- Exit code: " + exit_value + "\n"
+		+ "- Duration: " + to_string(capture_data["duration_ms"]) + "ms\n"
+		+ "- Mode: " + safe_to_string(capture_data["mode"]) + "\n"
+		+ "- Truncated: " + safe_to_string(capture_data["truncated"]) + "\n\n"
+		+ "## Reproduction Steps\n\n"
+		+ "1. Open reproduction.md and follow the command.\n"
+		+ "2. Review combined.log.\n"
+		+ "3. Compare with current local state.\n\n"
+		+ "## Git Context\n\n"
+		+ git_block + "\n\n"
+		+ "## Environment\n\n"
+		+ "- OS: " + safe_to_string(env_data["os"]) + "\n"
+		+ "- Architecture: " + safe_to_string(env_data["arch"]) + "\n"
+		+ "- Shell: " + safe_to_string(env_data["shell"]) + "\n"
+		+ "- CWD: " + safe_to_string(env_data["cwd"]) + "\n\n"
+		+ "## Relevant Files\n\n"
+		+ join(relevant_lines, "\n") + "\n\n"
+		+ "## Logs\n\n"
+		+ "- stdout.log\n"
+		+ "- stderr.log\n"
+		+ "- combined.log\n\n"
+		+ "## Initial Diagnosis Hints\n\n"
+		+ join(signal_lines, "\n") + "\n\n"
+		+ "## Recommended Next Checks\n\n"
+		+ join(reco_lines, "\n") + "\n\n"
+		+ "## AI / Human Handoff\n\n"
+		+ render_handoff(capture_data, classification, git_ctx)
+}
+
+func build_case_json(version, case_id, case_path, options, capture_data, git_ctx, env_data, classification, recommendations) {
+	return {
+		"version": version,
+		"case": {
+			"id": case_id,
+			"name": sanitize_case_name(options["name"]),
+			"created_at": current_timestamp(),
+			"mode": capture_data["mode"],
+			"path": case_path
+		},
+		"command": {
+			"argv": capture_data["argv"],
+			"display": capture_data["display"],
+			"exit_code": capture_data["exit_code"],
+			"duration_ms": capture_data["duration_ms"]
+		},
+		"repository": {
+			"is_git_repo": git_ctx["is_git_repo"],
+			"root": git_ctx["root"],
+			"branch": git_ctx["branch"],
+			"head": git_ctx["head"],
+			"changed_files": git_ctx["changed_files"]
+		},
+		"environment": {
+			"os": env_data["os"],
+			"arch": env_data["arch"],
+			"shell": env_data["shell"],
+			"cwd": env_data["cwd"],
+			"ci": env_data["ci"],
+			"node": env_data["node"],
+			"npm": env_data["npm"],
+			"pnpm": env_data["pnpm"],
+			"yarn": env_data["yarn"],
+			"python": env_data["python"],
+			"pytest": env_data["pytest"],
+			"php": env_data["php"],
+			"composer": env_data["composer"],
+			"go": env_data["go"],
+			"package_manager": env_data["package_manager"]
+		},
+		"logs": {
+			"stdout": "stdout.log",
+			"stderr": "stderr.log",
+			"combined": "combined.log",
+			"truncated": capture_data["truncated"]
+		},
+		"security": {
+			"redaction_enabled": capture_data["redaction_enabled"],
+			"redaction_count": capture_data["redaction_count"]
+		},
+		"classification": classification,
+		"recommendations": recommendations
+	}
+}
+
+func output_capture_summary(case_id, case_path, capture_data, classification) {
+	print_lines([
+		"CaseFile captured failure",
+		""
+	])
+	print_kv_lines("", [
+		["Case", case_id],
+		["Path", case_path],
+		["Command", capture_data["display"]],
+		["Exit code", capture_data["exit_code"]],
+		["Severity", classification["severity"]]
+	])
+	print_lines([
+		"",
+		"Artifacts:"
+	])
+	for artifact in ["case.md", "case.json", "combined.log", "reproduction.md", "handoff.md"] {
+		print("- " + artifact)
+	}
+	print_lines([
+		"",
+		"Next:"
+	])
+	steps := [
+		"Open " + path_join(safe_to_string(case_path), "case.md"),
+		"Re-run: " + safe_to_string(capture_data["display"]),
+		"Send handoff.md to the next reviewer or agent"
+	]
+	step_no := 1
+	for step in steps {
+		print(to_string(step_no) + ". " + step)
+		step_no = step_no + 1
+	}
+}
+
+func usage() {
+	print_lines([
+		"CaseFile " + VERSION,
+		"",
+		"Usage:",
+		"  kujo run casefile.kujo -- <command> [options]",
+		"",
+		"Commands:",
+		"  capture   Capture a command failure, log file, or manual case",
+		"  init      Create default casefile.toml",
+		"  validate  Validate casefile.toml",
+		"  doctor    Print diagnostics",
+		"  list      List existing cases",
+		"  show      Show case summary",
+		"  clean     Clean old cases"
+	])
+}
+
+func capture_command_handler(subargs) {
+	config_result := load_config("casefile.toml")
+	if !config_result["ok"] {
+		print(config_result["error"])
+		exit(2)
+	}
+	cfg := config_result["config"]
+
+	parsed_result := parse_capture_options(subargs, cfg)
+	if !parsed_result["ok"] {
+		print_capture_error(parsed_result["error"])
+		exit(parsed_result["code"])
+	}
+	options := parsed_result["options"]
+
+	if options["output_dir"] != null {
+		cfg["output_dir"] = options["output_dir"]
+	}
+	cfg["max_log_bytes"] = options["max_log_bytes"]
+
+	repo_root := get_repo_root()
+	case_name := options["name"]
+	if case_name == null {
+		case_name = "case"
+	}
+
+	case_result := create_case_dir(repo_root, cfg, case_name, options["force"])
+	if !case_result["ok"] {
+		print_capture_error(case_result["error"])
+		exit(4)
+	}
+	case_id := case_result["case_id"]
+	case_path := case_result["case_path"]
+
+	git_cfg := cfg["git"]
+	git_ctx := collect_git_context(parse_int_value(git_cfg["include_recent_commits"], 5))
+	write_git_files(case_path, git_ctx)
+
+	env_data := detect_environment(repo_root)
+	env_write := safe_write(path_join(case_path, "environment.json"), to_json_pretty(env_data))
+	if !env_write["ok"] {
+		print_capture_error(env_write["error"])
+		exit(4)
+	}
+
+	patterns := get_redaction_patterns(cfg)
+	redact_enabled := is_truthy(cfg["redact"]) && !options["no_redact"]
+	notes_redacted := redact_text(options["notes"], redact_enabled, patterns)
+	options["notes"] = notes_redacted["text"]
+
+	capture_result := null
+	if options["mode"] == "command" {
+		capture_result = capture_command(case_path, options, redact_enabled, patterns)
+	} else if options["mode"] == "log" {
+		capture_result = capture_from_log(case_path, options["from_log"], redact_enabled, patterns)
+	} else {
+		capture_result = create_manual_case(case_path)
+	}
+
+	if !capture_result["ok"] {
+		print_capture_error(capture_result["error"])
+		exit(4)
+	}
+	capture_result["redaction_enabled"] = redact_enabled
+	capture_result["redaction_count"] = capture_result["redaction_count"] + notes_redacted["count"]
+
+	classification := classify_case(capture_result, git_ctx, env_data)
+	recommendations := build_recommendations(capture_result, git_ctx, env_data)
+	case_json_obj := build_case_json(VERSION, case_id, case_path, options, capture_result, git_ctx, env_data, classification, recommendations)
+
+	case_markdown := render_case_markdown(case_id, case_path, options, capture_result, git_ctx, env_data, classification, recommendations)
+	reproduction_markdown := render_reproduction(capture_result)
+	handoff_markdown := render_handoff(capture_result, classification, git_ctx)
+
+	artifact_write := require_writes([
+		[path_join(case_path, "case.md"), case_markdown],
+		[path_join(case_path, "case.json"), to_json_pretty(case_json_obj)],
+		[path_join(case_path, "reproduction.md"), reproduction_markdown],
+		[path_join(case_path, "handoff.md"), handoff_markdown]
+	])
+	if !artifact_write["ok"] {
+		print_capture_error(artifact_write["error"])
+		exit(4)
+	}
+
+	if options["format"] == "json" {
+		print(to_json_pretty(case_json_obj))
+	} else if options["format"] == "markdown" {
+		print(case_markdown)
+	} else {
+		output_capture_summary(case_id, case_path, capture_result, classification)
+	}
+
+	if options["mirror_exit_code"] && capture_result["exit_code"] != null {
+		exit(capture_result["exit_code"])
+	}
+
+	exit(0)
+}
+
+func init_command_handler() {
+	if is_truthy(file_exists("casefile.toml")) {
+		print("casefile.toml already exists. Skipping.")
+		exit(0)
+	}
+	result := safe_write("casefile.toml", default_config_toml())
+	if !result["ok"] {
+		print(result["error"])
+		exit(4)
+	}
+	print("Created casefile.toml")
+	exit(0)
+}
+
+func validate_command_handler() {
+	load_result := load_config("casefile.toml")
+	if !load_result["ok"] {
+		print(load_result["error"])
+		exit(2)
+	}
+	cfg := load_result["config"]
+	repo_root := get_repo_root()
+	output_check := resolve_output_dir(repo_root, safe_to_string(cfg["output_dir"]))
+	if !output_check["ok"] {
+		print_validation_error(output_check["error"])
+		exit(2)
+	}
+	if parse_int_value(cfg["max_log_bytes"], -1) < 0 {
+		print_validation_error("max_log_bytes must be non-negative")
+		exit(2)
+	}
+	fmt := to_lower(safe_to_string(cfg["default_format"]))
+	if fmt != "human" && fmt != "markdown" && fmt != "json" {
+		print_validation_error("default_format must be human|markdown|json")
+		exit(2)
+	}
+	print_lines(["Config validation passed"])
+	print_kv_lines("- ", [
+		["Repo root", repo_root],
+		["Output dir", output_check["path"]]
+	])
+	exit(0)
+}
+
+func doctor_command_handler() {
+	load_result := load_config("casefile.toml")
+	cfg_ok := load_result["ok"]
+	cfg := default_config()
+	if cfg_ok {
+		cfg = load_result["config"]
+	}
+
+	repo_root := get_repo_root()
+	git_ctx := collect_git_context(5)
+	env_data := detect_environment(repo_root)
+	output_check := resolve_output_dir(repo_root, safe_to_string(cfg["output_dir"]))
+	writable := false
+	if output_check["ok"] {
+		mk := ensure_directory(output_check["path"])
+		writable = mk["ok"]
+	}
+
+	print_lines([
+		"CaseFile doctor",
+		""
+	])
+	print_kv_lines("- ", [
+		["Version", VERSION],
+		["CWD", env_data["cwd"]],
+		["Repo root", repo_root],
+		["Inside git repo", git_ctx["is_git_repo"]],
+		["Git branch", git_ctx["branch"]],
+		["Config detected", is_truthy(file_exists("casefile.toml"))],
+		["Config parse ok", cfg_ok],
+		["Output directory", output_check["path"]],
+		["Output writable", writable],
+		["Package manager", env_data["package_manager"]],
+		["Node", env_data["node"]],
+		["npm", env_data["npm"]],
+		["pnpm", env_data["pnpm"]],
+		["yarn", env_data["yarn"]],
+		["Python", env_data["python"]],
+		["pytest", env_data["pytest"]],
+		["PHP", env_data["php"]],
+		["composer", env_data["composer"]],
+		["Go", env_data["go"]]
+	])
+
+	if !cfg_ok {
+		print("Warning: configuration file exists but could not be parsed")
+	}
+	exit(0)
+}
+
+func sort_case_ids(values) {
+	return sort(clone_array(values))
+}
+
+func list_case_dirs(output_root) {
+	if !is_truthy(path_exists(output_root)) || !is_truthy(path_is_dir(output_root)) {
+		return []
+	}
+	entries := list_dir(output_root)
+	dirs := []
+	for entry in entries {
+		full_path := path_join(output_root, entry)
+		if is_truthy(path_is_dir(full_path)) {
+			dirs = push(dirs, entry)
+		}
+	}
+	return sort_case_ids(dirs)
+}
+
+func read_case_json(case_dir) {
+	json_path := path_join(case_dir, "case.json")
+	if !is_truthy(file_exists(json_path)) {
+		return null
+	}
+	try {
+		raw := read_file(json_path)
+		return parse_json(raw)
+	} except err {
+		return null
+	}
+}
+
+func list_command_handler() {
+	load_result := load_config("casefile.toml")
+	if !load_result["ok"] {
+		print(load_result["error"])
+		exit(2)
+	}
+	cfg := load_result["config"]
+	repo_root := get_repo_root()
+	out_result := resolve_output_dir(repo_root, safe_to_string(cfg["output_dir"]))
+	if !out_result["ok"] {
+		print(out_result["error"])
+		exit(2)
+	}
+	output_root := out_result["path"]
+	case_dirs := list_case_dirs(output_root)
+
+	if len(case_dirs) == 0 {
+		print("No cases found in " + safe_to_string(output_root))
+		exit(0)
+	}
+
+	print_lines([
+		"Case ID | Name | Exit | Severity | Path",
+		"----------------------------------------"
+	])
+	for case_id in case_dirs {
+		case_path := path_join(output_root, case_id)
+		case_json := read_case_json(case_path)
+		name := case_id
+		exit_code := "N/A"
+		severity := "unknown"
+		if case_json != null {
+			if dict_has_key(case_json, "case") && dict_has_key(case_json["case"], "name") {
+				name = safe_to_string(case_json["case"]["name"])
+			}
+			if dict_has_key(case_json, "command") && dict_has_key(case_json["command"], "exit_code") {
+				exit_code = safe_to_string(case_json["command"]["exit_code"])
+			}
+			if dict_has_key(case_json, "classification") && dict_has_key(case_json["classification"], "severity") {
+				severity = safe_to_string(case_json["classification"]["severity"])
+			}
+		}
+		line := safe_to_string(case_id) + " | " + safe_to_string(name)
+		line = line + " | " + safe_to_string(exit_code) + " | " + safe_to_string(severity)
+		line = line + " | " + safe_to_string(case_path)
+		print(line)
+	}
+	exit(0)
+}
+
+func resolve_case_id(requested_case_id, output_root) {
+	if requested_case_id != "latest" {
+		return requested_case_id
+	}
+	case_dirs := list_case_dirs(output_root)
+	if len(case_dirs) == 0 {
+		return null
+	}
+	return case_dirs[len(case_dirs) - 1]
+}
+
+func parse_show_options(subargs) {
+	if len(subargs) == 0 {
+		return {"ok": false, "error": "show requires <case-id|latest>"}
+	}
+	options := {"case_id": subargs[0], "format": "markdown"}
+	i := 1
+	while i < len(subargs) {
+		arg := subargs[i]
+		if arg == "--format" {
+			i = i + 1
+			if i >= len(subargs) {
+				return {"ok": false, "error": "missing value for --format"}
+			}
+			fmt := to_lower(subargs[i])
+			if fmt != "json" && fmt != "markdown" {
+				return {"ok": false, "error": "invalid --format for show"}
+			}
+			options["format"] = fmt
+		} else {
+			return {"ok": false, "error": "unknown show flag: " + arg}
+		}
+		i = i + 1
+	}
+	return {"ok": true, "options": options}
+}
+
+func show_command_handler(subargs) {
+	parsed := parse_show_options(subargs)
+	if !parsed["ok"] {
+		print(parsed["error"])
+		exit(2)
+	}
+	options := parsed["options"]
+
+	load_result := load_config("casefile.toml")
+	if !load_result["ok"] {
+		print(load_result["error"])
+		exit(2)
+	}
+	cfg := load_result["config"]
+	repo_root := get_repo_root()
+	out_result := resolve_output_dir(repo_root, safe_to_string(cfg["output_dir"]))
+	if !out_result["ok"] {
+		print(out_result["error"])
+		exit(2)
+	}
+	output_root := out_result["path"]
+	case_id := resolve_case_id(options["case_id"], output_root)
+	if case_id == null {
+		print("No cases available")
+		exit(2)
+	}
+	case_path := path_join(output_root, case_id)
+	if !is_truthy(path_exists(case_path)) {
+		print("Case not found: " + case_id)
+		exit(2)
+	}
+
+	if options["format"] == "json" {
+		json_path := path_join(case_path, "case.json")
+		if !is_truthy(file_exists(json_path)) {
+			print("case.json not found for case: " + case_id)
+			exit(2)
+		}
+		print(read_file(json_path))
+		exit(0)
+	}
+
+	md_path := path_join(case_path, "case.md")
+	if !is_truthy(file_exists(md_path)) {
+		print("case.md not found for case: " + case_id)
+		exit(2)
+	}
+	print(read_file(md_path))
+	exit(0)
+}
+
+func parse_days(value) {
+	raw := trim(value)
+	if ends_with(raw, "d") {
+		raw = substring(raw, 0, len(raw) - 1)
+	}
+	return parse_int_value(raw, -1)
+}
+
+func cutoff_stamp_for_days(days_value) {
+	cmd_mac := "-v-" + to_string(days_value) + "d"
+	mac := safe_spawn(["date", cmd_mac, "+%Y-%m-%d-%H%M%S"])
+	if proc_success(mac) && proc_exitcode(mac) == 0 {
+		return trim(proc_stdout(mac))
+	}
+	linux := safe_spawn(["date", "-d", to_string(days_value) + " days ago", "+%Y-%m-%d-%H%M%S"])
+	if proc_success(linux) && proc_exitcode(linux) == 0 {
+		return trim(proc_stdout(linux))
+	}
+	return null
+}
+
+func parse_clean_options(subargs) {
+	options := {"older_than": null, "keep": null, "dry_run": false}
+	i := 0
+	while i < len(subargs) {
+		arg := subargs[i]
+		if arg == "--older-than" {
+			i = i + 1
+			if i >= len(subargs) {
+				return {"ok": false, "error": "missing value for --older-than"}
+			}
+			options["older_than"] = subargs[i]
+		} else if arg == "--keep" {
+			i = i + 1
+			if i >= len(subargs) {
+				return {"ok": false, "error": "missing value for --keep"}
+			}
+			options["keep"] = parse_int_value(subargs[i], -1)
+			if options["keep"] < 0 {
+				return {"ok": false, "error": "--keep must be a non-negative integer"}
+			}
+		} else if arg == "--dry-run" {
+			options["dry_run"] = true
+		} else {
+			return {"ok": false, "error": "unknown clean flag: " + arg}
+		}
+		i = i + 1
+	}
+	return {"ok": true, "options": options}
+}
+
+func clean_command_handler(subargs) {
+	parsed := parse_clean_options(subargs)
+	if !parsed["ok"] {
+		print(parsed["error"])
+		exit(2)
+	}
+	options := parsed["options"]
+
+	load_result := load_config("casefile.toml")
+	if !load_result["ok"] {
+		print(load_result["error"])
+		exit(2)
+	}
+	cfg := load_result["config"]
+	repo_root := get_repo_root()
+	out_result := resolve_output_dir(repo_root, safe_to_string(cfg["output_dir"]))
+	if !out_result["ok"] {
+		print(out_result["error"])
+		exit(2)
+	}
+	output_root := out_result["path"]
+	case_dirs := list_case_dirs(output_root)
+	if len(case_dirs) == 0 {
+		print("No cases to clean")
+		exit(0)
+	}
+
+	to_delete := []
+	keep_limit := options["keep"]
+	if keep_limit != null {
+		if keep_limit < len(case_dirs) {
+			for i in range(0, len(case_dirs) - keep_limit) {
+				to_delete = push(to_delete, case_dirs[i])
+			}
+		}
+	}
+
+	if options["older_than"] != null {
+		days := parse_days(options["older_than"])
+		if days < 0 {
+			print("--older-than must be like 30d")
+			exit(2)
+		}
+		cutoff := cutoff_stamp_for_days(days)
+		if cutoff != null {
+			for case_id in case_dirs {
+				if len(case_id) >= 17 {
+					stamp := substring(case_id, 0, 17)
+					if stamp < cutoff {
+						to_delete = push(to_delete, case_id)
+					}
+				}
+			}
+		}
+	}
+
+	to_delete = unique(to_delete)
+	if len(to_delete) == 0 {
+		print("Nothing to delete")
+		exit(0)
+	}
+
+	for case_id in to_delete {
+		target := path_join(output_root, case_id)
+		if !path_within_root(target, output_root, "cleanup target")["ok"] {
+			print("Skipping unsafe path: " + target)
+			continue
+		}
+		if options["dry_run"] {
+			print("[dry-run] would delete " + target)
+		} else {
+			rm := safe_spawn(["rm", "-rf", target])
+			if proc_success(rm) && proc_exitcode(rm) == 0 {
+				print("Deleted " + target)
+			} else {
+				print("Failed to delete " + target + ": " + safe_to_string(proc_stderr(rm)))
+			}
+		}
+	}
+
+	exit(0)
+}
+
+argv := args()
+
+if len(argv) == 0 {
+	usage()
+	exit(2)
+}
+
+command := argv[0]
+subargs := []
+if len(argv) > 1 {
+	subargs = slice(argv, 1, len(argv))
+}
+
+if command == "capture" {
+	capture_command_handler(subargs)
+} else if command == "init" {
+	init_command_handler()
+} else if command == "validate" {
+	validate_command_handler()
+} else if command == "doctor" {
+	doctor_command_handler()
+} else if command == "list" {
+	list_command_handler()
+} else if command == "show" {
+	show_command_handler(subargs)
+} else if command == "clean" {
+	clean_command_handler(subargs)
+} else if command == "--help" || command == "-h" || command == "help" {
+	usage()
+	exit(0)
+} else {
+	print("Unknown command: " + command)
+	usage()
+	exit(2)
+}

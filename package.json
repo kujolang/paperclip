@@ -1,0 +1,64 @@
+{
+  "name": "@kujolang/paperclip",
+  "version": "0.1.0",
+  "description": "Make Paperclip agent work easier to scope, review, reproduce, and verify.",
+  "license": "MIT",
+  "homepage": "https://github.com/kujolang/paperclip#readme",
+  "bugs": { "url": "https://github.com/kujolang/paperclip/issues" },
+  "repository": { "type": "git", "url": "git+https://github.com/kujolang/paperclip.git" },
+  "type": "module",
+  "engines": {
+    "node": ">=24.11.0"
+  },
+  "files": [
+    "dist",
+    "bundled",
+    "schemas",
+    "skills",
+    "README.md",
+    "LICENSE"
+  ],
+  "paperclipPlugin": {
+    "manifest": "./dist/manifest.js",
+    "worker": "./dist/worker.js",
+    "ui": "./dist/ui"
+  },
+  "scripts": {
+    "build": "node esbuild.config.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "components:sync": "node scripts/sync-components.mjs --local-root ..",
+    "components:verify": "node scripts/verify-components.mjs",
+    "verify": "npm run typecheck && npm test && npm run components:verify && npm run build && npm run pack:verify",
+    "pack:verify": "node scripts/verify-package.mjs",
+    "release:dry-run": "npm run verify",
+    "prepublishOnly": "npm run verify"
+  },
+  "dependencies": {
+    "@kujolang/kujo-runtime": "1.2.0",
+    "@paperclipai/plugin-sdk": "2026.824.1",
+    "zod": "4.4.3"
+  },
+  "peerDependencies": {
+    "react": ">=18"
+  },
+  "peerDependenciesMeta": {
+    "react": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@types/node": "24.0.0",
+    "@types/react": "19.2.0",
+    "esbuild": "0.28.2",
+    "react": "19.1.1",
+    "rollup": "4.62.4",
+    "typescript": "5.9.2",
+    "vitest": "4.1.10"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  }
+}

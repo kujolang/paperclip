@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://kujolang.ai/schemas/paperclip/failure-evidence-v1.json",
+  "type": "object",
+  "required": ["schemaVersion", "id", "capturedAt", "context", "failure", "environment", "evidence", "redaction", "provenance"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "id": { "type": "string", "pattern": "^failure_" },
+    "capturedAt": { "type": "string", "format": "date-time" },
+    "context": { "type": "object" },
+    "failure": { "type": "object" },
+    "environment": { "type": "array" },
+    "evidence": { "type": "array" },
+    "redaction": { "type": "object" },
+    "provenance": { "type": "object" }
+  },
+  "additionalProperties": false
+}

@@ -1,0 +1,346 @@
+# ChangeBucket :: render
+#
+# Pure presentation: turn an analysis model into a compact text report or a
+# markdown report. Nothing here touches disk or git. (JSON output is just
+# `to_json_pretty(model)` and lives in the CLI.)
+#
+# Loops are index/`while` based so the module compiles under the checker.
+
+from src.util import commas, display_path
+from src.classify import category_order
+
+# Friendly label for a category key.
+func category_labels() {
+    return {
+        "source": "Source",
+        "tests": "Tests",
+        "docs": "Docs",
+        "config": "Config",
+        "dependency_manifests": "Dependency manifests",
+        "lockfiles": "Lockfiles",
+        "generated": "Generated",
+        "ci": "CI",
+        "scripts": "Scripts",
+        "other": "Other"
+    }
+}
+
+func cat_label(key) {
+    labels := category_labels()
+    if has_key(labels, key) == 1 {
+        return labels[key]
+    }
+    return "Other"
+}
+
+func mark(ok) {
+    if ok {
+        return "PASS"
+    }
+    return "FAIL"
+}
+
+func append_lines(out, lines) {
+    mut next := out
+    mut i := 0
+    while i < len(lines) {
+        next = push(next, lines[i])
+        i = i + 1
+    }
+    return next
+}
+
+func append_text_rows(out, rows) {
+    mut next := out
+    mut i := 0
+    while i < len(rows) {
+        row := rows[i]
+        next = push(next, "- " + row[0] + ": " + row[1])
+        i = i + 1
+    }
+    return next
+}
+
+# Files sorted by churn descending, truncated to `n`. A copy is sorted in place
+# via selection sort (no sort builtin is relied on).
+export func top_by_churn(files, n) {
+    mut arr := []
+    mut i := 0
+    while i < len(files) {
+        arr = push(arr, files[i])
+        i = i + 1
+    }
+    mut a := 0
+    while a < len(arr) {
+        mut best := a
+        mut b := a + 1
+        while b < len(arr) {
+            if arr[b]["churn"] > arr[best]["churn"] {
+                best = b
+            }
+            b = b + 1
+        }
+        if best != a {
+            tmp := arr[a]
+            arr[a] := arr[best]
+            arr[best] := tmp
+        }
+        a = a + 1
+    }
+    mut out := []
+    mut k := 0
+    while k < len(arr) && k < n {
+        out = push(out, arr[k])
+        k = k + 1
+    }
+    return out
+}
+
+func metric_value(summary, key) {
+    if key == "risk_level" {
+        return summary[key]
+    }
+    return commas(summary[key])
+}
+
+func summary_rows(summary, specs) {
+    mut rows := []
+    mut i := 0
+    while i < len(specs) {
+        spec := specs[i]
+        rows = push(rows, [spec[0], metric_value(summary, spec[1])])
+        i = i + 1
+    }
+    return rows
+}
+
+func text_summary_specs() {
+    return [
+        ["Files changed", "files_changed"],
+        ["Lines added", "lines_added"],
+        ["Lines deleted", "lines_deleted"],
+        ["Total line churn", "total_churn"],
+        ["Files added", "files_added"],
+        ["Files modified", "files_modified"],
+        ["Files deleted", "files_deleted"],
+        ["Binary files", "binary_files"],
+        ["Risk level", "risk_level"]
+    ]
+}
+
+func markdown_summary_specs() {
+    return [
+        ["Files changed", "files_changed"],
+        ["Files added", "files_added"],
+        ["Files modified", "files_modified"],
+        ["Files deleted", "files_deleted"],
+        ["Binary files", "binary_files"],
+        ["Lines added", "lines_added"],
+        ["Lines deleted", "lines_deleted"],
+        ["Total churn", "total_churn"],
+        ["Risk level", "risk_level"]
+    ]
+}
+
+func budget_limit_line(label, limit, actual, ok) {
+    return "- " + label + ": " + commas(limit) + " [" + mark(ok) + "] (actual " + commas(actual) + ")"
+}
+
+func budget_ban_line(label, ok) {
+    return "- " + label + " allowed: no [" + mark(ok) + "]"
+}
+
+# Budget lines for the text report, derived from the config so each configured
+# constraint shows its limit and a PASS/FAIL marker.
+func budget_text_lines(model, cfg) {
+    s := model["summary"]
+    cats := model["categories"]
+    mut lines := []
+    if type(cfg["max_files"]) != "null" {
+        lines = push(lines, budget_limit_line("Max files", cfg["max_files"], s["files_changed"], s["files_changed"] <= cfg["max_files"]))
+    }
+    if type(cfg["max_churn"]) != "null" {
+        lines = push(lines, budget_limit_line("Max churn", cfg["max_churn"], s["total_churn"], s["total_churn"] <= cfg["max_churn"]))
+    }
+    if type(cfg["max_additions"]) != "null" {
+        lines = push(lines, budget_limit_line("Max additions", cfg["max_additions"], s["lines_added"], s["lines_added"] <= cfg["max_additions"]))
+    }
+    if type(cfg["max_deletions"]) != "null" {
+        lines = push(lines, budget_limit_line("Max deletions", cfg["max_deletions"], s["lines_deleted"], s["lines_deleted"] <= cfg["max_deletions"]))
+    }
+    if cfg["no_deletes"] == true {
+        lines = push(lines, budget_ban_line("Deletes", s["files_deleted"] == 0))
+    }
+    if cfg["no_dependency_changes"] == true {
+        lines = push(lines, budget_ban_line("Dependency changes", len(cats["dependency_manifests"]) == 0))
+    }
+    if cfg["no_lockfile_changes"] == true {
+        lines = push(lines, budget_ban_line("Lockfile changes", len(cats["lockfiles"]) == 0))
+    }
+    if cfg["no_config_changes"] == true {
+        lines = push(lines, budget_ban_line("Config changes", len(cats["config"]) == 0))
+    }
+    if cfg["no_generated_changes"] == true {
+        lines = push(lines, budget_ban_line("Generated changes", len(cats["generated"]) == 0))
+    }
+    return lines
+}
+
+# Compact, human-readable terminal report.
+export func render_text(model, cfg, show_budget) {
+    s := model["summary"]
+    cats := model["categories"]
+    mut out := []
+    out = append_lines(out, [
+        "ChangeBucket",
+        "",
+        "Base: " + model["base"],
+        "Head: " + model["head"],
+        "",
+        "Summary:"
+    ])
+    summary := summary_rows(s, text_summary_specs())
+    out = append_text_rows(out, summary)
+    out = append_lines(out, ["", "Categories:"])
+    order := category_order()
+    mut ci := 0
+    while ci < len(order) {
+        key := order[ci]
+        count := len(cats[key])
+        if count > 0 {
+            out = push(out, "- " + pad_right(cat_label(key) + ":", 22, " ") + commas(count))
+        }
+        ci = ci + 1
+    }
+
+    largest := top_by_churn(model["files"], 5)
+    if len(largest) > 0 {
+        out = append_lines(out, ["", "Largest changes:"])
+        mut li := 0
+        while li < len(largest) {
+            f := largest[li]
+            out = push(out, "- " + display_path(f["path"]) + " (" + f["status"] + ", +" + commas(f["additions"]) + " -" + commas(f["deletions"]) + ", churn " + commas(f["churn"]) + ")")
+            li = li + 1
+        }
+    }
+
+    if show_budget && model["budget"]["checked"] == true {
+        out = append_lines(out, ["", "Budget:"])
+        blines := budget_text_lines(model, cfg)
+        if len(blines) == 0 {
+            out = push(out, "- (no constraints set)")
+        } else {
+            out = append_lines(out, blines)
+        }
+        if model["budget"]["passed"] == true {
+            out = append_lines(out, ["", "Result: within budget"])
+        } else {
+            out = append_lines(out, ["", "Result: budget exceeded"])
+            failures := model["budget"]["failures"]
+            mut fi := 0
+            while fi < len(failures) {
+                out = push(out, "  - " + failures[fi])
+                fi = fi + 1
+            }
+        }
+    }
+
+    return join(out, "\n")
+}
+
+func md_row(cells) {
+    return "| " + join(cells, " | ") + " |"
+}
+
+func append_md_rows(out, rows) {
+    mut next := out
+    mut i := 0
+    while i < len(rows) {
+        next = push(next, md_row(rows[i]))
+        i = i + 1
+    }
+    return next
+}
+
+func append_md_table(out, header, separator, rows) {
+    mut next := out
+    next = push(next, md_row(header))
+    next = push(next, md_row(separator))
+    next = append_md_rows(next, rows)
+    next = push(next, "")
+    return next
+}
+
+func markdown_code(value) {
+    safe := replace_str(display_path(value), "|", "\\|")
+    mut fence := "`"
+    while contains(safe, fence) == 1 {
+        fence = fence + "`"
+    }
+    return fence + safe + fence
+}
+
+# Clean markdown report.
+export func render_markdown(model, cfg, show_budget) {
+    s := model["summary"]
+    cats := model["categories"]
+    mut out := []
+    out = append_lines(out, [
+        "# ChangeBucket Report",
+        "",
+        "Generated: " + model["generated_at"],
+        "",
+        "Base: " + markdown_code(model["base"]) + "  Head: " + markdown_code(model["head"]),
+        "",
+        "## Summary",
+        ""
+    ])
+    summary := summary_rows(s, markdown_summary_specs())
+    out = append_md_table(out, ["Metric", "Value"], ["---", "---:"], summary)
+
+    if show_budget && model["budget"]["checked"] == true {
+        out = append_lines(out, ["## Budget Result", ""])
+        if model["budget"]["passed"] == true {
+            out = push(out, "Status: **within budget**")
+        } else {
+            out = push(out, "Status: **budget exceeded**")
+        }
+        out = push(out, "")
+        failures := model["budget"]["failures"]
+        if len(failures) > 0 {
+            mut fi := 0
+            while fi < len(failures) {
+                out = push(out, "- " + failures[fi])
+                fi = fi + 1
+            }
+            out = push(out, "")
+        }
+    }
+
+    out = append_lines(out, ["## File Categories", ""])
+    order := category_order()
+    mut category_rows := []
+    mut ci := 0
+    while ci < len(order) {
+        key := order[ci]
+        count := len(cats[key])
+        if count > 0 {
+            category_rows = push(category_rows, [cat_label(key), commas(count)])
+        }
+        ci = ci + 1
+    }
+    out = append_md_table(out, ["Category", "Count"], ["---", "---:"], category_rows)
+
+    largest := top_by_churn(model["files"], 10)
+    out = append_lines(out, ["## Largest Changes", ""])
+    mut largest_rows := []
+    mut li := 0
+    while li < len(largest) {
+        f := largest[li]
+        largest_rows = push(largest_rows, [markdown_code(f["path"]), f["status"], commas(f["additions"]), commas(f["deletions"]), commas(f["churn"])])
+        li = li + 1
+    }
+    out = append_md_table(out, ["File", "Status", "+", "-", "Churn"], ["---", "---", "---:", "---:", "---:"], largest_rows)
+
+    return join(out, "\n")
+}

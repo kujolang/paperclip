@@ -1,0 +1,92 @@
+# ChangeBucket :: budget
+#
+# Deterministic threshold checking against an analysis model. A budget config is
+# a plain dict (numeric limits default to null = unlimited; boolean bans default
+# to false). `evaluate` returns the model with its `budget` block filled in:
+#   {"checked": true, "passed": bool, "failures": [strings]}
+
+from src.util import commas, display_path
+
+# A budget config with everything off. The CLI overlays user flags onto this.
+export func empty_config() {
+    return {
+        "max_files": null,
+        "max_churn": null,
+        "max_additions": null,
+        "max_deletions": null,
+        "no_deletes": false,
+        "no_dependency_changes": false,
+        "no_lockfile_changes": false,
+        "no_config_changes": false,
+        "no_generated_changes": false
+    }
+}
+
+# True if the user actually set any budget constraint. Used to decide whether to
+# show the Budget section on the default (non-`check`) command.
+export func has_constraints(cfg) {
+    if type(cfg["max_files"]) != "null" || type(cfg["max_churn"]) != "null" {
+        return true
+    }
+    if type(cfg["max_additions"]) != "null" || type(cfg["max_deletions"]) != "null" {
+        return true
+    }
+    if cfg["no_deletes"] == true || cfg["no_dependency_changes"] == true {
+        return true
+    }
+    if cfg["no_lockfile_changes"] == true || cfg["no_config_changes"] == true {
+        return true
+    }
+    if cfg["no_generated_changes"] == true {
+        return true
+    }
+    return false
+}
+
+# Append a "label: value > max limit" failure when a numeric ceiling is exceeded.
+func check_max(failures, label, value, limit) {
+    if type(limit) == "null" {
+        return failures
+    }
+    if value > limit {
+        return push(failures, label + ": " + commas(value) + " > max " + commas(limit))
+    }
+    return failures
+}
+
+# Append one failure per file in a banned category.
+func check_banned(failures, banned, paths, label) {
+    if banned != true {
+        return failures
+    }
+    mut out := failures
+    for p in paths {
+        out = push(out, label + ": " + display_path(p))
+    }
+    return out
+}
+
+# Evaluate `cfg` against `model`, mutating and returning the model's budget block.
+export func evaluate(model, cfg) {
+    s := model["summary"]
+    cats := model["categories"]
+    mut failures := []
+
+    failures = check_max(failures, "Changed files", s["files_changed"], cfg["max_files"])
+    failures = check_max(failures, "Total churn", s["total_churn"], cfg["max_churn"])
+    failures = check_max(failures, "Lines added", s["lines_added"], cfg["max_additions"])
+    failures = check_max(failures, "Lines deleted", s["lines_deleted"], cfg["max_deletions"])
+
+    if cfg["no_deletes"] == true && s["files_deleted"] > 0 {
+        failures = push(failures, "Deletes not allowed: " + commas(s["files_deleted"]) + " file(s) deleted")
+    }
+
+    failures = check_banned(failures, cfg["no_dependency_changes"], cats["dependency_manifests"], "Dependency manifest changed")
+    failures = check_banned(failures, cfg["no_lockfile_changes"], cats["lockfiles"], "Lockfile changed")
+    failures = check_banned(failures, cfg["no_config_changes"], cats["config"], "Config file changed")
+    failures = check_banned(failures, cfg["no_generated_changes"], cats["generated"], "Generated file changed")
+
+    passed := len(failures) == 0
+    model["budget"] := {"checked": true, "passed": passed, "failures": failures}
+    return model
+}

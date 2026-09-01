@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://kujolang.ai/schemas/paperclip/context-pack-v1.json",
+  "type": "object",
+  "required": ["schemaVersion", "id", "generatedAt", "task", "depth", "budget", "estimatedTokens", "files", "workspaceId", "projectId", "snapshot", "stale", "cacheKey", "provenance"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "id": { "type": "string", "pattern": "^context_" },
+    "generatedAt": { "type": "string", "format": "date-time" },
+    "task": { "type": "string", "minLength": 1 },
+    "depth": { "enum": ["minimal", "focused", "broad"] },
+    "budget": { "type": "integer", "minimum": 1 },
+    "estimatedTokens": { "type": "integer", "minimum": 0 },
+    "files": { "type": "array" },
+    "workspaceId": { "type": "string" },
+    "projectId": { "type": "string" },
+    "snapshot": { "type": "object" },
+    "stale": { "type": "boolean" },
+    "cacheKey": { "type": "string" },
+    "provenance": { "type": "object" }
+  },
+  "additionalProperties": true
+}

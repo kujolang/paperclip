@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://kujolang.ai/schemas/paperclip/changebucket-analysis-v1.json",
+  "type": "object",
+  "required": ["base", "head", "summary", "categories", "files"],
+  "properties": {
+    "base": { "type": "string" },
+    "head": { "type": "string" },
+    "summary": {
+      "type": "object",
+      "required": ["files_changed", "lines_added", "lines_deleted", "total_churn", "risk_level"],
+      "properties": {
+        "files_changed": { "type": "integer", "minimum": 0 },
+        "lines_added": { "type": "integer", "minimum": 0 },
+        "lines_deleted": { "type": "integer", "minimum": 0 },
+        "total_churn": { "type": "integer", "minimum": 0 },
+        "risk_level": { "enum": ["low", "medium", "high"] }
+      },
+      "additionalProperties": true
+    },
+    "categories": { "type": "object", "additionalProperties": { "type": "array", "items": { "type": "string" } } },
+    "files": { "type": "array" }
+  },
+  "additionalProperties": true
+}

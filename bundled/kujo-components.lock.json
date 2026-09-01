@@ -1,0 +1,134 @@
+{
+  "schemaVersion": 1,
+  "bundleVersion": "0.1.0",
+  "runtime": {
+    "minimumVersion": "1.2.0"
+  },
+  "components": [
+    {
+      "id": "changebucket",
+      "repository": "https://github.com/kujolang/changebucket",
+      "gitCommit": "6fcaf41e7ca6c317ebb3b3408b4d185e76fb1640",
+      "version": "1.0.0",
+      "license": "MIT",
+      "entrypoint": "changebucket.kujo",
+      "files": [
+        "LICENSE",
+        "changebucket.kujo",
+        "src/cli.kujo",
+        "src/analyze.kujo",
+        "src/budget.kujo",
+        "src/classify.kujo",
+        "src/diffsrc.kujo",
+        "src/render.kujo",
+        "src/util.kujo"
+      ],
+      "checksums": {
+        "LICENSE": "4b6449939f8dce26dc5fb87756740a5977da9085517af127d9e634e6a6492506",
+        "changebucket.kujo": "74613364f008c52238aaeb89db99076229bca83a1e9ace50ee2b7037f179a9fd",
+        "src/cli.kujo": "221b482606be0620021ffe1ce7d0bf7109feb7425aff3c0548d0d09f21779b48",
+        "src/analyze.kujo": "17924d0133926622ac5b2a7f0d34971fd8e758e590ab067be444816864d1eafc",
+        "src/budget.kujo": "7e253ca9ee4a36e42aebf79f8af9b3af5bd3b251e8d0a44d674b5058ce347bde",
+        "src/classify.kujo": "4a79df8bc7db71bcc0805b76a37a6f77935c6db40795382db852dc0622ba7ed5",
+        "src/diffsrc.kujo": "9eb254c59ebeb6283bb88cd9b69a2059563a7f9ef0f7fe6bf22cbbc1bba94cd8",
+        "src/render.kujo": "60b084134fca588640a8bd02b9e2397d3a586b94ba5a2cb48bc4d7d1bc9850ac",
+        "src/util.kujo": "6bffc05e1dd0918e3934d6dd43681f326dae85ab9cb4f06adb24c08822e050ad"
+      },
+      "outputContracts": [
+        {
+          "name": "analysis",
+          "format": "json",
+          "schema": "schemas/changebucket-analysis.schema.json"
+        }
+      ]
+    },
+    {
+      "id": "patchbrief",
+      "repository": "https://github.com/kujolang/patchbrief",
+      "gitCommit": "d88397da0d98825191a76fdbce7a68fb9acb9a55",
+      "version": "1.0.1",
+      "license": "MIT",
+      "entrypoint": "patchbrief.kujo",
+      "files": [
+        "LICENSE",
+        "patchbrief.kujo",
+        "src/common.kujo",
+        "src/git.kujo",
+        "src/summarize.kujo",
+        "src/suggest_tests.kujo",
+        "src/handoff.kujo",
+        "schemas/patchbrief-summary.schema.json",
+        "schemas/patchbrief-handoff.schema.json"
+      ],
+      "checksums": {
+        "LICENSE": "4b6449939f8dce26dc5fb87756740a5977da9085517af127d9e634e6a6492506",
+        "patchbrief.kujo": "510e7880c9002fa0d630f0377440803b2b1dfb9f818633eb47d1daf058521645",
+        "src/common.kujo": "8fbd7f7853ae47f5f726cae3131cc27ffc21c3052b7740c85d057e382811f133",
+        "src/git.kujo": "4611fb50e827ec74abd26b607a91d5ec8a48a7bbb99900af9496b1e972582622",
+        "src/summarize.kujo": "55e62d1aa58fd724cbd7c4686f7da15a33b83116d01cb2810d1509b98dfe2c1e",
+        "src/suggest_tests.kujo": "667be110291da1d0c86015a51298cf2c93e3f7402997b1094803b6d80114286c",
+        "src/handoff.kujo": "74ad797e6c554f62a7c0cc1a7633f5d4097fea0d8c73ab412c2b44e3ab462810",
+        "schemas/patchbrief-summary.schema.json": "0fb7277cae93f93285bc69481c58edf3fe8590f6bd5960241b3ca3d6fa1f19bf",
+        "schemas/patchbrief-handoff.schema.json": "314416c21471023087309b46d783997399bb552ace95f80796a955256a58d0ed"
+      },
+      "outputContracts": [
+        {
+          "name": "summary",
+          "format": "json",
+          "schema": "schemas/patchbrief-summary.schema.json"
+        },
+        {
+          "name": "handoff",
+          "format": "json",
+          "schema": "schemas/patchbrief-handoff.schema.json"
+        }
+      ]
+    },
+    {
+      "id": "failure-evidence",
+      "repository": "https://github.com/kujolang/casefile",
+      "gitCommit": "6e8a6ded379a9882b2e48b0a8f0bad57e284c3bf",
+      "version": "1.0.0",
+      "license": "MIT",
+      "entrypoint": "casefile.kujo",
+      "files": [
+        "LICENSE",
+        "casefile.kujo"
+      ],
+      "checksums": {
+        "LICENSE": "4b6449939f8dce26dc5fb87756740a5977da9085517af127d9e634e6a6492506",
+        "casefile.kujo": "28ffc48f61b9abc959f590ef33ad0e75c060fd825801e46f943139050bbf9a2d"
+      },
+      "outputContracts": [
+        {
+          "name": "case",
+          "format": "json",
+          "schema": "schemas/failure-evidence.schema.json"
+        }
+      ]
+    },
+    {
+      "id": "context",
+      "repository": "https://github.com/kujolang/scent",
+      "gitCommit": "6e72cd06bf422a29e93148cf4edaddd98d937392",
+      "version": "1.0.0",
+      "license": "MIT",
+      "entrypoint": "scent.kujo",
+      "files": [
+        "LICENSE",
+        "scent.kujo"
+      ],
+      "checksums": {
+        "LICENSE": "4b6449939f8dce26dc5fb87756740a5977da9085517af127d9e634e6a6492506",
+        "scent.kujo": "01c16d6dfe3db280c5fc9a0ab689dc6de288f749daac17c9acadbb898f174f98"
+      },
+      "outputContracts": [
+        {
+          "name": "context",
+          "format": "json",
+          "schema": "schemas/context-pack.schema.json"
+        }
+      ]
+    }
+  ]
+}

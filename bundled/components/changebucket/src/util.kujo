@@ -1,0 +1,62 @@
+# ChangeBucket :: util
+#
+# Small, dependency-free helpers shared across the tool: timestamps, number
+# formatting, padding for tables, and tiny predicate helpers. Kept deliberately
+# boring so the rest of the codebase can rely on it without surprises.
+
+# Thousands-separated decimal string for an integer, e.g. 1280 -> "1,280".
+# Negative numbers are handled; the sign is preserved.
+export func commas(n) {
+    neg := n < 0
+    mut s := to_string(n)
+    if neg {
+        s = substring(s, 1, len(s))
+    }
+    mut out := ""
+    mut count := 0
+    mut i := len(s) - 1
+    while i >= 0 {
+        out = substring(s, i, i + 1) + out
+        count = count + 1
+        if count == 3 && i > 0 {
+            out = "," + out
+            count = 0
+        }
+        i = i - 1
+    }
+    if neg {
+        out = "-" + out
+    }
+    return out
+}
+
+# Truthiness for the 1/0 predicate builtins (contains/has_key/...).
+export func truthy(flag) {
+    return flag == 1 || flag == true
+}
+
+# True if any element of `arr` equals `value`.
+export func includes(arr, value) {
+    for item in arr {
+        if item == value {
+            return true
+        }
+    }
+    return false
+}
+
+# The basename (last path segment) of a slash-separated path.
+export func basename(path) {
+    parts := split(path, "/")
+    return parts[len(parts) - 1]
+}
+
+# Keep terminal/markdown reports one-record-per-line even when git paths contain
+# legal control characters. JSON output retains the exact original path.
+export func display_path(path) {
+    mut out := replace_str(path, "\\", "\\\\")
+    out = replace_str(out, "\r", "\\r")
+    out = replace_str(out, "\n", "\\n")
+    out = replace_str(out, "\t", "\\t")
+    return out
+}

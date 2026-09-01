@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://kujolang.ai/schemas/paperclip/review-pack-v1.json",
+  "type": "object",
+  "required": ["schemaVersion", "id", "generatedAt", "projectId", "workspaceId", "source", "footprint", "componentStatus", "stale", "provenance"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "id": { "type": "string", "pattern": "^review_" },
+    "generatedAt": { "type": "string", "format": "date-time" },
+    "projectId": { "type": "string" },
+    "workspaceId": { "type": "string" },
+    "source": { "type": "object" },
+    "footprint": { "type": "object" },
+    "componentStatus": { "type": "object" },
+    "stale": { "type": "boolean" },
+    "provenance": { "type": "object" }
+  },
+  "additionalProperties": true
+}

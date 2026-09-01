@@ -1,0 +1,252 @@
+# ChangeBucket :: diffsrc
+#
+# The git interface. Everything here is READ-ONLY: it only ever runs
+# rev-parse / diff / ls-files. Nothing stages, commits, resets, cleans,
+# checks out, stashes, or applies. It tolerates the absence of git or of a
+# repository so callers always get a structured answer.
+#
+# Two analysis shapes are supported:
+#   worktree mode  — compare the working tree (incl. untracked files) to a base
+#                    ref (default HEAD, or the empty tree for a repo with no
+#                    commits yet).
+#   range mode     — compare two commits, base..head (no working-tree/untracked).
+
+from src.util import basename
+
+# The well-known empty-tree object. Diffing against it yields "everything is an
+# addition", which is exactly what we want for a repo that has no commits yet.
+func empty_tree() {
+    return "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+}
+
+# Quote a path for safe inclusion in a shell command (POSIX single-quote rules).
+func shq(path) {
+    escaped := replace_str(path, "'", "'\\''")
+    return "'" + escaped + "'"
+}
+
+# Run a read-only git command against `repo_path`. `-C` keeps us in the target
+# repo without changing cwd; quotePath=false stops git from octal-escaping
+# non-ASCII paths so our tab parsing stays simple.
+func git(repo_path, subcmd) {
+    cmd := "git -C " + shq(repo_path) + " -c core.quotePath=false " + subcmd
+    return execute_status(cmd)
+}
+
+# Reject ref inputs that are unsafe or ambiguous to pass through the shell/git.
+# This keeps user-supplied --base/--head values from being interpreted as shell
+# syntax or git options.
+func has_unsafe_ref_char(ref) {
+    bad := [" ", "\t", "\n", "\r", "'", "\"", ";", "&", "|", "`", "$", "(", ")", "<", ">", "\\"]
+    for ch in bad {
+        if contains(ref, ch) == 1 {
+            return true
+        }
+    }
+    return false
+}
+
+func safe_ref_value(ref) {
+    if type(ref) == "null" || ref == "" {
+        return false
+    }
+    if starts_with(ref, "-") {
+        return false
+    }
+    if has_unsafe_ref_char(ref) {
+        return false
+    }
+    return true
+}
+
+# True if git exists and `repo_path` is inside a working tree.
+export func is_repo(repo_path) {
+    r := git(repo_path, "rev-parse --is-inside-work-tree")
+    if r.exitcode == 0 && trim(r.stdout) == "true" {
+        return true
+    }
+    return false
+}
+
+# Current commit hash, or null when there is none (no git, no repo, no commits).
+export func head_commit(repo_path) {
+    r := git(repo_path, "rev-parse HEAD")
+    if r.exitcode == 0 {
+        return trim(r.stdout)
+    }
+    return null
+}
+
+# Canonical repository root. Git diff paths are root-relative even when `-C`
+# points at a subdirectory, so all file access and untracked paths must use the
+# same root or the model mixes incompatible path bases.
+export func repo_root(repo_path) {
+    r := git(repo_path, "rev-parse --show-toplevel")
+    if r.exitcode == 0 {
+        mut root := r.stdout
+        if ends_with(root, "\n") {
+            root = substring(root, 0, len(root) - 1)
+        }
+        if ends_with(root, "\r") {
+            root = substring(root, 0, len(root) - 1)
+        }
+        return root
+    }
+    return repo_path
+}
+
+# Decide what we are diffing and produce a stable description:
+#   {mode, spec, base_label, head_label, include_untracked}
+# `spec` is the argument handed to `git diff` (a single ref in worktree mode,
+# or "base..head" in range mode).
+export func resolve_refs(repo_path, base_flag, head_flag) {
+    if type(head_flag) != "null" && head_flag != "" {
+        mut base := "HEAD"
+        if type(base_flag) != "null" && base_flag != "" {
+            base = base_flag
+        }
+        if safe_ref_value(base) == false {
+            return {"error": "invalid --base ref: " + base}
+        }
+        if safe_ref_value(head_flag) == false {
+            return {"error": "invalid --head ref: " + head_flag}
+        }
+        return {
+            "mode": "range",
+            "spec": base + ".." + head_flag,
+            "base_label": base,
+            "head_label": head_flag,
+            "include_untracked": false
+        }
+    }
+    # worktree mode
+    mut base := ""
+    mut base_label := ""
+    if type(base_flag) != "null" && base_flag != "" {
+        if safe_ref_value(base_flag) == false {
+            return {"error": "invalid --base ref: " + base_flag}
+        }
+        base = base_flag
+        base_label = base_flag
+    } else {
+        hc := head_commit(repo_path)
+        if type(hc) == "null" {
+            base = empty_tree()
+            base_label = "(empty tree)"
+        } else {
+            base = "HEAD"
+            base_label = "HEAD"
+        }
+    }
+    return {
+        "mode": "worktree",
+        "spec": base,
+        "base_label": base_label,
+        "head_label": "working tree",
+        "include_untracked": true
+    }
+}
+
+func diff_spec_arg(refs) {
+    return shq(refs["spec"])
+}
+
+# Validate the resolved diff spec once up front so a bad ref does not look like
+# a legitimate empty change.
+export func validate_diff(repo_path, refs) {
+    r := git(repo_path, "diff --name-status --no-renames " + diff_spec_arg(refs))
+    if r.exitcode == 0 {
+        return ""
+    }
+    mut msg := trim(r.stderr)
+    if msg == "" {
+        msg = trim(r.stdout)
+    }
+    if msg == "" {
+        msg = "git diff failed"
+    }
+    return "invalid git revision or range '" + refs["spec"] + "': " + msg
+}
+
+# NUL-delimited `git diff --numstat` output for the resolved spec
+# (added\tdeleted\tpath\0; "-" for binary). Renames are disabled.
+export func numstat_text(repo_path, refs) {
+    r := git(repo_path, "diff --numstat -z --no-renames " + diff_spec_arg(refs))
+    if r.exitcode == 0 {
+        return r.stdout
+    }
+    return ""
+}
+
+# NUL-delimited `git diff --name-status` output (status\0path\0).
+export func namestatus_text(repo_path, refs) {
+    r := git(repo_path, "diff --name-status -z --no-renames " + diff_spec_arg(refs))
+    if r.exitcode == 0 {
+        return r.stdout
+    }
+    return ""
+}
+
+# Untracked files not yet known to git (respecting .gitignore).
+export func untracked_list(repo_path) {
+    mut out := []
+    r := git(repo_path, "ls-files --full-name --others --exclude-standard -z")
+    if r.exitcode != 0 {
+        return out
+    }
+    nul := parse_json("\"\\u0000\"")
+    paths := split(r.stdout, nul)
+    for name in paths {
+        if name != "" {
+            out = push(out, name)
+        }
+    }
+    return out
+}
+
+# Treat a path as binary purely by extension. Used for untracked files, where
+# numstat cannot tell us. Keeps us from trying to line-count an image or
+# archive.
+export func is_binary_path(path) {
+    pl := to_lower(path)
+    exts := [".png", ".jpg", ".jpeg", ".gif", ".bmp", ".ico", ".webp", ".pdf", ".zip", ".gz", ".tar", ".tgz", ".bz2", ".7z", ".rar", ".woff", ".woff2", ".ttf", ".eot", ".otf", ".mp4", ".mp3", ".wav", ".mov", ".avi", ".class", ".jar", ".so", ".dylib", ".dll", ".exe", ".bin", ".wasm", ".o", ".a", ".lockb", ".db", ".sqlite", ".pyc", ".woff", ".pkl"]
+    for e in exts {
+        if ends_with(pl, e) {
+            return true
+        }
+    }
+    return false
+}
+
+# Count the lines in an untracked text file (its "additions"). Tolerates a
+# missing/unreadable file by returning 0.
+export func count_added_lines(repo_path, path) {
+    full := join_path(repo_path, path)
+    if file_exists(full) == false {
+        return 0
+    }
+    # Git records a symbolic link as one line containing its target. Reading
+    # the path would instead follow it, producing wrong churn and potentially
+    # inspecting data outside the repository.
+    if path_is_symlink(full) {
+        return 1
+    }
+    if path_is_file(full) == false {
+        return 0
+    }
+    mut content := ""
+    try {
+        content = read_file(full)
+    } except read_error {
+        return 0
+    }
+    if content == "" {
+        return 0
+    }
+    parts := split(content, "\n")
+    n := len(parts)
+    if parts[n - 1] == "" {
+        return n - 1
+    }
+    return n
+}

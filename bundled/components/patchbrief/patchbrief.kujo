@@ -1,0 +1,153 @@
+# PatchBrief — inspect git diffs and generate structured implementation briefs.
+#
+# Usage:
+#   kujo run patchbrief.kujo -- summarize [--format markdown|json] [--pretty]
+#   kujo run patchbrief.kujo -- suggest-tests
+#   kujo run patchbrief.kujo -- handoff [--format markdown|json] [--pretty]
+#   kujo run patchbrief.kujo -- version
+#   kujo run patchbrief.kujo -- help
+
+from src.common import parse_subcommand, flag_value, has_flag, str_starts_with, print_lines
+from src.git import is_git_repo
+
+VERSION := "1.0.1"
+
+func print_help() {
+	print_lines([
+		"PatchBrief v" + VERSION,
+		"",
+		"A local developer tool that inspects git diffs and generates",
+		"structured implementation briefs.",
+		"",
+		"Usage:",
+		"  kujo run patchbrief.kujo -- summarize [--format markdown|json] [--pretty]",
+		"  kujo run patchbrief.kujo -- suggest-tests",
+		"  kujo run patchbrief.kujo -- handoff [--format markdown|json] [--pretty]",
+		"  kujo run patchbrief.kujo -- version",
+		"  kujo run patchbrief.kujo -- help",
+		"",
+		"Commands:",
+		"  summarize     Generate a summary of the current git diff",
+		"  suggest-tests Suggest test commands based on changed files",
+		"  handoff       Generate a structured handoff note for reviewers",
+		"  version       Print version information",
+		"  help          Print this help message",
+		"",
+		"Options:",
+		"  --format      Output format: markdown (default) or json",
+		"  --pretty      Pretty-print JSON output when --format json is used",
+		"",
+		"Examples:",
+		"  kujo run patchbrief.kujo -- summarize",
+		"  kujo run patchbrief.kujo -- summarize --format json --pretty",
+		"  kujo run patchbrief.kujo -- suggest-tests",
+		"  kujo run patchbrief.kujo -- handoff",
+		"",
+		"Note: Use '--' before script arguments to avoid Kujo CLI flag parsing conflicts."
+	])
+}
+
+func print_version() {
+	print_lines([
+		"PatchBrief v" + VERSION,
+		"A Kujo ecosystem dogfood showcase tool.",
+		"https://github.com/kujolang/patchbrief"
+	])
+}
+
+func output_format(argv) {
+	mut fallback := "markdown"
+	if has_flag(argv, "--format") {
+		fallback = ""
+	}
+	format := flag_value(argv, "--format", fallback)
+	if format == "" || str_starts_with(format, "--") {
+		print("Error: Missing value for --format")
+		exit(2)
+	}
+	lower_format := to_lower(format)
+	if lower_format != "markdown" && lower_format != "json" {
+		print_lines([
+			"Error: Invalid format '" + format + "'.",
+			"Valid formats are: markdown, json"
+		])
+		exit(2)
+	}
+	return lower_format
+}
+
+func switch_to_caller_cwd() {
+	caller_cwd := env_or("PATCHBRIEF_CWD", "")
+	if caller_cwd != "" {
+		os_chdir(caller_cwd)
+	}
+}
+
+func main() {
+	argv := args()
+	if len(argv) < 1 {
+		print_help()
+		exit(0)
+	}
+	subcommand := parse_subcommand(argv)
+	if subcommand == "" || subcommand == "help" {
+		if len(argv) > 0 {
+			first := to_string(argv[0])
+			if str_starts_with(first, "--") {
+				print_lines([
+					"Error: Command must come before PatchBrief flags.",
+					"Example: kujo run patchbrief.kujo -- summarize --format json",
+					""
+				])
+			}
+		}
+		print_help()
+		exit(0)
+	}
+	if subcommand == "version" {
+		print_version()
+		exit(0)
+	}
+	if subcommand == "summarize" {
+		format := output_format(argv)
+		pretty_json := has_flag(argv, "--pretty")
+		if format == "json" {
+			from src.summarize import summarize_json
+			switch_to_caller_cwd()
+			summarize_json(pretty_json)
+		} else {
+			from src.summarize import summarize_markdown
+			switch_to_caller_cwd()
+			summarize_markdown()
+		}
+		exit(0)
+	}
+	if subcommand == "suggest-tests" {
+		from src.suggest_tests import suggest_tests
+		switch_to_caller_cwd()
+		suggest_tests()
+		exit(0)
+	}
+	if subcommand == "handoff" {
+		format := output_format(argv)
+		pretty_json := has_flag(argv, "--pretty")
+		if format == "json" {
+			from src.handoff import handoff_json
+			switch_to_caller_cwd()
+			handoff_json(pretty_json)
+		} else {
+			from src.handoff import handoff_markdown
+			switch_to_caller_cwd()
+			handoff_markdown()
+		}
+		exit(0)
+	}
+	# Unknown subcommand
+	print_lines([
+		"Error: Unknown command '" + subcommand + "'",
+		"Run 'kujo run patchbrief.kujo -- help' for usage."
+	])
+	exit(2)
+}
+
+main()

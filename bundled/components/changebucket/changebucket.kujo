@@ -1,0 +1,12 @@
+# ChangeBucket entrypoint.
+#
+# Thin wrapper: no logic here. Hand the user's arguments to the CLI module and
+# translate its return value into a process exit code.
+#
+# Run via the bin/changebucket wrapper:
+#   ./bin/changebucket <command> [arguments]
+
+from src.cli import main
+
+code := main(args())
+exit(code)

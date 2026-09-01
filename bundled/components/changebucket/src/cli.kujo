@@ -1,0 +1,324 @@
+# ChangeBucket :: cli
+#
+# Argument parsing and command dispatch. This is the only module that prints
+# user-facing output and chooses the process exit code. It wires together
+# analyze / budget / render.
+#
+# Exit code convention:
+#   0  success, or analysis printed (default command always exits 0)
+#   1  operational failure (not a git repo), OR a `check` whose budget failed
+#   2  usage error (unknown command)
+
+from src.analyze import analyze
+from src.budget import empty_config, has_constraints, evaluate
+from src.render import render_text, render_markdown
+from src.util import includes
+
+VERSION := "1.0.0"
+
+# --- argument parsing ---------------------------------------------------
+
+func split_flag_token(token) {
+    raw := substring(token, 2, len(token))
+    eq := index_of(raw, "=")
+    if eq >= 0 {
+        return {"name": substring(raw, 0, eq), "value": substring(raw, eq + 1, len(raw)), "has_value": true}
+    }
+    return {"name": raw, "value": "", "has_value": false}
+}
+
+# Split tokens into positionals and flags. Names in `bool_flags` are valueless
+# switches; names in `value_flags` consume the next token as their value.
+func parse_args(tokens, bool_flags) {
+    mut flags := {}
+    mut positionals := []
+    mut i := 0
+    while i < len(tokens) {
+        token := tokens[i]
+        if starts_with(token, "--") {
+            split_flag := split_flag_token(token)
+            name := split_flag["name"]
+            if known_flag(name, bool_flags) == false {
+                return {"positionals": [], "flags": {}, "error": "unknown option --" + name}
+            }
+            if includes(bool_flags, name) {
+                if split_flag["has_value"] == true {
+                    return {"positionals": [], "flags": {}, "error": "option --" + name + " does not take a value"}
+                }
+                flags[name] := "true"
+            } else if split_flag["has_value"] == true {
+                if split_flag["value"] == "" {
+                    return {"positionals": [], "flags": {}, "error": "missing value for --" + name}
+                }
+                flags[name] := split_flag["value"]
+            } else {
+                if i + 1 >= len(tokens) || starts_with(tokens[i + 1], "-") {
+                    return {"positionals": [], "flags": {}, "error": "missing value for --" + name}
+                }
+                flags[name] := tokens[i + 1]
+                i = i + 1
+            }
+        } else {
+            positionals = append(positionals, token)
+        }
+        i = i + 1
+    }
+    return {"positionals": positionals, "flags": flags}
+}
+
+func flag(parsed, name) {
+    if has_key(parsed["flags"], name) == 1 {
+        return parsed["flags"][name]
+    }
+    return null
+}
+
+func flag_or(parsed, name, fallback) {
+    v := flag(parsed, name)
+    if type(v) == "null" {
+        return fallback
+    }
+    return v
+}
+
+func has_flag(parsed, name) {
+    return has_key(parsed["flags"], name) == 1
+}
+
+# The set of valueless boolean flags ChangeBucket understands.
+func bool_flags() {
+    return ["json", "markdown", "no-deletes", "no-dependency-changes", "no-lockfile-changes", "no-config-changes", "no-generated-changes"]
+}
+
+func value_flags() {
+    return ["base", "head", "repo", "output", "max-files", "max-churn", "max-additions", "max-deletions"]
+}
+
+func numeric_flags() {
+    return ["max-files", "max-churn", "max-additions", "max-deletions"]
+}
+
+func known_flag(name, bools) {
+    return includes(bools, name) || includes(value_flags(), name)
+}
+
+func is_digits(text) {
+    if text == "" {
+        return false
+    }
+    mut i := 0
+    while i < len(text) {
+        ch := substring(text, i, i + 1)
+        if contains("0123456789", ch) == 0 {
+            return false
+        }
+        i = i + 1
+    }
+    return true
+}
+
+func trim_leading_zeroes(text) {
+    mut i := 0
+    while i + 1 < len(text) && substring(text, i, i + 1) == "0" {
+        i = i + 1
+    }
+    return substring(text, i, len(text))
+}
+
+func fits_int(text) {
+    normalized := trim_leading_zeroes(text)
+    max_int := "9223372036854775807"
+    if len(normalized) < len(max_int) {
+        return true
+    }
+    if len(normalized) > len(max_int) {
+        return false
+    }
+    return normalized <= max_int
+}
+
+func validate_numeric_flags(parsed) {
+    for name in numeric_flags() {
+        v := flag(parsed, name)
+        if type(v) != "null" {
+            if is_digits(v) == false {
+                return "invalid numeric value for --" + name + ": " + v
+            }
+            if fits_int(v) == false {
+                return "numeric value out of range for --" + name + ": " + v
+            }
+        }
+    }
+    return ""
+}
+
+# Read an integer flag (null when absent or empty).
+func int_flag(parsed, name) {
+    v := flag(parsed, name)
+    if type(v) == "null" || v == "" {
+        return null
+    }
+    return parse_int(v)
+}
+
+# Build a budget config from parsed flags.
+func build_config(parsed) {
+    cfg := empty_config()
+    cfg["max_files"] := int_flag(parsed, "max-files")
+    cfg["max_churn"] := int_flag(parsed, "max-churn")
+    cfg["max_additions"] := int_flag(parsed, "max-additions")
+    cfg["max_deletions"] := int_flag(parsed, "max-deletions")
+    cfg["no_deletes"] := has_flag(parsed, "no-deletes")
+    cfg["no_dependency_changes"] := has_flag(parsed, "no-dependency-changes")
+    cfg["no_lockfile_changes"] := has_flag(parsed, "no-lockfile-changes")
+    cfg["no_config_changes"] := has_flag(parsed, "no-config-changes")
+    cfg["no_generated_changes"] := has_flag(parsed, "no-generated-changes")
+    return cfg
+}
+
+# --- the one real command ----------------------------------------------
+
+# Run analysis and emit output. `is_check` decides whether a failed budget
+# turns into a non-zero exit code.
+func run(parsed, is_check) {
+    if has_key(parsed, "error") == 1 {
+        print("error: " + parsed["error"])
+        return 2
+    }
+    if len(parsed["positionals"]) > 0 {
+        print("error: unexpected argument '" + parsed["positionals"][0] + "'")
+        return 2
+    }
+    numeric_error := validate_numeric_flags(parsed)
+    if numeric_error != "" {
+        print("error: " + numeric_error)
+        return 2
+    }
+
+    repo := flag_or(parsed, "repo", ".")
+    base := flag(parsed, "base")
+    head := flag(parsed, "head")
+
+    model := analyze(repo, base, head)
+    if type(model) == "dict" && has_key(model, "error") == 1 {
+        print("error: " + model["error"])
+        return 1
+    }
+
+    cfg := build_config(parsed)
+    show_budget := is_check || has_constraints(cfg)
+    mut m := model
+    if show_budget {
+        m = evaluate(m, cfg)
+    }
+
+    mut code := 0
+    if is_check && has_key(m, "budget") == 1 && m["budget"]["checked"] == true && m["budget"]["passed"] == false {
+        code = 1
+    }
+
+    if has_flag(parsed, "json") {
+        print(to_json_pretty(m))
+        return code
+    }
+
+    output := flag(parsed, "output")
+    wants_md := has_flag(parsed, "markdown") || (type(output) != "null" && output != "")
+    if wants_md {
+        md := render_markdown(m, cfg, show_budget)
+        if type(output) != "null" && output != "" {
+            try {
+                if path_is_dir(output) {
+                    print("error: output path is a directory: " + output)
+                    return 1
+                }
+                write_file(output, md, true)
+            } except write_error {
+                print("error: could not write report to " + output + ": " + to_string(write_error))
+                return 1
+            }
+            print("Wrote report to " + output)
+            return code
+        }
+        print(md)
+        return code
+    }
+
+    print(render_text(m, cfg, show_budget))
+    return code
+}
+
+# --- help / dispatch ----------------------------------------------------
+
+func print_lines(lines) {
+    mut i := 0
+    while i < len(lines) {
+        print(lines[i])
+        i = i + 1
+    }
+}
+
+func print_help() {
+    print_lines([
+        "changebucket " + VERSION + " — measure the footprint of a code change",
+        "",
+        "Usage:",
+        "  changebucket [options]            Analyze the working tree against HEAD",
+        "  changebucket check [budget opts]  Analyze and enforce a budget (non-zero exit on fail)",
+        "",
+        "Range options:",
+        "  --base <ref>      Compare against this ref (default HEAD)",
+        "  --head <ref>      Compare a commit range base..head (no working tree)",
+        "  --repo <path>     Repository to analyze (default current directory)",
+        "",
+        "Output options:",
+        "  --json            Emit machine-readable JSON only",
+        "  --markdown        Emit a markdown report",
+        "  --output <file>   Write a markdown report to a file",
+        "",
+        "Budget options (informational on the default command; enforced under `check`):",
+        "  --max-files <n>",
+        "  --max-churn <n>",
+        "  --max-additions <n>",
+        "  --max-deletions <n>",
+        "  --no-deletes",
+        "  --no-dependency-changes",
+        "  --no-lockfile-changes",
+        "  --no-config-changes",
+        "  --no-generated-changes",
+        "",
+        "  help, --help      Show this help",
+        "  version           Show version",
+        "",
+        "ChangeBucket uses read-only git commands and never modifies your repo."
+    ])
+}
+
+# Entry point. `argv` is the user argument list (args()).
+export func main(argv) {
+    if len(argv) == 0 {
+        return run(parse_args([], bool_flags()), false)
+    }
+
+    cmd := argv[0]
+
+    if cmd == "help" || cmd == "--help" || cmd == "-h" {
+        print_help()
+        return 0
+    }
+    if cmd == "version" || cmd == "--version" || cmd == "-V" {
+        print("changebucket " + VERSION)
+        return 0
+    }
+    if cmd == "check" {
+        rest := slice(argv, 1, len(argv))
+        return run(parse_args(rest, bool_flags()), true)
+    }
+    if starts_with(cmd, "-") {
+        return run(parse_args(argv, bool_flags()), false)
+    }
+
+    print("error: unknown command '" + cmd + "'")
+    print("Run 'changebucket help' for usage.")
+    return 2
+}

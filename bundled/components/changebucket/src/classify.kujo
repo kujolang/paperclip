@@ -1,0 +1,221 @@
+# ChangeBucket :: classify
+#
+# Pragmatic path/extension rules that bucket a changed file into zero or more
+# categories. A file may belong to several (e.g. package.json is both `config`
+# and `dependency_manifests`). Rules are intentionally simple and documented in
+# the README; this is not a plugin system and should not become one.
+#
+# Helper predicates each use a single `for` loop so the module compiles cleanly
+# under the checker (which rejects >1 `for` loop per function scope).
+
+from src.util import basename
+
+# The canonical category order used everywhere (reports, JSON, counts).
+export func category_order() {
+    return ["source", "tests", "docs", "config", "dependency_manifests", "lockfiles", "generated", "ci", "scripts", "other"]
+}
+
+# --- tiny predicate helpers (one loop each) -----------------------------
+
+func ends_any(s, suffixes) {
+    for suf in suffixes {
+        if ends_with(s, suf) {
+            return true
+        }
+    }
+    return false
+}
+
+func starts_any(s, prefixes) {
+    for p in prefixes {
+        if starts_with(s, p) {
+            return true
+        }
+    }
+    return false
+}
+
+func contains_any(s, subs) {
+    for sub in subs {
+        if contains(s, sub) == 1 {
+            return true
+        }
+    }
+    return false
+}
+
+# True when one of `names` occurs as a complete slash-delimited path segment.
+# Appending/prepending slashes avoids false positives such as `rebuild/` for
+# the generated directory `build/` and `descripts/` for `scripts/`.
+func has_dir_segment(path, names) {
+    wrapped := "/" + path + "/"
+    for name in names {
+        if contains(wrapped, "/" + name + "/") == 1 {
+            return true
+        }
+    }
+    return false
+}
+
+func eq_any(s, vals) {
+    for v in vals {
+        if s == v {
+            return true
+        }
+    }
+    return false
+}
+
+# --- per-category predicates --------------------------------------------
+
+func is_test(pl, namel) {
+    if contains_any(pl, ["/test/", "/tests/", "/__tests__/", "/spec/"]) {
+        return true
+    }
+    if starts_any(pl, ["test/", "tests/", "spec/"]) {
+        return true
+    }
+    if contains(namel, ".test.") == 1 || contains(namel, ".spec.") == 1 {
+        return true
+    }
+    if starts_with(namel, "test_") {
+        return true
+    }
+    if ends_any(namel, ["_test.go", "_test.py", "_test.rs", "_spec.rb", ".test.ts", ".spec.ts"]) {
+        return true
+    }
+    return false
+}
+
+func is_docs(pl, namel) {
+    if ends_any(namel, [".md", ".mdx", ".rst", ".adoc"]) {
+        return true
+    }
+    if has_dir_segment(pl, ["docs", "doc"]) {
+        return true
+    }
+    if starts_any(namel, ["readme", "changelog", "license", "contributing", "authors", "code_of_conduct"]) {
+        return true
+    }
+    return false
+}
+
+func is_lockfile(namel) {
+    return eq_any(namel, ["package-lock.json", "pnpm-lock.yaml", "yarn.lock", "cargo.lock", "poetry.lock", "composer.lock", "go.sum", "gemfile.lock", "pdm.lock", "bun.lockb", "pipfile.lock"])
+}
+
+func is_dependency_manifest(namel) {
+    if eq_any(namel, ["package.json", "pyproject.toml", "cargo.toml", "composer.json", "go.mod", "gemfile", "setup.py", "pipfile", "build.gradle", "pom.xml", "setup.cfg"]) {
+        return true
+    }
+    # requirements.txt / requirements-dev.txt / requirements/foo.txt
+    if starts_with(namel, "requirements") && ends_with(namel, ".txt") {
+        return true
+    }
+    return false
+}
+
+func is_ci(pl, namel) {
+    if contains(pl, "/.github/workflows/") == 1 || starts_with(pl, ".github/workflows/") {
+        return true
+    }
+    if contains(pl, "/.gitea/workflows/") == 1 || starts_with(pl, ".gitea/workflows/") {
+        return true
+    }
+    if has_dir_segment(pl, [".circleci"]) {
+        return true
+    }
+    if eq_any(namel, ["jenkinsfile", ".gitlab-ci.yml", "circle.yml", ".travis.yml", "azure-pipelines.yml", "bitbucket-pipelines.yml", ".drone.yml"]) {
+        return true
+    }
+    return false
+}
+
+func is_generated(pl, namel) {
+    if has_dir_segment(pl, ["dist", "build", "target", "node_modules", ".next", ".nuxt", "out", "coverage", "__pycache__", "vendor", ".svelte-kit"]) {
+        return true
+    }
+    if ends_any(namel, [".min.js", ".min.css", ".map", ".g.dart", ".generated.ts", ".pb.go"]) {
+        return true
+    }
+    if ends_with(namel, "_pb2.py") {
+        return true
+    }
+    return false
+}
+
+func is_scripts(pl, namel) {
+    if has_dir_segment(pl, ["scripts", "bin"]) {
+        return true
+    }
+    if ends_any(namel, [".sh", ".bash", ".zsh", ".fish", ".ps1"]) {
+        return true
+    }
+    return false
+}
+
+func is_config(pl, namel) {
+    if eq_any(namel, ["package.json", "tsconfig.json", "pyproject.toml", "cargo.toml", "composer.json", "kujo.toml", "rustfmt.toml", ".editorconfig", ".eslintrc", ".eslintrc.js", ".eslintrc.json", ".eslintrc.cjs", ".prettierrc", ".prettierrc.json", "tslint.json", "dockerfile", "makefile", ".gitignore", ".dockerignore", ".npmrc", "go.work"]) {
+        return true
+    }
+    if contains_any(namel, [".config.", "eslint.config", "vite.config", "rollup.config", "webpack.config", "tailwind.config", "next.config", "svelte.config", "postcss.config", "jest.config", "babel.config", "vitest.config"]) {
+        return true
+    }
+    if ends_any(namel, [".toml", ".ini", ".cfg", ".conf", ".properties"]) {
+        return true
+    }
+    if starts_with(namel, ".env") {
+        return true
+    }
+    return false
+}
+
+func is_source(pl, namel, is_t, is_d) {
+    if is_t || is_d {
+        return false
+    }
+    return ends_any(namel, [".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".py", ".rs", ".go", ".php", ".rb", ".java", ".c", ".cc", ".cpp", ".cxx", ".h", ".hh", ".hpp", ".cs", ".swift", ".kt", ".kts", ".scala", ".m", ".mm", ".vue", ".svelte", ".kujo", ".kujo", ".lua", ".dart", ".ex", ".exs", ".erl", ".clj", ".sql", ".html", ".css", ".scss"])
+}
+
+# Return the list of categories a path belongs to. Always non-empty: a file
+# matching nothing falls back to ["other"].
+export func classify(path) {
+    pl := to_lower(path)
+    namel := to_lower(basename(path))
+
+    matched_test := is_test(pl, namel)
+    matched_docs := is_docs(pl, namel)
+
+    mut cats := []
+    if is_source(pl, namel, matched_test, matched_docs) {
+        cats = push(cats, "source")
+    }
+    if matched_test {
+        cats = push(cats, "tests")
+    }
+    if matched_docs {
+        cats = push(cats, "docs")
+    }
+    if is_config(pl, namel) {
+        cats = push(cats, "config")
+    }
+    if is_dependency_manifest(namel) {
+        cats = push(cats, "dependency_manifests")
+    }
+    if is_lockfile(namel) {
+        cats = push(cats, "lockfiles")
+    }
+    if is_generated(pl, namel) {
+        cats = push(cats, "generated")
+    }
+    if is_ci(pl, namel) {
+        cats = push(cats, "ci")
+    }
+    if is_scripts(pl, namel) {
+        cats = push(cats, "scripts")
+    }
+    if len(cats) == 0 {
+        cats = push(cats, "other")
+    }
+    return cats
+}
