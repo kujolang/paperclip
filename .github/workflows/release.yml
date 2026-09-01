@@ -1,0 +1,26 @@
+name: Release
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.11.0
+          registry-url: https://registry.npmjs.org
+          cache: npm
+      - run: npm install --ignore-scripts
+      - run: npm run verify
+      - name: Confirm runtime exists before publishing plugin
+        run: npm view "@kujolang/kujo-runtime@$(node -p \"require('./package.json').dependencies['@kujolang/kujo-runtime']\")" version
+      - run: npm publish --access public --provenance
