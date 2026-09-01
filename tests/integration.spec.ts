@@ -10,7 +10,9 @@ import { generateContextPack } from "../src/features/context/generate.js";
 import { parsePluginConfig } from "../src/config/schema.js";
 
 const execFileAsync = promisify(execFile);
-const kujoBinary = resolve(import.meta.dirname, "../../kujo/target/release/kujo");
+const kujoBinary = process.env.KUJO_INTEGRATION_BINARY
+  ? resolve(process.env.KUJO_INTEGRATION_BINARY)
+  : resolve(import.meta.dirname, "../../kujo/target/release/kujo");
 const config = parsePluginConfig({ runtime: { binary: kujoBinary, allowSystemPathFallback: false }, limits: { timeoutMs: 60_000 } });
 
 async function fixture() {
@@ -59,4 +61,3 @@ describe("real Kujo component bridge", () => {
     expect(pack.files.some((file) => file.path.includes("oauth"))).toBe(true);
   }, 90_000);
 });
-
