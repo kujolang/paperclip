@@ -13,8 +13,10 @@
   "files": [
     "dist",
     "bundled",
+    "docs",
     "schemas",
     "skills",
+    "CHANGELOG.md",
     "README.md",
     "LICENSE"
   ],

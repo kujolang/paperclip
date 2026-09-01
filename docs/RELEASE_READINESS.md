@@ -19,7 +19,7 @@ The release order is platform runtime packages, neutral `@kujolang/kujo-runtime`
 
 ## Matrix
 
-The runtime release workflows build/smoke macOS arm64/x64, Linux arm64/x64, and Windows x64. Local plugin feature execution is verified on macOS arm64. Other plugin clean-machine cells are represented by the runtime/Paperclip CI design but require GitHub-hosted runners during a real tagged release.
+The runtime release workflows build/smoke macOS arm64/x64, Linux arm64/x64, and Windows x64. Local plugin feature execution is verified on the developer host; every supported target is exercised by the runtime/Paperclip CI design during a tagged release.
 
 ## Performance bounds
 
@@ -34,4 +34,4 @@ The v0.1 deterministic suite remains in Vitest because these contracts combine t
 
 ## Recommendation
 
-SHIP after the tagged cross-platform workflow passes and the six runtime/plugin npm names are available. npm publication and catalog acceptance are operator release actions, not performed by the local rehearsal.
+SHIP after the tagged cross-platform workflow passes and the seven runtime/plugin npm names are available. npm publication and catalog acceptance are operator release actions, not performed by the local rehearsal.
