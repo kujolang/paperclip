@@ -14,6 +14,7 @@
     "dist",
     "bundled",
     "docs",
+    "examples",
     "schemas",
     "skills",
     "CHANGELOG.md",
@@ -35,7 +36,8 @@
     "components:sync": "node scripts/sync-components.mjs --local-root ..",
     "components:verify": "node scripts/verify-components.mjs",
     "repository:verify": "node scripts/verify-repository.mjs",
-    "verify": "npm run repository:verify && npm run typecheck && npm test && npm run components:verify && npm run build && npm run pack:verify",
+    "supply-chain:verify": "node scripts/verify-supply-chain.mjs",
+    "verify": "npm run repository:verify && npm run typecheck && npm test && npm run components:verify && npm run supply-chain:verify && npm run build && npm run pack:verify",
     "pack:verify": "node scripts/verify-package.mjs",
     "release:dry-run": "npm run verify",
     "prepublishOnly": "npm run verify"

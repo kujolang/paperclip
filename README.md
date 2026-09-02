@@ -72,7 +72,7 @@ The npm package is `@kujolang/paperclip`. Its Paperclip manifest ID is `kujolang
 
 Paperclip builds the settings form from the plugin manifest. You can enable or disable each feature, set an absolute Kujo binary override, allow or deny `PATH` fallback, and change bounded process limits.
 
-Defaults are safe for normal repositories: a 30-second timeout, 2 MB stdout limit, and 256 KB stderr limit. See [Configuration](docs/CONFIGURATION.md) for every setting and limit.
+Defaults are safe for normal repositories: a 27-second timeout, 2 MB stdout limit, and 256 KB stderr limit. The timeout stays below Paperclip's bridge deadline so the worker can return a structured result. See [Configuration](docs/CONFIGURATION.md) for every setting and limit.
 
 ## How it runs
 
@@ -92,7 +92,7 @@ npm ci --ignore-scripts
 npm run verify
 ```
 
-`npm run verify` type-checks the source, runs contract and real-component tests, verifies component checksums, builds the worker/manifest/UI bundles, and inspects the npm tarball.
+`npm run verify` type-checks the source, runs contract, hardening, and real-component tests, verifies component checksums, audits dependency integrity and licenses, produces an SBOM, builds the worker/manifest/UI bundles, and inspects the npm tarball.
 
 Read [AGENTS.md](AGENTS.md) before agent-assisted changes and [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request.
 
@@ -102,11 +102,14 @@ Read [AGENTS.md](AGENTS.md) before agent-assisted changes and [CONTRIBUTING.md](
 - [Installation](docs/INSTALLATION.md)
 - [Usage](docs/USAGE.md)
 - [Configuration](docs/CONFIGURATION.md)
+- [Compatibility](docs/COMPATIBILITY.md)
 - [Architecture](docs/ARCHITECTURE.md)
 - [Threat model](docs/THREAT_MODEL.md)
 - [Security policy](SECURITY.md)
 - [Troubleshooting](docs/TROUBLESHOOTING.md)
 - [Release readiness](docs/RELEASE_READINESS.md)
+- [Operations](docs/OPERATIONS.md)
+- [Agent workflow example](examples/agent-workflow.md)
 
 ## License
 

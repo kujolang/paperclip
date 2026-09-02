@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.0 - 2026-09-02
+
+- Add Review Pack, Failure Evidence, and Context Pack tools and UI actions for Paperclip.
+- Bundle and verify ChangeBucket, PatchBrief, CaseFile, and Scent component snapshots.
+- Enforce company-scoped state, feature policy, stale-context rejection, workspace bounds, hostile Git configuration suppression, and process-tree cleanup.
+- Add cross-platform compatibility, dependency review, CodeQL, SBOM, provenance, signed-tag, and exact-tarball release controls.
+
 ## 0.1.0
 
 - Initial Paperclip-native Review Pack, Failure Evidence, and Context Pack.

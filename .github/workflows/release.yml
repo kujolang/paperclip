@@ -7,6 +7,7 @@ on:
 permissions:
   contents: write
   id-token: write
+  attestations: write
 
 jobs:
   publish:
@@ -21,14 +22,36 @@ jobs:
           registry-url: https://registry.npmjs.org
       - run: npm ci --ignore-scripts
       - name: Verify tag matches package version
-        run: test "$GITHUB_REF_NAME" = "v$(node -p "require('./package.json').version")"
+        run: |
+          test "$GITHUB_REF_NAME" = "v$(node -p "require('./package.json').version")"
+          test "$(git cat-file -t "$GITHUB_REF_NAME")" = tag
+          git cat-file -p "$GITHUB_REF_NAME" | grep -q -- "-----BEGIN PGP SIGNATURE-----"
       - run: npm run verify
       - name: Confirm runtime exists before publishing plugin
         run: npm view "@kujolang/kujo-runtime@$(node -p \"require('./package.json').dependencies['@kujolang/kujo-runtime']\")" version
-      - run: npm publish --access public
+      - name: Build release artifacts
+        id: pack
+        run: |
+          npm pack --ignore-scripts --json > npm-pack.json
+          tarball="$(node -p "JSON.parse(require('fs').readFileSync('npm-pack.json','utf8'))[0].filename")"
+          echo "tarball=$tarball" >> "$GITHUB_OUTPUT"
+          sha256sum "$tarball" > "$tarball.sha256"
+          npm sbom --sbom-format cyclonedx > paperclip.cdx.json
+      - uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3.0.0
+        with:
+          subject-path: ${{ steps.pack.outputs.tarball }}
+      - name: Publish verified tarball
+        run: npm publish "${{ steps.pack.outputs.tarball }}" --ignore-scripts --access public --provenance
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
       - name: Create GitHub release
-        run: gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes --title "Paperclip $GITHUB_REF_NAME"
+        run: >-
+          gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes
+          --title "Paperclip $GITHUB_REF_NAME"
+          "${{ steps.pack.outputs.tarball }}"
+          "${{ steps.pack.outputs.tarball }}.sha256"
+          paperclip.cdx.json
+          bundled/kujo-components.lock.json
+          schemas/*.json
         env:
           GH_TOKEN: ${{ github.token }}
