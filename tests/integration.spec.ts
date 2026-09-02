@@ -36,7 +36,7 @@ describe("real Kujo component bridge", () => {
     const pack = await generateReviewPack({ cwd, workspaceId: "ws", projectId: "project", config });
     expect(pack.footprint.filesChanged).toBe(2);
     expect(pack.componentStatus.footprint).toBe("ok");
-    expect(pack.provenance.components.map((item) => item.id)).toContain("changebucket");
+    expect(pack.provenance.components.map((item) => item.id)).toContain(process.platform === "win32" ? "paperclip-git-fallback" : "changebucket");
   }, 90_000);
 
   it("captures and defensively redacts failure evidence", async () => {

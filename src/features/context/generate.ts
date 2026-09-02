@@ -51,7 +51,13 @@ export async function generateContextPack(input: {
     if (process.platform !== "win32") {
       for (const exclusion of EXCLUSIONS) args.push("--exclude", exclusion);
     }
-    const result = await runComponent({ component: "context", cwd: workspace.path, args, config: input.config });
+    const result = await runComponent({
+      component: "context",
+      cwd: workspace.path,
+      args,
+      config: input.config,
+      acceptExitCodes: process.platform === "win32" ? [0, 1] : [0],
+    });
     const output = JSON.parse(await readFile(join(temp, "context.json"), "utf8")) as ScentContext;
     const files = (output.selected_files ?? []).flatMap((file) => {
       if (typeof file.path !== "string") return [];

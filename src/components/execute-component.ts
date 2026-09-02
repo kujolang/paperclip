@@ -12,6 +12,7 @@ export type RunComponentInput = {
   args: string[];
   config: PluginConfig;
   interpreter?: boolean;
+  acceptExitCodes?: number[];
 };
 
 export type RunComponentResult<T = unknown> = ExecuteKujoResult & {
@@ -35,7 +36,7 @@ export async function runComponent<T = unknown>(input: RunComponentInput): Promi
     maxStdoutBytes: input.config.limits.maxStdoutBytes,
     maxStderrBytes: input.config.limits.maxStderrBytes,
   });
-  if (result.exitCode !== 0) {
+  if (!(input.acceptExitCodes ?? [0]).includes(result.exitCode)) {
     throw new KujoPluginError("KUJO_RUNTIME_EXEC_FAILED", `${input.component} exited with ${result.exitCode}`, {
       exitCode: result.exitCode,
       stdout: result.stdout,
