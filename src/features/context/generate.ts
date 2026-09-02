@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { PluginConfig } from "../../config/schema.js";
@@ -9,6 +9,7 @@ import { captureWorkspaceSnapshot, isSnapshotCurrent } from "../../paperclip/git
 import { assertBoundedWorkspaceInputs, prepareContextWorkspace } from "../../paperclip/workspace-guard.js";
 import type { ContextPack } from "./schema.js";
 import { contextPackSchema } from "./schema.js";
+import { removeTree } from "../../runtime/files.js";
 
 export type ContextDepth = keyof typeof CONTEXT_BUDGETS;
 
@@ -89,6 +90,6 @@ export async function generateContextPack(input: {
       },
     });
   } finally {
-    await Promise.all([rm(temp, { recursive: true, force: true }), workspace.cleanup()]);
+    await Promise.all([removeTree(temp), workspace.cleanup()]);
   }
 }

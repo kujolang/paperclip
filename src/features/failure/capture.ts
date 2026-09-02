@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
-import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -8,6 +8,7 @@ import type { PluginConfig } from "../../config/schema.js";
 import { DEFAULT_LIMITS, PLUGIN_VERSION } from "../../config/defaults.js";
 import { runComponent } from "../../components/execute-component.js";
 import { safeChildEnv } from "../../runtime/execute-kujo.js";
+import { removeTree } from "../../runtime/files.js";
 import { failureEvidenceSchema, type FailureEvidence } from "./schema.js";
 import { redactText, truncateMiddle } from "./redact.js";
 
@@ -99,6 +100,6 @@ export async function captureFailure(input: CaptureFailureInput): Promise<Failur
       },
     });
   } finally {
-    await rm(temp, { recursive: true, force: true });
+    await removeTree(temp);
   }
 }

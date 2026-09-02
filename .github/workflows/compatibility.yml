@@ -26,5 +26,5 @@ jobs:
           cache: npm
       - run: npm ci --ignore-scripts
       - if: matrix.sdk == 'latest'
-        run: npm install --no-save --package-lock=false --ignore-scripts @paperclipai/plugin-sdk@latest
+        run: npm install --no-save --ignore-scripts --include=optional @paperclipai/plugin-sdk@latest
       - run: npm run verify
