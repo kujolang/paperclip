@@ -25,7 +25,10 @@ jobs:
         run: |
           test "$GITHUB_REF_NAME" = "v$(node -p "require('./package.json').version")"
           test "$(git cat-file -t "$GITHUB_REF_NAME")" = tag
-          git cat-file -p "$GITHUB_REF_NAME" | grep -q -- "-----BEGIN PGP SIGNATURE-----"
+          tag_oid="$(git rev-parse "$GITHUB_REF_NAME^{tag}")"
+          test "$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$tag_oid" --jq .verification.verified)" = true
+        env:
+          GH_TOKEN: ${{ github.token }}
       - run: npm run verify
       - name: Confirm runtime exists before publishing plugin
         run: npm view "@kujolang/kujo-runtime@$(node -p \"require('./package.json').dependencies['@kujolang/kujo-runtime']\")" version
