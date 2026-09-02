@@ -13,7 +13,7 @@ export const CONTEXT_BUDGETS = {
   broad: 40_000,
 } as const;
 
-export const PLUGIN_VERSION = "0.1.1";
+export const PLUGIN_VERSION = "0.1.2";
 export const PAPERCLIP_API_VERSION = 1;
 // Paperclip 2026.831.1 currently reports 0.0.0 to its plugin loader. Keep the
 // manifest gate neutral until the host supplies its real version; the supported

@@ -47,8 +47,6 @@ jobs:
           subject-path: ${{ steps.pack.outputs.tarball }}
       - name: Publish verified tarball
         run: npm publish "${{ steps.pack.outputs.tarball }}" --ignore-scripts --access public --provenance
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
       - name: Verify public registry install
         run: |
           package_version="$(node -p "require('./package.json').version")"
