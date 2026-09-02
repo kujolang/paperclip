@@ -7,3 +7,5 @@
 - Strict workspace, process, output, redaction, schema, provenance, and stale-state boundaries.
 - Monochrome project badges and install-first ecosystem documentation.
 - Root agent, contribution, security, and version contracts.
+- Reproducible lockfile-based CI and npm release gates.
+- Exact Kujo `1.2.2` runtime dependency with the restored Windows package build.

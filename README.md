@@ -63,7 +63,7 @@ All four component snapshots are pinned, checksummed, and shipped in the package
 | --- | --- |
 | Paperclip host | `>=2026.824.1` |
 | `@paperclipai/plugin-sdk` | `2026.824.1` |
-| `@kujolang/kujo-runtime` | `1.2.0` |
+| `@kujolang/kujo-runtime` | `1.2.2` |
 | Node.js | `>=24.11.0` |
 
 The npm package is `@kujolang/paperclip`. Its Paperclip manifest ID is `kujolang.paperclip` because manifest IDs do not accept npm scope syntax.

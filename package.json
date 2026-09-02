@@ -18,6 +18,8 @@
     "skills",
     "CHANGELOG.md",
     "README.md",
+    "SECURITY.md",
+    "VERSION",
     "LICENSE"
   ],
   "paperclipPlugin": {
@@ -32,13 +34,14 @@
     "test:watch": "vitest",
     "components:sync": "node scripts/sync-components.mjs --local-root ..",
     "components:verify": "node scripts/verify-components.mjs",
-    "verify": "npm run typecheck && npm test && npm run components:verify && npm run build && npm run pack:verify",
+    "repository:verify": "node scripts/verify-repository.mjs",
+    "verify": "npm run repository:verify && npm run typecheck && npm test && npm run components:verify && npm run build && npm run pack:verify",
     "pack:verify": "node scripts/verify-package.mjs",
     "release:dry-run": "npm run verify",
     "prepublishOnly": "npm run verify"
   },
   "dependencies": {
-    "@kujolang/kujo-runtime": "1.2.0",
+    "@kujolang/kujo-runtime": "1.2.2",
     "@paperclipai/plugin-sdk": "2026.824.1",
     "zod": "4.4.3"
   },

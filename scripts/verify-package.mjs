@@ -12,6 +12,11 @@ for (const required of [
   "bundled/components/patchbrief/patchbrief.kujo",
   "bundled/components/failure-evidence/casefile.kujo",
   "bundled/components/context/scent.kujo",
+  "docs/INSTALLATION.md",
+  "docs/USAGE.md",
+  "docs/CONFIGURATION.md",
+  "SECURITY.md",
+  "VERSION",
 ]) {
   if (!files.has(required)) throw new Error(`npm tarball is missing ${required}`);
 }

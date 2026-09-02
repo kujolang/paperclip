@@ -4,7 +4,7 @@ Thanks for improving Kujo for Paperclip.
 
 ## Set up
 
-Use Node.js `24.11.0` or later. Build Kujo `1.2.0` in the sibling `kujo` repository, then install dependencies without lifecycle scripts:
+Use Node.js `24.11.0` or later. Build Kujo `1.2.2` in the sibling `kujo` repository, then install dependencies without lifecycle scripts:
 
 ```bash
 npm ci --ignore-scripts
