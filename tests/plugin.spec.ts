@@ -5,10 +5,13 @@ import manifest from "../src/manifest.js";
 import plugin from "../src/worker.js";
 import { z } from "zod";
 import { loadArtifact, saveArtifact } from "../src/storage/state.js";
+import { SUPPORTED_HOST_VERSION } from "../src/config/defaults.js";
 
 describe("Paperclip plugin contract", () => {
   it("validates against the host manifest schema", () => {
     expect(pluginManifestV1Schema.safeParse(manifest)).toMatchObject({ success: true });
+    expect(manifest.minimumHostVersion).toBe("0.0.0");
+    expect(SUPPORTED_HOST_VERSION).toBe("2026.824.1");
   });
 
   it("initializes against the official SDK harness and exposes doctor data", async () => {
