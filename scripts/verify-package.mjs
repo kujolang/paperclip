@@ -1,7 +1,9 @@
 import { execFileSync } from "node:child_process";
 
-const npm = process.platform === "win32" ? "npm.cmd" : "npm";
-const output = execFileSync(npm, ["pack", "--dry-run", "--json", "--ignore-scripts"], { encoding: "utf8" });
+const npm = process.env.npm_execpath
+  ? { executable: process.execPath, prefix: [process.env.npm_execpath] }
+  : { executable: "npm", prefix: [] };
+const output = execFileSync(npm.executable, [...npm.prefix, "pack", "--dry-run", "--json", "--ignore-scripts"], { encoding: "utf8" });
 const report = JSON.parse(output)[0];
 const files = new Set(report.files.map((file) => file.path));
 const allowedRoots = ["dist/", "bundled/", "docs/", "examples/", "schemas/", "skills/"];
