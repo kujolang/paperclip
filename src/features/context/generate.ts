@@ -10,6 +10,7 @@ import { assertBoundedWorkspaceInputs, prepareContextWorkspace } from "../../pap
 import type { ContextPack } from "./schema.js";
 import { contextPackSchema } from "./schema.js";
 import { removeTree } from "../../runtime/files.js";
+import { KujoPluginError } from "../../runtime/errors.js";
 
 export type ContextDepth = keyof typeof CONTEXT_BUDGETS;
 
@@ -51,14 +52,33 @@ export async function generateContextPack(input: {
     if (process.platform !== "win32") {
       for (const exclusion of EXCLUSIONS) args.push("--exclude", exclusion);
     }
-    const result = await runComponent({
-      component: "context",
-      cwd: workspace.path,
-      args,
-      config: input.config,
-      acceptExitCodes: process.platform === "win32" ? [0, 1] : [0],
-    });
-    const output = JSON.parse(await readFile(join(temp, "context.json"), "utf8")) as ScentContext;
+    let result: Awaited<ReturnType<typeof runComponent>> | undefined;
+    let output: ScentContext;
+    try {
+      result = await runComponent({
+        component: "context",
+        cwd: workspace.path,
+        args,
+        config: input.config,
+        acceptExitCodes: process.platform === "win32" ? [0, 1] : [0],
+        timeoutMs: 8_000,
+      });
+      output = JSON.parse(await readFile(join(temp, "context.json"), "utf8")) as ScentContext;
+    } catch (error) {
+      if (!(error instanceof KujoPluginError) || error.code !== "KUJO_EXEC_TIMEOUT") throw error;
+      const selected = workspace.selectedPaths.slice(0, MAX_FILES[input.depth]);
+      output = {
+        selected_files: selected.map((path, index) => ({
+          path,
+          reason: "Selected by Paperclip's bounded task-path fallback",
+          score: Math.max(1, selected.length - index),
+        })),
+        estimated_tokens: selected.length * Math.ceil(DEFAULT_LIMITS.maxContextFileBytes / 4),
+        excluded: workspace.selectedPaths.slice(selected.length),
+        truncated: workspace.selectedPaths.length >= selected.length,
+        warnings: ["Canonical context selection exceeded its bounded execution window"],
+      };
+    }
     const files = (output.selected_files ?? []).flatMap((file) => {
       if (typeof file.path !== "string") return [];
       return [{
@@ -71,7 +91,7 @@ export async function generateContextPack(input: {
     const estimatedTokens = typeof output.estimated_tokens === "number" ? Math.max(0, Math.trunc(output.estimated_tokens)) : 0;
     const truncated = output.truncated === true || estimatedTokens > budget || files.length >= MAX_FILES[input.depth];
     const cacheKey = createHash("sha256")
-      .update(`${input.workspaceId}\0${snapshot.fingerprint}\0${task.toLowerCase()}\0${input.depth}\0${result.componentVersion}`)
+      .update(`${input.workspaceId}\0${snapshot.fingerprint}\0${task.toLowerCase()}\0${input.depth}\0${result?.componentVersion ?? PLUGIN_VERSION}`)
       .digest("hex");
     return contextPackSchema.parse({
       schemaVersion: 1,
@@ -93,10 +113,10 @@ export async function generateContextPack(input: {
       cacheKey,
       provenance: {
         pluginVersion: PLUGIN_VERSION,
-        kujoRuntimeVersion: result.runtimeVersion,
-        componentId: result.component,
-        componentVersion: result.componentVersion,
-        componentCommit: result.componentCommit,
+        kujoRuntimeVersion: result?.runtimeVersion ?? "bounded-fallback",
+        componentId: result?.component ?? "paperclip-context-fallback",
+        componentVersion: result?.componentVersion ?? PLUGIN_VERSION,
+        componentCommit: result?.componentCommit ?? "bundled",
       },
     });
   } finally {

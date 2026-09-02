@@ -44,7 +44,7 @@ export async function assertBoundedWorkspaceInputs(cwd: string): Promise<void> {
   }
 }
 
-export async function prepareContextWorkspace(cwd: string, task: string): Promise<{ path: string; cleanup: () => Promise<void> }> {
+export async function prepareContextWorkspace(cwd: string, task: string): Promise<{ path: string; selectedPaths: string[]; cleanup: () => Promise<void> }> {
   const root = resolve(cwd);
   const terms = task.toLowerCase().split(/[^a-z0-9]+/).filter((term) => term.length >= 3);
   const paths = (await gitVisiblePaths(root)).sort((left, right) => {
@@ -90,7 +90,7 @@ export async function prepareContextWorkspace(cwd: string, task: string): Promis
       timeout: 10_000,
       windowsHide: true,
     });
-    return { path: mirror, cleanup: async () => await removeTree(mirror) };
+    return { path: mirror, selectedPaths: paths, cleanup: async () => await removeTree(mirror) };
   } catch (error) {
     await removeTree(mirror);
     throw error;

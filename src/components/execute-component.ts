@@ -13,6 +13,7 @@ export type RunComponentInput = {
   config: PluginConfig;
   interpreter?: boolean;
   acceptExitCodes?: number[];
+  timeoutMs?: number;
 };
 
 export type RunComponentResult<T = unknown> = ExecuteKujoResult & {
@@ -32,7 +33,7 @@ export async function runComponent<T = unknown>(input: RunComponentInput): Promi
     executable: runtime.executable,
     cwd: input.cwd,
     args: invocation,
-    timeoutMs: input.config.limits.timeoutMs,
+    timeoutMs: Math.min(input.timeoutMs ?? input.config.limits.timeoutMs, input.config.limits.timeoutMs),
     maxStdoutBytes: input.config.limits.maxStdoutBytes,
     maxStderrBytes: input.config.limits.maxStderrBytes,
   });
