@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { redactText } from "../failure/redact.js";
 import type { ContextPack } from "./schema.js";
 import { KujoPluginError } from "../../runtime/errors.js";
+import { isPathInside } from "../../runtime/path.js";
 
 const SENSITIVE = /(^|\/)(?:\.env(?:\.|$)|id_(?:rsa|ed25519)|credentials?|secrets?)(?:\/|$)/i;
 
@@ -22,7 +23,7 @@ export async function getContextContent(input: {
   for (const relative of requested) {
     if (!allowed.has(relative) || relative.startsWith("/") || relative.split(/[\\/]/).includes("..") || SENSITIVE.test(relative)) continue;
     const candidate = await realpath(join(workspace, relative)).catch(() => null);
-    if (!candidate || !candidate.startsWith(`${workspace}/`)) continue;
+    if (!candidate || !isPathInside(workspace, candidate)) continue;
     const info = await stat(candidate);
     if (!info.isFile() || info.size > 1_000_000) continue;
     const bytes = await readFile(candidate);
@@ -40,4 +41,3 @@ export async function getContextContent(input: {
   }
   return { files, estimatedTokens: Math.ceil(used / 4), truncated };
 }
-

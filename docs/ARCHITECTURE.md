@@ -12,7 +12,7 @@ Paperclip issue/project/run context
 
 Paperclip remains the system of record for companies, projects, workspaces, issues, runs, approvals, budgets, and authentication. The plugin requests only project/workspace reads, agent-tool registration, plugin state, its detail tab, and its managed guidance skill.
 
-All execution enters through `executeKujo()`. It uses `spawn`, never a shell, validates a real absolute working directory, passes a minimal allowlisted environment, caps stdout/stderr, and applies a timeout. Feature code can call only IDs in the compiled component registry. Registry resolution validates the complete bundle against the lock before returning an entrypoint.
+All execution enters through `executeKujo()`. It uses `spawn`, never a shell, validates a real absolute working directory, passes a minimal allowlisted environment, caps stdout/stderr, and applies a timeout. Feature code can call only IDs in the compiled component registry. Registry resolution validates the complete bundle against the lock before returning an entrypoint. Context selection runs against a task-ranked temporary mirror of at most four Git-visible regular files, so ignored dependency trees and other ambient files never enter Scent's walk.
 
 Artifacts use Paperclip state scopes: Review and Context Packs are stored against their project or issue; Failure Evidence is stored against its run. Generated CaseFile/Scent scratch output is created in a private temporary directory and removed after normalization. Project repositories remain read-only.
 
@@ -26,4 +26,3 @@ Artifacts use Paperclip state scopes: Review and Context Packs are stored agains
 - additive JSON compatibility within a plugin major version
 
 Review generation captures a git snapshot before parallel read-only ChangeBucket/PatchBrief calls and checks it afterward. Partial PatchBrief failure preserves an accurate ChangeBucket footprint and records component status. Context cache identity combines workspace, HEAD/dirty fingerprint, normalized task, depth, and component version. The v0.1 worker records the key but intentionally regenerates instead of adding a second cache index.
-

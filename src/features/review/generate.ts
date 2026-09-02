@@ -3,6 +3,7 @@ import type { PluginConfig } from "../../config/schema.js";
 import { PLUGIN_VERSION } from "../../config/defaults.js";
 import { runComponent } from "../../components/execute-component.js";
 import { captureWorkspaceSnapshot, isSnapshotCurrent, validateGitRef } from "../../paperclip/git.js";
+import { assertBoundedWorkspaceInputs } from "../../paperclip/workspace-guard.js";
 import type { ReviewPack } from "./schema.js";
 import { reviewPackSchema } from "./schema.js";
 
@@ -54,6 +55,7 @@ function testSuggestions(output: string): Array<{ command: string; reason?: stri
 }
 
 export async function generateReviewPack(input: GenerateReviewInput): Promise<ReviewPack> {
+  await assertBoundedWorkspaceInputs(input.cwd);
   const before = await captureWorkspaceSnapshot(input.cwd);
   const base = input.base ? validateGitRef(input.base) : "HEAD";
   const head = input.head ? validateGitRef(input.head) : undefined;

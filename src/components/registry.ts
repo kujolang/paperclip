@@ -3,6 +3,7 @@ import { readFile, realpath } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { KujoPluginError } from "../runtime/errors.js";
+import { isPathInside } from "../runtime/path.js";
 
 export type ComponentId = "changebucket" | "patchbrief" | "failure-evidence" | "context";
 
@@ -53,7 +54,7 @@ export async function resolveComponent(id: ComponentId): Promise<ComponentInfo &
   for (const relative of component.files) {
     const filename = join(realRoot, relative);
     const resolved = await realpath(filename).catch(() => null);
-    if (!resolved || !resolved.startsWith(`${realRoot}/`)) {
+    if (!resolved || !isPathInside(realRoot, resolved)) {
       throw new KujoPluginError("KUJO_COMPONENT_INTEGRITY_FAILED", `${id} contains an unsafe or missing path`, { relative });
     }
     const digest = createHash("sha256").update(await readFile(resolved)).digest("hex");

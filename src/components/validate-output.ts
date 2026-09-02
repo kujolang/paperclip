@@ -33,6 +33,7 @@ export function validateComponentOutput(component: ComponentId, operation: strin
     if (component === "changebucket") return changebucket.parse(value);
     if (component === "patchbrief" && operation === "summarize") return patchbriefSummary.parse(value);
     if (component === "patchbrief" && operation === "handoff") return patchbriefHandoff.parse(value);
+    if (component === "patchbrief" && operation !== "suggest-tests") throw new Error(`Unsupported patchbrief operation: ${operation ?? "undefined"}`);
     if (component === "context") return scentSummary.parse(value);
     if (typeof value !== "object" || value === null) throw new Error("Expected a JSON object");
     return value;
@@ -43,4 +44,3 @@ export function validateComponentOutput(component: ComponentId, operation: strin
     });
   }
 }
-

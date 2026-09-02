@@ -16,6 +16,7 @@ export type ExecuteKujoInput = {
   maxStdoutBytes: number;
   maxStderrBytes: number;
   env?: Record<string, string>;
+  signal?: AbortSignal;
 };
 
 export type ExecuteKujoResult = {
@@ -27,4 +28,3 @@ export type ExecuteKujoResult = {
   durationMs: number;
   timedOut: boolean;
 };
-

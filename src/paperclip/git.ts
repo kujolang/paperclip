@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { KujoPluginError } from "../runtime/errors.js";
+import { safeChildEnv } from "../runtime/execute-kujo.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -27,6 +28,7 @@ async function git(cwd: string, args: string[]): Promise<string> {
       maxBuffer: 2_000_000,
       timeout: 10_000,
       windowsHide: true,
+      env: safeChildEnv(),
     });
     return stdout.trim();
   } catch (error) {
@@ -56,4 +58,3 @@ export async function isSnapshotCurrent(cwd: string, expected: WorkspaceSnapshot
   const current = await captureWorkspaceSnapshot(cwd);
   return current.head === expected.head && current.fingerprint === expected.fingerprint;
 }
-

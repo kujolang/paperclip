@@ -7,6 +7,7 @@ import { promisify } from "node:util";
 import type { PluginConfig } from "../../config/schema.js";
 import { DEFAULT_LIMITS, PLUGIN_VERSION } from "../../config/defaults.js";
 import { runComponent } from "../../components/execute-component.js";
+import { safeChildEnv } from "../../runtime/execute-kujo.js";
 import { failureEvidenceSchema, type FailureEvidence } from "./schema.js";
 import { redactText, truncateMiddle } from "./redact.js";
 
@@ -36,7 +37,7 @@ export async function captureFailure(input: CaptureFailureInput): Promise<Failur
   const redactedCount = safeTitle.count + safeCommand.count + safeNotes.count + safeLog.count;
   const temp = await mkdtemp(join(tmpdir(), "kujo-paperclip-evidence-"));
   try {
-    await execFileAsync("git", ["init", "--quiet", temp]);
+    await execFileAsync("git", ["init", "--quiet", temp], { env: safeChildEnv(), windowsHide: true });
     const logPath = join(temp, "failure.log");
     await writeFile(logPath, safeLog.text, { mode: 0o600 });
     const result = await runComponent<Record<string, unknown>>({

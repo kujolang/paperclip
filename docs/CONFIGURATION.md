@@ -24,7 +24,7 @@ Bundled runtime resolution is the normal choice. Use an override only for contro
 
 | Setting | Default | Allowed range |
 | --- | ---: | ---: |
-| `limits.timeoutMs` | 30,000 | 1,000–120,000 |
+| `limits.timeoutMs` | 27,000 | 1,000–27,000 |
 | `limits.maxStdoutBytes` | 2,000,000 | 1,024–10,000,000 |
 | `limits.maxStderrBytes` | 256,000 | 1,024–2,000,000 |
 

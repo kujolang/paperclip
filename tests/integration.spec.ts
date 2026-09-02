@@ -1,5 +1,4 @@
 import { execFile } from "node:child_process";
-import { existsSync } from "node:fs";
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -12,11 +11,10 @@ import { generateContextPack } from "../src/features/context/generate.js";
 import { parsePluginConfig } from "../src/config/schema.js";
 
 const execFileAsync = promisify(execFile);
-const siblingKujoBinary = resolve(import.meta.dirname, "../../kujo/target/release/kujo");
 const kujoBinary = process.env.KUJO_INTEGRATION_BINARY
   ? resolve(process.env.KUJO_INTEGRATION_BINARY)
-  : existsSync(siblingKujoBinary) ? siblingKujoBinary : resolveKujoBinary();
-const config = parsePluginConfig({ runtime: { binary: kujoBinary, allowSystemPathFallback: false }, limits: { timeoutMs: 60_000 } });
+  : resolveKujoBinary();
+const config = parsePluginConfig({ runtime: { binary: kujoBinary, allowSystemPathFallback: false }, limits: { timeoutMs: 27_000 } });
 
 async function fixture() {
   const root = await mkdtemp(join(tmpdir(), "kujo-paperclip-fixture-"));

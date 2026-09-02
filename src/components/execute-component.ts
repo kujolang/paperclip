@@ -38,6 +38,7 @@ export async function runComponent<T = unknown>(input: RunComponentInput): Promi
   if (result.exitCode !== 0) {
     throw new KujoPluginError("KUJO_RUNTIME_EXEC_FAILED", `${input.component} exited with ${result.exitCode}`, {
       exitCode: result.exitCode,
+      stdout: result.stdout,
       stderr: result.stderr,
     });
   }

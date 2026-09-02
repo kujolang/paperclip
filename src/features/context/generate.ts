@@ -6,6 +6,7 @@ import type { PluginConfig } from "../../config/schema.js";
 import { CONTEXT_BUDGETS, DEFAULT_LIMITS, PLUGIN_VERSION } from "../../config/defaults.js";
 import { runComponent } from "../../components/execute-component.js";
 import { captureWorkspaceSnapshot, isSnapshotCurrent } from "../../paperclip/git.js";
+import { assertBoundedWorkspaceInputs, prepareContextWorkspace } from "../../paperclip/workspace-guard.js";
 import type { ContextPack } from "./schema.js";
 import { contextPackSchema } from "./schema.js";
 
@@ -20,7 +21,7 @@ type ScentContext = {
   warnings?: unknown[];
 };
 
-const MAX_FILES: Record<ContextDepth, number> = { minimal: 12, focused: 40, broad: 100 };
+const MAX_FILES: Record<ContextDepth, number> = { minimal: 2, focused: 3, broad: 4 };
 const EXCLUSIONS = [".git", "node_modules", "vendor", "dist", "build", "target", "coverage", ".venv", "__pycache__", "generated"];
 
 export async function generateContextPack(input: {
@@ -31,11 +32,13 @@ export async function generateContextPack(input: {
   depth: ContextDepth;
   config: PluginConfig;
 }): Promise<ContextPack> {
+  await assertBoundedWorkspaceInputs(input.cwd);
   const task = input.task.trim().slice(0, 10_000);
   if (!task) throw new Error("Task is required");
   const snapshot = await captureWorkspaceSnapshot(input.cwd);
   const budget = CONTEXT_BUDGETS[input.depth];
   const temp = await mkdtemp(join(tmpdir(), "kujo-paperclip-context-"));
+  const workspace = await prepareContextWorkspace(input.cwd, task);
   try {
     const args = [
       "pack", "--task", task, "--target", "generic", "--budget", String(budget),
@@ -43,7 +46,7 @@ export async function generateContextPack(input: {
       "--out", temp, "--format", "json", "--json",
     ];
     for (const exclusion of EXCLUSIONS) args.push("--exclude", exclusion);
-    const result = await runComponent({ component: "context", cwd: input.cwd, args, config: input.config });
+    const result = await runComponent({ component: "context", cwd: workspace.path, args, config: input.config });
     const output = JSON.parse(await readFile(join(temp, "context.json"), "utf8")) as ScentContext;
     const files = (output.selected_files ?? []).flatMap((file) => {
       if (typeof file.path !== "string") return [];
@@ -86,6 +89,6 @@ export async function generateContextPack(input: {
       },
     });
   } finally {
-    await rm(temp, { recursive: true, force: true });
+    await Promise.all([rm(temp, { recursive: true, force: true }), workspace.cleanup()]);
   }
 }
