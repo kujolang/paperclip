@@ -83,6 +83,7 @@ const manifest: PaperclipPluginManifestV1 = {
     "project.workspaces.read",
     "plugin.state.read",
     "plugin.state.write",
+    "activity.log.write",
     "ui.detailTab.register",
     "skills.managed",
   ],
@@ -106,4 +107,3 @@ const manifest: PaperclipPluginManifestV1 = {
 };
 
 export default manifest;
-

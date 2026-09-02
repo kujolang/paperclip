@@ -65,6 +65,7 @@ export function KujoDetailTab({ context }: PluginDetailTabProps) {
   const generateReview = usePluginAction("generate-review");
   const generateContext = usePluginAction("generate-context");
   const captureFailure = usePluginAction("capture-failure");
+  const clearArtifacts = usePluginAction("clear-artifacts");
   const [task, setTask] = useState("");
   const [failureTitle, setFailureTitle] = useState("");
   const [failureLog, setFailureLog] = useState("");
@@ -100,6 +101,9 @@ export function KujoDetailTab({ context }: PluginDetailTabProps) {
       <label>Bounded failure log<textarea value={failureLog} onChange={(event) => setFailureLog(event.target.value)} maxLength={200000} rows={5} style={{ display: "block", width: "100%" }} /></label>
       <button disabled={busy !== null || !failureTitle.trim()} onClick={() => run("failure", () => captureFailure({ entityType: context.entityType, entityId: context.entityId, title: failureTitle, log: failureLog }))}>
         {busy === "failure" ? "Capturing…" : "Capture Failure Evidence"}
+      </button>
+      <button disabled={busy !== null} onClick={() => run("clear", () => clearArtifacts({ entityType: context.entityType, entityId: context.entityId }))}>
+        {busy === "clear" ? "Clearing…" : "Clear Kujo data"}
       </button>
     </section>}
     <ReviewSection review={data?.review ?? null} />

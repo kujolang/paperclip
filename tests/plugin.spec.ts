@@ -3,6 +3,8 @@ import { createTestHarness } from "@paperclipai/plugin-sdk/testing";
 import { pluginManifestV1Schema } from "@paperclipai/shared";
 import manifest from "../src/manifest.js";
 import plugin from "../src/worker.js";
+import { z } from "zod";
+import { loadArtifact, saveArtifact } from "../src/storage/state.js";
 
 describe("Paperclip plugin contract", () => {
   it("validates against the host manifest schema", () => {
@@ -22,5 +24,26 @@ describe("Paperclip plugin contract", () => {
     await plugin.definition.setup(harness.ctx);
     const result = await harness.executeTool("get-context", { task: "", unknown: true });
     expect(result.error).toContain("KUJO_INVALID_CONFIG");
+  });
+
+  it("enforces feature switches on every UI generation action", async () => {
+    const harness = createTestHarness({
+      manifest,
+      config: { features: { review: false, failureEvidence: false, context: false, verification: false } },
+    });
+    await plugin.definition.setup(harness.ctx);
+    const options = { companyId: "company", actor: { type: "user" as const, userId: "user", companyId: "company" } };
+    await expect(harness.performAction("generate-review", { entityType: "project", entityId: "project" }, options)).rejects.toThrow(/disabled/);
+    await expect(harness.performAction("generate-context", { entityType: "project", entityId: "project", task: "task" }, options)).rejects.toThrow(/disabled/);
+    await expect(harness.performAction("capture-failure", { entityType: "project", entityId: "project", title: "failure" }, options)).rejects.toThrow(/disabled/);
+  });
+
+  it("binds artifact state to a company and rejects corrupt values", async () => {
+    const harness = createTestHarness({ manifest });
+    const target = { entityType: "project" as const, entityId: "project", companyId: "company-a" };
+    await saveArtifact(harness.ctx, target, "test", "valid");
+    expect(await loadArtifact(harness.ctx, target, "test", z.string())).toBe("valid");
+    expect(await loadArtifact(harness.ctx, { ...target, companyId: "company-b" }, "test", z.string())).toBeNull();
+    expect(await loadArtifact(harness.ctx, target, "test", z.object({ id: z.string() }))).toBeNull();
   });
 });
