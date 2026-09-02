@@ -31,7 +31,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
       - run: npm run verify
       - name: Confirm runtime exists before publishing plugin
-        run: npm view "@kujolang/kujo-runtime@$(node -p \"require('./package.json').dependencies['@kujolang/kujo-runtime']\")" version
+        run: |
+          runtime_version="$(node -p "require('./package.json').dependencies['@kujolang/kujo-runtime']")"
+          npm view "@kujolang/kujo-runtime@$runtime_version" version
       - name: Build release artifacts
         id: pack
         run: |
