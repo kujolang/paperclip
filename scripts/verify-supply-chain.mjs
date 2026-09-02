@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 
 const lock = JSON.parse(readFileSync(new URL("../package-lock.json", import.meta.url), "utf8"));
+const npm = process.platform === "win32" ? "npm.cmd" : "npm";
 const allowedLicenses = new Set(["Apache-2.0", "BSD-3-Clause", "ISC", "MIT", "MPL-2.0"]);
 for (const [path, entry] of Object.entries(lock.packages ?? {})) {
   if (!path) continue;
@@ -13,8 +14,8 @@ for (const [path, entry] of Object.entries(lock.packages ?? {})) {
   }
 }
 
-execFileSync("npm", ["audit", "--audit-level=high"], { stdio: "inherit" });
-const sbom = JSON.parse(execFileSync("npm", ["sbom", "--sbom-format", "cyclonedx"], { encoding: "utf8" }));
+execFileSync(npm, ["audit", "--audit-level=high"], { stdio: "inherit" });
+const sbom = JSON.parse(execFileSync(npm, ["sbom", "--sbom-format", "cyclonedx"], { encoding: "utf8" }));
 if (sbom.bomFormat !== "CycloneDX" || !Array.isArray(sbom.components) || sbom.components.length === 0) {
   throw new Error("npm did not produce a valid non-empty CycloneDX SBOM");
 }
