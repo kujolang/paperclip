@@ -19,7 +19,6 @@ jobs:
         with:
           node-version: 24.11.0
           registry-url: https://registry.npmjs.org
-          package-manager-cache: false
       - run: npm ci --ignore-scripts
       - name: Verify tag matches package version
         run: test "$GITHUB_REF_NAME" = "v$(node -p "require('./package.json').version")"
