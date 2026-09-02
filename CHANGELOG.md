@@ -5,4 +5,5 @@
 - Initial Paperclip-native Review Pack, Failure Evidence, and Context Pack.
 - Lifecycle-script-free Kujo runtime resolution and deterministic component bundle.
 - Strict workspace, process, output, redaction, schema, provenance, and stale-state boundaries.
-
+- Monochrome project badges and install-first ecosystem documentation.
+- Root agent, contribution, security, and version contracts.
