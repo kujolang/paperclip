@@ -60,6 +60,11 @@ export async function generateReviewPack(input: GenerateReviewInput): Promise<Re
   const base = input.base ? validateGitRef(input.base) : "HEAD";
   const head = input.head ? validateGitRef(input.head) : undefined;
   const changeArgs = ["--json"];
+  if (process.platform === "win32") {
+    // The bundled ChangeBucket release does not resolve `.` correctly on
+    // Windows, but accepts an explicit forward-slash repository path.
+    changeArgs.push("--repo", input.cwd.replaceAll("\\", "/"));
+  }
   if (input.mode === "range") {
     changeArgs.push("--base", base);
     if (head) changeArgs.push("--head", head);

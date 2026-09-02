@@ -27,4 +27,7 @@ jobs:
       - run: npm ci --ignore-scripts
       - if: matrix.sdk == 'latest'
         run: npm install --no-save --ignore-scripts --include=optional @paperclipai/plugin-sdk@latest
-      - run: npm run verify
+      - if: matrix.sdk == 'minimum'
+        run: npm run verify
+      - if: matrix.sdk == 'latest'
+        run: npm run repository:verify && npm run typecheck && npm test && npm run components:verify && npm run build

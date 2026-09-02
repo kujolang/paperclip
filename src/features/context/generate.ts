@@ -46,7 +46,11 @@ export async function generateContextPack(input: {
       "--max-files", String(MAX_FILES[input.depth]), "--max-file-bytes", String(DEFAULT_LIMITS.maxContextFileBytes),
       "--out", temp, "--format", "json", "--json",
     ];
-    for (const exclusion of EXCLUSIONS) args.push("--exclude", exclusion);
+    // The bounded mirror contains at most four Git-visible files. Scent's
+    // current Windows path validator cannot safely compare relative excludes.
+    if (process.platform !== "win32") {
+      for (const exclusion of EXCLUSIONS) args.push("--exclude", exclusion);
+    }
     const result = await runComponent({ component: "context", cwd: workspace.path, args, config: input.config });
     const output = JSON.parse(await readFile(join(temp, "context.json"), "utf8")) as ScentContext;
     const files = (output.selected_files ?? []).flatMap((file) => {
