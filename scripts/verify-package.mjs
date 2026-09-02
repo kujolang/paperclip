@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 
 const npm = process.env.npm_execpath
   ? { executable: process.execPath, prefix: [process.env.npm_execpath] }
@@ -29,5 +30,12 @@ for (const file of files) {
   if (!allowedFiles.has(file) && !allowedRoots.some((root) => file.startsWith(root))) {
     throw new Error(`npm tarball includes unexpected file ${file}`);
   }
+}
+const worker = readFileSync(new URL("../dist/worker.js", import.meta.url), "utf8");
+if (!worker.includes('import("@kujolang/kujo-runtime")')) {
+  throw new Error("worker bundle must resolve @kujolang/kujo-runtime from the installed package tree");
+}
+if (worker.includes("Kujo's platform package")) {
+  throw new Error("worker bundle must not inline @kujolang/kujo-runtime");
 }
 console.log(`Verified npm tarball: ${files.size} files, ${report.size} bytes.`);

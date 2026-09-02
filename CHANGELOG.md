@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.3 - 2026-09-02
+
+- Resolve the installed `@kujolang/kujo-runtime` package at worker runtime instead of inlining its package resolver into the ESM worker bundle.
+- Add a package verification regression gate for the external runtime boundary.
+
 ## 0.1.2 - 2026-09-02
 
 - Publish through npm trusted publishing with short-lived GitHub Actions identity tokens instead of a stored npm token.
