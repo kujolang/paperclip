@@ -20,6 +20,28 @@ No known plugin defect blocks normal public use. The remaining work is upstream 
 distribution work: the host-version change is waiting on Paperclip maintainers, and
 catalog distribution is not available yet.
 
+## Next-agent brief
+
+There is no plugin-owned release work waiting. Start with
+[paperclipai/paperclip#12745](https://github.com/paperclipai/paperclip/pull/12745):
+it is open, ready for review, mergeable, and green as of September 3, 2026. Respond to
+maintainer feedback, but do not raise this plugin's manifest minimum while that change
+is absent from a public Paperclip release.
+
+After Paperclip publishes the fix:
+
+1. verify that `npx paperclipai plugin install @kujolang/paperclip@0.1.6` succeeds;
+2. replace the temporary `MINIMUM_HOST_VERSION = "0.0.0"` value in
+   `src/config/defaults.ts` with the real supported floor;
+3. update the compatibility tests and documentation;
+4. run `npm ci --ignore-scripts`, `npm run verify`, `npm run test:browser`, and the
+   minimum/latest clean-install matrix; and
+5. release a patch through the signed-tag workflow if the package changes.
+
+Separately, check Paperclip's documentation for an official catalog or marketplace
+submission path. None exists today, so catalog submission is parked rather than
+failed. Do not create or use an unofficial listing process.
+
 ## At a glance
 
 | Work | State | Next action |
@@ -234,4 +256,8 @@ provenance, and clean public install are all verified.
 ## Release evidence
 
 - GitHub release: <https://github.com/kujolang/paperclip/releases/tag/v0.1.6>
+- successful release workflow: <https://github.com/kujolang/paperclip/actions/runs/33716203158>
 - npm package: <https://www.npmjs.com/package/@kujolang/paperclip/v/0.1.6>
+- npm SLSA provenance: <https://registry.npmjs.org/-/npm/v1/attestations/@kujolang%2fpaperclip@0.1.6>
+- signed tag commit: `924ae40cac2ba2447c235ae4d6ea033ea62b6361`
+- npm integrity: `sha512-O1/V23rMyPvTe+akUn7CqG5WUj/GKg0Sf9krwSZQCcrcEQGm9OH1leLOmIc0Skb1qM94NV5n3XFFWgmg3WiJCg==`
