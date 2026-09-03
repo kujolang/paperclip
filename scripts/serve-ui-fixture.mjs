@@ -15,9 +15,9 @@ createServer((request, response) => {
     return;
   }
 
-  const path = request.url === "/app.js" || request.url === "/app.js.map"
-    ? join(root, request.url.slice(1))
-    : new URL("../tests/ui/fixture.html", import.meta.url).pathname;
+  let path = new URL("../tests/ui/fixture.html", import.meta.url).pathname;
+  if (request.url === "/app.js") path = join(root, "app.js");
+  if (request.url === "/app.js.map") path = join(root, "app.js.map");
 
   response.setHeader("Content-Type", contentTypes.get(extname(path)) ?? "application/octet-stream");
   createReadStream(path)
