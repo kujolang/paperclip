@@ -21,6 +21,7 @@ jobs:
           node-version: 24.11.0
           registry-url: https://registry.npmjs.org
       - run: npm ci --ignore-scripts
+      - run: npx playwright install --with-deps chromium
       - name: Verify tag matches package version
         run: |
           test "$GITHUB_REF_NAME" = "v$(node -p "require('./package.json').version")"
@@ -29,7 +30,7 @@ jobs:
           test "$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$tag_oid" --jq .verification.verified)" = true
         env:
           GH_TOKEN: ${{ github.token }}
-      - run: npm run verify
+      - run: npm run verify && npm run test:ui
       - name: Confirm runtime exists before publishing plugin
         run: |
           runtime_version="$(node -p "require('./package.json').dependencies['@kujolang/kujo-runtime']")"

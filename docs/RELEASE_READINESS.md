@@ -28,7 +28,7 @@ The release order is platform runtime packages, neutral `@kujolang/kujo-runtime`
 
 The runtime release workflows build and smoke macOS arm64/x64, Linux arm64/x64, and Windows x64. Paperclip CI tests those five targets. A separate compatibility matrix tests Node.js 24.11 and current Node.js 24 against the minimum, locked, and latest compatible Paperclip SDK versions. Local plugin feature execution is verified on the developer host; every supported target is exercised during a tagged release.
 
-The tag workflow accepts only an annotated tag with a GitHub-verified SSH or PGP signature whose name matches `package.json`. It verifies the repository, packs once, attests that tarball, publishes that exact file through npm trusted publishing with short-lived OIDC credentials, and attaches its checksum, CycloneDX SBOM, component lock, and JSON schemas to the GitHub release. Package settings require two-factor authentication and disallow traditional token publishing.
+The tag workflow accepts only an annotated tag with a GitHub-verified SSH or PGP signature whose name matches `package.json`. It verifies the repository and browser UI, packs once, attests that tarball, publishes that exact file through npm trusted publishing with short-lived OIDC credentials, and attaches its checksum, CycloneDX SBOM, component lock, and JSON schemas to the GitHub release. Package settings require two-factor authentication and disallow traditional token publishing.
 
 ## Performance bounds
 
