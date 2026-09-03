@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.4 - 2026-09-02
+
+- Show Kujo automatically in Paperclip's current issue view while keeping the shared detail tab for project, issue, and run pages.
+- Replace the basic action list with a polished monochrome workspace, clearer action cards, stronger artifact states, and responsive controls.
+- Correct the empty Context Pack state so it reports that a pack has not been generated.
+
 ## 0.1.3 - 2026-09-02
 
 - Resolve the installed `@kujolang/kujo-runtime` package at worker runtime instead of inlining its package resolver into the ESM worker bundle.

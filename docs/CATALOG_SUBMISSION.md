@@ -14,12 +14,13 @@
 - `projects.read`, `project.workspaces.read`: canonical workspace resolution only
 - `plugin.state.read`, `plugin.state.write`: normalized artifact persistence
 - `ui.detailTab.register`: one shared Kujo tab on project/issue/run details
+- `ui.taskDetailView.register`: an inline Kujo workspace in the current issue view
 - `skills.managed`: optional Scoped Repository Context guidance
 
 The plugin requests no HTTP, secret, issue-write, approval, budget, database, job, webhook, or arbitrary local-folder capability.
 
 ## UI walkthrough
 
-The shared Kujo tab starts with runtime/artifact status. Issue/project views provide **Generate Review Pack**, **Generate Context Pack**, and **Capture Failure Evidence** actions. Review shows blast radius, explainable signals, and clearly labeled suggested verification. Failure Evidence shows bounded excerpts and redaction counts. Context shows selected paths, reasons, estimated tokens, depth, and stale/budget status. Run views show associated persisted evidence without exposing a terminal.
+Kujo appears automatically in the current issue view and remains available as a shared detail tab on project, issue detail, and run pages. The workspace presents **Generate Review Pack**, **Generate Context Pack**, and **Capture Failure Evidence** as distinct, styled actions. Review shows blast radius, explainable signals, and clearly labeled suggested verification. Failure Evidence shows bounded excerpts and redaction counts. Context shows selected paths, reasons, estimated tokens, depth, and stale/budget status. Run views show associated persisted evidence without exposing a terminal.
 
 Catalog review should require the tagged cross-platform workflow, npm provenance for all six runtime packages and this plugin, install/upgrade/uninstall evidence on the declared minimum host, and the security assertions in `THREAT_MODEL.md`.

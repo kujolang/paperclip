@@ -1,11 +1,16 @@
 {
   "name": "@kujolang/paperclip",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "Make Paperclip agent work easier to scope, review, reproduce, and verify.",
   "license": "MIT",
   "homepage": "https://github.com/kujolang/paperclip#readme",
-  "bugs": { "url": "https://github.com/kujolang/paperclip/issues" },
-  "repository": { "type": "git", "url": "git+https://github.com/kujolang/paperclip.git" },
+  "bugs": {
+    "url": "https://github.com/kujolang/paperclip/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kujolang/paperclip.git"
+  },
   "type": "module",
   "engines": {
     "node": ">=24.11.0"
