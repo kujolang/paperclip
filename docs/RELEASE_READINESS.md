@@ -6,6 +6,7 @@
 | --- | --- |
 | TypeScript strict typecheck | automated by `npm run verify` |
 | Unit/contract tests | automated by Vitest |
+| Browser behavior and visual baselines | automated by Playwright in `browser-ui` CI |
 | Official Paperclip SDK worker harness | automated by Vitest |
 | Real ChangeBucket/PatchBrief fixture | automated by Vitest |
 | Real CaseFile redaction fixture | automated by Vitest |
@@ -39,8 +40,8 @@ The tag workflow accepts only an annotated tag with a GitHub-verified SSH or PGP
 - context file: 2 KB during selection and 1 MB hard read refusal
 - Review file rows retained by canonical output; UI eagerly renders at most 20 context entries and 12 suggested tests
 
-The v0.1 deterministic suite remains in Vitest because these contracts combine the Paperclip SDK harness, native-process bounds, filesystem escape checks, and JSON assertions directly. Kujo Spec/Eval would add a second runner without improving determinism for this release; the versioned schemas and fixture cases are ready to export into Eval when the plugin adds executable verification.
+The v0.1 deterministic contract suite remains in Vitest because these contracts combine the Paperclip SDK harness, native-process bounds, filesystem escape checks, and JSON assertions directly. Playwright separately renders both registered UI surfaces in a deterministic SDK fixture, exercises every primary action, verifies the project, issue, and read-only run states, and compares desktop-light and narrow-dark screenshots. Kujo Spec/Eval would add a second contract runner without improving determinism for this release; the versioned schemas and fixture cases are ready to export into Eval when the plugin adds executable verification.
 
 ## Release decision
 
-SHIP only after the protected-branch checks pass, the compatibility workflow passes, the signed-tag workflow succeeds, the seven runtime/plugin npm names are available, a clean-room npm install passes, and a real Paperclip host loads the published package and exercises its tools.
+SHIP only after the protected-branch checks, browser UI suite, and compatibility workflow pass; the signed-tag workflow succeeds; the seven runtime/plugin npm names are available; a clean-room npm install passes; and a real Paperclip host loads the published package and exercises its tools.

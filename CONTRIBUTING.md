@@ -11,6 +11,17 @@ npm ci --ignore-scripts
 npm run verify
 ```
 
+Install the Playwright browser once before changing plugin UI, then run the browser
+suite separately:
+
+```bash
+npx playwright install chromium
+npm run test:ui
+```
+
+The browser suite exercises both Paperclip surfaces, action wiring, responsive light
+and dark layouts, and the approved screenshots in `tests/ui/__screenshots__/`.
+
 Set `KUJO_INTEGRATION_BINARY` if the release binary is elsewhere.
 
 ## Work on one contract at a time
@@ -43,5 +54,6 @@ Run the full gate before pushing:
 
 ```bash
 npm run verify
+npm run test:ui
 git diff --check
 ```
