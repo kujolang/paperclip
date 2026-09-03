@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.6 - 2026-09-03
+
+- Add deterministic Chromium coverage for both Paperclip UI surfaces, all primary
+  actions, project/issue/run states, accessible branding, responsive themes, and
+  approved visual baselines.
+- Gate pull requests and tagged releases on the browser suite, with failure reports
+  retained for diagnosis.
+- Upgrade Zod, React development types, Rollup, TypeScript, Vitest, build provenance,
+  and dependency-review tooling after passing the full compatibility matrix.
+- Make Node and React compiler types explicit for TypeScript 7.
+
 ## 0.1.5 - 2026-09-02
 
 - Replace the temporary lettermark in the Paperclip workspace with the official adaptive Kujo SVG from kujolang.ai.

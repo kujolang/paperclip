@@ -5,30 +5,31 @@ Updated September 3, 2026.
 ## Current state
 
 `@kujolang/paperclip` is ready for public use within its documented scope. Version
-`0.1.5` is published on npm and GitHub from commit
-`459d76048cebdf9e532fc871a93a535b28dc677a`. The released plugin:
+`0.1.6` is published on npm and GitHub. The released plugin:
 
 - works in Paperclip's current task view without requiring the Classic Task Interface;
 - provides Review, Context, and Failure Evidence workflows in the inline workspace and
   the shared Kujo detail tab;
 - uses the official Kujo logomark;
+- protects both UI surfaces with browser behavior, accessibility, responsive, and
+  visual-regression checks;
 - bundles checksummed Kujo components for every supported platform; and
 - publishes through GitHub Actions with npm trusted publishing and provenance.
 
-No known plugin defect blocks normal public use. The remaining work is listed below.
-Only the browser test suite is plugin functionality work. The host-version change is
-waiting on upstream Paperclip, and catalog distribution is not available yet.
+No known plugin defect blocks normal public use. The remaining work is upstream or
+distribution work: the host-version change is waiting on Paperclip maintainers, and
+catalog distribution is not available yet.
 
 ## At a glance
 
 | Work | State | Next action |
 | --- | --- | --- |
-| Exact scoped-version install | Upstream PR open | Get Paperclip PR #12745 reviewed and merged |
+| Exact scoped-version install | Upstream PR ready and green | Get Paperclip PR #12745 reviewed and merged |
 | Real minimum host version | Externally blocked | Wait for a Paperclip release containing PR #12745 |
-| Browser/UI regression coverage | Implemented on feature branch | Merge after the hosted browser job passes |
-| Dependency updates | Partly ready | Merge #3 and #4; repair or split #1 and #2 |
+| Browser/UI regression coverage | Complete | Maintain the approved baselines with UI changes |
+| Dependency updates | Complete | Continue normal Dependabot review |
 | Paperclip catalog listing | Not currently available | Recheck when Paperclip publishes a marketplace process |
-| Next Kujo plugin release | Not yet warranted | Release after the selected plugin-owned changes land |
+| Kujo plugin release | Complete | Verify and retain the v0.1.6 release evidence |
 
 ## Work queue
 
@@ -37,15 +38,15 @@ waiting on upstream Paperclip, and catalog distribution is not available yet.
 **Priority:** High  
 **Owner:** Paperclip host CLI, not this plugin
 
-**State:** Implemented in draft upstream PR
+**State:** Implemented in a green upstream PR awaiting maintainer review
 
 The Paperclip CLI currently misparses an exact scoped npm package reference:
 
 ```bash
-npx paperclipai plugin install @kujolang/paperclip@0.1.5
+npx paperclipai plugin install @kujolang/paperclip@0.1.6
 ```
 
-It looks for a directory named `@kujolang/paperclip@0.1.5` after npm installs the
+It looks for a directory named `@kujolang/paperclip@0.1.6` after npm installs the
 package. Installing the current version without a version suffix works:
 
 ```bash
@@ -54,21 +55,19 @@ npx paperclipai plugin install @kujolang/paperclip
 
 The fix is implemented and pushed from the isolated worktree
 `/Users/robertdevore/2026/paperclip-kujo-fixes` on branch
-`codex/kujo-plugin-host-fixes`. The draft upstream pull request is
+`codex/kujo-plugin-host-fixes`. The upstream pull request is
 [paperclipai/paperclip#12745](https://github.com/paperclipai/paperclip/pull/12745).
 It adds a shared npm-package-spec parser, CLI and server regression tests, and real
 host-version detection. Local targeted verification passed 59 tests across four test
-files, plus shared, CLI, and direct server TypeScript checks. The upstream CI matrix
-was still running when this handoff was updated; Greptile, Snyk, Socket, policy, and
-the initial review checks had passed.
+files, plus shared, CLI, and direct server TypeScript checks. The complete upstream CI
+matrix, Greptile, Snyk, Socket, policy, and automated review checks passed. The PR is
+ready for maintainer review.
 
 Next steps:
 
-1. Wait for every required hosted check.
-2. Address any review or CI failure in the upstream branch.
-3. Mark the PR ready for review and obtain maintainer approval.
-4. Merge through the upstream project's normal process.
-5. Verify a clean exact-version install from the first Paperclip release containing
+1. Address any maintainer review request.
+2. Merge through the upstream project's normal process.
+3. Verify a clean exact-version install from the first Paperclip release containing
    the change.
 
 Acceptance criteria:
@@ -115,10 +114,10 @@ a clear message, and no `0.0.0` compatibility exception remains.
 **Priority:** Medium  
 **Owner:** Plugin repository
 
-**State:** Implemented; awaiting hosted verification and merge
+**State:** Complete in plugin PR #11
 
-The UI has contract tests and manual browser evidence, but it does not yet have an
-automated end-to-end browser or visual-regression test. Add coverage for:
+The UI has contract tests, manual browser evidence, and automated browser and visual
+regression coverage for:
 
 - the inline current-task workspace registered through `taskDetailView`;
 - the shared `detailTab` on project, issue, and run pages;
@@ -126,48 +125,33 @@ automated end-to-end browser or visual-regression test. Add coverage for:
 - the official Kujo mark and accessible labels; and
 - light and dark themes at desktop and narrow widths.
 
-Use a deterministic SDK fixture and a real browser runner. Keep visual assertions
-stable: test layout, visibility, accessible names, and a small set of approved
-screenshots instead of brittle pixel checks for every element. Run this suite in CI
-and keep the fixture free of network and installed-Kujo dependencies.
-
 The implementation uses Playwright with a deterministic SDK fixture. It covers the
 current-task surface, the project and issue detail tabs, the read-only run detail tab,
 all three primary actions, the official mark, accessible labels, and approved
 desktop-light and narrow-dark screenshots. The `browser-ui` CI job installs its own
 Chromium build and uploads the Playwright report on failure.
 
-Acceptance criteria: merge only after the hosted Linux browser job proves that either
-surface disappearing, losing its primary actions, or exceeding the approved visual
-baseline tolerance fails CI.
+The hosted Linux browser job passed before merge. Pull requests and releases fail if
+either surface disappears, loses its primary actions, or exceeds the approved visual
+baseline tolerance. Lens also passed its full desktop/mobile accessibility and link
+check with no findings at warning or higher.
 
 ### 4. Review the open dependency pull requests
 
 **Priority:** Medium  
 **Owner:** Plugin maintainers
 
-**State:** In progress
+**State:** Complete
 
-Dependabot currently has four open pull requests: [artifact attestation
+The four reviewed Dependabot pull requests were [artifact attestation
 #1](https://github.com/kujolang/paperclip/pull/1), [the grouped development update
 #2](https://github.com/kujolang/paperclip/pull/2), [Zod
 #3](https://github.com/kujolang/paperclip/pull/3), and [dependency review
-#4](https://github.com/kujolang/paperclip/pull/4).
+#4](https://github.com/kujolang/paperclip/pull/4). All four are merged.
 
-Status on September 3, 2026:
-
-- #3 and #4 are current, mergeable, and green across the hosted matrix.
-- #2 is current but fails because the TypeScript 7 upgrade no longer discovers the
-  required Node.js types under the existing compiler configuration. Make the type
-  libraries explicit or split TypeScript 7 from the low-risk package updates.
-- #1 is behind `main` and still shows failures from its older run. Update its branch,
-  rerun the full matrix, and investigate only failures that reproduce on the updated
-  head.
-
-The grouped development update is failing because TypeScript 7 no longer discovers
-the Node.js types under the current compiler configuration. Do not merge the group as
-it stands. Split major upgrades when useful, make the TypeScript configuration explicit,
-and run `npm run verify` plus the hosted compatibility matrix before merging.
+The grouped TypeScript 7 update initially failed because compiler types were implicit.
+The repaired branch declares Node and React types explicitly. Local verification and
+the complete hosted compatibility matrix passed before merge.
 
 ### 5. Submit to the Paperclip catalog
 
@@ -193,24 +177,19 @@ This is a distribution task, not a prerequisite for installing the public npm pa
 
 **Owner:** Plugin release maintainer
 
-**State:** No release is required for documentation or an upstream-only host change
+**State:** v0.1.6 released
 
-Do not publish a version merely because PR #12745 exists. Cut the next patch release
-after browser coverage or dependency changes land, or after the manifest floor can be
-restored. Follow [RELEASE_READINESS.md](RELEASE_READINESS.md), use the existing trusted
-publishing workflow, and verify GitHub, npm provenance, and a clean public install.
+Version 0.1.6 consolidates the browser coverage and dependency maintenance. Its tagged
+workflow runs the full repository, browser, compatibility, supply-chain, packaging,
+and clean-install gates before publication through npm trusted publishing.
 
 ## Recommended next-agent sequence
 
-1. Merge the browser/UI coverage after the complete hosted matrix passes.
-2. Merge dependency PRs #3 and #4, then repair or split #1 and #2 without weakening
-   compiler or security checks.
-3. Monitor upstream PR #12745 through review and merge; do not change the published
+1. Monitor upstream PR #12745 through review and merge; do not change the published
    minimum-host constraint yet.
-4. After an upstream Paperclip release contains the host fix, restore the real host
+2. After an upstream Paperclip release contains the host fix, restore the real host
    floor and run minimum/latest clean-install tests.
-5. Publish one consolidated patch release and refresh this handoff with permanent
-   release evidence.
+3. Publish a follow-up patch only if restoring the manifest floor changes the package.
 
 The catalog task stays parked until Paperclip exposes an official public submission
 process.
@@ -254,6 +233,5 @@ provenance, and clean public install are all verified.
 
 ## Release evidence
 
-- GitHub release: <https://github.com/kujolang/paperclip/releases/tag/v0.1.5>
-- npm package: <https://www.npmjs.com/package/@kujolang/paperclip/v/0.1.5>
-- Release workflow: <https://github.com/kujolang/paperclip/actions/runs/33707750913>
+- GitHub release: <https://github.com/kujolang/paperclip/releases/tag/v0.1.6>
+- npm package: <https://www.npmjs.com/package/@kujolang/paperclip/v/0.1.6>

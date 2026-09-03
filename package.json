@@ -1,6 +1,6 @@
 {
   "name": "@kujolang/paperclip",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "description": "Make Paperclip agent work easier to scope, review, reproduce, and verify.",
   "license": "MIT",
   "homepage": "https://github.com/kujolang/paperclip#readme",
@@ -45,7 +45,7 @@
     "supply-chain:verify": "node scripts/verify-supply-chain.mjs",
     "verify": "npm run repository:verify && npm run typecheck && npm test && npm run components:verify && npm run supply-chain:verify && npm run build && npm run pack:verify",
     "pack:verify": "node scripts/verify-package.mjs",
-    "release:dry-run": "npm run verify",
+    "release:dry-run": "npm run verify && npm run test:ui",
     "prepublishOnly": "npm run verify"
   },
   "dependencies": {
