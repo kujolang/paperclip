@@ -12,6 +12,10 @@ describe("Paperclip plugin contract", () => {
     expect(pluginManifestV1Schema.safeParse(manifest)).toMatchObject({ success: true });
     expect(manifest.minimumHostVersion).toBe("0.0.0");
     expect(SUPPORTED_HOST_VERSION).toBe("2026.824.1");
+    expect(manifest.ui?.slots).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: "detailTab", id: "kujo", entityTypes: ["project", "issue", "run"] }),
+      expect.objectContaining({ type: "taskDetailView", id: "kujo-task-view", entityTypes: ["issue"] }),
+    ]));
   });
 
   it("initializes against the official SDK harness and exposes doctor data", async () => {
