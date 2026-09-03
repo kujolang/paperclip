@@ -14,5 +14,6 @@ Start with [Installation](INSTALLATION.md), then [Usage](USAGE.md).
 | [Release readiness](RELEASE_READINESS.md) | Release order, test matrix, and operator checks. |
 | [Operations](OPERATIONS.md) | Health, audit, retention, upgrades, rollback, recovery, and incident response. |
 | [Catalog submission](CATALOG_SUBMISSION.md) | Paperclip catalog metadata and review evidence. |
+| [Maintenance handoff](MAINTENANCE_HANDOFF.md) | Current release state, remaining work, priorities, and completion criteria. |
 
 Repository policy lives in [SECURITY.md](../SECURITY.md), [CONTRIBUTING.md](../CONTRIBUTING.md), and [AGENTS.md](../AGENTS.md).
