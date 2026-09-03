@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.5 - 2026-09-02
+
+- Replace the temporary lettermark in the Paperclip workspace with the official adaptive Kujo SVG from kujolang.ai.
+
 ## 0.1.4 - 2026-09-02
 
 - Show Kujo automatically in Paperclip's current issue view while keeping the shared detail tab for project, issue, and run pages.
