@@ -1,6 +1,6 @@
 {
   "name": "@kujolang/paperclip",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Make Paperclip agent work easier to scope, review, reproduce, and verify.",
   "license": "MIT",
   "homepage": "https://github.com/kujolang/paperclip#readme",
