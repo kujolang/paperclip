@@ -96,13 +96,22 @@ const manifest: PaperclipPluginManifestV1 = {
     description: "Request focused Context Packs before broad repository exploration.",
   }],
   ui: {
-    slots: [{
-      type: "detailTab",
-      id: "kujo",
-      displayName: "Kujo",
-      exportName: "KujoDetailTab",
-      entityTypes: ["project", "issue", "run"],
-    }],
+    slots: [
+      {
+        type: "detailTab",
+        id: "kujo",
+        displayName: "Kujo",
+        exportName: "KujoDetailTab",
+        entityTypes: ["project", "issue", "run"],
+      },
+      {
+        type: "taskDetailView",
+        id: "kujo-task-view",
+        displayName: "Kujo",
+        exportName: "KujoTaskDetailView",
+        entityTypes: ["issue"],
+      },
+    ],
   },
 };
 

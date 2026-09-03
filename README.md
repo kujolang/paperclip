@@ -1,6 +1,6 @@
 # Kujo for Paperclip
 
-[![Version](https://img.shields.io/badge/version-0.1.0-black)](https://github.com/kujolang/paperclip/releases/tag/v0.1.0)
+[![Version](https://img.shields.io/badge/version-0.1.5-black)](https://github.com/kujolang/paperclip/releases/tag/v0.1.5)
 [![License](https://img.shields.io/badge/license-MIT-lightgrey)](LICENSE)
 [![built with Kujo](https://img.shields.io/badge/built%20with-Kujo-white.svg)](https://github.com/kujolang/kujo)
 
@@ -14,7 +14,7 @@ You need Paperclip `2026.824.1` or later and Node.js `24.11.0` or later.
 npx paperclipai plugin install @kujolang/paperclip
 ```
 
-Restart Paperclip if it is already running. Open a project, issue, or run and select the **Kujo** tab. The status panel should report that the runtime and all four bundled components are ready.
+Restart Paperclip if it is already running. Kujo appears automatically inside Paperclip's current task view. On project and run pages, open the **Kujo** tab. You do not need to switch to the Classic Task Interface.
 
 The npm package includes the correct Kujo runtime for macOS arm64/x64, Linux arm64/x64, and Windows x64. Installation does not run `preinstall`, `install`, or `postinstall` scripts.
 
@@ -22,7 +22,7 @@ See [Installation](docs/INSTALLATION.md) for upgrades, local development install
 
 ## Use
 
-Open the **Kujo** tab on a project or issue to:
+Open an issue to use the inline Kujo workspace, or open the **Kujo** tab on a project, issue detail page, or run to:
 
 - generate a **Review Pack** for the working tree;
 - create a task-specific **Context Pack**;
@@ -109,6 +109,7 @@ Read [AGENTS.md](AGENTS.md) before agent-assisted changes and [CONTRIBUTING.md](
 - [Troubleshooting](docs/TROUBLESHOOTING.md)
 - [Release readiness](docs/RELEASE_READINESS.md)
 - [Operations](docs/OPERATIONS.md)
+- [Maintenance handoff](docs/MAINTENANCE_HANDOFF.md)
 - [Agent workflow example](examples/agent-workflow.md)
 
 ## License

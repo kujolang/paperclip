@@ -25,10 +25,15 @@ jobs:
         run: |
           test "$GITHUB_REF_NAME" = "v$(node -p "require('./package.json').version")"
           test "$(git cat-file -t "$GITHUB_REF_NAME")" = tag
-          git cat-file -p "$GITHUB_REF_NAME" | grep -q -- "-----BEGIN PGP SIGNATURE-----"
+          tag_oid="$(git rev-parse "$GITHUB_REF_NAME^{tag}")"
+          test "$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$tag_oid" --jq .verification.verified)" = true
+        env:
+          GH_TOKEN: ${{ github.token }}
       - run: npm run verify
       - name: Confirm runtime exists before publishing plugin
-        run: npm view "@kujolang/kujo-runtime@$(node -p \"require('./package.json').dependencies['@kujolang/kujo-runtime']\")" version
+        run: |
+          runtime_version="$(node -p "require('./package.json').dependencies['@kujolang/kujo-runtime']")"
+          npm view "@kujolang/kujo-runtime@$runtime_version" version
       - name: Build release artifacts
         id: pack
         run: |
@@ -42,8 +47,21 @@ jobs:
           subject-path: ${{ steps.pack.outputs.tarball }}
       - name: Publish verified tarball
         run: npm publish "${{ steps.pack.outputs.tarball }}" --ignore-scripts --access public --provenance
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      - name: Verify public registry install
+        run: |
+          package_version="$(node -p "require('./package.json').version")"
+          for attempt in $(seq 1 30); do
+            if test "$(npm view "@kujolang/paperclip@$package_version" version 2>/dev/null || true)" = "$package_version"; then
+              break
+            fi
+            if test "$attempt" = 30; then
+              echo "Published package did not become visible in the registry" >&2
+              exit 1
+            fi
+            sleep 10
+          done
+          npm install --prefix "$RUNNER_TEMP/paperclip-clean-install" --ignore-scripts --no-audit --no-fund --no-package-lock "@kujolang/paperclip@$package_version"
+          test "$(node -p "require('$RUNNER_TEMP/paperclip-clean-install/node_modules/@kujolang/paperclip/package.json').version")" = "$package_version"
       - name: Create GitHub release
         run: >-
           gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes
