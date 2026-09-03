@@ -37,6 +37,7 @@
     "build": "node esbuild.config.mjs",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
+    "test:ui": "playwright test",
     "test:watch": "vitest",
     "components:sync": "node scripts/sync-components.mjs --local-root ..",
     "components:verify": "node scripts/verify-components.mjs",
@@ -61,10 +62,13 @@
     }
   },
   "devDependencies": {
+    "@playwright/test": "1.62.1",
     "@types/node": "24.0.0",
     "@types/react": "19.2.0",
+    "@types/react-dom": "19.2.5",
     "esbuild": "0.28.2",
     "react": "19.1.1",
+    "react-dom": "19.1.1",
     "rollup": "4.62.4",
     "typescript": "5.9.2",
     "vitest": "4.1.10"

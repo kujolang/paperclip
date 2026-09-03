@@ -2,5 +2,7 @@ node_modules/
 dist/
 *.tgz
 coverage/
+playwright-report/
+test-results/
+.ui-test-dist/
 .DS_Store
-
