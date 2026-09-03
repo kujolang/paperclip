@@ -34,6 +34,15 @@
         padding: 24px;
       }
       #root { margin: 0 auto; max-width: 1180px; }
+      .visually-hidden {
+        clip: rect(0 0 0 0);
+        clip-path: inset(50%);
+        height: 1px;
+        overflow: hidden;
+        position: absolute;
+        white-space: nowrap;
+        width: 1px;
+      }
       button:focus-visible, input:focus-visible, textarea:focus-visible {
         outline: 3px solid #2f6fed;
         outline-offset: 2px;
@@ -42,6 +51,7 @@
     </style>
   </head>
   <body>
+    <header><h1 class="visually-hidden">Kujo integration preview</h1></header>
     <main id="root"></main>
     <script type="module" src="/app.js"></script>
   </body>
