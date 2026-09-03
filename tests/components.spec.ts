@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { sep } from "node:path";
 import { componentsInfo, resolveComponent } from "../src/components/registry.js";
 
 describe("component bundle", () => {
@@ -11,8 +12,7 @@ describe("component bundle", () => {
   it("verifies every file before returning an entrypoint", async () => {
     for (const info of await componentsInfo()) {
       const resolved = await resolveComponent(info.id);
-      expect(resolved.entrypointPath).toContain(`/bundled/components/${info.id}/`);
+      expect(resolved.entrypointPath.split(sep).join("/")).toContain(`/bundled/components/${info.id}/`);
     }
   });
 });
-

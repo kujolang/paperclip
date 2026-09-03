@@ -12,7 +12,7 @@
 npx paperclipai plugin install @kujolang/paperclip
 ```
 
-Restart Paperclip if it is running. Open a project, issue, or run, select the **Kujo** tab, and check the status panel.
+Restart Paperclip if it is running. Open an issue and confirm that the Kujo workspace appears in the current task view. On project and run pages, open the **Kujo** tab. No Classic Task Interface setting is required.
 
 The package installs `@kujolang/kujo-runtime` and one matching optional native package. Supported targets are macOS arm64/x64, Linux arm64/x64, and Windows x64. No Kujo package uses `preinstall`, `install`, or `postinstall`.
 

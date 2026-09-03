@@ -7,10 +7,14 @@ const presets = createPluginBundlerPresets({
   uiEntry: "src/ui/index.tsx",
   sourcemap: false,
 });
+const worker = {
+  ...presets.esbuild.worker,
+  external: [...new Set([...(presets.esbuild.worker.external ?? []), "@kujolang/kujo-runtime"])],
+};
 
 await rm(new URL("./dist", import.meta.url), { recursive: true, force: true });
 await Promise.all([
-  build(presets.esbuild.worker),
+  build(worker),
   build(presets.esbuild.manifest),
   ...(presets.esbuild.ui ? [build(presets.esbuild.ui)] : []),
 ]);

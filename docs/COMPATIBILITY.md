@@ -13,6 +13,7 @@ The plugin supports macOS arm64/x64, Linux arm64/x64, and Windows x64. CI runs t
 ## Change rules
 
 - Patch releases keep the same artifact schemas and minimum host train.
+- Paperclip `2026.831.1` reports `0.0.0` to its plugin loader. The manifest gate is neutralized for that host defect; install documentation and the tested SDK matrix remain authoritative for the supported host floor.
 - Before 1.0, a minor release may add fields or raise a minimum version. The changelog must call out either change.
 - Readers accept additive fields but reject unknown schema versions.
 - Context content requires the same company, project, workspace, and Git snapshot that produced the pack.

@@ -1,10 +1,11 @@
 import { execFile } from "node:child_process";
-import { link, lstat, mkdir, mkdtemp, open, rm, writeFile } from "node:fs/promises";
+import { link, lstat, mkdir, mkdtemp, open, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { KujoPluginError } from "../runtime/errors.js";
 import { safeChildEnv } from "../runtime/execute-kujo.js";
+import { removeTree } from "../runtime/files.js";
 import { isPathInside } from "../runtime/path.js";
 
 const execFileAsync = promisify(execFile);
@@ -43,7 +44,7 @@ export async function assertBoundedWorkspaceInputs(cwd: string): Promise<void> {
   }
 }
 
-export async function prepareContextWorkspace(cwd: string, task: string): Promise<{ path: string; cleanup: () => Promise<void> }> {
+export async function prepareContextWorkspace(cwd: string, task: string): Promise<{ path: string; selectedPaths: string[]; cleanup: () => Promise<void> }> {
   const root = resolve(cwd);
   const terms = task.toLowerCase().split(/[^a-z0-9]+/).filter((term) => term.length >= 3);
   const paths = (await gitVisiblePaths(root)).sort((left, right) => {
@@ -89,9 +90,9 @@ export async function prepareContextWorkspace(cwd: string, task: string): Promis
       timeout: 10_000,
       windowsHide: true,
     });
-    return { path: mirror, cleanup: async () => await rm(mirror, { recursive: true, force: true }) };
+    return { path: mirror, selectedPaths: paths, cleanup: async () => await removeTree(mirror) };
   } catch (error) {
-    await rm(mirror, { recursive: true, force: true });
+    await removeTree(mirror);
     throw error;
   }
 }

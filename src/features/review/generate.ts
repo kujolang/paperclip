@@ -6,6 +6,8 @@ import { captureWorkspaceSnapshot, isSnapshotCurrent, validateGitRef } from "../
 import { assertBoundedWorkspaceInputs } from "../../paperclip/workspace-guard.js";
 import type { ReviewPack } from "./schema.js";
 import { reviewPackSchema } from "./schema.js";
+import { analyzeWithGit } from "./git-fallback.js";
+import { KujoPluginError } from "../../runtime/errors.js";
 
 type ChangeBucketOutput = {
   base?: string;
@@ -60,6 +62,11 @@ export async function generateReviewPack(input: GenerateReviewInput): Promise<Re
   const base = input.base ? validateGitRef(input.base) : "HEAD";
   const head = input.head ? validateGitRef(input.head) : undefined;
   const changeArgs = ["--json"];
+  if (process.platform === "win32") {
+    // The bundled ChangeBucket release does not resolve `.` correctly on
+    // Windows, but accepts an explicit forward-slash repository path.
+    changeArgs.push("--repo", input.cwd.replaceAll("\\", "/"));
+  }
   if (input.mode === "range") {
     changeArgs.push("--base", base);
     if (head) changeArgs.push("--head", head);
@@ -72,16 +79,25 @@ export async function generateReviewPack(input: GenerateReviewInput): Promise<Re
     runComponent<Record<string, unknown>>({ component: "patchbrief", cwd: input.cwd, args: ["handoff", "--format", "json", "--pretty"], config: input.config }),
   ]);
 
-  if (footprintResult.status === "rejected") throw footprintResult.reason;
-  const footprint = footprintResult.value.parsed;
+  const canFallback = footprintResult.status === "rejected"
+    && process.platform === "win32"
+    && footprintResult.reason instanceof KujoPluginError
+    && footprintResult.reason.code === "KUJO_RUNTIME_EXEC_FAILED"
+    && String(footprintResult.reason.details?.stdout ?? "").includes("not a git repository");
+  const fallback = canFallback
+    ? await analyzeWithGit({ cwd: input.cwd, base, ...(input.mode ? { mode: input.mode } : {}), ...(head ? { head } : {}) })
+    : undefined;
+  if (footprintResult.status === "rejected" && !fallback) throw footprintResult.reason;
+  const footprint = footprintResult.status === "fulfilled" ? footprintResult.value.parsed : fallback;
   if (!footprint) throw new Error("ChangeBucket returned no JSON");
   const summary = footprint.summary ?? {};
   const categories = footprint.categories ?? {};
-  const runtimeVersion = footprintResult.value.runtimeVersion;
-  const components = [footprintResult, summaryResult, testsResult, handoffResult]
+  const runtimeVersion = footprintResult.status === "fulfilled" ? footprintResult.value.runtimeVersion : "git-fallback";
+  const components: Array<{ id: string; version: string; commit: string }> = [footprintResult, summaryResult, testsResult, handoffResult]
     .filter((result): result is PromiseFulfilledResult<Awaited<ReturnType<typeof runComponent>>> => result.status === "fulfilled")
     .map((result) => ({ id: result.value.component, version: result.value.componentVersion, commit: result.value.componentCommit }))
     .filter((item, index, all) => all.findIndex((candidate) => candidate.id === item.id) === index);
+  if (fallback) components.push({ id: "paperclip-git-fallback", version: PLUGIN_VERSION, commit: "bundled" });
 
   return reviewPackSchema.parse({
     schemaVersion: 1,

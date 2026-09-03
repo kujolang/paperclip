@@ -2,13 +2,15 @@
 
 ## Paperclip UI
 
-Open the **Kujo** detail tab on a project or issue.
+Open an issue and Kujo appears inline in Paperclip's current task view. There is no Classic Task Interface prerequisite. Project, issue detail, and run pages also expose the **Kujo** detail tab where the host supports tabs.
 
 - **Generate Review Pack** measures the current working tree and builds a handoff.
 - **Generate Context Pack** selects files for a task at minimal, focused, or broad depth.
 - **Capture Failure Evidence** stores supplied command details and logs after bounding and redaction.
 
 Run views display saved evidence. They do not expose a terminal.
+
+The inline workspace and detail tab use the same actions and persisted artifacts, so changing views does not create a second copy of Kujo data.
 
 ## Agent tools
 

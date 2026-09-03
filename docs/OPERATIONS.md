@@ -36,6 +36,10 @@ Component updates must start from clean, reviewed source repositories at exact c
 
 Never hand-edit a bundled file without updating its canonical source. Runtime checks reject any file that differs from the component lock.
 
+## Release credentials
+
+GitHub Actions publishes through the npm trusted publisher bound to `kujolang/paperclip`, `.github/workflows/release.yml`, and the `npm` environment. Keep `id-token: write`; do not add an npm access token or `NODE_AUTH_TOKEN`. The npm package requires two-factor authentication and disallows traditional token publishing, while trusted OIDC publishing remains available.
+
 ## Recover from corrupt state
 
 If a detail view shows no artifact after an upgrade, inspect worker logs for schema or state errors. Clear the entity's Kujo data, then regenerate the artifact. Do not edit Paperclip's plugin-state tables directly.
