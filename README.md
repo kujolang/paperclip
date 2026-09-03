@@ -109,6 +109,7 @@ Read [AGENTS.md](AGENTS.md) before agent-assisted changes and [CONTRIBUTING.md](
 - [Troubleshooting](docs/TROUBLESHOOTING.md)
 - [Release readiness](docs/RELEASE_READINESS.md)
 - [Operations](docs/OPERATIONS.md)
+- [Maintenance handoff](docs/MAINTENANCE_HANDOFF.md)
 - [Agent workflow example](examples/agent-workflow.md)
 
 ## License
