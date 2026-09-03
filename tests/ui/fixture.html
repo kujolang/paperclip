@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Kujo Paperclip UI fixture</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --background: #f7f7f5;
+        --card: #ffffff;
+        --foreground: #111111;
+        --muted: #f1f1ee;
+        --muted-foreground: #62625e;
+        --border: #d9d9d4;
+        --destructive: #b42318;
+      }
+      :root[data-theme="dark"] {
+        color-scheme: dark;
+        --background: #111110;
+        --card: #191918;
+        --foreground: #f5f5f2;
+        --muted: #242422;
+        --muted-foreground: #a9a9a2;
+        --border: #393936;
+        --destructive: #ff8a80;
+      }
+      * { box-sizing: border-box; }
+      body {
+        background: var(--background);
+        color: var(--foreground);
+        font-family: Arial, Helvetica, sans-serif;
+        margin: 0;
+        padding: 24px;
+      }
+      #root { margin: 0 auto; max-width: 1180px; }
+      .visually-hidden {
+        clip: rect(0 0 0 0);
+        clip-path: inset(50%);
+        height: 1px;
+        overflow: hidden;
+        position: absolute;
+        white-space: nowrap;
+        width: 1px;
+      }
+      button:focus-visible, input:focus-visible, textarea:focus-visible {
+        outline: 3px solid #2f6fed;
+        outline-offset: 2px;
+      }
+      @media (max-width: 560px) { body { padding: 12px; } }
+    </style>
+  </head>
+  <body>
+    <header><h1 class="visually-hidden">Kujo integration preview</h1></header>
+    <main id="root"></main>
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>

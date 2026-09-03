@@ -25,7 +25,7 @@ waiting on upstream Paperclip, and catalog distribution is not available yet.
 | --- | --- | --- |
 | Exact scoped-version install | Upstream PR open | Get Paperclip PR #12745 reviewed and merged |
 | Real minimum host version | Externally blocked | Wait for a Paperclip release containing PR #12745 |
-| Browser/UI regression coverage | Ready for implementation | Add deterministic coverage for both registered surfaces |
+| Browser/UI regression coverage | Implemented on feature branch | Merge after the hosted browser job passes |
 | Dependency updates | Partly ready | Merge #3 and #4; repair or split #1 and #2 |
 | Paperclip catalog listing | Not currently available | Recheck when Paperclip publishes a marketplace process |
 | Next Kujo plugin release | Not yet warranted | Release after the selected plugin-owned changes land |
@@ -115,7 +115,7 @@ a clear message, and no `0.0.0` compatibility exception remains.
 **Priority:** Medium  
 **Owner:** Plugin repository
 
-**State:** Not started
+**State:** Implemented; awaiting hosted verification and merge
 
 The UI has contract tests and manual browser evidence, but it does not yet have an
 automated end-to-end browser or visual-regression test. Add coverage for:
@@ -131,8 +131,15 @@ stable: test layout, visibility, accessible names, and a small set of approved
 screenshots instead of brittle pixel checks for every element. Run this suite in CI
 and keep the fixture free of network and installed-Kujo dependencies.
 
-Acceptance criteria: CI fails when either surface disappears, loses its primary
-actions, or regresses past approved visual baselines.
+The implementation uses Playwright with a deterministic SDK fixture. It covers the
+current-task surface, the project and issue detail tabs, the read-only run detail tab,
+all three primary actions, the official mark, accessible labels, and approved
+desktop-light and narrow-dark screenshots. The `browser-ui` CI job installs its own
+Chromium build and uploads the Playwright report on failure.
+
+Acceptance criteria: merge only after the hosted Linux browser job proves that either
+surface disappearing, losing its primary actions, or exceeding the approved visual
+baseline tolerance fails CI.
 
 ### 4. Review the open dependency pull requests
 
@@ -195,8 +202,7 @@ publishing workflow, and verify GitHub, npm provenance, and a clean public insta
 
 ## Recommended next-agent sequence
 
-1. Finish browser/UI coverage in the plugin repository and merge it after the complete
-   hosted matrix passes.
+1. Merge the browser/UI coverage after the complete hosted matrix passes.
 2. Merge dependency PRs #3 and #4, then repair or split #1 and #2 without weakening
    compiler or security checks.
 3. Monitor upstream PR #12745 through review and merge; do not change the published
