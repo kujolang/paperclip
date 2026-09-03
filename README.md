@@ -1,6 +1,6 @@
 # Kujo for Paperclip
 
-[![Version](https://img.shields.io/badge/version-0.1.5-black)](https://github.com/kujolang/paperclip/releases/tag/v0.1.5)
+[![Version](https://img.shields.io/badge/version-0.1.6-black)](https://github.com/kujolang/paperclip/releases/tag/v0.1.6)
 [![License](https://img.shields.io/badge/license-MIT-lightgrey)](LICENSE)
 [![built with Kujo](https://img.shields.io/badge/built%20with-Kujo-white.svg)](https://github.com/kujolang/kujo)
 
