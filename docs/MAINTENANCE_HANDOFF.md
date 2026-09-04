@@ -5,7 +5,7 @@ Updated September 3, 2026.
 ## Current state
 
 `@kujolang/paperclip` is ready for public use within its documented scope. Version
-`0.1.6` is published on npm and GitHub. The released plugin:
+`0.1.7` is published on npm and GitHub. The released plugin:
 
 - works in Paperclip's current task view without requiring the Classic Task Interface;
 - provides Review, Context, and Failure Evidence workflows in the inline workspace and
@@ -30,7 +30,7 @@ is absent from a public Paperclip release.
 
 After Paperclip publishes the fix:
 
-1. verify that `npx paperclipai plugin install @kujolang/paperclip@0.1.6` succeeds;
+1. verify that `npx paperclipai plugin install @kujolang/paperclip@0.1.7` succeeds;
 2. replace the temporary `MINIMUM_HOST_VERSION = "0.0.0"` value in
    `src/config/defaults.ts` with the real supported floor;
 3. update the compatibility tests and documentation;
@@ -51,7 +51,7 @@ failed. Do not create or use an unofficial listing process.
 | Browser/UI regression coverage | Complete | Maintain the approved baselines with UI changes |
 | Dependency updates | Complete | Continue normal Dependabot review |
 | Paperclip catalog listing | Not currently available | Recheck when Paperclip publishes a marketplace process |
-| Kujo plugin release | Complete | Verify and retain the v0.1.6 release evidence |
+| Kujo plugin release | Complete | Verify and retain the v0.1.7 release evidence |
 
 ## Work queue
 
@@ -65,10 +65,10 @@ failed. Do not create or use an unofficial listing process.
 The Paperclip CLI currently misparses an exact scoped npm package reference:
 
 ```bash
-npx paperclipai plugin install @kujolang/paperclip@0.1.6
+npx paperclipai plugin install @kujolang/paperclip@0.1.7
 ```
 
-It looks for a directory named `@kujolang/paperclip@0.1.6` after npm installs the
+It looks for a directory named `@kujolang/paperclip@0.1.7` after npm installs the
 package. Installing the current version without a version suffix works:
 
 ```bash
@@ -199,11 +199,13 @@ This is a distribution task, not a prerequisite for installing the public npm pa
 
 **Owner:** Plugin release maintainer
 
-**State:** v0.1.6 released
+**State:** v0.1.7 released
 
-Version 0.1.6 consolidates the browser coverage and dependency maintenance. Its tagged
-workflow runs the full repository, browser, compatibility, supply-chain, packaging,
-and clean-install gates before publication through npm trusted publishing.
+Version 0.1.7 adds the plain-English install and first-use guide, monochrome npm and CI
+badges, corrected Context Pack limits, documentation command validation, and current
+runtime and type dependencies. Its tagged workflow runs the full repository, browser,
+compatibility, supply-chain, packaging, and clean-install gates before publication
+through npm trusted publishing.
 
 ## Recommended next-agent sequence
 
@@ -255,9 +257,7 @@ provenance, and clean public install are all verified.
 
 ## Release evidence
 
-- GitHub release: <https://github.com/kujolang/paperclip/releases/tag/v0.1.6>
-- successful release workflow: <https://github.com/kujolang/paperclip/actions/runs/33716203158>
-- npm package: <https://www.npmjs.com/package/@kujolang/paperclip/v/0.1.6>
-- npm SLSA provenance: <https://registry.npmjs.org/-/npm/v1/attestations/@kujolang%2fpaperclip@0.1.6>
-- signed tag commit: `924ae40cac2ba2447c235ae4d6ea033ea62b6361`
-- npm integrity: `sha512-O1/V23rMyPvTe+akUn7CqG5WUj/GKg0Sf9krwSZQCcrcEQGm9OH1leLOmIc0Skb1qM94NV5n3XFFWgmg3WiJCg==`
+- GitHub release: <https://github.com/kujolang/paperclip/releases/tag/v0.1.7>
+- release workflows: <https://github.com/kujolang/paperclip/actions/workflows/release.yml>
+- npm package: <https://www.npmjs.com/package/@kujolang/paperclip/v/0.1.7>
+- npm SLSA provenance: <https://registry.npmjs.org/-/npm/v1/attestations/@kujolang%2fpaperclip@0.1.7>
