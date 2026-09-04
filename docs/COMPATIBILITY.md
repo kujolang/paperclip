@@ -6,7 +6,7 @@
 | --- | --- | --- |
 | Paperclip | `2026.824.1` and later in the current compatibility train | SDK minimum and latest |
 | Node.js | `24.11.0` through the latest Node 24 release | minimum and latest Node 24 |
-| Kujo runtime | bundled `1.2.2` | five native targets |
+| Kujo runtime | bundled `1.2.3` | five native targets |
 
 The plugin supports macOS arm64/x64, Linux arm64/x64, and Windows x64. CI runs the full plugin suite on each target at the minimum Node version. A separate compatibility job tests the minimum and latest Paperclip SDK against the minimum and latest Node 24 release.
 

@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.7 - 2026-09-04
+
+- Rewrite the README in plain English with a 30-second install path, first-use steps,
+  copyable agent requests, and clear compatibility notes.
+- Add monochrome npm and CI badges alongside the standard Kujo version, license, and
+  build badges.
+- Correct the documented Context Pack file limits and reject unknown `npm run`
+  commands in repository documentation.
+- Upgrade the bundled Kujo runtime to 1.2.3 and refresh the Node and React DOM type
+  definitions after full verification.
+
 ## 0.1.6 - 2026-09-03
 
 - Add deterministic Chromium coverage for both Paperclip UI surfaces, all primary

@@ -12,6 +12,12 @@
 npx paperclipai plugin install @kujolang/paperclip
 ```
 
+Use the package name without an exact version suffix until Paperclip ships
+[paperclipai/paperclip#12745](https://github.com/paperclipai/paperclip/pull/12745).
+Current hosts misparse exact scoped references such as
+`@kujolang/paperclip@0.1.7`; the unversioned command above installs the current npm
+release correctly.
+
 Restart Paperclip if it is running. Open an issue and confirm that the Kujo workspace appears in the current task view. On project and run pages, open the **Kujo** tab. No Classic Task Interface setting is required.
 
 The package installs `@kujolang/kujo-runtime` and one matching optional native package. Supported targets are macOS arm64/x64, Linux arm64/x64, and Windows x64. No Kujo package uses `preinstall`, `install`, or `postinstall`.
