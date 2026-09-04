@@ -52,6 +52,10 @@ const markdownFiles = [
 
 for (const markdownFile of markdownFiles) {
   const content = read(markdownFile);
+  for (const match of content.matchAll(/\bnpm run ([A-Za-z0-9:_-]+)/g)) {
+    const script = match[1];
+    assert(script in (manifest.scripts ?? {}), `${markdownFile} references unknown npm script ${script}`);
+  }
   for (const match of content.matchAll(/\[[^\]]+\]\(([^)]+)\)/g)) {
     const target = match[1].split("#", 1)[0];
     if (!target || /^(?:https?:|mailto:)/.test(target)) continue;

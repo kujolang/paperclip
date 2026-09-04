@@ -63,9 +63,9 @@ Depth controls the token and file budget:
 
 | Depth | Token budget | File limit |
 | --- | ---: | ---: |
-| `minimal` | 4,000 | 12 |
-| `focused` | 16,000 | 40 |
-| `broad` | 40,000 | 100 |
+| `minimal` | 4,000 | 2 |
+| `focused` | 16,000 | 3 |
+| `broad` | 40,000 | 4 |
 
 Start without content. Review the selected paths and reasons, then request content only when needed.
 

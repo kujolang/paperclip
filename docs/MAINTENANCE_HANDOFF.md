@@ -34,7 +34,7 @@ After Paperclip publishes the fix:
 2. replace the temporary `MINIMUM_HOST_VERSION = "0.0.0"` value in
    `src/config/defaults.ts` with the real supported floor;
 3. update the compatibility tests and documentation;
-4. run `npm ci --ignore-scripts`, `npm run verify`, `npm run test:browser`, and the
+4. run `npm ci --ignore-scripts`, `npm run verify`, `npm run test:ui`, and the
    minimum/latest clean-install matrix; and
 5. release a patch through the signed-tag workflow if the package changes.
 
