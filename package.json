@@ -49,7 +49,7 @@
     "prepublishOnly": "npm run verify"
   },
   "dependencies": {
-    "@kujolang/kujo-runtime": "1.2.3",
+    "@kujolang/kujo-runtime": "1.4.0",
     "@paperclipai/plugin-sdk": "2026.824.1",
     "zod": "4.5.4"
   },
