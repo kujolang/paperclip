@@ -62,16 +62,16 @@
     }
   },
   "devDependencies": {
-    "@playwright/test": "1.62.1",
-    "@types/node": "26.4.1",
-    "@types/react": "19.2.18",
-    "@types/react-dom": "19.2.7",
+    "@playwright/test": "1.63.0",
+    "@types/node": "26.5.1",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
     "esbuild": "0.28.2",
-    "react": "19.2.8",
-    "react-dom": "19.2.8",
-    "rollup": "4.63.1",
+    "react": "19.3.0",
+    "react-dom": "19.3.0",
+    "rollup": "4.63.2",
     "typescript": "7.0.2",
-    "vitest": "4.1.11"
+    "vitest": "5.0.0"
   },
   "publishConfig": {
     "access": "public",
