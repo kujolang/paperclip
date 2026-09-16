@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Update the Paperclip SDK, bundled Kujo runtime, Zod, browser and test tooling,
+  React development stack, type definitions, and pinned GitHub Actions.
+
 ## 0.1.7 - 2026-09-04
 
 - Rewrite the README in plain English with a 30-second install path, first-use steps,
