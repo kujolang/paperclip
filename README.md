@@ -87,8 +87,8 @@ recommended agent sequence.
 | Package | Version |
 | --- | --- |
 | Paperclip host | `>=2026.824.1` |
-| `@paperclipai/plugin-sdk` | `2026.824.1` |
-| `@kujolang/kujo-runtime` | `1.2.3` |
+| `@paperclipai/plugin-sdk` | `2026.831.1` |
+| `@kujolang/kujo-runtime` | `1.4.0` |
 | Node.js | `>=24.11.0` |
 
 The npm package is `@kujolang/paperclip`. Its Paperclip manifest ID is

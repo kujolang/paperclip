@@ -4,9 +4,10 @@
 
 | Dependency | Supported range | CI coverage |
 | --- | --- | --- |
-| Paperclip | `2026.824.1` and later in the current compatibility train | SDK minimum and latest |
+| Paperclip | `2026.824.1` and later in the current compatibility train | minimum host and latest compatible host |
+| Paperclip SDK | `2026.831.1` and latest compatible release | locked minimum and latest |
 | Node.js | `24.11.0` through the latest Node 24 release | minimum and latest Node 24 |
-| Kujo runtime | bundled `1.2.3` | five native targets |
+| Kujo runtime | bundled `1.4.0` | five native targets |
 
 The plugin supports macOS arm64/x64, Linux arm64/x64, and Windows x64. CI runs the full plugin suite on each target at the minimum Node version. A separate compatibility job tests the minimum and latest Paperclip SDK against the minimum and latest Node 24 release.
 
