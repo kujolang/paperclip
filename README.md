@@ -1,6 +1,6 @@
 # Kujo for Paperclip
 
-[![Version](https://img.shields.io/badge/version-0.1.7-black)](https://github.com/kujolang/paperclip/releases/tag/v0.1.7)
+[![Version](https://img.shields.io/badge/version-0.1.8-black)](https://github.com/kujolang/paperclip/releases/tag/v0.1.8)
 [![npm](https://img.shields.io/npm/v/%40kujolang%2Fpaperclip?label=npm&color=black)](https://www.npmjs.com/package/@kujolang/paperclip)
 [![CI](https://img.shields.io/github/actions/workflow/status/kujolang/paperclip/ci.yml?branch=main&label=CI&color=black)](https://github.com/kujolang/paperclip/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-MIT-lightgrey)](LICENSE)
@@ -87,8 +87,8 @@ recommended agent sequence.
 | Package | Version |
 | --- | --- |
 | Paperclip host | `>=2026.824.1` |
-| `@paperclipai/plugin-sdk` | `2026.831.1` |
-| `@kujolang/kujo-runtime` | `1.4.0` |
+| `@paperclipai/plugin-sdk` | `2026.1012.0` |
+| `@kujolang/kujo-runtime` | `1.8.1` |
 | Node.js | `>=24.11.0` |
 
 The npm package is `@kujolang/paperclip`. Its Paperclip manifest ID is
