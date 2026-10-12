@@ -1,6 +1,6 @@
 {
   "name": "@kujolang/paperclip",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "description": "Make Paperclip agent work easier to scope, review, reproduce, and verify.",
   "license": "MIT",
   "homepage": "https://github.com/kujolang/paperclip#readme",
@@ -49,9 +49,9 @@
     "prepublishOnly": "npm run verify"
   },
   "dependencies": {
-    "@kujolang/kujo-runtime": "1.4.0",
-    "@paperclipai/plugin-sdk": "2026.831.1",
-    "zod": "4.6.4"
+    "@kujolang/kujo-runtime": "1.8.1",
+    "@paperclipai/plugin-sdk": "2026.1012.0",
+    "zod": "4.6.5"
   },
   "peerDependencies": {
     "react": ">=18"

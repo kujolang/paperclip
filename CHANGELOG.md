@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.8 — 2026-10-12
+
+- Update the Paperclip SDK to 2026.1012.0, bundled Kujo runtime to 1.8.1, and Zod to 4.6.5.
+- Refresh the source-map-js dependency to its patched release.
+- Keep the four pinned components and existing Context Pack, Review Pack, and Failure Evidence contracts unchanged; broader Kujo feature expansion is a separate release.
+
 ## Unreleased
 
 - Update the Paperclip SDK, bundled Kujo runtime, Zod, browser and test tooling,
