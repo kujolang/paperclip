@@ -19,3 +19,4 @@ Start with [Installation](INSTALLATION.md), then [Usage](USAGE.md).
 Repository policy lives in [SECURITY.md](../SECURITY.md), [CONTRIBUTING.md](../CONTRIBUTING.md), and [AGENTS.md](../AGENTS.md).
 
 - [Canonical Abilities and company profiles](ABILITIES.md)
+- [Approved execution foundation (internal prototype)](EXECUTION.md)

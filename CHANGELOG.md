@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Add an internal human-confirmation and persistent execution coordinator with atomic ownership, cancellation, uncertain-outcome recovery and an additive job ledger migration. No execution tool is enabled yet.
+- Prevent pre-aborted runtime requests from spawning a child process.
+
+
 - Add native ShipCheck release readiness signals, scoped tool/UI/history and explicit metadata-only gate semantics.
 - Enforce per-tool profile admission within shared feature groups so Essentials can use ShipCheck without enabling other verification adapters.
 

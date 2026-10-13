@@ -66,8 +66,10 @@
     {
       "id": "execution",
       "requirement": "Human-bound effect approval, persistent job ownership, start/status/inspect/cancel, Dispatch/Muzzle/Workcell",
-      "status": "pending",
-      "evidence": []
+      "status": "in_progress",
+      "evidence": [
+        "Internal approval/job prototype binds immutable plans to host human-only confirmation, atomically claims scoped ownership, persists cancellation and preserves uncertainty after lost responses or expired leases. Native child-process, PostgreSQL, host-contract and restart evidence is recorded on the implementation PR. Public handlers, canonical Eval adapter, actual-host approval acceptance and durable workflow integrations remain pending."
+      ]
     },
     {
       "id": "knowledge-ai",
