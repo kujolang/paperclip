@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.9 — 2026-10-13
+
+- Isolate canonical component imports from project modules in VM and interpreter modes.
+- Require Kujo 1.8.1 for configured runtime overrides; bundled runtime and component source pins are unchanged.
+
 ## 0.1.8 — 2026-10-12
 
 - Update the Paperclip SDK to 2026.1012.0, bundled Kujo runtime to 1.8.1, and Zod to 4.6.5.
