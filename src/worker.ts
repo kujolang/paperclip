@@ -1,3 +1,4 @@
+import { previewStarter, requireStarters, starterCatalog, starterInputSchema } from "./features/starters/preview.js";
 import { definePlugin, runWorker, type PluginContext, type ToolRunContext } from "@paperclipai/plugin-sdk";
 import { z } from "zod";
 import { inspectPackages, discoverPackages, packageInputSchema, packageReportSchema } from "./features/packages/inspect.js";
@@ -516,7 +517,7 @@ function registerUiBridge(ctx: PluginContext, executions: ReturnType<typeof regi
     const history = (await listEvidence(ctx, target)).filter((record) => evidenceEnabled(config, record.kind));
     const readiness = await doctor(config);
     const executionActive = target.entityType === "issue" && (await executions.recoveryList({ companyId: target.companyId, issueId: target.entityId })).some(record => ["preparing", "pending", "running", "cancel_requested"].includes(record.state));
-    return { packages: ownedPackages, packageFiles, executionHistory, executionActive, catalog: capabilityCatalog(config, readiness, true), shipcheck: ownedShipcheck, concord: ownedConcord, fence: ownedFence, spec: ownedSpec, specs, verification, verificationEnabled: config.features.verification, history, language: ownedLanguage, sources, understanding: ownedUnderstanding, review: ownedReview, failure: ownedFailure, context: ownedContext, readiness, workspace: inspection?.readiness, suggestedTask };
+    return { starters: config.features.examples && ["installed", "build", "full"].includes(config.capabilityProfile) ? starterCatalog : [], packages: ownedPackages, packageFiles, executionHistory, executionActive, catalog: capabilityCatalog(config, readiness, true), shipcheck: ownedShipcheck, concord: ownedConcord, fence: ownedFence, spec: ownedSpec, specs, verification, verificationEnabled: config.features.verification, history, language: ownedLanguage, sources, understanding: ownedUnderstanding, review: ownedReview, failure: ownedFailure, context: ownedContext, readiness, workspace: inspection?.readiness, suggestedTask };
   });
 
   ctx.actions.register("inspect-release-readiness", async (params, actionCtx) => {
@@ -588,6 +589,13 @@ function registerUiBridge(ctx: PluginContext, executions: ReturnType<typeof regi
     await saveArtifact(ctx, { ...target, companyId: actionCtx.companyId }, "understand-latest", pack, { inputs: { config, workspaceId: workspace.id, snapshot: pack.snapshot }, definition: understandTool, projection: projectionReceipt(understandTool) });
     await audit(ctx, { companyId: actionCtx.companyId, operation: "repository.understood", ...target, artifactId: pack.id });
     return { status: pack.status, understandingId: pack.id };
+  });
+
+  ctx.actions.register("preview-starter", async (params, actionCtx) => {
+    if (!actionCtx.companyId) throw new Error("Company context is required");
+    const config = await configFor(ctx, actionCtx.companyId);
+    requireStarters(config);
+    return previewStarter(starterInputSchema.parse(actionParams(params)), config);
   });
 
   ctx.actions.register("run-example", async (params, actionCtx) => {
