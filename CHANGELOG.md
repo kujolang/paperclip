@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Retain bounded source-preparation stage/error codes with panel repair guidance; preserve failed-request no-replay behavior and exclude raw exception data.
+
 - Supervise approved native executions outside the plugin worker so worker crashes and stalled control heartbeats stop ordinary owned process trees. Preserve independent timeout/output caps, uncertain lost outcomes and existing approval limits; verify crash recovery on an isolated authenticated host.
 
 - Create approved canonical script, API, MCP and fixture-agent starter files through a separate opt-in issue workflow. Bind human approval to exact inventory/runtime/workspace settings; use native no-overwrite publication and retain partial outcomes, linked evidence and portable receipts without running generated code.

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, stat, writeFile, unlink } from "node:fs/promises";
 import { join } from "node:path";
 
 export async function qualifyProductionSource({ call, companyId, projectId, issueId, root, node, checks, json, stop, start, waitUntil }) {
@@ -39,11 +39,22 @@ export async function qualifyProductionSource({ call, companyId, projectId, issu
   await accept(stale); await writeFile(join(root, "workspace/approved.kujo"), 'print("changed")\n');
   assert.equal((await action("start", { id: stale.id })).data.state, "stale");
   checks.push("native test-file and fixture commands retain observed output; changed source invalidates earlier approval");
+  const missing = (await action("prepare", { mode: "run", path: "approved.kujo", submissionId: "host-source-missing" })).data;
+  await accept(missing); await unlink(join(root, "workspace/approved.kujo"));
+  const preparationFailure = (await action("start", { id: missing.id })).data;
+  assert.equal(preparationFailure.state, "failed"); assert.equal(preparationFailure.result, null);
+  assert.equal(preparationFailure.diagnostic, "source_preparation:select_source:source_missing");
+  assert.equal(preparationFailure.abilityReceipt.error.details.diagnostic, preparationFailure.diagnostic);
+  await writeFile(join(root, "workspace/approved.kujo"), 'print("changed")\n');
+  assert.deepEqual((await action("start", { id: missing.id })).data, preparationFailure);
+  await json("source-preparation-outcome.json", preparationFailure);
+  checks.push("source preparation failure retains a safe stage/code, null native result and no replay after source restoration");
   const exported = (await call(route, { method: "POST", body: { companyId, key: "export-evidence", params: { entityType: "issue", entityId: issueId, evidenceId: receipt.history.outcomeId } } })).data.data;
   assert.equal(exported.parent.status, "retained"); assert.equal(exported.payload.planEvidence.digest, exported.parent.receipt.digest);
   await stop(); await start();
   await waitUntil(async () => { try { return (await action("status", { id: receipt.id })).data?.state === "succeeded"; } catch { return false; } });
   assert.deepEqual((await action("status", { id: receipt.id })).data, receipt);
+  assert.deepEqual((await action("status", { id: missing.id })).data, preparationFailure);
   assert.equal((await action("list")).data.history.pending, false);
   const pending = (await action("prepare", { mode: "run", path: "approved.kujo", submissionId: "disabled-source" })).data;
   await config(false);

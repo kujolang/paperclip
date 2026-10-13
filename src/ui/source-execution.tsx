@@ -1,3 +1,4 @@
+import { sourcePreparationGuidance } from "../execution/preparation-error.js";
 import { useEffect, useRef, useState } from "react";
 import { usePluginAction } from "@paperclipai/plugin-sdk/ui";
 import type { ExecutionPlan } from "../execution/contracts.js";
@@ -56,7 +57,7 @@ export function SourceExecutionPanel({ issueId, enabled, ready, refreshEvidence 
     {preview && <details open><summary>Command and approved input coverage</summary><p>{preview.summary}</p><pre style={pre}>{preview.preview}</pre></details>}
     {selected && <div style={{ display: "grid", gap: 8 }}><strong>{selected.mode} · {selected.path}</strong><span>Process: {selected.state}</span>
       {selected.classification && <strong>{String(selected.classification)}</strong>}
-      {selected.diagnostic && <p>{selected.diagnostic}</p>}
+      {selected.diagnostic && <p>{selected.diagnostic}{sourcePreparationGuidance(selected.diagnostic) && <> — {sourcePreparationGuidance(selected.diagnostic)}</>}</p>}
       {selected.state === "pending" && <p>Accept the human-only decision card, then select Start approved command. A pending request does not prove approval.</p>}
       <div style={controls}>{selected.state === "pending" && <button disabled={!enabled || !ready || !!busy} onClick={() => void act("start", selected.id)}>Start approved command</button>}
         {!terminal.has(selected.state) && <button disabled={busy !== null && busy !== "start"} onClick={() => void act("cancel", selected.id)}>Cancel command</button>}</div>

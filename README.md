@@ -103,6 +103,8 @@ exit/output and linked receipts are retained; exit zero alone does not establish
 that tests ran or the whole project passed. These are one-shot commands capped at
 27 seconds, not persistent API/MCP services or project creation. See
 [run/test modes and limits](docs/EXECUTION.md#native-source-and-tests).
+Preparation failures show a safe stage/code and repair guidance. After correcting
+the cause, review a new request; a failed request does not run again.
 
 ## Kujo starters
 

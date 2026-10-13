@@ -629,3 +629,14 @@ test("company navigation discards delayed creation source and errors", async ({ 
   await page.evaluate(() => window.__KUJO_RESOLVE_CREATION__?.());
   await expect(page.getByText("private delayed creation result")).toHaveCount(0);
 });
+
+test("source preparation failure shows repair guidance and no retry control", async ({ page }) => {
+  await page.goto("/?surface=task&entity=issue&sourceExecution=1");
+  await page.evaluate(() => { window.__KUJO_SOURCE_REQUESTS__ = [{ id: "source_no_space", mode: "run", path: "main.kujo", state: "failed", diagnostic: "source_preparation:temporary_directory:ENOSPC", result: null }]; });
+  const section = page.getByRole("region", { name: "Approved Kujo run and test", exact: true });
+  await section.getByRole("button", { name: "Refresh run/test requests", exact: true }).click();
+  await section.getByRole("button", { name: /Inspect run\/test/ }).click();
+  await expect(section.getByText(/Free disk space or increase the storage quota/)).toBeVisible();
+  await expect(section.getByRole("button", { name: "Start approved command", exact: true })).toHaveCount(0);
+  await expect(section.getByLabel("Native Kujo output")).toHaveCount(0);
+});

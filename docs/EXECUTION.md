@@ -90,6 +90,19 @@ passes. In particular, `test-run` can exit zero with no tests. Program output is
 untrusted text; inspect it for actual coverage. Timeout, cancellation, stale input,
 rejection and uncertainty retain their distinct coordinator states.
 
+Preparation errors retain `source_preparation:<stage>:<reason>` in status,
+portable receipts and linked history. Stages distinguish admission, temporary
+storage, workspace snapshot, runtime lookup, inventory, input copying, source
+selection, freshness, preview, runtime digest and cleanup. Filesystem reasons
+are restricted to ENOSPC, EDQUOT, EACCES, EPERM, ENOENT, EIO, EMFILE, ENFILE and
+EROFS; other unexpected failures use `unknown`. The panel gives repair guidance.
+Raw exception messages, paths, stacks and causes are not retained. Existing Kujo
+runtime timeout/cancellation/error codes remain unchanged. These failures occur
+before native project execution and do not acquire a native result or retry
+permission. Correct the cause and review a new request. Historical generic
+`materialization_failed` receipts remain unchanged; new diagnostics cannot
+reconstruct their original causes.
+
 Terminal source requests publish linked `source-execution-plan` and
 `source-execution-result` records with the same atomic publication, bounded
 recovery, pruning, parent export and clear semantics as Eval. Portable
