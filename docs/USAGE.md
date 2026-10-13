@@ -151,3 +151,27 @@ The **Explore Kujo** panel presents the same data and definition digests. Profil
 ## Import verification evidence
 
 Enable `features.verification` in company settings, then paste a canonical `kujo.evaluation-result/v1` document into **Verification evidence**. Agent calls use `kujolang.paperclip:import-verification` with `{ "json": "<evaluation-result JSON text>" }`; the host supplies the project/company. The UI can also import against the current issue. A run view remains read-only. See [Verification imports](VERIFICATION.md) for classifications and limits. Imported summaries participate in the same history, comparison, export and explicit human attachment workflow.
+
+## Review a task contract
+
+Enable Verification, add a contract such as `specs/release.spec.yml` to the project,
+and select it in **Task contract**:
+
+```yaml
+name: Release artifact
+goal: Make the built package available for review.
+acceptance_criteria:
+  - A reviewer can inspect the built entrypoint.
+eval_requirements:
+  - description: Built entrypoint exists
+    check_type: file_exists
+    params:
+      path: dist/index.js
+human_approval_points:
+  - A maintainer approves publication.
+```
+
+Choose **Review task contract** to validate its structure. This does not run the
+file check or approve publication. Criteria and checks remain not-run. Agents can
+call `inspect-task-contract` with the relative path and optional `strict: true`.
+Use Evidence history for comparisons and redacted exports.

@@ -1,5 +1,39 @@
 import { expect, test } from "@playwright/test";
 
+test("task contracts distinguish validity, unexecuted acceptance and declared approvals", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 1200 });
+  await page.goto("/?surface=task&entity=issue&verification=1&spec=1&specReport=1&theme=dark");
+  const section = page.getByRole("region", { name: "Task contract", exact: true });
+  await expect(section.getByText("Contract validation: warnings", { exact: true })).toBeVisible();
+  await expect(section.getByText("Not run · A new user can install the package", { exact: true })).toBeVisible();
+  await expect(section.getByText("Maintainer reviews release evidence · Approval not granted", { exact: true })).toBeVisible();
+  await section.getByLabel("Treat warnings as validation failures").check();
+  await section.getByRole("button", { name: "Review task contract" }).click();
+  await expect.poll(() => page.evaluate(() => window.__KUJO_ACTIONS__?.at(-1))).toMatchObject({ action: "inspect-task-contract", input: { entityType: "issue", entityId: "issue-fixture", path: "specs/release.spec.yml", strict: true } });
+  await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  await expect(section).toHaveScreenshot("task-contract.png", { animations: "disabled", maxDiffPixelRatio: 0.02 });
+});
+
+test("contract validation needs runtime readiness and profile admission", async ({ page }) => {
+  await page.goto("/?surface=detail&entity=project&verification=1&spec=1&runtime=broken");
+  await page.getByLabel("Contract file").selectOption("specs/release.spec.yml");
+  await expect(page.getByRole("button", { name: "Review task contract" })).toBeDisabled();
+  await page.goto("/?surface=detail&entity=project&verification=1&spec=1&profile=build");
+  await expect(page.getByRole("region", { name: "Task contract", exact: true })).toHaveCount(0);
+});
+
+test("a pending contract request cannot carry selection or errors across companies", async ({ page }) => {
+  await page.goto("/?surface=detail&entity=project&verification=1&spec=1");
+  await page.evaluate(() => { window.__KUJO_DELAY_SPEC__ = true; });
+  await page.getByLabel("Contract file").selectOption("specs/release.spec.yml");
+  await page.getByRole("button", { name: "Review task contract" }).click();
+  await expect.poll(() => page.evaluate(() => Boolean(window.__KUJO_RESOLVE_SPEC__))).toBe(true);
+  await page.evaluate(() => window.__KUJO_NAVIGATE__?.("other-company"));
+  await expect(page.getByLabel("Contract file")).toHaveValue("");
+  await page.evaluate(() => window.__KUJO_RESOLVE_SPEC__?.());
+  await expect(page.getByText("private delayed contract error")).toHaveCount(0);
+});
+
 test("current task surface exposes all primary Kujo actions", async ({ page }) => {
   await page.goto("/?surface=task&entity=issue");
 

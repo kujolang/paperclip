@@ -57,7 +57,7 @@
       "requirement": "Spec acceptance, Eval, Fence, Concord, ShipCheck with real result classifications and imported evidence",
       "status": "in_progress",
       "evidence": [
-        "Bounded imports of canonical evaluation-result JSON implemented with pinned schema validation, imported provenance, redacted summaries, truthful empty/skipped/partial/blocked/error classifications and profile/tenant enforcement. Local97 tests and18 browser scenarios pass; fresh tarball consumer passed a real Eval report, separate-process PostgreSQL restart, runtime-independent import and tenant isolation. Hosted CI/merge remain pending. Spec views, native Fence/Concord/ShipCheck checks and approved Eval execution remain pending."
+        "Imported verification evidence merged in PR45 at a598241;97 tests/18 browser cases, all native platforms, SDK/security matrices and a fresh local tarball consumer passed. Native Spec validation, declared acceptance/check views and scoped history are implemented on feat/spec-task-contracts;11 focused backend cases and existing language boundary checks pass. Full verification, browser/hosted/native acceptance and commit/merge are pending. Native Fence/Concord/ShipCheck and approval-backed Eval execution remain unfinished."
       ]
     },
     {

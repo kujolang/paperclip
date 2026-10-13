@@ -58,13 +58,14 @@ Kujo retains up to 20 results per company/entity for 30 days in its Paperclip da
 
 | Workflow | What it does | Kujo component |
 | --- | --- | --- |
+| **Task contracts** | Validates a declared task contract and shows acceptance criteria and checks as not-run. | Spec |
 | **Kujo source tools** | Checks and lints a selected source file; previews formatting without applying changes. | Kujo runtime |
 | **Repository understanding** | Maps project structure, languages, dependencies, routes and heuristic observations; shows partial scans explicitly. | Scout |
 | **Context Pack** | Selects a small, task-specific set of files before an agent reads broadly. | Scent |
 | **Review Pack** | Measures change size, explains risk signals, and prepares a review handoff. | ChangeBucket and PatchBrief |
 | **Failure Evidence** | Turns supplied command details and logs into a bounded, redacted record. | CaseFile |
 
-The five component snapshots are pinned, checksummed, and shipped with the plugin. The
+The six component snapshots are pinned, checksummed, and shipped with the plugin. The
 plugin does not download component code while installing or running.
 
 ## Build with Kujo
@@ -77,7 +78,9 @@ The upcoming release requires Paperclip database namespace migrations and authen
 
 ## Verification evidence
 
-Enable **Verification** in company settings to import `kujo.evaluation-result/v1` JSON, including Eval's `evaluation-result.json`. The panel distinguishes imported pass/fail claims, warnings, skipped-only or empty runs, partial runs, blocked evaluations and errors. It validates the pinned canonical schema and stores a redacted summary with the supplied-byte digest. It does not authenticate the producer, open evidence references, or establish that the result applies to this workspace. See [Verification imports](docs/VERIFICATION.md).
+Enable **Verification** in company settings to review a Git-visible `.spec.json`, `.spec.yml`, `.spec.yaml` or `.spec.toml` task contract. The native Spec validator reports contract errors and warnings; strict mode treats warnings as failures. Acceptance criteria and declared checks remain **not-run**, and declared approval points do not grant approval. No workspace files or check commands are executed or changed.
+
+The same setting lets you import `kujo.evaluation-result/v1` JSON, including Eval's `evaluation-result.json`. The panel distinguishes imported pass/fail claims, warnings, skipped-only or empty runs, partial runs, blocked evaluations and errors. It validates the pinned canonical schema and stores a redacted summary with the supplied-byte digest. It does not authenticate the producer, open evidence references, or establish that the result applies to this workspace. See [Verification imports](docs/VERIFICATION.md).
 
 ## Explore Kujo
 
@@ -89,10 +92,11 @@ The plugin ships pinned, checksummed Ability contracts/catalogs and generates it
 
 ## Agent tools
 
-Paperclip agents can call eleven tools:
+Paperclip agents can call twelve tools:
 
 | Tool | Use |
 | --- | --- |
+| `kujolang.paperclip:inspect-task-contract` | Validate one Git-visible Spec contract; inspect declared outcomes without executing checks. |
 | `kujolang.paperclip:import-verification` | Retain a redacted, explicitly imported evaluation summary; never runs checks. |
 | `kujolang.paperclip:list-capabilities` | Discover scoped tool readiness, profiles and optional ecosystem integrations. |
 | `kujolang.paperclip:list-evidence` | List retained receipts in the current project or run. |
