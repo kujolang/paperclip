@@ -140,3 +140,10 @@ Each receipt records source kind (observed, supplied, or migrated legacy), a res
 Retention uses database insertion time: at most 20 records across all five artifact kinds per company/entity, with records older than 30 days inaccessible and removed on the next history read or append. There is no background expiry sweep. Each payload is limited to 5 MB. **Clear Kujo data** removes retained history and legacy latest keys for the selected project/issue; it does not remove documents already attached to issues. No generic SQL or arbitrary file access is exposed.
 
 Agents can use `kujolang.paperclip:list-evidence` with `{ "scope": "project" }` (default) or `{ "scope": "run" }`, then `kujolang.paperclip:get-evidence` with the same scope and an `evidenceId`. IDs for the project/run/company come from the authenticated host context. Reads above 64 KiB are rejected with a panel-download hint; the tools never attach documents.
+
+
+## Discover capabilities
+
+Use `kujolang.paperclip:list-capabilities` with `{}` for implemented Paperclip tools, or `{ "includeUnavailable": true }` to include canonical ecosystem references. Returned states separate installed adapter, company/profile enablement, platform support, runtime/component readiness and authorization checked on invocation. Missing adapters are not registered as agent tools. The full canonical input definitions remain in the packaged catalog; use the generated Paperclip schemas when calling Paperclip tools.
+
+The **Explore Kujo** panel presents the same data and definition digests. Profile changes belong in company plugin settings. New retained work records link their Paperclip projection identity and exact canonical definition digests in `kujoProjection`; legacy records remain unchanged and do not invent that provenance.

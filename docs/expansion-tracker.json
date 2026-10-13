@@ -41,14 +41,16 @@
       "requirement": "Immutable history, receipts, comparisons, stale-state, retention/export and explicit host attachment",
       "status": "in_progress",
       "evidence": [
-        "Company/entity-scoped PostgreSQL history, immutable payload/input/definition receipts, legacy migration,20-record/30-day retention, comparisons, freshness inspection, redacted exports, explicit human-only issue documents and bounded agent list/read tools are implemented. Local77 tests and14 browser scenarios pass. A fresh local tarball consumer passed migration, separate-process database restart, redaction and tenant isolation; actual host validators accepted129 runtime statements. Five native platforms and SDK minimum/latest passed at4ad56b7; final CI is pending after screenshot text-rendering tolerance and freshness refinements. Real-host minimum/latest install acceptance, invocation failure receipts, automatic parent/child integration and imported verification evidence remain pending."
+        "Company/entity-scoped PostgreSQL history, immutable payload/input/definition receipts, legacy migration,20-record/30-day retention, comparisons, freshness inspection, redacted exports, explicit human-only issue documents and bounded agent list/read tools are implemented. Local77 tests and14 browser scenarios pass. A fresh local tarball consumer passed migration, separate-process database restart, redaction and tenant isolation; actual host validators accepted129 runtime statements. Merged in PR43 at5f70430; final headbb7a3f6 passed all five native platforms, SDK minimum/latest, browser, dependency review and CodeQL. Real-host minimum/latest install acceptance, invocation failure receipts, automatic parent/child integration and imported verification evidence remain pending."
       ]
     },
     {
       "id": "abilities",
       "requirement": "Canonical definitions, profiles, generated manifest tool declarations, installed/enabled/authorized/supported states",
-      "status": "pending",
-      "evidence": []
+      "status": "in_progress",
+      "evidence": [
+        "Pinned38 canonical Ability definitions and four canonical profiles, reused the canonical TypeScript contract validator/digest, and generated ten reviewed Paperclip tool declarations. Company profiles are enforced by both UI and agent handlers; discovery separates installed, enabled, supported, runtime readiness and call-time authorization. New evidence includes additive projection/canonical digests. Local83 tests and16 browser scenarios pass; hosted CI and fresh consumer acceptance are pending. Canonical execution receipts and broader adapters remain pending."
+      ]
     },
     {
       "id": "verification",

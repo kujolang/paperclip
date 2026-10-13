@@ -1,3 +1,6 @@
+import { capabilityCatalog, applyCapabilityProfile, type CapabilityCatalog } from "../../src/abilities/catalog.js";
+import { parsePluginConfig } from "../../src/config/schema.js";
+import type { DoctorReport } from "../../src/health/doctor.js";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { KujoDetailTab, KujoTaskDetailView } from "../../src/ui/index.js";
@@ -80,6 +83,13 @@ window.__KUJO_FIXTURE_DATA__ = {
     },
   },
 };
+const fixture = window.__KUJO_FIXTURE_DATA__ as { readiness: DoctorReport; catalog?: CapabilityCatalog };
+fixture.readiness.runtime.platform = "linux";
+fixture.readiness.runtime.arch = "x64";
+fixture.readiness.components = ["scout", "context", "failure-evidence", "changebucket", "patchbrief"].map((id) => ({ id: id as DoctorReport["components"][number]["id"], version: "1.0.0", integrity: "ok" }));
+const fixtureConfig = applyCapabilityProfile(parsePluginConfig({ capabilityProfile: parameters.get("profile") ?? "installed" }));
+for (const feature of Object.keys(fixture.readiness.capabilities) as Array<keyof DoctorReport["capabilities"]>) if (!fixtureConfig.features[feature]) fixture.readiness.capabilities[feature] = "disabled";
+fixture.catalog = capabilityCatalog(fixtureConfig, fixture.readiness, true);
 window.__KUJO_ACTIONS__ = [];
 
 const props = {

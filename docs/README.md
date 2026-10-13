@@ -17,3 +17,5 @@ Start with [Installation](INSTALLATION.md), then [Usage](USAGE.md).
 | [Maintenance handoff](MAINTENANCE_HANDOFF.md) | Current release state, remaining work, priorities, and completion criteria. |
 
 Repository policy lives in [SECURITY.md](../SECURITY.md), [CONTRIBUTING.md](../CONTRIBUTING.md), and [AGENTS.md](../AGENTS.md).
+
+- [Canonical Abilities and company profiles](ABILITIES.md)
