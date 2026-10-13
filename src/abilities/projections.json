@@ -933,5 +933,100 @@
         "executes_code": false
       }
     }
+  },
+  {
+    "exportName": "specTool",
+    "id": "kujo.paperclip.spec.inspect",
+    "feature": "verification",
+    "canonicalIds": [
+      "kujo.spec.contract.validate"
+    ],
+    "components": [
+      "spec"
+    ],
+    "profiles": [
+      "installed",
+      "review",
+      "ship",
+      "full"
+    ],
+    "tool": {
+      "name": "inspect-task-contract",
+      "displayName": "Review Task Contract",
+      "description": "Validate one Git-visible Kujo Spec contract with pinned native tools. Inspect acceptance criteria and declared checks without executing them, granting approvals or changing workspace files.",
+      "parametersSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "path"
+        ],
+        "properties": {
+          "path": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1000,
+            "description": "Relative .spec.json, .spec.yml, .spec.yaml or .spec.toml path from the project contract catalog"
+          },
+          "strict": {
+            "type": "boolean",
+            "default": false,
+            "description": "Treat canonical validation warnings as contract validation failure"
+          }
+        }
+      }
+    },
+    "definition": {
+      "schema": "kujo.ability/v1",
+      "id": "kujo.paperclip.spec.inspect",
+      "version": "1.0.0",
+      "title": "Review Task Contract",
+      "description": "Validate one Git-visible Kujo Spec contract with pinned native tools. Inspect acceptance criteria and declared checks without executing them, granting approvals or changing workspace files.",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "path"
+        ],
+        "properties": {
+          "path": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1000,
+            "description": "Relative .spec.json, .spec.yml, .spec.yaml or .spec.toml path from the project contract catalog"
+          },
+          "strict": {
+            "type": "boolean",
+            "default": false,
+            "description": "Treat canonical validation warnings as contract validation failure"
+          }
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "additionalProperties": true
+      },
+      "effects": [
+        {
+          "kind": "read",
+          "resource": "kujo.paperclip.workspace"
+        },
+        {
+          "kind": "write",
+          "resource": "kujo.paperclip.evidence"
+        },
+        {
+          "kind": "write",
+          "resource": "kujo.paperclip.activity"
+        }
+      ],
+      "idempotency": {
+        "mode": "none"
+      },
+      "semantics": {
+        "open_world": false,
+        "destructive": false,
+        "executes_code": false
+      }
+    }
   }
 ]

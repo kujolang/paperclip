@@ -1,7 +1,7 @@
 import { definePlugin, runWorker, type PluginContext, type ToolRunContext } from "@paperclipai/plugin-sdk";
 import { z } from "zod";
 import { parsePluginConfig } from "./config/schema.js";
-import { importVerificationTool, catalogTool, listEvidenceTool, readEvidenceTool, languageTool, formatTool, understandTool, contextContentTool, contextTool, failureTool, reviewTool } from "./manifest.js";
+import { specTool, importVerificationTool, catalogTool, listEvidenceTool, readEvidenceTool, languageTool, formatTool, understandTool, contextContentTool, contextTool, failureTool, reviewTool } from "./manifest.js";
 import { generateReviewPack } from "./features/review/generate.js";
 import { reviewPackSchema, type ReviewPack } from "./features/review/schema.js";
 import { captureFailure } from "./features/failure/capture.js";
@@ -27,6 +27,7 @@ import { discoverSources, sourcePathSchema } from "./features/language/source.js
 import { languageReportSchema } from "./features/language/schema.js";
 
 import { importVerification, verificationInput, verificationReportSchema } from "./features/verification/import.js";
+import { discoverSpecs, inspectSpec, specInputSchema, specReportSchema } from "./features/spec/inspect.js";
 
 const languageInput = z.object({ path: sourcePathSchema }).strict();
 const reviewInput = z.object({
@@ -72,7 +73,7 @@ async function configFor(ctx: PluginContext, companyId: string) {
 
 const historyTarget = z.object({ entityType: z.enum(["project", "issue", "run"]), entityId: z.string().min(1), evidenceId: z.string().min(1).max(100), otherId: z.string().min(1).max(100).optional() }).strict();
 function evidenceEnabled(config: ReturnType<typeof parsePluginConfig>, kind: ArtifactKind) {
-  const feature = { "review-latest": "review", "context-latest": "context", "failure-latest": "failureEvidence", "understand-latest": "understand", "language-latest": "language", "verification-latest": "verification" } as const;
+  const feature = { "review-latest": "review", "context-latest": "context", "failure-latest": "failureEvidence", "understand-latest": "understand", "language-latest": "language", "verification-latest": "verification", "spec-latest": "verification" } as const;
   return config.features[feature[kind]];
 }
 
@@ -150,7 +151,28 @@ async function importForTarget(ctx: PluginContext, target: StateTarget, json: st
   return report;
 }
 
+async function inspectContractFor(ctx: PluginContext, target: StateTarget, params: z.infer<typeof specInputSchema>) {
+  if (target.entityType === "run") throw new Error("Choose a project or issue contract");
+  const config = await configFor(ctx, target.companyId);
+  const workspace = await resolveWorkspace(ctx, { ...target, entityType: target.entityType });
+  const report = await inspectSpec({ ...params, config, cwd: workspace.path, projectId: workspace.projectId, workspaceId: workspace.id });
+  await saveArtifact(ctx, target, "spec-latest", report, { inputs: { params, config, sourceDigest: report.sourceDigest }, definition: specTool, projection: projectionReceipt(specTool) });
+  await audit(ctx, { ...target, operation: "spec.inspected", artifactId: report.id });
+  return report;
+}
+
 function registerTools(ctx: PluginContext) {
+  ctx.tools.register(specTool.name, specTool, async (raw, runCtx) => {
+    try {
+      const params = specInputSchema.parse(raw);
+      const report = await inspectContractFor(ctx, { entityType: "project", entityId: runCtx.projectId, companyId: runCtx.companyId }, params);
+      const { snapshot: _snapshot, ...data } = report;
+      return { content: JSON.stringify(data), data };
+    } catch (error) {
+      const normalized = normalizeError(error);
+      return { error: normalized.message, data: { code: normalized.code } };
+    }
+  });
   ctx.tools.register(importVerificationTool.name, importVerificationTool, async (raw, runCtx) => {
     try {
       const value = verificationInput.parse(raw);
@@ -339,13 +361,14 @@ function registerUiBridge(ctx: PluginContext) {
     const suggestedTask = issue
       ? `${issue.title}\n\n${issue.description ?? ""}`.trim().slice(0, 10_000)
       : "Understand this repository and identify the best starting points for the next change.";
-    const [review, failure, context, understanding, language, verification] = await Promise.all([
+    const [review, failure, context, understanding, language, verification, spec] = await Promise.all([
       config.features.review ? loadArtifact(ctx, target, "review-latest", reviewPackSchema) : null,
       config.features.failureEvidence ? loadArtifact(ctx, target, "failure-latest", failureEvidenceSchema) : null,
       config.features.context ? loadArtifact(ctx, target, "context-latest", contextPackSchema) : null,
       config.features.understand ? loadArtifact(ctx, target, "understand-latest", understandingSchema) : null,
       config.features.language ? loadArtifact(ctx, target, "language-latest", languageReportSchema) : null,
       config.features.verification ? loadArtifact(ctx, target, "verification-latest", verificationReportSchema) : null,
+      config.features.verification ? loadArtifact(ctx, target, "spec-latest", specReportSchema) : null,
     ]);
     const ownedReview = review && (
       (target.entityType === "project" && review.projectId === target.entityId) ||
@@ -364,10 +387,20 @@ function registerUiBridge(ctx: PluginContext) {
     const ownedLanguage = language && workspace && language.projectId === workspace.projectId && language.workspaceId === workspace.id
       ? { ...language, stale: language.stale || !(await isSnapshotCurrent(workspace.path, language.snapshot)) } : null;
     const sources = config.features.language && workspace ? await discoverSources(workspace.path).catch(() => ({ files: [], truncated: false })) : { files: [], truncated: false };
+    const ownedSpec = spec && workspace && spec.projectId === workspace.projectId && spec.workspaceId === workspace.id
+      ? { ...spec, stale: spec.stale || !(await isSnapshotCurrent(workspace.path, spec.snapshot)) } : null;
+    const specs = config.features.verification && workspace ? await discoverSpecs(workspace.path).catch(() => ({ files: [], truncated: false })) : { files: [], truncated: false };
     await ensureHistory(ctx, target);
     const history = (await listEvidence(ctx, target)).filter((record) => evidenceEnabled(config, record.kind));
     const readiness = await doctor(config);
-    return { catalog: capabilityCatalog(config, readiness, true), verification, verificationEnabled: config.features.verification, history, language: ownedLanguage, sources, understanding: ownedUnderstanding, review: ownedReview, failure: ownedFailure, context: ownedContext, readiness, workspace: inspection?.readiness, suggestedTask };
+    return { catalog: capabilityCatalog(config, readiness, true), spec: ownedSpec, specs, verification, verificationEnabled: config.features.verification, history, language: ownedLanguage, sources, understanding: ownedUnderstanding, review: ownedReview, failure: ownedFailure, context: ownedContext, readiness, workspace: inspection?.readiness, suggestedTask };
+  });
+
+  ctx.actions.register("inspect-task-contract", async (params, actionCtx) => {
+    if (!actionCtx.companyId) throw new Error("Company context is required");
+    const value = actionTarget.extend(specInputSchema.shape).parse(actionParams(params));
+    const report = await inspectContractFor(ctx, { entityType: value.entityType, entityId: value.entityId, companyId: actionCtx.companyId }, { path: value.path, strict: value.strict });
+    return { status: report.validation.status, reportId: report.id };
   });
 
   ctx.actions.register("import-verification", async (params, actionCtx) => {

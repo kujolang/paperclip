@@ -8,7 +8,7 @@ import { redactText } from "../features/failure/redact.js";
 export const EVIDENCE_NAMESPACE = "plugin_kujo_evidence_c15d42de56";
 export const HISTORY_LIMIT = 20;
 export const HISTORY_DAYS = 30;
-export const ARTIFACT_KINDS = ["review-latest", "context-latest", "failure-latest", "understand-latest", "language-latest", "verification-latest"] as const;
+export const ARTIFACT_KINDS = ["review-latest", "context-latest", "failure-latest", "understand-latest", "language-latest", "verification-latest", "spec-latest"] as const;
 export type ArtifactKind = typeof ARTIFACT_KINDS[number];
 export type ReceiptOptions = { inputs?: unknown; definition?: unknown; parentId?: string; legacy?: boolean; projection?: ProjectionReceipt };
 export const evidenceMetadataSchema = z.object({
@@ -34,6 +34,7 @@ export function canonicalJson(value: unknown): string {
 }
 export function evidenceDigest(value: unknown) { return createHash("sha256").update(canonicalJson(value)).digest("hex"); }
 function resultLabel(kind: ArtifactKind, payload: Record<string, unknown>) {
+  if (kind === "spec-latest") return `contract ${(payload.validation as { status: string }).status}`;
   if (kind === "verification-latest") return `imported ${payload.classification}`;
   if (kind === "failure-latest") return "supplied failure";
   if (payload.check === "failed" || payload.lint === "failed") return "failed";
@@ -119,7 +120,11 @@ export function compareEvidence(left: Awaited<ReturnType<typeof getEvidence>>, r
   const summarize = (payload: Record<string, unknown>) => {
     const footprint = payload.footprint as Record<string, unknown> | undefined;
     const intelligence = payload.intelligence as Record<string, unknown> | undefined;
+    const contract = payload.contract as Record<string, unknown> | null | undefined;
     return { classification: payload.classification, sourceKind: payload.sourceKind, claimedChecks: (payload.result as Record<string, unknown> | undefined)?.checks, check: payload.check, lint: payload.lint, status: payload.status, staleAtCreation: payload.stale,
+      contractValidation: (payload.validation as Record<string, unknown> | undefined)?.status,
+      acceptanceCriteria: Array.isArray(contract?.criteria) ? contract.criteria.length : undefined,
+      declaredChecks: Array.isArray(contract?.checks) ? contract.checks.length : undefined,
       filesChanged: footprint?.filesChanged, churn: footprint?.churn, risk: footprint?.riskLevel,
       selectedFiles: Array.isArray(payload.files) ? payload.files.length : undefined,
       diagnostics: Array.isArray(payload.diagnostics) ? payload.diagnostics.length : undefined,
