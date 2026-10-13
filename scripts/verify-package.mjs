@@ -66,3 +66,7 @@ if (worker.includes("Kujo's platform package")) {
   throw new Error("worker bundle must not inline @kujolang/kujo-runtime");
 }
 console.log(`Verified npm tarball: ${files.size} files, ${report.size} bytes.`);
+
+if (worker.includes("Isolated approval acceptance fixture")) {
+  throw new Error("development approval fixture must not be bundled in the production worker");
+}

@@ -85,11 +85,54 @@ and real child processes, including the released Kujo runtime. They cover duplic
 claims, approval changes/expiry/forgery, tenant boundaries, lost responses, stale
 inputs, shutdown/cancellation, output/time limits, redaction and uncertain outcomes.
 The development acceptance probe also checks host SQL validators and confirmation
-schemas. These checks do not replace an authenticated approval in a running
-Paperclip host.
+schemas. The opt-in authenticated host qualification below tests the actual worker bridge,
+host confirmation and PostgreSQL persistence using a disposable board account.
+It does not replace manual UI approval or newcomer usability validation.
 
 Before exposing Eval: add the pinned canonical adapter and frozen input/effect
 preview, bounded canonical result collection, durable failure/parent-child receipts,
 retention/admission limits, UI and agent start/status/inspect/cancel flows, and
 actual-host approval/restart/tenant acceptance. Preserve this foundation's tests
 when integrating those surfaces; do not present the prototype as a shipped workflow.
+
+## Reproduce authenticated host qualification
+
+From a source checkout with plugin dependencies installed, use a prepared
+Paperclip source checkout with its server dependencies, `cli`'s `tsx` dependency
+and embedded PostgreSQL platform package already installed:
+
+```bash
+KUJO_ACCEPTANCE_HOST=/absolute/path/to/paperclip npm run test:host:execution
+```
+
+Use a Node version supported by that host checkout. To select the host executable
+explicitly, set `KUJO_ACCEPTANCE_NODE=/absolute/path/to/node`. This is an opt-in
+development test, separate from the portable unit and browser suites. It requires
+free loopback ports and disk space for a fresh embedded database. It does not
+install host dependencies or download component code.
+
+The harness creates a new private temporary instance with separate configuration,
+ports, database, storage and secrets. It never accepts an existing server URL or
+database. It signs up a disposable authenticated test board user, creates fixture
+company/project/issue/workspace records, and installs a development-only worker.
+The worker uses the real coordinator and bundled runtime but executes only two
+fixed fixture programs. No project code or agent-supplied command is executed.
+The fixture uses the production plugin ID only inside this isolated database;
+never install it over an existing Kujo plugin. Neither the harness nor fixture is
+in the npm package.
+
+Checks cover duplicate confirmation preparation; unauthenticated, nonmember and
+unapproved starts; human-only rejection for an agent with real host run
+attribution; forged actor context; cross-company status/start/cancel; native
+execution after host-recorded board acceptance; immutable terminal replay;
+cancellation before and during execution; worker reload; and full host/database
+restart with pending and terminal records. The agent API key is revoked after
+the actor checks. These are automated test-account approvals, not manual human
+review, production Eval qualification or proof of orphan cleanup after a crash.
+
+The harness stops its own server gracefully and prints its private evidence
+directory. `result.json` records the source commits, completed checks and shutdown
+result; `receipts.json` contains fixture outcomes. Inspect a failure using the
+private `server.log`. Do not publish the database, logs or secrets directory.
+The temporary directory is retained for local diagnosis and may be removed after
+confirming the owned host stopped. Existing Paperclip instances remain untouched.
