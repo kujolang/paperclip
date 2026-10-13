@@ -1,8 +1,9 @@
-import type { PluginContext } from "@paperclipai/plugin-sdk";
+import type { PluginContext, ToolRunContext } from "@paperclipai/plugin-sdk";
 import { z } from "zod";
 import { evalTool } from "../../abilities/generated.js";
 import type { ExecutionRecord, ExecutionRequest, ExecutionScope } from "../../execution/contracts.js";
 import { normalizeError } from "../../runtime/errors.js";
+import { publishEvaluation, reconcileEvaluationHistory, type EvaluationHistory } from "./history.js";
 import { createEvalHostService } from "./host.js";
 
 const identity = z.string().min(1).max(200);
@@ -18,11 +19,20 @@ export function executionSummary(record: ExecutionRecord) {
     interactionId: record.interactionId, createdAt: record.createdAt, expiresAt: record.expiresAt, finishedAt: record.finishedAt,
     diagnostic: record.diagnostic, classification: record.result?.classification ?? null };
 }
-export function executionView(record: ExecutionRecord) {
-  return { ...executionSummary(record), requestDigest: record.requestDigest, plan: record.request.plan, result: record.result };
+export function executionView(record: ExecutionRecord, history?: EvaluationHistory) {
+  return { ...executionSummary(record), requestDigest: record.requestDigest, plan: record.request.plan, result: record.result, ...(history ? { history } : {}) };
 }
 export type EvaluationView = ReturnType<typeof executionView>;
 export type EvaluationSummary = ReturnType<typeof executionSummary>;
+
+export async function requireAgentIssue(ctx: PluginContext, issueId: string, run: ToolRunContext) {
+  for (const id of [run.companyId, run.projectId, run.agentId, run.runId]) identity.parse(id);
+  const issue = await ctx.issues.get(issueId, run.companyId);
+  if (!issue || issue.id !== issueId || issue.companyId !== run.companyId || issue.projectId !== run.projectId
+    || issue.assigneeAgentId !== run.agentId || (issue.checkoutRunId !== run.runId && issue.executionRunId !== run.runId)) {
+    throw new Error("Eval requires the host's assigned issue and current agent run");
+  }
+}
 
 /** All identity comes from host action/tool context. No route accepts an
  * approval token, workspace path, executable, command, or requester override. */
@@ -30,17 +40,27 @@ export function registerEvaluation(ctx: PluginContext) {
   const service = createEvalHostService(ctx);
   async function execute(value: z.infer<typeof evalInput>, scope: ExecutionScope, requester: ExecutionRequest["requester"]) {
     if (value.operation === "inspect") return await service.inspect(scope, value.suite);
-    if (value.operation === "prepare") return executionView(await service.prepare(scope, value.suite, value.submissionId, requester));
+    if (value.operation === "prepare") {
+      const record = await service.prepare(scope, value.suite, value.submissionId, requester);
+      return executionView(record, await publishEvaluation(ctx, scope, record));
+    }
     // Scoped metadata is available after disabling, so people can still find
     // and cancel outstanding requests without reading suite/result contents.
-    if (value.operation === "list") return { requests: (await service.recoveryList(scope)).map(executionSummary) };
+    if (value.operation === "list") {
+      const requests = (await service.recoveryList(scope)).map(executionSummary);
+      return { requests, history: await reconcileEvaluationHistory(ctx, scope) };
+    }
     if (requester.kind === "agent" && (value.operation === "start" || value.operation === "cancel")) {
       const record = (await service.recoveryList(scope)).find(record => record.id === value.id);
       if (!record || record.request.requester.kind !== "agent" || record.request.requester.id !== requester.id
         || record.request.requester.runId !== requester.runId) throw new Error("Only the requesting agent run or a human may start or cancel this request");
     }
-    if (value.operation === "cancel") return executionSummary(await service.cancel(scope, value.id));
-    return executionView(await service[value.operation](scope, value.id));
+    if (value.operation === "cancel") {
+      const record = await service.cancel(scope, value.id);
+      return { ...executionSummary(record), history: await publishEvaluation(ctx, scope, record) };
+    }
+    const record = await service[value.operation](scope, value.id);
+    return executionView(record, await publishEvaluation(ctx, scope, record));
   }
   ctx.actions.register("manage-evaluation", async (params, actionCtx) => {
     const actor = actionCtx.actor;
@@ -52,15 +72,13 @@ export function registerEvaluation(ctx: PluginContext) {
   ctx.tools.register(evalTool.name, evalTool, async (raw, run) => {
     try {
       const value = evalInput.parse(raw);
-      for (const id of [run.companyId, run.projectId, run.agentId, run.runId]) identity.parse(id);
-      const issue = await ctx.issues.get(value.issueId, run.companyId);
-      if (!issue || issue.id !== value.issueId || issue.companyId !== run.companyId || issue.projectId !== run.projectId
-        || issue.assigneeAgentId !== run.agentId || (issue.checkoutRunId !== run.runId && issue.executionRunId !== run.runId)) {
-        throw new Error("Eval requires the host's assigned issue and current agent run");
-      }
+      await requireAgentIssue(ctx, value.issueId, run);
       const data = await execute(value, { companyId: run.companyId, issueId: value.issueId }, { kind: "agent", id: run.agentId, runId: run.runId });
       return { content: JSON.stringify(data), data };
     } catch (error) { return { error: normalizeError(error).message }; }
   });
-  return service;
+  return { ...service, async reconcileHistory(scope: ExecutionScope) {
+    await service.recoveryList(scope);
+    return await reconcileEvaluationHistory(ctx, scope);
+  } };
 }

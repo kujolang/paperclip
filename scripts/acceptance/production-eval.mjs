@@ -21,6 +21,7 @@ export async function qualifyProductionEvaluation({ call, companyId, projectId, 
   await accept(request);
   const receipt = (await action("start", { id: request.id })).data;
   assert.equal(receipt.state, "succeeded"); assert.equal(receipt.result.classification, "passed");
+  assert.equal(receipt.history.status, "retained");
   assert.equal(receipt.ownerId, undefined); assert.equal(receipt.claimId, undefined);
   assert.deepEqual((await action("start", { id: request.id })).data, receipt);
   checks.push("production worker runs approved native Eval and retains immutable public receipt without ownership secrets");
@@ -63,6 +64,14 @@ export async function qualifyProductionEvaluation({ call, companyId, projectId, 
     await call(`/issues/${agentIssue.id}/interactions/${request.interactionId}/accept`, { method: "POST", body: {} });
     const completed = await tool({ operation: "start", id: request.id });
     assert.equal(completed.error, undefined); assert.equal(completed.data.result.classification, "passed");
+    const evidenceTool = async (name, parameters) => (await call("/plugins/tools/execute", { method: "POST", token, runId: run.id, body: { tool: `kujolang.paperclip:${name}`, parameters, runContext: { companyId, projectId, agentId: agent.id, runId: run.id } } })).data.result;
+    const listed = await evidenceTool("list-evidence", { scope: "issue", issueId: agentIssue.id });
+    assert.equal(listed.error, undefined); assert.ok(listed.data.records.some(record => record.kind === "evaluation-result"));
+    const exported = await evidenceTool("get-evidence", { scope: "issue", issueId: agentIssue.id, evidenceId: completed.data.history.outcomeId });
+    assert.equal(exported.error, undefined); assert.equal(exported.data.parent.status, "retained");
+    assert.equal(exported.data.payload.planEvidence.digest, exported.data.parent.receipt.digest);
+    assert.match((await evidenceTool("list-evidence", { scope: "issue", issueId })).error, /assigned issue/);
+    checks.push("agent history list/read enforce assigned issue and export the verified parent plan with native outcome");
     checks.push("authenticated agent tool binds real checkout/run, cannot self-approve, and executes only after board approval");
   } finally {
     try { if (agentRunId) await call(`/heartbeat-runs/${agentRunId}/cancel`, { method: "POST", body: {} }); }
@@ -81,5 +90,21 @@ export async function qualifyProductionEvaluation({ call, companyId, projectId, 
   assert.match(deniedTenant.message, /issue|company|not found/i);
   assert.doesNotMatch(deniedTenant.message, /disabled/);
   checks.push("production receipt access rejects a different tenant even for the shared board administrator");
-  await json("receipts.json", { receipt, failed, pendingId: pending.id, companyId, projectId, issueId });
+  const evidenceAction = async (key, params = {}, options = {}) => (await call(route, { method: "POST", body: { companyId, key, params: { entityType: "issue", entityId: issueId, ...params } }, ...options })).data;
+  const exportedHistory = (await evidenceAction("export-evidence", { evidenceId: receipt.history.outcomeId })).data;
+  assert.equal(exportedHistory.payload.executionState, "succeeded"); assert.equal(exportedHistory.parent.status, "retained");
+  assert.equal(exportedHistory.receipt.parentId, exportedHistory.parent.receipt.id);
+  assert.equal(exportedHistory.payload.planEvidence.digest, exportedHistory.parent.receipt.digest);
+  const compared = (await evidenceAction("compare-evidence", { evidenceId: receipt.history.outcomeId, otherId: failed.history.outcomeId })).data;
+  assert.equal(compared.left.summary.classification, "passed"); assert.equal(compared.right.summary.classification, "failed");
+  assert.equal((await evidenceAction("attach-evidence", { evidenceId: receipt.history.outcomeId })).data.status, "attached");
+  await evidenceAction("export-evidence", { evidenceId: receipt.history.outcomeId }, { status: 502, body: { companyId: other, key: "export-evidence", params: { entityType: "issue", entityId: issueId, evidenceId: receipt.history.outcomeId } } });
+  checks.push("restarted native Evidence history supports parent-linked export, comparison, explicit attachment and tenant isolation");
+  await evidenceAction("clear-artifacts");
+  const afterClear = (await action("status", { id: receipt.id })).data;
+  assert.equal(afterClear.history.status, "not-retained"); assert.deepEqual(afterClear.result, receipt.result);
+  const detail = (await call("/plugins/kujolang.paperclip/bridge/data", { method: "POST", body: { companyId, key: "detail", params: { entityType: "issue", entityId: issueId } } })).data.data;
+  assert.deepEqual(detail.history, []);
+  checks.push("explicit history clearing survives status/detail reconciliation without rerunning or losing the independent execution outcome");
+  await json("receipts.json", { receipt, failed, exportedHistory, pendingId: pending.id, companyId, projectId, issueId });
 }

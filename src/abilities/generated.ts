@@ -2220,7 +2220,7 @@ export const projections = [
     "tool": {
       "name": "list-evidence",
       "displayName": "List Kujo Evidence",
-      "description": "List retained Kujo receipts for the current project or run. Results distinguish observed, supplied and legacy evidence; they do not imply project tests passed.",
+      "description": "List retained Kujo receipts for the current project, run, or assigned issue. Results distinguish observed, supplied and legacy evidence; they do not imply project tests passed. Issue scope requires issueId and the current assigned host run.",
       "parametersSchema": {
         "type": "object",
         "additionalProperties": false,
@@ -2229,9 +2229,16 @@ export const projections = [
             "type": "string",
             "enum": [
               "project",
-              "run"
+              "run",
+              "issue"
             ],
             "default": "project"
+          },
+          "issueId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200,
+            "description": "Required only for issue scope; verified against the assigned current host run."
           }
         }
       }
@@ -2239,9 +2246,9 @@ export const projections = [
     "definition": {
       "schema": "kujo.ability/v1",
       "id": "kujo.paperclip.evidence.list",
-      "version": "1.0.0",
+      "version": "1.1.0",
       "title": "List Kujo Evidence",
-      "description": "List retained Kujo receipts for the current project or run. Results distinguish observed, supplied and legacy evidence; they do not imply project tests passed.",
+      "description": "List retained Kujo receipts for the current project, run, or assigned issue. Results distinguish observed, supplied and legacy evidence; they do not imply project tests passed. Issue scope requires issueId and the current assigned host run.",
       "input_schema": {
         "type": "object",
         "additionalProperties": false,
@@ -2250,9 +2257,16 @@ export const projections = [
             "type": "string",
             "enum": [
               "project",
-              "run"
+              "run",
+              "issue"
             ],
             "default": "project"
+          },
+          "issueId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200,
+            "description": "Required only for issue scope; verified against the assigned current host run."
           }
         }
       },
@@ -2279,7 +2293,7 @@ export const projections = [
         "executes_code": false
       }
     },
-    "definitionDigest": "21d13e1f5be100a02c19fb83c7ce8df8b6c504dec33dbd509e08db7dc4a5b82d",
+    "definitionDigest": "22ed900ebb524ce9a42fbca146df6d104eb329ffa47c4c80913f3358d3203cc5",
     "canonicalDefinitions": [
       {
         "definition": {
@@ -2332,7 +2346,7 @@ export const projections = [
     "tool": {
       "name": "get-evidence",
       "displayName": "Read Kujo Evidence",
-      "description": "Read one integrity-checked, redacted evidence export in the current project or run, limited to 64 KiB. Does not attach or mutate host documents.",
+      "description": "Read one integrity-checked, redacted evidence export in the current project, run, or assigned issue, limited to 64 KiB. Does not attach or mutate host documents. Issue scope requires issueId and the current assigned host run.",
       "parametersSchema": {
         "type": "object",
         "additionalProperties": false,
@@ -2344,7 +2358,8 @@ export const projections = [
             "type": "string",
             "enum": [
               "project",
-              "run"
+              "run",
+              "issue"
             ],
             "default": "project"
           },
@@ -2352,6 +2367,12 @@ export const projections = [
             "type": "string",
             "minLength": 1,
             "maxLength": 100
+          },
+          "issueId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200,
+            "description": "Required only for issue scope; verified against the assigned current host run."
           }
         }
       }
@@ -2359,9 +2380,9 @@ export const projections = [
     "definition": {
       "schema": "kujo.ability/v1",
       "id": "kujo.paperclip.evidence.read",
-      "version": "1.0.0",
+      "version": "1.1.0",
       "title": "Read Kujo Evidence",
-      "description": "Read one integrity-checked, redacted evidence export in the current project or run, limited to 64 KiB. Does not attach or mutate host documents.",
+      "description": "Read one integrity-checked, redacted evidence export in the current project, run, or assigned issue, limited to 64 KiB. Does not attach or mutate host documents. Issue scope requires issueId and the current assigned host run.",
       "input_schema": {
         "type": "object",
         "additionalProperties": false,
@@ -2373,7 +2394,8 @@ export const projections = [
             "type": "string",
             "enum": [
               "project",
-              "run"
+              "run",
+              "issue"
             ],
             "default": "project"
           },
@@ -2381,6 +2403,12 @@ export const projections = [
             "type": "string",
             "minLength": 1,
             "maxLength": 100
+          },
+          "issueId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200,
+            "description": "Required only for issue scope; verified against the assigned current host run."
           }
         }
       },
@@ -2407,7 +2435,7 @@ export const projections = [
         "executes_code": false
       }
     },
-    "definitionDigest": "766da449f1dae58bc21f371ae2499ed9748c91759cfe413198ed3c1fc46ead8c",
+    "definitionDigest": "f84d08f4c3f5cac0891ce3b0ce4251fe2fcc822360c2409f8a561ad6d0d527b7",
     "canonicalDefinitions": []
   },
   {
