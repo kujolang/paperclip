@@ -1,0 +1,5667 @@
+from src.retrieval_preferences import normalize_retrieval_preferences
+from src.common import dict_get_or, dict_without_key, num_or, read_json_file_or, write_json_file
+from src.audit_log import append_audit_event, verify_audit_chain
+from src.config import cfg_with_namespace, validate_config
+from src.embeddings import clear_embedding_cache, embedding_cache_metrics
+from src.rag_engine import build_rag_index, load_or_initialize_index, query_rag, query_rag_federated
+from src.vector_backend import save_index_with_backend
+from src.vector_store import protect_json_at_rest, unprotect_json_at_rest
+from src.retention_policy import apply_retention_policy, normalize_retention_ttl_days
+from src.privacy_workflows import summarize_namespace_index, write_privacy_export_artifact, build_deleted_namespace_index
+
+func req_method(req) {
+	return dict_get_or(req, "method", "UNKNOWN")
+}
+
+func req_path(req) {
+	return dict_get_or(req, "path", "")
+}
+
+func req_ip(req) {
+	ip := dict_get_or(req, "peer_ip", dict_get_or(req, "remote_addr", "unknown"))
+	if type(ip) != "string" || trim(ip) == "" {
+		ip := "unknown"
+	}
+	return ip
+}
+
+func req_header(req, header_name) {
+	headers := dict_get_or(req, "headers", {})
+	if type(headers) != "dict" {
+		return ""
+	}
+	if has_key(headers, header_name) == 1 {
+		return to_string(headers[header_name])
+	}
+	norm := to_lower(header_name)
+	for key in keys(headers) {
+		key_str := to_string(key)
+		if to_lower(key_str) == norm {
+			return to_string(headers[key])
+		}
+	}
+	return ""
+}
+
+func ensure_request_id(req) {
+	cached := trim(to_string(dict_get_or(req, "_request_id", "")))
+	if cached != "" {
+		return cached
+	}
+
+	request_id := trim(req_header(req, "x-request-id"))
+	if request_id == "" {
+		request_id = trim(req_header(req, "x-correlation-id"))
+	}
+	if request_id == "" {
+		request_id = "req-" + to_string(current_timestamp()) + "-" + to_string(len(req_path(req)))
+	}
+
+	req["_request_id"] := request_id
+	return request_id
+}
+
+func ensure_correlation_id(req) {
+	cached := trim(to_string(dict_get_or(req, "_correlation_id", "")))
+	if cached != "" {
+		return cached
+	}
+
+	correlation_id := trim(req_header(req, "x-correlation-id"))
+	if correlation_id == "" {
+		correlation_id = ensure_request_id(req)
+	}
+
+	req["_correlation_id"] := correlation_id
+	return correlation_id
+}
+
+func with_request_ids(response, req) {
+	response = set_header(response, "X-Request-ID", ensure_request_id(req))
+	response = set_header(response, "X-Correlation-ID", ensure_correlation_id(req))
+	return response
+}
+
+func redaction_enabled(cfg) {
+	return dict_get_or(cfg, "api_redaction_enabled", false)
+}
+
+func redaction_mask(cfg) {
+	mask := to_string(dict_get_or(cfg, "api_redaction_mask", "[REDACTED]"))
+	if trim(mask) == "" {
+		return "[REDACTED]"
+	}
+	return mask
+}
+
+func redaction_keys(cfg) {
+	raw_keys := dict_get_or(cfg, "api_redaction_keys", [])
+	if type(raw_keys) != "array" {
+		raw_keys = [raw_keys]
+	}
+	out := []
+	i := 0
+	while i < len(raw_keys) {
+		entry := to_lower(trim(to_string(raw_keys[i])))
+		if entry != "" {
+			out = push(out, entry)
+		}
+		i = i + 1
+	}
+	if len(out) == 0 {
+		out = ["authorization", "token", "api_key", "apikey", "secret", "password", "passphrase", "x-api-key", "set-cookie", "cookie", "bearer", "openai_api_key"]
+	}
+	return out
+}
+
+func redaction_values(cfg) {
+	raw_values := dict_get_or(cfg, "api_redaction_values", [])
+	if type(raw_values) != "array" {
+		raw_values = [raw_values]
+	}
+	out := []
+	i := 0
+	while i < len(raw_values) {
+		entry := trim(to_string(raw_values[i]))
+		if entry != "" {
+			out = push(out, entry)
+		}
+		i = i + 1
+	}
+	return out
+}
+
+func key_needs_redaction(key_name, sensitive_keys) {
+	norm := to_lower(trim(to_string(key_name)))
+	if norm == "" {
+		return false
+	}
+	i := 0
+	while i < len(sensitive_keys) {
+		needle := sensitive_keys[i]
+		if needle != "" && index_of(norm, needle) >= 0 {
+			return true
+		}
+		i = i + 1
+	}
+	return false
+}
+
+func redact_text_value(raw_value, cfg, sensitive_values, mask) {
+	text := to_string(raw_value)
+	if redaction_enabled(cfg) == false {
+		return text
+	}
+	if index_of(to_lower(text), "bearer ") >= 0 {
+		return mask
+	}
+	i := 0
+	while i < len(sensitive_values) {
+		needle := sensitive_values[i]
+		if needle != "" && index_of(text, needle) >= 0 {
+			return mask
+		}
+		i = i + 1
+	}
+	return text
+}
+
+func redact_any(value, cfg, sensitive_keys, sensitive_values, mask) {
+	vtype := type(value)
+
+	if vtype == "string" {
+		return redact_text_value(value, cfg, sensitive_values, mask)
+	}
+
+	if vtype == "dict" {
+		out := {}
+		value_keys := keys(value)
+		i := 0
+		while i < len(value_keys) {
+			key := value_keys[i]
+			if key_needs_redaction(key, sensitive_keys) {
+				out[key] := mask
+			} else {
+				out[key] := redact_any(value[key], cfg, sensitive_keys, sensitive_values, mask)
+			}
+			i = i + 1
+		}
+		return out
+	}
+
+	if vtype == "array" {
+		out := []
+		i := 0
+		while i < len(value) {
+			out = push(out, redact_any(value[i], cfg, sensitive_keys, sensitive_values, mask))
+			i = i + 1
+		}
+		return out
+	}
+
+	if vtype == "null" || vtype == "bool" || vtype == "int" || vtype == "float" {
+		return value
+	}
+
+	if vtype == "func" {
+		return mask
+	}
+
+	text := to_string(value)
+	i := 0
+	while i < len(sensitive_values) {
+		needle := sensitive_values[i]
+		if needle != "" && index_of(text, needle) >= 0 {
+			return mask
+		}
+		i = i + 1
+	}
+	return text
+}
+
+func redact_map(raw, cfg) {
+	if type(raw) != "dict" {
+		return {}
+	}
+	if redaction_enabled(cfg) == false {
+		return raw
+	}
+
+	sensitive_keys := redaction_keys(cfg)
+	sensitive_values := redaction_values(cfg)
+	mask := redaction_mask(cfg)
+	redacted := redact_any(raw, cfg, sensitive_keys, sensitive_values, mask)
+	if type(redacted) == "dict" {
+		return redacted
+	}
+	return {}
+}
+
+export resolve_cors_origin := func(req, cfg) {
+	enabled := dict_get_or(cfg, "api_cors_enabled", false)
+	if enabled == false {
+		return ""
+	}
+
+	origin := trim(req_header(req, "origin"))
+	if origin == "" {
+		return ""
+	}
+
+	allowed := dict_get_or(cfg, "api_cors_allowed_origins", [])
+	if type(allowed) != "array" {
+		allowed = [allowed]
+	}
+
+	for item in allowed {
+		candidate := trim(to_string(item))
+		if candidate == "*" {
+			return "*"
+		}
+		if candidate == origin {
+			return origin
+		}
+	}
+
+	return ""
+}
+
+func with_cors(response, req, cfg) {
+	allow_origin := resolve_cors_origin(req, cfg)
+	if allow_origin == "" {
+		return response
+	}
+
+	response = set_header(response, "Access-Control-Allow-Origin", allow_origin)
+	response = set_header(response, "Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+	response = set_header(response, "Access-Control-Allow-Headers", "Content-Type, Authorization")
+	response = set_header(response, "Access-Control-Max-Age", "86400")
+	response = set_header(response, "Vary", "Origin")
+	if allow_origin != "*" {
+		response = set_header(response, "Access-Control-Allow-Credentials", "true")
+	}
+
+	return response
+}
+
+func json_ok(req, cfg, data) {
+	request_id := ensure_request_id(req)
+	correlation_id := ensure_correlation_id(req)
+	response := json_response(200, {
+		"ok": true,
+		"data": data,
+		"request_id": request_id,
+		"correlation_id": correlation_id
+	})
+	response = with_request_ids(response, req)
+	return with_cors(response, req, cfg)
+}
+
+func json_ok_status(req, cfg, status, data) {
+	request_id := ensure_request_id(req)
+	correlation_id := ensure_correlation_id(req)
+	response := json_response(status, {
+		"ok": true,
+		"data": data,
+		"request_id": request_id,
+		"correlation_id": correlation_id
+	})
+	response = with_request_ids(response, req)
+	return with_cors(response, req, cfg)
+}
+
+func json_err(req, cfg, status, code, message, details) {
+	safe_details := details
+	if type(details) == "dict" {
+		safe_details = redact_map(details, cfg)
+	}
+	safe_message := message
+	if dict_get_or(cfg, "runtime_environment", "development") == "production" {
+		if status >= 500 {
+			safe_message = "An internal server error occurred"
+			safe_details = {}
+		}
+	}
+
+	body := {
+		"ok": false,
+		"request_id": ensure_request_id(req),
+		"correlation_id": ensure_correlation_id(req),
+		"error": {
+			"code": code,
+			"message": safe_message
+		}
+	}
+	if type(safe_details) == "dict" {
+		err_obj := body["error"]
+		err_obj["details"] := safe_details
+		body["error"] := err_obj
+	}
+	response := json_response(status, body)
+	response = with_request_ids(response, req)
+	return with_cors(response, req, cfg)
+}
+
+func cors_preflight_response(req, cfg) {
+	response := http_response(204, "")
+	return with_cors(response, req, cfg)
+}
+
+func resolve_namespace_cfg(cfg, data) {
+	requested := dict_get_or(data, "namespace", "")
+	if type(requested) != "string" {
+		return {
+			"ok": false,
+			"status": 400,
+			"error": "invalid_namespace",
+			"message": "Optional 'namespace' must be a string",
+			"details": {}
+		}
+	}
+
+	ns_result := cfg_with_namespace(cfg, requested)
+	if dict_get_or(ns_result, "ok", false) == false {
+		return {
+			"ok": false,
+			"status": 400,
+			"error": dict_get_or(ns_result, "error", "invalid_namespace"),
+			"message": dict_get_or(ns_result, "message", "Invalid namespace"),
+			"details": dict_get_or(ns_result, "details", {})
+		}
+	}
+
+	return {
+		"ok": true,
+		"namespace": dict_get_or(ns_result, "namespace", dict_get_or(cfg, "namespace", "default")),
+		"cfg": dict_get_or(ns_result, "cfg", cfg)
+	}
+}
+
+func ensure_index_for_namespace(state, namespace, namespace_cfg) {
+	state = load_api_runtime_state(state)
+	indexes := dict_get_or(state, "indexes", {})
+	if type(indexes) != "dict" {
+		indexes = {}
+	}
+	if has_key(indexes, namespace) == 0 {
+		indexes[namespace] := load_or_initialize_index(namespace_cfg)
+	}
+	state["indexes"] := indexes
+	state = persist_api_runtime_state(state)
+	return {
+		"state": state,
+		"index": dict_get_or(indexes, namespace, {})
+	}
+}
+
+func normalize_federation_weight(raw_value) {
+	weight := num_or(raw_value, 1.0)
+	if weight < 0.0 {
+		weight = 0.0
+	}
+	if weight > 10.0 {
+		weight = 10.0
+	}
+	return weight
+}
+
+func default_federation_plan(base_namespace) {
+	return {
+		"ok": true,
+		"explicit": false,
+		"merge_strategy": "weighted_score",
+		"fallback_policy": "best_effort",
+		"targets": [{
+			"namespace": base_namespace,
+			"weight": 1.0,
+			"primary": true
+		}]
+	}
+}
+
+func normalize_federation_plan(raw_federation, base_namespace) {
+	defaults := default_federation_plan(base_namespace)
+	if type(raw_federation) == "null" {
+		return defaults
+	}
+	if type(raw_federation) != "dict" {
+		return {
+			"ok": false,
+			"status": 400,
+			"error": "invalid_federation",
+			"message": "Optional 'federation' must be a JSON object",
+			"details": {}
+		}
+	}
+
+	merge_strategy := to_lower(trim(to_string(dict_get_or(raw_federation, "merge_strategy", "weighted_score"))))
+	if merge_strategy == "" {
+		merge_strategy = "weighted_score"
+	}
+	if merge_strategy != "weighted_score" {
+		return {
+			"ok": false,
+			"status": 400,
+			"error": "invalid_federation_merge_strategy",
+			"message": "federation.merge_strategy must be 'weighted_score'",
+			"details": {
+				"merge_strategy": merge_strategy
+			}
+		}
+	}
+
+	fallback_policy := to_lower(trim(to_string(dict_get_or(raw_federation, "fallback_policy", "best_effort"))))
+	if fallback_policy == "" {
+		fallback_policy = "best_effort"
+	}
+	if fallback_policy != "best_effort" && fallback_policy != "primary_then_all" {
+		return {
+			"ok": false,
+			"status": 400,
+			"error": "invalid_federation_fallback_policy",
+			"message": "federation.fallback_policy must be 'best_effort' or 'primary_then_all'",
+			"details": {
+				"fallback_policy": fallback_policy
+			}
+		}
+	}
+
+	raw_targets := dict_get_or(raw_federation, "targets", [])
+	if type(raw_targets) != "array" || len(raw_targets) == 0 {
+		return {
+			"ok": false,
+			"status": 400,
+			"error": "invalid_federation_targets",
+			"message": "federation.targets must be a non-empty array",
+			"details": {}
+		}
+	}
+
+	seen := {}
+	targets := []
+	i := 0
+	while i < len(raw_targets) {
+		entry := raw_targets[i]
+		namespace := ""
+		weight := 1.0
+
+		if type(entry) == "string" {
+			namespace = trim(entry)
+		}
+		if type(entry) == "dict" {
+			namespace = trim(to_string(dict_get_or(entry, "namespace", "")))
+			weight = normalize_federation_weight(dict_get_or(entry, "weight", 1.0))
+		}
+
+		if namespace == "" {
+			return {
+				"ok": false,
+				"status": 400,
+				"error": "invalid_federation_target_namespace",
+				"message": "Each federation target must include a non-empty namespace",
+				"details": {
+					"index": i
+				}
+			}
+		}
+
+		norm_ns := to_lower(namespace)
+		if has_key(seen, norm_ns) == 0 {
+			seen[norm_ns] = true
+			targets = push(targets, {
+				"namespace": namespace,
+				"weight": weight,
+				"primary": len(targets) == 0
+			})
+		}
+
+		i = i + 1
+	}
+
+	if len(targets) == 0 {
+		return {
+			"ok": false,
+			"status": 400,
+			"error": "invalid_federation_targets",
+			"message": "No valid federation targets were provided",
+			"details": {}
+		}
+	}
+	if len(targets) > 8 {
+		return {
+			"ok": false,
+			"status": 400,
+			"error": "federation_targets_exceeded",
+			"message": "federation.targets exceeds maximum supported target count",
+			"details": {
+				"max_targets": 8,
+				"actual_targets": len(targets)
+			}
+		}
+	}
+
+	return {
+		"ok": true,
+		"explicit": true,
+		"merge_strategy": merge_strategy,
+		"fallback_policy": fallback_policy,
+		"targets": targets
+	}
+}
+
+func normalize_response_policy_request(raw_policy) {
+	if type(raw_policy) == "null" {
+		return {
+			"ok": true,
+			"explicit": false,
+			"policy": {}
+		}
+	}
+	if type(raw_policy) != "dict" {
+		return {
+			"ok": false,
+			"status": 400,
+			"error": "invalid_response_policy",
+			"message": "Optional 'response_policy' must be a JSON object",
+			"details": {}
+		}
+	}
+
+	style := to_lower(trim(to_string(dict_get_or(raw_policy, "style", "expanded"))))
+	if style != "strict_extractive" && style != "concise" && style != "expanded" {
+		return {
+			"ok": false,
+			"status": 400,
+			"error": "invalid_response_policy_style",
+			"message": "response_policy.style must be one of strict_extractive, concise, expanded",
+			"details": {
+				"style": style
+			}
+		}
+	}
+
+	safety_mode := to_lower(trim(to_string(dict_get_or(raw_policy, "safety_mode", "balanced"))))
+	if safety_mode != "balanced" && safety_mode != "strict" && safety_mode != "permissive" {
+		return {
+			"ok": false,
+			"status": 400,
+			"error": "invalid_response_policy_safety_mode",
+			"message": "response_policy.safety_mode must be one of balanced, strict, permissive",
+			"details": {
+				"safety_mode": safety_mode
+			}
+		}
+	}
+
+	policy := {
+		"style": style,
+		"safety_mode": safety_mode
+	}
+	if has_key(raw_policy, "min_confidence") == 1 {
+		policy["min_confidence"] = dict_get_or(raw_policy, "min_confidence", 0.45)
+	}
+	if has_key(raw_policy, "min_citations") == 1 {
+		policy["min_citations"] = dict_get_or(raw_policy, "min_citations", 2)
+	}
+
+	return {
+		"ok": true,
+		"explicit": true,
+		"policy": policy
+	}
+}
+
+func cfg_with_response_policy(cfg, response_policy) {
+	if type(response_policy) != "dict" || len(keys(response_policy)) == 0 {
+		return cfg
+	}
+	out := {}
+	for key in keys(cfg) {
+		out[key] := cfg[key]
+	}
+	out["query_response_policy"] = response_policy
+	return out
+}
+
+func normalize_retrieval_explanation_request(raw_flag, cfg) {
+	default_enabled := to_bool(dict_get_or(cfg, "query_retrieval_explanation_enabled", false))
+	if type(raw_flag) == "null" {
+		return {
+			"ok": true,
+			"explicit": false,
+			"enabled": default_enabled
+		}
+	}
+
+	if type(raw_flag) != "bool" {
+		return {
+			"ok": false,
+			"status": 400,
+			"error": "invalid_retrieval_explanation_flag",
+			"message": "Optional 'include_retrieval_explanation' must be a boolean",
+			"details": {}
+		}
+	}
+
+	return {
+		"ok": true,
+		"explicit": true,
+		"enabled": raw_flag
+	}
+}
+
+func cfg_with_retrieval_explanation(cfg, enabled) {
+	out := {}
+	for key in keys(cfg) {
+		out[key] = cfg[key]
+	}
+	out["query_retrieval_explanation_enabled"] = enabled
+	return out
+}
+
+func ensure_retention_state(state) {
+	state = load_api_runtime_state(state)
+	policies := dict_get_or(state, "retention_policies", {})
+	if type(policies) != "dict" {
+		policies = {}
+	}
+	holds := dict_get_or(state, "legal_holds", {})
+	if type(holds) != "dict" {
+		holds = {}
+	}
+	state["retention_policies"] = policies
+	state["legal_holds"] = holds
+	return state
+}
+
+func retention_policy_default(cfg) {
+	return {
+		"enabled": to_bool(dict_get_or(cfg, "retention_policy_enabled", false)),
+		"ttl_days": normalize_retention_ttl_days(dict_get_or(cfg, "retention_default_ttl_days", 365), 365),
+		"updated_at": 0,
+		"source": "config_default"
+	}
+}
+
+func namespace_retention_policy(state, cfg, namespace) {
+	state = ensure_retention_state(state)
+	policies := dict_get_or(state, "retention_policies", {})
+	policy := retention_policy_default(cfg)
+	override := dict_get_or(policies, namespace, null)
+	if type(override) == "dict" {
+		policy["enabled"] = to_bool(dict_get_or(override, "enabled", dict_get_or(policy, "enabled", false)))
+		policy["ttl_days"] = normalize_retention_ttl_days(dict_get_or(override, "ttl_days", dict_get_or(policy, "ttl_days", 365)), dict_get_or(policy, "ttl_days", 365))
+		policy["updated_at"] = num_or(dict_get_or(override, "updated_at", 0), 0)
+		policy["source"] = "namespace_override"
+	}
+	policy["namespace"] = namespace
+	return {
+		"state": state,
+		"policy": policy
+	}
+}
+
+func namespace_legal_hold(state, cfg, namespace) {
+	state = ensure_retention_state(state)
+	holds := dict_get_or(state, "legal_holds", {})
+	hold := dict_get_or(holds, namespace, null)
+	if type(hold) != "dict" {
+		hold = {
+			"enabled": false,
+			"reason": "",
+			"updated_at": 0
+		}
+	}
+	if to_bool(dict_get_or(cfg, "retention_legal_hold_enabled", true)) == false {
+		hold["enabled"] = false
+		hold["reason"] = ""
+	}
+	hold["namespace"] = namespace
+	return {
+		"state": state,
+		"hold": hold
+	}
+}
+
+func set_namespace_retention_policy(state, namespace, enabled, ttl_days) {
+	state = load_api_runtime_state(state)
+	state = ensure_retention_state(state)
+	policies := dict_get_or(state, "retention_policies", {})
+	policies[namespace] = {
+		"enabled": enabled,
+		"ttl_days": ttl_days,
+		"updated_at": current_timestamp()
+	}
+	state["retention_policies"] = policies
+	state = persist_api_runtime_state(state)
+	return state
+}
+
+func set_namespace_legal_hold(state, namespace, enabled, reason) {
+	state = load_api_runtime_state(state)
+	state = ensure_retention_state(state)
+	holds := dict_get_or(state, "legal_holds", {})
+	holds[namespace] = {
+		"enabled": enabled,
+		"reason": reason,
+		"updated_at": current_timestamp()
+	}
+	state["legal_holds"] = holds
+	state = persist_api_runtime_state(state)
+	return state
+}
+
+func index_legal_hold_snapshot(index_payload, namespace) {
+	meta := dict_get_or(index_payload, "meta", {})
+	if type(meta) != "dict" {
+		meta = {}
+	}
+	reason := to_string(dict_get_or(meta, "legal_hold_reason", ""))
+	return {
+		"enabled": to_bool(dict_get_or(meta, "legal_hold_enabled", false)),
+		"reason": reason,
+		"updated_at": num_or(dict_get_or(meta, "legal_hold_updated_at", 0), 0),
+		"namespace": namespace
+	}
+}
+
+func persist_namespace_legal_hold_index(state, namespace, namespace_cfg, enabled, reason) {
+	state = load_api_runtime_state(state)
+	indexed := ensure_index_for_namespace(state, namespace, namespace_cfg)
+	state = dict_get_or(indexed, "state", state)
+	index_payload := dict_get_or(indexed, "index", {})
+	meta := dict_get_or(index_payload, "meta", {})
+	if type(meta) != "dict" {
+		meta = {}
+	}
+	meta["legal_hold_enabled"] = enabled
+	meta["legal_hold_reason"] = reason
+	meta["legal_hold_updated_at"] = current_timestamp()
+	index_payload["meta"] = meta
+	indexes := dict_get_or(state, "indexes", {})
+	indexes[namespace] = index_payload
+	state["indexes"] = indexes
+	save_index_with_backend(namespace_cfg, index_payload)
+	state = persist_api_runtime_state(state)
+	return {
+		"state": state,
+		"hold": index_legal_hold_snapshot(index_payload, namespace)
+	}
+}
+
+func effective_namespace_legal_hold(state, cfg, namespace, namespace_cfg) {
+	state = load_api_runtime_state(state)
+	hold_payload := namespace_legal_hold(state, cfg, namespace)
+	state = dict_get_or(hold_payload, "state", state)
+	hold := dict_get_or(hold_payload, "hold", {})
+	if to_bool(dict_get_or(hold, "enabled", false)) == false {
+		persisted_index := load_or_initialize_index(namespace_cfg)
+		indexes := dict_get_or(state, "indexes", {})
+		if type(indexes) != "dict" {
+			indexes = {}
+		}
+		indexes[namespace] = persisted_index
+		state["indexes"] = indexes
+		state = persist_api_runtime_state(state)
+		persisted_hold := index_legal_hold_snapshot(persisted_index, namespace)
+		if to_bool(dict_get_or(persisted_hold, "enabled", false)) {
+			hold = persisted_hold
+		}
+	}
+	if to_bool(dict_get_or(cfg, "retention_legal_hold_enabled", true)) == false {
+		hold["enabled"] = false
+		hold["reason"] = ""
+	}
+	return {
+		"state": state,
+		"hold": hold
+	}
+}
+
+func remove_namespace_sessions(state, namespace) {
+	state = load_api_runtime_state(state)
+	sessions := dict_get_or(state, "sessions", {})
+	if type(sessions) != "dict" {
+		sessions = {}
+	}
+	prefix := namespace + "::"
+	next_sessions := {}
+	for key in keys(sessions) {
+		session_key := to_string(key)
+		if starts_with(session_key, prefix) == false {
+			next_sessions[session_key] := dict_get_or(sessions, session_key, [])
+		}
+	}
+	next_sessions = dict_without_key(next_sessions, namespace)
+	state["sessions"] := next_sessions
+	state = persist_api_runtime_state(state)
+	return state
+}
+
+func remove_namespace_ingest_state(state, namespace) {
+	state = load_api_runtime_state(state)
+	jobs := dict_get_or(state, "ingest_jobs", {})
+	if type(jobs) != "dict" {
+		jobs = {}
+	}
+	next_jobs := {}
+	removed_job_ids := {}
+	for job_id in keys(jobs) {
+		job := dict_get_or(jobs, job_id, {})
+		job_namespace := to_string(dict_get_or(job, "namespace", ""))
+		if job_namespace == namespace {
+			removed_job_ids[job_id] := true
+		} else {
+			next_jobs[job_id] := job
+		}
+	}
+	state["ingest_jobs"] := next_jobs
+
+	queue := dict_get_or(state, "ingest_queue", [])
+	if type(queue) != "array" {
+		queue = []
+	}
+	next_queue := []
+	i := 0
+	while i < len(queue) {
+		job_id := to_string(queue[i])
+		if has_key(removed_job_ids, job_id) == 0 {
+			next_queue = push(next_queue, job_id)
+		}
+		i = i + 1
+	}
+	state["ingest_queue"] := next_queue
+
+	idempotency := dict_get_or(state, "ingest_idempotency", {})
+	if type(idempotency) != "dict" {
+		idempotency = {}
+	}
+	prefix := namespace + "::"
+	next_idempotency := {}
+	for scoped_key in keys(idempotency) {
+		scoped_key_text := to_string(scoped_key)
+		entry := dict_get_or(idempotency, scoped_key_text, {})
+		entry_namespace := to_string(dict_get_or(entry, "namespace", ""))
+		if entry_namespace != namespace && starts_with(scoped_key_text, prefix) == false {
+			next_idempotency[scoped_key_text] := entry
+		}
+	}
+	state["ingest_idempotency"] := next_idempotency
+	state = persist_api_runtime_state(state)
+	return state
+}
+
+func remove_namespace_retention_controls(state, namespace) {
+	state = load_api_runtime_state(state)
+	state = ensure_retention_state(state)
+	policies := dict_get_or(state, "retention_policies", {})
+	if type(policies) != "dict" {
+		policies = {}
+	}
+	policies = dict_without_key(policies, namespace)
+	state["retention_policies"] := policies
+
+	holds := dict_get_or(state, "legal_holds", {})
+	if type(holds) != "dict" {
+		holds = {}
+	}
+	holds = dict_without_key(holds, namespace)
+	state["legal_holds"] := holds
+	state = persist_api_runtime_state(state)
+	return state
+}
+
+func remove_namespace_runtime_metrics(state, namespace) {
+	state = load_api_runtime_state(state)
+	state = ensure_metrics_state(state)
+
+	last_by_ns := dict_get_or(state, "last_ingest_by_namespace", {})
+	if type(last_by_ns) != "dict" {
+		last_by_ns = {}
+	}
+	last_by_ns = dict_without_key(last_by_ns, namespace)
+	state["last_ingest_by_namespace"] := last_by_ns
+
+	tenant_rate := dict_get_or(state, "tenant_query_rate", {})
+	if type(tenant_rate) != "dict" {
+		tenant_rate = {}
+	}
+	tenant_rate = dict_without_key(tenant_rate, namespace)
+	state["tenant_query_rate"] := tenant_rate
+
+	metrics := dict_get_or(state, "metrics", {})
+	metric_maps := ["tenant_ingest_requests", "tenant_query_requests", "tenant_ingest_errors", "tenant_query_errors", "tenant_quota_rejections"]
+	i := 0
+	while i < len(metric_maps) {
+		metric_key := to_string(metric_maps[i])
+		metric_map := dict_get_or(metrics, metric_key, {})
+		if type(metric_map) != "dict" {
+			metric_map = {}
+		}
+		metric_map = dict_without_key(metric_map, namespace)
+		metrics[metric_key] := metric_map
+		i = i + 1
+	}
+	state["metrics"] := metrics
+
+	last_ingest := dict_get_or(state, "last_ingest", null)
+	if type(last_ingest) == "dict" {
+		if to_string(dict_get_or(last_ingest, "namespace", "")) == namespace {
+			state["last_ingest"] := null
+		}
+	}
+	state = persist_api_runtime_state(state)
+	return state
+}
+
+func apply_namespace_privacy_delete(state, namespace) {
+	state = remove_namespace_sessions(state, namespace)
+	state = remove_namespace_ingest_state(state, namespace)
+	state = remove_namespace_retention_controls(state, namespace)
+	state = remove_namespace_runtime_metrics(state, namespace)
+	state = invalidate_caches_after_ingest(state, namespace)
+	return state
+}
+
+func session_key(namespace, session_id) {
+	if namespace == "" {
+		return session_id
+	}
+	return namespace + "::" + session_id
+}
+
+func query_cache_enabled(cfg) {
+	return dict_get_or(cfg, "api_query_cache_enabled", true)
+}
+
+func query_cache_ttl_ms(cfg) {
+	ttl_sec := dict_get_or(cfg, "api_query_cache_ttl_sec", 300)
+	if ttl_sec < 1 {
+		ttl_sec = 1
+	}
+	return ttl_sec * 1000
+}
+
+func query_cache_max_entries(cfg) {
+	limit := dict_get_or(cfg, "api_query_cache_max_entries", 1000)
+	if limit < 1 {
+		limit = 1
+	}
+	if limit > 200000 {
+		limit = 200000
+	}
+	return limit
+}
+
+func ensure_query_cache_state(state) {
+	state = load_api_runtime_state(state)
+	query_cache := dict_get_or(state, "query_cache", {})
+	if type(query_cache) != "dict" {
+		query_cache = {}
+	}
+	entries := dict_get_or(query_cache, "entries", {})
+	if type(entries) != "dict" {
+		entries = {}
+	}
+	order := dict_get_or(query_cache, "order", [])
+	if type(order) != "array" {
+		order = []
+	}
+	generation := dict_get_or(query_cache, "generation_by_namespace", {})
+	if type(generation) != "dict" {
+		generation = {}
+	}
+	query_cache["entries"] := entries
+	query_cache["order"] := order
+	query_cache["generation_by_namespace"] := generation
+	state["query_cache"] := query_cache
+	return state
+}
+
+func query_cache_generation(state, namespace) {
+	state = ensure_query_cache_state(state)
+	query_cache := dict_get_or(state, "query_cache", {})
+	generation := dict_get_or(query_cache, "generation_by_namespace", {})
+	return dict_get_or(generation, namespace, 0)
+}
+
+func query_cache_key(namespace, generation, query, filters, session_history, preferences) {
+	payload := {
+		"namespace": namespace,
+		"generation": generation,
+		"query": query,
+		"filters": filters,
+		"session_history": session_history,
+		"retrieval_preferences": preferences
+	}
+	return sha256(to_json(payload))
+}
+
+func query_cache_remove_entry(state, key) {
+	state = load_api_runtime_state(state)
+	state = ensure_query_cache_state(state)
+	query_cache := dict_get_or(state, "query_cache", {})
+	entries := dict_get_or(query_cache, "entries", {})
+	order := dict_get_or(query_cache, "order", [])
+
+	if has_key(entries, key) == 1 {
+		entries = dict_without_key(entries, key)
+	}
+
+	next_order := []
+	i := 0
+	while i < len(order) {
+		candidate := to_string(order[i])
+		if candidate != key {
+			next_order = push(next_order, candidate)
+		}
+		i = i + 1
+	}
+	entries = dict_without_key(entries, key)
+	query_cache["entries"] := entries
+	query_cache["order"] := next_order
+	state["query_cache"] := query_cache
+	state = persist_api_runtime_state(state)
+	return state
+}
+
+func query_cache_lookup(state, namespace, query, filters, session_history, cfg) {
+	state = ensure_query_cache_state(state)
+	if query_cache_enabled(cfg) == false {
+		return {
+			"state": state,
+			"hit": false,
+			"result": {}
+		}
+	}
+
+	generation := query_cache_generation(state, namespace)
+	cache_key := query_cache_key(namespace, generation, query, filters, session_history, normalize_retrieval_preferences(dict_get_or(cfg, "retrieval_preferences", {})))
+	query_cache := dict_get_or(state, "query_cache", {})
+	entries := dict_get_or(query_cache, "entries", {})
+	entry := dict_get_or(entries, cache_key, null)
+	if type(entry) != "dict" {
+		return {
+			"state": state,
+			"hit": false,
+			"result": {}
+		}
+	}
+
+	now := current_timestamp()
+	expires_at := dict_get_or(entry, "expires_at", 0)
+	if expires_at <= now {
+		state = query_cache_remove_entry(state, cache_key)
+		return {
+			"state": state,
+			"hit": false,
+			"result": {}
+		}
+	}
+
+	entry_generation := dict_get_or(entry, "generation", -1)
+	if entry_generation != generation {
+		state = query_cache_remove_entry(state, cache_key)
+		return {
+			"state": state,
+			"hit": false,
+			"result": {}
+		}
+	}
+
+	return {
+		"state": state,
+		"hit": true,
+		"result": dict_get_or(entry, "result", {})
+	}
+}
+
+func query_cache_store(state, namespace, query, filters, session_history, result, cfg) {
+	state = load_api_runtime_state(state)
+	state = ensure_query_cache_state(state)
+	if query_cache_enabled(cfg) == false {
+		return state
+	}
+
+	generation := query_cache_generation(state, namespace)
+	cache_key := query_cache_key(namespace, generation, query, filters, session_history, normalize_retrieval_preferences(dict_get_or(cfg, "retrieval_preferences", {})))
+	query_cache := dict_get_or(state, "query_cache", {})
+	entries := dict_get_or(query_cache, "entries", {})
+	order := dict_get_or(query_cache, "order", [])
+
+	if has_key(entries, cache_key) == 0 {
+		order = push(order, cache_key)
+	}
+
+	now := current_timestamp()
+	entries[cache_key] := {
+		"namespace": namespace,
+		"generation": generation,
+		"created_at": now,
+		"expires_at": now + query_cache_ttl_ms(cfg),
+		"result": result
+	}
+
+	limit := query_cache_max_entries(cfg)
+	while len(order) > limit {
+		evict_key := to_string(order[0])
+		entries = dict_without_key(entries, evict_key)
+		order = slice(order, 1, len(order))
+	}
+
+	query_cache["entries"] := entries
+	query_cache["order"] := order
+	state["query_cache"] := query_cache
+	state = persist_api_runtime_state(state)
+	return state
+}
+
+func invalidate_namespace_query_cache(state, namespace) {
+	state = load_api_runtime_state(state)
+	state = ensure_query_cache_state(state)
+	query_cache := dict_get_or(state, "query_cache", {})
+	entries := dict_get_or(query_cache, "entries", {})
+	order := dict_get_or(query_cache, "order", [])
+	generation := dict_get_or(query_cache, "generation_by_namespace", {})
+	generation[namespace] := dict_get_or(generation, namespace, 0) + 1
+
+	next_entries := {}
+	next_order := []
+	i := 0
+	while i < len(order) {
+		cache_key := to_string(order[i])
+		entry := dict_get_or(entries, cache_key, null)
+		if type(entry) == "dict" {
+			entry_namespace := to_string(dict_get_or(entry, "namespace", ""))
+			if entry_namespace != namespace {
+				next_entries[cache_key] := entry
+				next_order = push(next_order, cache_key)
+			}
+		}
+		i = i + 1
+	}
+	entries = next_entries
+	query_cache["entries"] := next_entries
+	query_cache["order"] := next_order
+	query_cache["generation_by_namespace"] := generation
+	state["query_cache"] := query_cache
+	state = persist_api_runtime_state(state)
+	return state
+}
+
+func invalidate_caches_after_ingest(state, namespace) {
+	state = invalidate_namespace_query_cache(state, namespace)
+	_ = clear_embedding_cache()
+	return state
+}
+
+func new_latency_buckets() {
+	return {
+		"lt_100ms": 0,
+		"lt_500ms": 0,
+		"lt_1000ms": 0,
+		"gte_1000ms": 0
+	}
+}
+
+func ensure_metrics_state(state) {
+	state = load_api_runtime_state(state)
+	metrics := dict_get_or(state, "metrics", {})
+	if type(metrics) != "dict" {
+		metrics = {}
+	}
+	if has_key(metrics, "ingest_requests") == 0 {
+		metrics["ingest_requests"] := 0
+	}
+	if has_key(metrics, "query_requests") == 0 {
+		metrics["query_requests"] := 0
+	}
+	if has_key(metrics, "ingest_errors") == 0 {
+		metrics["ingest_errors"] := 0
+	}
+	if has_key(metrics, "query_errors") == 0 {
+		metrics["query_errors"] := 0
+	}
+	if has_key(metrics, "inflight_requests") == 0 {
+		metrics["inflight_requests"] := 0
+	}
+	if has_key(metrics, "ingest_latency_ms") == 0 {
+		metrics["ingest_latency_ms"] := new_latency_buckets()
+	}
+	if has_key(metrics, "query_latency_ms") == 0 {
+		metrics["query_latency_ms"] := new_latency_buckets()
+	}
+	if has_key(metrics, "auth_failures") == 0 {
+		metrics["auth_failures"] := 0
+	}
+	if has_key(metrics, "cache_hits") == 0 {
+		metrics["cache_hits"] := 0
+	}
+	if has_key(metrics, "cache_misses") == 0 {
+		metrics["cache_misses"] := 0
+	}
+	if has_key(metrics, "error_codes") == 0 {
+		metrics["error_codes"] := {}
+	}
+	if has_key(metrics, "tenant_ingest_requests") == 0 {
+		metrics["tenant_ingest_requests"] := {}
+	}
+	if has_key(metrics, "tenant_query_requests") == 0 {
+		metrics["tenant_query_requests"] := {}
+	}
+	if has_key(metrics, "tenant_ingest_errors") == 0 {
+		metrics["tenant_ingest_errors"] := {}
+	}
+	if has_key(metrics, "tenant_query_errors") == 0 {
+		metrics["tenant_query_errors"] := {}
+	}
+	if has_key(metrics, "tenant_quota_rejections") == 0 {
+			metrics["tenant_quota_rejections"] := {}
+	}
+	if has_key(metrics, "query_stage_total_ms") == 0 {
+		metrics["query_stage_total_ms"] := {}
+	}
+	if has_key(metrics, "query_stage_sample_count") == 0 {
+		metrics["query_stage_sample_count"] := {}
+	}
+	if has_key(metrics, "query_stage_last_ms") == 0 {
+		metrics["query_stage_last_ms"] := {}
+	}
+	state["metrics"] := metrics
+	return state
+}
+
+func query_stage_names() {
+	return ["tokenize", "embed", "retrieve", "rerank", "synthesize"]
+}
+
+func stage_timings_payload(metrics) {
+	totals := dict_get_or(metrics, "query_stage_total_ms", {})
+	if type(totals) != "dict" {
+		totals = {}
+	}
+
+	samples := dict_get_or(metrics, "query_stage_sample_count", {})
+	if type(samples) != "dict" {
+		samples = {}
+	}
+
+	last_values := dict_get_or(metrics, "query_stage_last_ms", {})
+	if type(last_values) != "dict" {
+		last_values = {}
+	}
+
+	payload := {}
+	stages := query_stage_names()
+	i := 0
+	while i < len(stages) {
+		stage := stages[i]
+		sample_count := dict_get_or(samples, stage, 0)
+		total_ms := num_or(dict_get_or(totals, stage, 0), 0)
+		avg_ms := 0.0
+		if sample_count > 0 {
+			avg_ms = total_ms / sample_count
+		}
+		payload[stage] := {
+			"avg_ms": avg_ms,
+			"last_ms": dict_get_or(last_values, stage, 0),
+			"samples": sample_count
+		}
+		i = i + 1
+	}
+
+	return payload
+}
+
+func record_query_stage_metrics(state, stage_timings) {
+	if type(stage_timings) != "dict" {
+		return state
+	}
+
+	state = load_api_runtime_state(state)
+	state = ensure_metrics_state(state)
+	metrics := dict_get_or(state, "metrics", {})
+	totals := dict_get_or(metrics, "query_stage_total_ms", {})
+	samples := dict_get_or(metrics, "query_stage_sample_count", {})
+	last_values := dict_get_or(metrics, "query_stage_last_ms", {})
+	if type(totals) != "dict" {
+		totals = {}
+	}
+	if type(samples) != "dict" {
+		samples = {}
+	}
+	if type(last_values) != "dict" {
+		last_values = {}
+	}
+
+	stages := query_stage_names()
+	i := 0
+	while i < len(stages) {
+		stage := stages[i]
+		elapsed_ms := num_or(dict_get_or(stage_timings, stage, 0), 0)
+		if elapsed_ms < 0 {
+			elapsed_ms = 0
+		}
+		totals[stage] = num_or(dict_get_or(totals, stage, 0), 0) + elapsed_ms
+		samples[stage] = dict_get_or(samples, stage, 0) + 1
+		last_values[stage] = elapsed_ms
+		i = i + 1
+	}
+
+	metrics["query_stage_total_ms"] = totals
+	metrics["query_stage_sample_count"] = samples
+	metrics["query_stage_last_ms"] = last_values
+	state["metrics"] = metrics
+	state = persist_api_runtime_state(state)
+	return state
+}
+
+func increment_tenant_metric(state, map_key, namespace) {
+	state = load_api_runtime_state(state)
+	state = ensure_metrics_state(state)
+	metrics := dict_get_or(state, "metrics", {})
+	metric_map := dict_get_or(metrics, map_key, {})
+	if type(metric_map) != "dict" {
+		metric_map = {}
+	}
+	ns := trim(to_string(namespace))
+	if ns == "" {
+		ns = "default"
+	}
+	metric_map[ns] := dict_get_or(metric_map, ns, 0) + 1
+	metrics[map_key] := metric_map
+	state["metrics"] := metrics
+	state = persist_api_runtime_state(state)
+	return state
+}
+
+func quota_namespace(namespace) {
+	ns := to_lower(trim(to_string(namespace)))
+	if ns == "" {
+		ns = "default"
+	}
+	return ns
+}
+
+func tenant_quota_enabled(cfg) {
+	return dict_get_or(cfg, "api_tenant_quota_enabled", false) == true
+}
+
+func check_tenant_query_rate_quota(state, cfg, namespace) {
+	state = load_api_runtime_state(state)
+	if tenant_quota_enabled(cfg) == false {
+		return {
+			"ok": true,
+			"state": state
+		}
+	}
+
+	ns := quota_namespace(namespace)
+	now_ts := current_timestamp()
+	window_sec := dict_get_or(cfg, "api_tenant_query_rate_window_sec", 60)
+	if window_sec < 1 {
+		window_sec = 1
+	}
+	max_requests := dict_get_or(cfg, "api_tenant_query_rate_max_requests", 120)
+	if max_requests < 1 {
+		max_requests = 1
+	}
+	window_ms := window_sec * 1000
+
+	buckets := dict_get_or(state, "tenant_query_rate", {})
+	if type(buckets) != "dict" {
+		buckets = {}
+	}
+	bucket := dict_get_or(buckets, ns, {})
+	if type(bucket) != "dict" {
+		bucket = {}
+	}
+	window_start := dict_get_or(bucket, "window_start", 0)
+	count := dict_get_or(bucket, "count", 0)
+	if window_start <= 0 || (now_ts - window_start) >= window_ms {
+		window_start = now_ts
+		count = 0
+	}
+
+	if count >= max_requests {
+		retry_after_ms := window_ms - (now_ts - window_start)
+		if retry_after_ms < 0 {
+			retry_after_ms = 0
+		}
+		return {
+			"ok": false,
+			"state": state,
+			"status": 429,
+			"error": "tenant_query_quota_exceeded",
+			"message": "Tenant query quota exceeded for the current rate window",
+			"quota_type": "query_rate",
+			"details": {
+				"namespace": ns,
+				"window_sec": window_sec,
+				"max_requests": max_requests,
+				"retry_after_ms": retry_after_ms
+			}
+		}
+	}
+
+	count = count + 1
+	buckets[ns] := {
+		"window_start": window_start,
+		"count": count
+	}
+	state["tenant_query_rate"] := buckets
+	state = persist_api_runtime_state(state)
+
+	return {
+		"ok": true,
+		"state": state,
+		"details": {
+			"namespace": ns,
+			"window_sec": window_sec,
+			"max_requests": max_requests,
+			"count": count,
+			"remaining": max_requests - count
+		}
+	}
+}
+
+func increment_tenant_quota_rejection(state, namespace, quota_type) {
+	state = load_api_runtime_state(state)
+	state = ensure_metrics_state(state)
+	metrics := dict_get_or(state, "metrics", {})
+	rejections := dict_get_or(metrics, "tenant_quota_rejections", {})
+	if type(rejections) != "dict" {
+		rejections = {}
+	}
+	ns := quota_namespace(namespace)
+	tenant_rejections := dict_get_or(rejections, ns, {})
+	if type(tenant_rejections) != "dict" {
+		tenant_rejections = {}
+	}
+	kind := to_lower(trim(to_string(quota_type)))
+	if kind == "" {
+		kind = "unknown"
+	}
+	tenant_rejections[kind] := dict_get_or(tenant_rejections, kind, 0) + 1
+	rejections[ns] = tenant_rejections
+	metrics["tenant_quota_rejections"] = rejections
+	state["metrics"] = metrics
+	state = persist_api_runtime_state(state)
+	return state
+}
+
+func evaluate_tenant_ingest_quotas(cfg, namespace, result) {
+	if tenant_quota_enabled(cfg) == false {
+		return {
+			"ok": true
+		}
+	}
+
+	ns := quota_namespace(namespace)
+	ingest_chunks := dict_get_or(result, "chunks", 0)
+	if ingest_chunks < 0 {
+		ingest_chunks = 0
+	}
+	ingest_limit := dict_get_or(cfg, "api_tenant_ingest_max_chunks_per_request", 50000)
+	if ingest_limit < 1 {
+		ingest_limit = 1
+	}
+	if ingest_chunks > ingest_limit {
+		return {
+			"ok": false,
+			"status": 429,
+			"error": "tenant_ingest_quota_exceeded",
+			"message": "Tenant ingest volume quota exceeded for this request",
+			"quota_type": "ingest_volume",
+			"details": {
+				"namespace": ns,
+				"ingest_chunks": ingest_chunks,
+				"max_chunks_per_request": ingest_limit
+			}
+		}
+	}
+
+	storage_limit := dict_get_or(cfg, "api_tenant_storage_max_chunks", 200000)
+	if storage_limit < 1 {
+		storage_limit = 1
+	}
+	next_index := dict_get_or(result, "index", {})
+	next_storage_chunks := len(dict_get_or(next_index, "chunks", []))
+	if next_storage_chunks > storage_limit {
+		return {
+			"ok": false,
+			"status": 429,
+			"error": "tenant_storage_quota_exceeded",
+			"message": "Tenant storage quota exceeded for namespace index",
+			"quota_type": "storage",
+			"details": {
+				"namespace": ns,
+				"storage_chunks": next_storage_chunks,
+				"max_storage_chunks": storage_limit
+			}
+		}
+	}
+
+	return {
+		"ok": true
+	}
+}
+
+func query_filter_key_count(filters) {
+	if type(filters) != "dict" {
+		return 0
+	}
+	return len(keys(filters))
+}
+
+func session_history_char_count(session_history) {
+	if type(session_history) != "array" {
+		return 0
+	}
+	total := 0
+	i := 0
+	while i < len(session_history) {
+		turn := session_history[i]
+		if type(turn) == "dict" {
+			total = total + len(to_string(dict_get_or(turn, "query", "")))
+			total = total + len(to_string(dict_get_or(turn, "answer", "")))
+		}
+		i = i + 1
+	}
+	return total
+}
+
+func evaluate_query_guardrails(cfg, namespace, query, filters, session_history) {
+	max_filter_keys := dict_get_or(cfg, "api_guardrail_query_max_filter_keys", 32)
+	if max_filter_keys < 1 {
+		max_filter_keys = 1
+	}
+	filter_keys := query_filter_key_count(filters)
+	if filter_keys > max_filter_keys {
+		return {
+			"ok": false,
+			"status": 413,
+			"error": "query_filter_complexity_exceeded",
+			"message": "Query filters exceed configured complexity guardrail",
+			"details": {
+				"namespace": quota_namespace(namespace),
+				"max_filter_keys": max_filter_keys,
+				"actual_filter_keys": filter_keys
+			}
+		}
+	}
+
+	max_session_chars := dict_get_or(cfg, "api_guardrail_query_max_session_chars", 12000)
+	if max_session_chars < 1 {
+		max_session_chars = 1
+	}
+	session_chars := session_history_char_count(session_history)
+	if session_chars > max_session_chars {
+		return {
+			"ok": false,
+			"status": 413,
+			"error": "query_session_context_too_large",
+			"message": "Session context exceeds configured memory guardrail",
+			"details": {
+				"namespace": quota_namespace(namespace),
+				"max_session_chars": max_session_chars,
+				"actual_session_chars": session_chars
+			}
+		}
+	}
+
+	max_complexity := dict_get_or(cfg, "api_guardrail_query_max_complexity", 18000)
+	if max_complexity < 1 {
+		max_complexity = 1
+	}
+	complexity := len(query) + session_chars + (filter_keys * 128)
+	if complexity > max_complexity {
+		return {
+			"ok": false,
+			"status": 413,
+			"error": "query_complexity_exceeded",
+			"message": "Query exceeds configured CPU/memory complexity guardrail",
+			"details": {
+				"namespace": quota_namespace(namespace),
+				"max_complexity": max_complexity,
+				"actual_complexity": complexity,
+				"query_chars": len(query),
+				"session_chars": session_chars,
+				"filter_keys": filter_keys
+			}
+		}
+	}
+
+	return {
+		"ok": true,
+		"details": {
+			"complexity": complexity,
+			"session_chars": session_chars,
+			"filter_keys": filter_keys
+		}
+	}
+}
+
+func evaluate_ingest_result_guardrail(result) {
+	if dict_get_or(result, "ok", true) == false {
+		persistence_error := dict_get_or(result, "error", {})
+		return {
+			"ok": false,
+			"status": 507,
+			"error": dict_get_or(persistence_error, "code", "index_persistence_failed"),
+			"message": dict_get_or(persistence_error, "message", "Index persistence failed"),
+			"details": dict_get_or(persistence_error, "details", {})
+		}
+	}
+
+	guardrail := dict_get_or(result, "guardrail", {})
+	if type(guardrail) != "dict" || len(keys(guardrail)) == 0 {
+		ingest := dict_get_or(result, "ingest", {})
+		if type(ingest) == "dict" && dict_get_or(ingest, "aborted", false) == true {
+			guardrail = dict_get_or(ingest, "guardrail", {})
+		}
+	}
+
+	if type(guardrail) != "dict" || len(keys(guardrail)) == 0 {
+		return {
+			"ok": true
+		}
+	}
+
+	return {
+		"ok": false,
+		"status": dict_get_or(guardrail, "status", 413),
+		"error": dict_get_or(guardrail, "error", "ingest_guardrail_exceeded"),
+		"message": dict_get_or(guardrail, "message", "Ingest request exceeded configured guardrail"),
+		"details": dict_get_or(guardrail, "details", {})
+	}
+}
+
+func count_ingest_queue_depth(state) {
+	jobs := dict_get_or(state, "ingest_jobs", {})
+	if type(jobs) != "dict" {
+		return 0
+	}
+	depth := 0
+	for job_id in keys(jobs) {
+		job := dict_get_or(jobs, job_id, {})
+		status := to_lower(trim(to_string(dict_get_or(job, "status", ""))))
+		if status == "submitted" || status == "running" {
+			depth = depth + 1
+		}
+	}
+	return depth
+}
+
+func percentile_from_buckets(buckets, percentile_label) {
+	target_percent := 0.5
+	if percentile_label == "p95" {
+		target_percent = 0.95
+	} else if percentile_label == "p99" {
+		target_percent = 0.99
+	}
+
+	lt_100 := dict_get_or(buckets, "lt_100ms", 0)
+	lt_500 := dict_get_or(buckets, "lt_500ms", 0)
+	lt_1000 := dict_get_or(buckets, "lt_1000ms", 0)
+	gte_1000 := dict_get_or(buckets, "gte_1000ms", 0)
+	total := lt_100 + lt_500 + lt_1000 + gte_1000
+	if total <= 0 {
+		return 0
+	}
+	target := total * target_percent
+	running := 0
+
+	running = running + lt_100
+	if running >= target {
+		return 100
+	}
+	running = running + lt_500
+	if running >= target {
+		return 500
+	}
+	running = running + lt_1000
+	if running >= target {
+		return 1000
+	}
+	return 2000
+}
+
+func build_tenant_views(state, metrics) {
+	views := {}
+	indexes := dict_get_or(state, "indexes", {})
+	if type(indexes) != "dict" {
+		return views
+	}
+	last_by_ns := dict_get_or(state, "last_ingest_by_namespace", {})
+	ingest_requests := dict_get_or(metrics, "tenant_ingest_requests", {})
+	query_requests := dict_get_or(metrics, "tenant_query_requests", {})
+	ingest_errors := dict_get_or(metrics, "tenant_ingest_errors", {})
+	query_errors := dict_get_or(metrics, "tenant_query_errors", {})
+	quota_rejections := dict_get_or(metrics, "tenant_quota_rejections", {})
+
+	for namespace in keys(indexes) {
+		idx := dict_get_or(indexes, namespace, {})
+		views[namespace] := {
+			"chunks": len(dict_get_or(idx, "chunks", [])),
+			"last_ingest_unix_ms": dict_get_or(last_by_ns, namespace, 0),
+			"ingest_requests": dict_get_or(ingest_requests, namespace, 0),
+			"query_requests": dict_get_or(query_requests, namespace, 0),
+			"ingest_errors": dict_get_or(ingest_errors, namespace, 0),
+			"query_errors": dict_get_or(query_errors, namespace, 0),
+			"quota_rejections": dict_get_or(quota_rejections, namespace, {})
+		}
+	}
+
+	return views
+}
+
+func tenant_quota_payload(cfg, metrics) {
+	return {
+		"enabled": tenant_quota_enabled(cfg),
+		"query_rate_window_sec": dict_get_or(cfg, "api_tenant_query_rate_window_sec", 60),
+		"query_rate_max_requests": dict_get_or(cfg, "api_tenant_query_rate_max_requests", 120),
+		"ingest_max_chunks_per_request": dict_get_or(cfg, "api_tenant_ingest_max_chunks_per_request", 50000),
+		"storage_max_chunks": dict_get_or(cfg, "api_tenant_storage_max_chunks", 200000),
+		"rejections": dict_get_or(metrics, "tenant_quota_rejections", {})
+	}
+}
+
+func latency_bucket_key(elapsed_ms) {
+	if elapsed_ms < 100 {
+		return "lt_100ms"
+	}
+	if elapsed_ms < 500 {
+		return "lt_500ms"
+	}
+	if elapsed_ms < 1000 {
+		return "lt_1000ms"
+	}
+	return "gte_1000ms"
+}
+
+func increment_metric_counter(state, key) {
+	state = load_api_runtime_state(state)
+	state = ensure_metrics_state(state)
+	metrics := dict_get_or(state, "metrics", {})
+	metrics[key] := dict_get_or(metrics, key, 0) + 1
+	state["metrics"] := metrics
+	state = persist_api_runtime_state(state)
+	return state
+}
+
+func increment_latency_metric(state, metric_key, elapsed_ms) {
+	state = load_api_runtime_state(state)
+	state = ensure_metrics_state(state)
+	metrics := dict_get_or(state, "metrics", {})
+	buckets := dict_get_or(metrics, metric_key, new_latency_buckets())
+	bucket_key := latency_bucket_key(elapsed_ms)
+	buckets[bucket_key] := dict_get_or(buckets, bucket_key, 0) + 1
+	metrics[metric_key] := buckets
+	state["metrics"] := metrics
+	state = persist_api_runtime_state(state)
+	return state
+}
+
+func metrics_snapshot(state, cfg) {
+	state = ensure_metrics_state(state)
+	metrics := dict_get_or(state, "metrics", {})
+	ingest_latency := dict_get_or(metrics, "ingest_latency_ms", new_latency_buckets())
+	query_latency := dict_get_or(metrics, "query_latency_ms", new_latency_buckets())
+	cache_hits := dict_get_or(metrics, "cache_hits", 0)
+	cache_misses := dict_get_or(metrics, "cache_misses", 0)
+	total_cache := cache_hits + cache_misses
+	cache_hit_ratio := 0.0
+	if total_cache > 0 {
+		cache_hit_ratio = cache_hits / total_cache
+	}
+	state = ensure_query_cache_state(state)
+	query_cache := dict_get_or(state, "query_cache", {})
+	query_cache_entries := dict_get_or(query_cache, "entries", {})
+	if type(query_cache_entries) != "dict" {
+		query_cache_entries = {}
+	}
+	embedding_cache := embedding_cache_metrics()
+	started_at := dict_get_or(state, "started_at_unix_ms", current_timestamp())
+	uptime_ms := current_timestamp() - started_at
+	uptime_min := uptime_ms / 60000.0
+	if uptime_min <= 0 {
+		uptime_min = 1.0
+	}
+	ingest_requests := dict_get_or(metrics, "ingest_requests", 0)
+	ingest_throughput_per_min := ingest_requests / uptime_min
+	drain := dict_get_or(state, "drain", {})
+	return {
+		"ingest_requests": ingest_requests,
+		"query_requests": dict_get_or(metrics, "query_requests", 0),
+		"ingest_errors": dict_get_or(metrics, "ingest_errors", 0),
+		"query_errors": dict_get_or(metrics, "query_errors", 0),
+		"inflight_requests": dict_get_or(metrics, "inflight_requests", 0),
+		"ingest_latency_ms": ingest_latency,
+		"query_latency_ms": query_latency,
+		"ingest_latency_percentiles_ms": {
+			"p50": percentile_from_buckets(ingest_latency, "p50"),
+			"p95": percentile_from_buckets(ingest_latency, "p95"),
+			"p99": percentile_from_buckets(ingest_latency, "p99")
+		},
+		"query_latency_percentiles_ms": {
+			"p50": percentile_from_buckets(query_latency, "p50"),
+			"p95": percentile_from_buckets(query_latency, "p95"),
+			"p99": percentile_from_buckets(query_latency, "p99")
+		},
+		"ingest_queue_depth": count_ingest_queue_depth(state),
+		"ingest_throughput_per_min": ingest_throughput_per_min,
+		"auth_failures": dict_get_or(metrics, "auth_failures", 0),
+		"cache_hits": cache_hits,
+		"cache_misses": cache_misses,
+		"cache_hit_ratio": cache_hit_ratio,
+		"query_cache_entries": len(keys(query_cache_entries)),
+		"embedding_cache_hits": dict_get_or(embedding_cache, "hits", 0),
+		"embedding_cache_misses": dict_get_or(embedding_cache, "misses", 0),
+		"embedding_cache_entries": dict_get_or(embedding_cache, "size", 0),
+		"query_stage_timings_ms": stage_timings_payload(metrics),
+		"tenant_quota": tenant_quota_payload(cfg, metrics),
+		"error_cardinality": dict_get_or(metrics, "error_codes", {}),
+		"drain": {
+			"enabled": dict_get_or(drain, "enabled", false),
+			"started_at": dict_get_or(drain, "started_at", 0),
+			"reason": dict_get_or(drain, "reason", "")
+		},
+		"tenant_views": build_tenant_views(state, metrics)
+	}
+}
+
+func log_access(enabled, req, status, extra) {
+	if enabled == false {
+		return null
+	}
+	entry := {
+		"ts": current_timestamp(),
+		"request_id": ensure_request_id(req),
+		"correlation_id": ensure_correlation_id(req),
+		"method": req_method(req),
+		"path": req_path(req),
+		"ip": req_ip(req),
+		"status": status,
+		"extra": extra
+	}
+	print(to_json({"access": entry}))
+	return null
+}
+
+func audit_emit(cfg, event_type, status, details) {
+	audit_append_result := append_audit_event(cfg, event_type, status, details)
+	if dict_get_or(audit_append_result, "ok", false) == false && dict_get_or(cfg, "api_audit_fail_closed", false) == true {
+		print(to_json({
+			"ok": false,
+			"error": "audit_write_failed",
+			"message": "Security audit persistence failed; stopping service"
+		}))
+		exit(1)
+	}
+	return audit_append_result
+}
+
+export validate_audit_startup := func(cfg) {
+	if dict_get_or(cfg, "api_audit_enabled", false) == false {
+		return {"ok": true, "enabled": false}
+	}
+	return verify_audit_chain(cfg)
+}
+
+func trace_emit(cfg, req, span_name, stage, status, started_at, attributes) {
+	if dict_get_or(cfg, "otel_enabled", false) == false {
+		return null
+	}
+	if dict_get_or(cfg, "otel_export_mode", "audit") == "none" {
+		return null
+	}
+
+	details := {
+		"service_name": dict_get_or(cfg, "otel_service_name", "kujo-rag"),
+		"otlp_endpoint": dict_get_or(cfg, "otel_otlp_endpoint", ""),
+		"span_name": span_name,
+		"stage": stage,
+		"request_id": ensure_request_id(req),
+		"correlation_id": ensure_correlation_id(req),
+		"duration_ms": current_timestamp() - started_at,
+		"attributes": attributes
+	}
+	_ = audit_emit(cfg, "trace_span", status, details)
+	return null
+}
+
+func emit_query_stage_traces(cfg, req, namespace, stage_timings, cache_hit) {
+	if type(stage_timings) != "dict" {
+		return null
+	}
+
+	stages := query_stage_names()
+	i := 0
+	while i < len(stages) {
+		stage := stages[i]
+		elapsed_ms := num_or(dict_get_or(stage_timings, stage, 0), 0)
+		if elapsed_ms > 0 {
+			stage_started := current_timestamp() - elapsed_ms
+			trace_emit(cfg, req, "query.stage." + stage, stage, "ok", stage_started, {
+				"namespace": namespace,
+				"cache_hit": cache_hit
+			})
+		}
+		i = i + 1
+	}
+
+	return null
+}
+
+func audit_auth_decision(cfg, req, auth) {
+	auth_status := "allow"
+	if dict_get_or(auth, "ok", false) == false {
+		auth_status = "deny"
+	}
+	audit_emit(cfg, "auth_decision", auth_status, {
+		"provider": dict_get_or(auth, "provider", "unknown"),
+		"method": req_method(req),
+		"path": req_path(req),
+		"ip": req_ip(req),
+		"status_code": dict_get_or(auth, "status", 200),
+		"error": dict_get_or(auth, "error", "")
+	})
+	return null
+}
+
+func audit_rbac_decision(cfg, req, rbac, action, namespace) {
+	rbac_status := "allow"
+	if dict_get_or(rbac, "ok", false) == false {
+		rbac_status = "deny"
+	}
+	audit_emit(cfg, "rbac_decision", rbac_status, {
+		"method": req_method(req),
+		"path": req_path(req),
+		"ip": req_ip(req),
+		"action": action,
+		"namespace": namespace,
+		"role": dict_get_or(rbac, "role", ""),
+		"error": dict_get_or(rbac, "error", "")
+	})
+	return null
+}
+
+func rate_key(req) {
+	return req_ip(req)
+}
+
+func rate_backend_mode(cfg) {
+	mode := to_lower(trim(to_string(dict_get_or(cfg, "api_rate_limit_backend", "memory"))))
+	if mode != "memory" && mode != "shared_file" {
+		return "memory"
+	}
+	return mode
+}
+
+func shared_rate_state_path(cfg) {
+	path := trim(to_string(dict_get_or(cfg, "api_rate_limit_backend_file", "./results/rate_limit_state.json")))
+	if path == "" {
+		return "./results/rate_limit_state.json"
+	}
+	return path
+}
+
+func load_shared_rate_state(state, cfg) {
+	if rate_backend_mode(cfg) != "shared_file" {
+		return state
+	}
+	path := shared_rate_state_path(cfg)
+	if file_exists(path) == false {
+		return state
+	}
+	raw := read_file(path)
+	err := null
+	parsed := {}
+	try {
+		parsed := parse_json(raw)
+	} except e {
+		err := e
+	}
+	if type(err) != "null" || type(parsed) != "dict" {
+		return state
+	}
+
+	rate_map := dict_get_or(parsed, "rate", {})
+	if type(rate_map) == "dict" {
+		state["rate"] := rate_map
+	}
+	blocked := dict_get_or(parsed, "abuse_blocked_ips", {})
+	if type(blocked) == "dict" {
+		state["abuse_blocked_ips"] := blocked
+	}
+	return state
+}
+
+func persist_shared_rate_state(state, cfg) {
+	if rate_backend_mode(cfg) != "shared_file" {
+		return state
+	}
+	path := shared_rate_state_path(cfg)
+	if starts_with(path, "./results/") || starts_with(path, "results/") {
+		if path_exists("results") == false {
+			create_dir("results")
+		}
+	}
+	payload := {
+		"rate": dict_get_or(state, "rate", {}),
+		"abuse_blocked_ips": dict_get_or(state, "abuse_blocked_ips", {}),
+		"updated_at": current_timestamp()
+	}
+	if file_exists(path) {
+		delete_file(path)
+	}
+	write_file(path, to_json(payload))
+	return state
+}
+
+func persist_rate_state_if_needed(state, cfg) {
+	if rate_backend_mode(cfg) == "shared_file" {
+		state = persist_shared_rate_state(state, cfg)
+	}
+	return state
+}
+
+func api_runtime_state_path(state) {
+	path := trim(to_string(dict_get_or(state, "_runtime_state_path", "")))
+	if path == "" {
+		return ""
+	}
+	return path
+}
+
+func load_api_runtime_state(state) {
+	path := api_runtime_state_path(state)
+	if path == "" {
+		return state
+	}
+	if file_exists(path) == false {
+		return state
+	}
+	raw := read_file(path)
+	persisted := null
+	parse_error := null
+	try {
+		persisted = parse_json(raw)
+	} except e {
+		parse_error = e
+	}
+	if type(parse_error) != "null" || type(persisted) != "dict" {
+		encryption_cfg := dict_get_or(state, "_runtime_encryption_cfg", {})
+		if dict_get_or(encryption_cfg, "strict_config", false) == true || dict_get_or(encryption_cfg, "runtime_environment", "development") == "production" {
+			print(to_json({"ok": false, "error": "runtime_state_read_failed", "message": "Runtime state could not be decoded; stopping service"}))
+			exit(1)
+		}
+		return state
+	}
+	encryption_cfg := dict_get_or(state, "_runtime_encryption_cfg", {})
+	unprotected := unprotect_json_at_rest(persisted, path, encryption_cfg)
+	if dict_get_or(unprotected, "ok", false) == false {
+		if dict_get_or(encryption_cfg, "strict_config", false) == true || dict_get_or(encryption_cfg, "runtime_environment", "development") == "production" {
+			print(to_json({"ok": false, "error": "runtime_state_integrity_failed", "message": "Runtime state could not be authenticated or decrypted; stopping service"}))
+			exit(1)
+		}
+		return state
+	}
+	persisted = dict_get_or(unprotected, "value", {})
+	if type(persisted) != "dict" {
+		return state
+	}
+
+	for key in keys(persisted) {
+		key_text := to_string(key)
+		state[key_text] := persisted[key]
+	}
+	return state
+}
+
+func persist_api_runtime_state(state) {
+	path := api_runtime_state_path(state)
+	if path == "" {
+		return state
+	}
+	if starts_with(path, "./results/") || starts_with(path, "results/") {
+		if path_exists("results") == false {
+			create_dir("results")
+		}
+	}
+	encryption_cfg := dict_get_or(state, "_runtime_encryption_cfg", {})
+	persisted_state := dict_without_key(state, "_runtime_encryption_cfg")
+	protected := protect_json_at_rest(persisted_state, path, encryption_cfg)
+	if dict_get_or(protected, "ok", false) == false {
+		if dict_get_or(encryption_cfg, "strict_config", false) == true || dict_get_or(encryption_cfg, "runtime_environment", "development") == "production" {
+			print(to_json({"ok": false, "error": "runtime_state_encryption_failed", "message": "Runtime state could not be protected; stopping service"}))
+			exit(1)
+		}
+		return state
+	}
+	written := write_file_atomic(path, to_json(dict_get_or(protected, "value", persisted_state)), true)
+	if written != true && (dict_get_or(encryption_cfg, "strict_config", false) == true || dict_get_or(encryption_cfg, "runtime_environment", "development") == "production") {
+		print(to_json({"ok": false, "error": "runtime_state_write_failed", "message": "Runtime state could not be persisted; stopping service"}))
+		exit(1)
+	}
+	return state
+}
+
+func ip_in_static_blocklist(cfg, ip) {
+	blocked := dict_get_or(cfg, "api_abuse_blocklist_ips", [])
+	if type(blocked) != "array" {
+		blocked = [blocked]
+	}
+	i := 0
+	while i < len(blocked) {
+		entry := trim(to_string(blocked[i]))
+		if entry != "" && entry == ip {
+			return true
+		}
+		i = i + 1
+	}
+	return false
+}
+
+func prune_blocked_ip_state(state, now_ts) {
+	blocked := dict_get_or(state, "abuse_blocked_ips", {})
+	if type(blocked) != "dict" {
+		state["abuse_blocked_ips"] := {}
+		return state
+	}
+
+	pruned := {}
+	for ip in keys(blocked) {
+		until_ts := dict_get_or(blocked, ip, 0)
+		if until_ts > now_ts {
+			pruned[ip] := until_ts
+		}
+	}
+
+	state["abuse_blocked_ips"] := pruned
+	return state
+}
+
+func get_dynamic_block_until(state, ip) {
+	blocked := dict_get_or(state, "abuse_blocked_ips", {})
+	if type(blocked) != "dict" {
+		return 0
+	}
+	return dict_get_or(blocked, ip, 0)
+}
+
+func add_dynamic_block(state, ip, until_ts) {
+	blocked := dict_get_or(state, "abuse_blocked_ips", {})
+	if type(blocked) != "dict" {
+		blocked = {}
+	}
+	blocked[ip] := until_ts
+	state["abuse_blocked_ips"] := blocked
+	return state
+}
+
+func rate_without_key(rate_map, target_key) {
+	out := {}
+	for key in keys(rate_map) {
+		if key != target_key {
+			out[key] := rate_map[key]
+		}
+	}
+	return out
+}
+
+export prune_rate_state := func(state, cfg, now_ts) {
+	state = prune_blocked_ip_state(state, now_ts)
+	rate_map := dict_get_or(state, "rate", {})
+	if type(rate_map) != "dict" {
+		state["rate"] := {}
+		return state
+	}
+
+	window := dict_get_or(cfg, "api_rate_limit_window_sec", 60)
+	ttl_sec := dict_get_or(cfg, "api_rate_limit_bucket_ttl_sec", window * 5)
+	if ttl_sec < window {
+		ttl_sec = window
+	}
+	ttl_ms := ttl_sec * 1000
+
+	pruned := {}
+	for key in keys(rate_map) {
+		bucket := dict_get_or(rate_map, key, {})
+		window_start := dict_get_or(bucket, "window_start", now_ts)
+		if (now_ts - window_start) < ttl_ms {
+			pruned[key] := bucket
+		}
+	}
+
+	max_keys := dict_get_or(cfg, "api_rate_limit_max_keys", 5000)
+	if max_keys < 1 {
+		max_keys = 1
+	}
+
+	while len(keys(pruned)) > max_keys {
+		oldest_key := ""
+		oldest_ts := now_ts
+		for key in keys(pruned) {
+			bucket := dict_get_or(pruned, key, {})
+			window_start := dict_get_or(bucket, "window_start", now_ts)
+			if oldest_key == "" || window_start < oldest_ts {
+				oldest_key = key
+				oldest_ts = window_start
+			}
+		}
+		if oldest_key == "" {
+			break
+		}
+		pruned = rate_without_key(pruned, oldest_key)
+	}
+
+	state["rate"] := pruned
+	return state
+}
+
+func rate_check(state, cfg, req) {
+	window := dict_get_or(cfg, "api_rate_limit_window_sec", 60)
+	max_requests := dict_get_or(cfg, "api_rate_limit_max_requests", 120)
+	burst_window := dict_get_or(cfg, "api_rate_limit_burst_window_sec", 5)
+	burst_max_requests := dict_get_or(cfg, "api_rate_limit_burst_max_requests", 30)
+	anomaly_hook_enabled := dict_get_or(cfg, "api_anomaly_hook_enabled", false)
+	auto_block_enabled := dict_get_or(cfg, "api_anomaly_auto_block_enabled", false)
+	violation_threshold := dict_get_or(cfg, "api_anomaly_violation_threshold", 3)
+	block_ttl_sec := dict_get_or(cfg, "api_anomaly_block_ttl_sec", 900)
+	now_ts := current_timestamp()
+	state = load_api_runtime_state(state)
+	state = load_shared_rate_state(state, cfg)
+	state = prune_rate_state(state, cfg, now_ts)
+	key := rate_key(req)
+
+	if ip_in_static_blocklist(cfg, key) {
+		if anomaly_hook_enabled {
+			audit_emit(cfg, "anomaly_hook", "triggered", {
+				"kind": "static_blocklist",
+				"ip": key,
+				"path": req_path(req),
+				"method": req_method(req)
+			})
+		}
+		state = persist_rate_state_if_needed(state, cfg)
+		state = persist_api_runtime_state(state)
+		return {
+			"ok": false,
+			"error_code": "ip_blocked",
+			"message": "Client IP is blocked",
+			"ip": key,
+			"state": state
+		}
+	}
+
+	dynamic_block_until := get_dynamic_block_until(state, key)
+	if dynamic_block_until > now_ts {
+		if anomaly_hook_enabled {
+			audit_emit(cfg, "anomaly_hook", "triggered", {
+				"kind": "dynamic_block",
+				"ip": key,
+				"path": req_path(req),
+				"method": req_method(req),
+				"blocked_until_unix_ms": dynamic_block_until
+			})
+		}
+		state = persist_rate_state_if_needed(state, cfg)
+		state = persist_api_runtime_state(state)
+		return {
+			"ok": false,
+			"error_code": "ip_blocked",
+			"message": "Client IP is temporarily blocked",
+			"ip": key,
+			"blocked_until_unix_ms": dynamic_block_until,
+			"state": state
+		}
+	}
+
+	bucket := dict_get_or(state["rate"], key, {
+		"window_start": now_ts,
+		"count": 0,
+		"burst_window_start": now_ts,
+		"burst_count": 0,
+		"violation_count": 0
+	})
+
+	if (now_ts - dict_get_or(bucket, "window_start", now_ts)) >= (window * 1000) {
+		bucket["window_start"] := now_ts
+		bucket["count"] := 0
+	}
+	if (now_ts - dict_get_or(bucket, "burst_window_start", now_ts)) >= (burst_window * 1000) {
+		bucket["burst_window_start"] := now_ts
+		bucket["burst_count"] := 0
+	}
+
+	bucket["count"] := dict_get_or(bucket, "count", 0) + 1
+	bucket["burst_count"] := dict_get_or(bucket, "burst_count", 0) + 1
+	rate_map := dict_get_or(state, "rate", {})
+	rate_map[key] := bucket
+	state["rate"] := rate_map
+
+	violation_kind := ""
+	error_code := ""
+	message := ""
+	if dict_get_or(bucket, "burst_count", 0) > burst_max_requests {
+		violation_kind = "burst"
+		error_code = "burst_limited"
+		message = "Burst limit exceeded"
+	} else if dict_get_or(bucket, "count", 0) > max_requests {
+		violation_kind = "rate"
+		error_code = "rate_limited"
+		message = "Rate limit exceeded"
+	}
+
+	if violation_kind != "" {
+		bucket["violation_count"] = dict_get_or(bucket, "violation_count", 0) + 1
+		bucket["last_violation_at"] = now_ts
+		rate_map[key] = bucket
+		state["rate"] = rate_map
+
+		if anomaly_hook_enabled {
+			audit_emit(cfg, "anomaly_hook", "triggered", {
+				"kind": violation_kind,
+				"ip": key,
+				"path": req_path(req),
+				"method": req_method(req),
+				"window_count": dict_get_or(bucket, "count", 0),
+				"burst_count": dict_get_or(bucket, "burst_count", 0),
+				"violation_count": dict_get_or(bucket, "violation_count", 0)
+			})
+		}
+
+		blocked_until := 0
+		if auto_block_enabled && dict_get_or(bucket, "violation_count", 0) >= violation_threshold {
+			blocked_until = now_ts + (block_ttl_sec * 1000)
+			state = add_dynamic_block(state, key, blocked_until)
+			if anomaly_hook_enabled {
+				audit_emit(cfg, "anomaly_hook", "triggered", {
+					"kind": "auto_block",
+					"ip": key,
+					"blocked_until_unix_ms": blocked_until,
+					"violation_count": dict_get_or(bucket, "violation_count", 0)
+				})
+			}
+		}
+		state = persist_rate_state_if_needed(state, cfg)
+		state = persist_api_runtime_state(state)
+
+		return {
+			"ok": false,
+			"error_code": error_code,
+			"message": message,
+			"window_sec": window,
+			"limit": max_requests,
+			"burst_window_sec": burst_window,
+			"burst_limit": burst_max_requests,
+			"violation_count": dict_get_or(bucket, "violation_count", 0),
+			"ip": key,
+			"blocked_until_unix_ms": blocked_until,
+			"state": state
+		}
+	}
+	state = persist_rate_state_if_needed(state, cfg)
+	state = persist_api_runtime_state(state)
+
+	return {
+		"ok": true,
+		"state": state
+	}
+}
+
+func rate_limit_error(req, cfg, access_log, rate) {
+	code := dict_get_or(rate, "error_code", "rate_limited")
+	message := dict_get_or(rate, "message", "Rate limit exceeded")
+	details := {
+		"window_sec": dict_get_or(rate, "window_sec", 60),
+		"limit": dict_get_or(rate, "limit", 120),
+		"burst_window_sec": dict_get_or(rate, "burst_window_sec", dict_get_or(cfg, "api_rate_limit_burst_window_sec", 5)),
+		"burst_limit": dict_get_or(rate, "burst_limit", dict_get_or(cfg, "api_rate_limit_burst_max_requests", 30))
+	}
+	blocked_until := dict_get_or(rate, "blocked_until_unix_ms", 0)
+	if blocked_until > 0 {
+		details["blocked_until_unix_ms"] := blocked_until
+	}
+	details["ip"] := dict_get_or(rate, "ip", req_ip(req))
+	details["violation_count"] := dict_get_or(rate, "violation_count", 0)
+
+	audit_emit(cfg, "abuse_protection", "blocked", {
+		"code": code,
+		"path": req_path(req),
+		"method": req_method(req),
+		"ip": dict_get_or(details, "ip", "unknown")
+	})
+	log_access(access_log, req, 429, {"code": code})
+	return json_err(req, cfg, 429, code, message, details)
+}
+
+func startup_complete(state, cfg) {
+	deadline := dict_get_or(state, "startup_deadline_ms", 0)
+	if deadline <= 0 {
+		grace_ms := dict_get_or(cfg, "api_startup_grace_ms", 1000)
+		if grace_ms <= 0 {
+			return true
+		}
+		return false
+	}
+	return current_timestamp() >= deadline
+}
+
+func drain_state_snapshot(state, cfg) {
+	drain := dict_get_or(state, "drain", {})
+	return {
+		"enabled": dict_get_or(drain, "enabled", false),
+		"started_at": dict_get_or(drain, "started_at", 0),
+		"reason": dict_get_or(drain, "reason", ""),
+		"pre_stop_delay_ms": dict_get_or(cfg, "api_drain_pre_stop_ms", 5000),
+		"reject_mutations": dict_get_or(cfg, "api_drain_reject_mutations", true),
+		"inflight_requests": dict_get_or(dict_get_or(state, "metrics", {}), "inflight_requests", 0),
+		"ingest_queue_depth": count_ingest_queue_depth(state)
+	}
+}
+
+func drain_enabled(state) {
+	drain := dict_get_or(state, "drain", {})
+	return dict_get_or(drain, "enabled", false)
+}
+
+func set_drain_state(state, enabled, reason) {
+	state = load_api_runtime_state(state)
+	drain := dict_get_or(state, "drain", {})
+	drain["enabled"] := enabled
+	if enabled {
+		drain["started_at"] := current_timestamp()
+		drain["reason"] := reason
+	} else {
+		drain["started_at"] := 0
+		drain["reason"] := ""
+	}
+	state["drain"] := drain
+	state = persist_api_runtime_state(state)
+	return state
+}
+
+func drain_mode_error(req, cfg, access_log, state, operation_name) {
+	details := drain_state_snapshot(state, cfg)
+	details["operation"] := operation_name
+	audit_emit(cfg, "drain_mode", "rejected", {
+		"operation": operation_name,
+		"path": req_path(req),
+		"method": req_method(req)
+	})
+	log_access(access_log, req, 503, {"code": "service_draining", "operation": operation_name})
+	return json_err(req, cfg, 503, "service_draining", "Service is draining for graceful shutdown", details)
+}
+
+func readiness_snapshot(state, cfg) {
+	startup_ok := startup_complete(state, cfg)
+	forced_unready := dict_get_or(cfg, "api_readiness_force_unready", false)
+	draining := drain_enabled(state)
+	ready := false
+	status := "not_ready"
+	reason := "startup_incomplete"
+	if forced_unready {
+		reason = "forced_unready"
+	} else if draining {
+		reason = "draining"
+	} else if startup_ok == false {
+		reason = "startup_incomplete"
+	} else {
+		ready = true
+		status = "ready"
+		reason = "ok"
+	}
+
+	return {
+		"ready": ready,
+		"status": status,
+		"reason": reason,
+		"startup_complete": startup_ok,
+		"draining": draining,
+		"forced_unready": forced_unready,
+		"startup_deadline_ms": dict_get_or(state, "startup_deadline_ms", 0),
+		"drain": drain_state_snapshot(state, cfg)
+	}
+}
+
+export parse_api_json_body := func(req, cfg) {
+	body := dict_get_or(req, "body", "")
+	if type(body) != "string" {
+		body_type := "unknown"
+		if type(body) == "dict" {
+			body_type = "dict"
+		} else if type(body) == "array" {
+			body_type = "array"
+		} else if type(body) == "int" {
+			body_type = "int"
+		} else if type(body) == "float" {
+			body_type = "float"
+		} else if type(body) == "bool" {
+			body_type = "bool"
+		} else if type(body) == "null" {
+			body_type = "null"
+		}
+		return {
+			"ok": false,
+			"error": "invalid_body_type",
+			"message": "Request body must be a JSON string payload",
+			"details": {
+				"actual_type": body_type
+			}
+		}
+	}
+
+	max_bytes := dict_get_or(cfg, "api_max_body_bytes", 1048576)
+	if len(body) > max_bytes {
+		return {
+			"ok": false,
+			"error": "body_too_large",
+			"message": "Request body exceeds limit",
+			"details": {"max_bytes": max_bytes, "actual_bytes": len(body)}
+		}
+	}
+
+	data := {}
+	err := null
+	try {
+		data := parse_json(body)
+	} except e {
+		err := e
+	}
+	if type(err) != "null" {
+		return {
+			"ok": false,
+			"error": "invalid_json",
+			"message": to_string(err),
+			"details": {}
+		}
+	}
+
+	if type(data) != "dict" {
+		return {
+			"ok": false,
+			"error": "invalid_body",
+			"message": "JSON body must be an object",
+			"details": {}
+		}
+	}
+
+	return {
+		"ok": true,
+		"data": data
+	}
+}
+
+func auth_provider_mode(cfg) {
+	mode := to_lower(trim(to_string(dict_get_or(cfg, "api_auth_provider", "bearer"))))
+	if mode == "" {
+		token := trim(to_string(dict_get_or(cfg, "api_bearer_token", "")))
+		if token == "" {
+			return "none"
+		}
+		return "bearer"
+	}
+	if mode != "none" && mode != "bearer" && mode != "jwt_proxy" {
+		return "bearer"
+	}
+	return mode
+}
+
+func parse_int_or(value, fallback) {
+	err := null
+	parsed := fallback
+	try {
+		parsed := parse_int(value)
+	} except e {
+		err := e
+	}
+	if type(err) != "null" {
+		return fallback
+	}
+	return parsed
+}
+
+func split_audience_values(raw_aud) {
+	clean := trim(to_string(raw_aud))
+	if clean == "" {
+		return []
+	}
+	comma := split(clean, ",")
+	values := []
+	i := 0
+	while i < len(comma) {
+		part := trim(comma[i])
+		if part != "" {
+			values = push(values, part)
+		}
+		i = i + 1
+	}
+	if len(values) == 0 {
+		values = [clean]
+	}
+	return values
+}
+
+func audience_contains(values, expected) {
+	i := 0
+	while i < len(values) {
+		if to_string(values[i]) == expected {
+			return true
+		}
+		i = i + 1
+	}
+	return false
+}
+
+func token_in_list(token, values) {
+	if type(values) != "array" {
+		return false
+	}
+	i := 0
+	while i < len(values) {
+		candidate := trim(to_string(values[i]))
+		if candidate != "" && candidate == token {
+			return true
+		}
+		i = i + 1
+	}
+	return false
+}
+
+func peer_host(req) {
+	peer := to_lower(trim(req_ip(req)))
+	if peer == "" || peer == "unknown" {
+		return ""
+	}
+	if starts_with(peer, "[") {
+		close_index := index_of(peer, "]")
+		if close_index > 1 {
+			return substring(peer, 1, close_index)
+		}
+	}
+	if index_of(peer, ".") >= 0 {
+		parts := split(peer, ":")
+		if len(parts) > 0 {
+			return trim(parts[0])
+		}
+	}
+	return peer
+}
+
+func trusted_proxy_peer(req, cfg) {
+	allowed := dict_get_or(cfg, "api_trusted_proxy_ips", [])
+	if type(allowed) != "array" || len(allowed) == 0 {
+		return false
+	}
+	actual := peer_host(req)
+	for candidate in allowed {
+		if to_lower(trim(to_string(candidate))) == actual {
+			return true
+		}
+	}
+	return false
+}
+
+func trusted_proxy_secret_matches(req, cfg) {
+	expected := trim(to_string(dict_get_or(cfg, "api_trusted_proxy_secret", "")))
+	header_name := to_lower(trim(to_string(dict_get_or(cfg, "api_trusted_proxy_secret_header", "x-kujo-proxy-secret"))))
+	if expected == "" || header_name == "" {
+		return false
+	}
+	provided := trim(req_header(req, header_name))
+	if provided == "" {
+		return false
+	}
+	return sha256(provided) == sha256(expected)
+}
+
+export validate_api_auth := func(req, cfg) {
+	mode := auth_provider_mode(cfg)
+	if mode == "none" {
+		return {
+			"ok": true,
+			"enabled": false,
+			"provider": "none"
+		}
+	}
+
+	if mode == "bearer" {
+		active_token := trim(to_string(dict_get_or(cfg, "api_bearer_token", "")))
+		next_token := trim(to_string(dict_get_or(cfg, "api_bearer_token_next", "")))
+		if active_token == "" && next_token == "" {
+			return {
+				"ok": true,
+				"enabled": false,
+				"provider": "bearer"
+			}
+		}
+	}
+
+	authorization := trim(req_header(req, "authorization"))
+	if authorization == "" {
+		return {
+			"ok": false,
+			"status": 401,
+			"error": "unauthorized",
+			"message": "Missing Authorization header",
+			"provider": mode
+		}
+	}
+
+	if starts_with(to_lower(authorization), "bearer ") == false {
+		return {
+			"ok": false,
+			"status": 401,
+			"error": "invalid_auth_header",
+			"message": "Authorization header must use Bearer token",
+			"provider": mode
+		}
+	}
+
+	provided_token := trim(substring(authorization, 7, len(authorization)))
+	if provided_token == "" {
+		return {
+			"ok": false,
+			"status": 401,
+			"error": "unauthorized",
+			"message": "Bearer token cannot be empty",
+			"provider": mode
+		}
+	}
+
+	if mode == "bearer" {
+		active_token := trim(to_string(dict_get_or(cfg, "api_bearer_token", "")))
+		next_token := trim(to_string(dict_get_or(cfg, "api_bearer_token_next", "")))
+		revoked_tokens := dict_get_or(cfg, "api_bearer_revoked_tokens", [])
+
+		if token_in_list(provided_token, revoked_tokens) {
+			return {
+				"ok": false,
+				"status": 403,
+				"error": "revoked_token",
+				"message": "Bearer token is revoked",
+				"provider": "bearer"
+			}
+		}
+
+		if provided_token != active_token && (next_token == "" || provided_token != next_token) {
+			return {
+				"ok": false,
+				"status": 403,
+				"error": "forbidden",
+				"message": "Invalid bearer token",
+				"provider": "bearer"
+			}
+		}
+
+		slot := "current"
+		if next_token != "" && provided_token == next_token {
+			slot = "next"
+		}
+
+		return {
+			"ok": true,
+			"enabled": true,
+			"provider": "bearer",
+			"token_slot": slot
+		}
+	}
+
+	if mode == "jwt_proxy" {
+		expected_issuer := trim(to_string(dict_get_or(cfg, "api_jwt_issuer", "")))
+		expected_audience := trim(to_string(dict_get_or(cfg, "api_jwt_audience", "")))
+		clock_skew_sec := parse_int_or(to_string(dict_get_or(cfg, "api_jwt_clock_skew_sec", 60)), 60)
+
+		if expected_issuer == "" || expected_audience == "" {
+			return {
+				"ok": false,
+				"status": 500,
+				"error": "invalid_auth_config",
+				"message": "JWT proxy auth requires configured issuer and audience",
+				"provider": "jwt_proxy"
+			}
+		}
+
+		if trusted_proxy_peer(req, cfg) == false {
+			return {
+				"ok": false,
+				"status": 403,
+				"error": "untrusted_proxy_peer",
+				"message": "JWT proxy claims are accepted only from an explicitly trusted peer",
+				"provider": "jwt_proxy"
+			}
+		}
+
+		if trusted_proxy_secret_matches(req, cfg) == false {
+			return {
+				"ok": false,
+				"status": 403,
+				"error": "invalid_proxy_attestation",
+				"message": "JWT proxy attestation is missing or invalid",
+				"provider": "jwt_proxy"
+			}
+		}
+
+		claim_issuer := trim(req_header(req, "x-kujo-claim-iss"))
+		claim_audience_raw := trim(req_header(req, "x-kujo-claim-aud"))
+		claim_exp_raw := trim(req_header(req, "x-kujo-claim-exp"))
+
+		if claim_issuer == "" || claim_audience_raw == "" || claim_exp_raw == "" {
+			return {
+				"ok": false,
+				"status": 401,
+				"error": "missing_token_claims",
+				"message": "JWT proxy mode requires x-kujo-claim-iss, x-kujo-claim-aud, and x-kujo-claim-exp headers",
+				"provider": "jwt_proxy"
+			}
+		}
+
+		if claim_issuer != expected_issuer {
+			return {
+				"ok": false,
+				"status": 403,
+				"error": "invalid_token_issuer",
+				"message": "Token issuer does not match configured issuer",
+				"provider": "jwt_proxy"
+			}
+		}
+
+		claim_aud_values := split_audience_values(claim_audience_raw)
+		if audience_contains(claim_aud_values, expected_audience) == false {
+			return {
+				"ok": false,
+				"status": 403,
+				"error": "invalid_token_audience",
+				"message": "Token audience does not match configured audience",
+				"provider": "jwt_proxy"
+			}
+		}
+
+		exp_unix := parse_int_or(claim_exp_raw, 0)
+		now_unix := parse_int_or(to_string(current_timestamp() / 1000), 0)
+		if exp_unix <= 0 || exp_unix < (now_unix - clock_skew_sec) {
+			return {
+				"ok": false,
+				"status": 401,
+				"error": "expired_token",
+				"message": "Token is expired",
+				"provider": "jwt_proxy"
+			}
+		}
+
+		return {
+			"ok": true,
+			"enabled": true,
+			"provider": "jwt_proxy",
+			"subject": trim(req_header(req, "x-kujo-claim-sub")),
+			"role": to_lower(trim(req_header(req, "x-kujo-claim-role"))),
+			"namespace_scope": to_lower(trim(req_header(req, "x-kujo-claim-namespace")))
+		}
+	}
+
+	return {
+		"ok": true,
+		"enabled": true,
+		"provider": mode
+	}
+}
+
+func rbac_role_from_context(req, cfg, auth_ctx) {
+	role := ""
+	provider := ""
+	if type(auth_ctx) == "dict" {
+		role = to_lower(trim(to_string(dict_get_or(auth_ctx, "role", ""))))
+		provider = to_lower(trim(to_string(dict_get_or(auth_ctx, "provider", ""))))
+	}
+	if role != "" {
+		return role
+	}
+	if provider == "jwt_proxy" {
+		role_header := to_lower(trim(to_string(dict_get_or(cfg, "api_rbac_role_header", "x-kujo-role"))))
+		if role_header == "" {
+			role_header = "x-kujo-role"
+		}
+		role = to_lower(trim(req_header(req, role_header)))
+		if role != "" {
+			return role
+		}
+	}
+	return to_lower(trim(to_string(dict_get_or(cfg, "api_rbac_default_role", "reader"))))
+}
+
+func rbac_namespace_scope_from_context(req, cfg, auth_ctx) {
+	scope := ""
+	provider := ""
+	if type(auth_ctx) == "dict" {
+		scope = to_lower(trim(to_string(dict_get_or(auth_ctx, "namespace_scope", ""))))
+		provider = to_lower(trim(to_string(dict_get_or(auth_ctx, "provider", ""))))
+	}
+	if scope != "" {
+		return scope
+	}
+	if provider == "jwt_proxy" {
+		namespace_header := to_lower(trim(to_string(dict_get_or(cfg, "api_rbac_namespace_header", "x-kujo-namespace"))))
+		if namespace_header == "" {
+			namespace_header = "x-kujo-namespace"
+		}
+		scope = to_lower(trim(req_header(req, namespace_header)))
+		if scope != "" {
+			return scope
+		}
+	}
+	scope = to_lower(trim(to_string(dict_get_or(cfg, "namespace", "default"))))
+	if scope == "" {
+		return "default"
+	}
+	return scope
+}
+
+func rbac_action_allowed(cfg, role, action) {
+	policy := dict_get_or(cfg, "api_rbac_policy", {})
+	if type(policy) != "dict" {
+		return false
+	}
+	actions := dict_get_or(policy, role, [])
+	if type(actions) != "array" {
+		return false
+	}
+	i := 0
+	while i < len(actions) {
+		entry := to_lower(trim(to_string(actions[i])))
+		if entry == "*" || entry == action {
+			return true
+		}
+		i = i + 1
+	}
+	return false
+}
+
+export validate_api_rbac := func(req, cfg, auth_ctx, action, namespace) {
+	enabled := dict_get_or(cfg, "api_rbac_enabled", false)
+	if enabled == false {
+		return {
+			"ok": true,
+			"enabled": false,
+			"role": ""
+		}
+	}
+
+	action_name := to_lower(trim(to_string(action)))
+	if action_name == "" {
+		action_name = "query"
+	}
+
+	role := rbac_role_from_context(req, cfg, auth_ctx)
+	if role == "" {
+		role = "reader"
+	}
+
+	if rbac_action_allowed(cfg, role, action_name) == false {
+		return {
+			"ok": false,
+			"status": 403,
+			"error": "rbac_forbidden",
+			"message": "Role is not authorized for requested action",
+			"details": {
+				"role": role,
+				"action": action_name
+			}
+		}
+	}
+
+	namespace_scope := rbac_namespace_scope_from_context(req, cfg, auth_ctx)
+	requested_namespace := to_lower(trim(to_string(namespace)))
+	if requested_namespace == "" {
+		requested_namespace = "*"
+	}
+
+	if namespace_scope != "" && namespace_scope != "*" && requested_namespace != "*" {
+		if namespace_scope != requested_namespace {
+			return {
+				"ok": false,
+				"status": 403,
+				"error": "rbac_namespace_forbidden",
+				"message": "Role is not authorized for requested namespace",
+				"details": {
+					"role": role,
+					"namespace_scope": namespace_scope,
+					"requested_namespace": requested_namespace
+				}
+			}
+		}
+	}
+
+	return {
+		"ok": true,
+		"enabled": true,
+		"role": role,
+		"namespace_scope": namespace_scope
+	}
+}
+
+func normalize_path(path_value) {
+	if type(path_value) != "string" {
+		return "."
+	}
+	raw := trim(path_value)
+	if raw == "" {
+		return "."
+	}
+	raw = regex_replace(raw, "\\\\", "/")
+	raw = regex_replace(raw, "/+", "/")
+	is_abs := starts_with(raw, "/")
+	parts := split(raw, "/")
+	stack := []
+	for part in parts {
+		if part == "" || part == "." {
+			continue
+		}
+		if part == ".." {
+			if len(stack) > 0 {
+				last := stack[len(stack) - 1]
+				if last != ".." {
+					stack = slice(stack, 0, len(stack) - 1)
+				} else if is_abs == false {
+					stack := push(stack, "..")
+				}
+			} else if is_abs == false {
+				stack := push(stack, "..")
+			}
+		} else {
+			stack := push(stack, part)
+		}
+	}
+
+	joined := join(stack, "/")
+	if is_abs {
+		if joined == "" {
+			return "/"
+		}
+		return "/" + joined
+	}
+	if joined == "" {
+		return "."
+	}
+	return joined
+}
+
+func resolve_path(path_value, project_root) {
+	candidate := path_value
+	if type(candidate) != "string" || trim(candidate) == "" {
+		candidate = "."
+	}
+	candidate = trim(candidate)
+	base := normalize_path(project_root)
+
+	if starts_with(candidate, "/") {
+		return normalize_path(candidate)
+	}
+
+	if base == "/" {
+		return normalize_path("/" + candidate)
+	}
+
+	return normalize_path(base + "/" + candidate)
+}
+
+func path_within_root(path_value, root) {
+	if path_value == root {
+		return true
+	}
+	if root == "/" {
+		return starts_with(path_value, "/")
+	}
+	prefix := root
+	if ends_with(prefix, "/") == false {
+		prefix = prefix + "/"
+	}
+	return starts_with(path_value, prefix)
+}
+
+func first_symlink_component_within(path_value, root) {
+	normalized := normalize_path(path_value)
+	normalized_root := normalize_path(root)
+	if normalized == normalized_root {
+		return ""
+	}
+	prefix := normalized_root
+	if ends_with(prefix, "/") == false {
+		prefix = prefix + "/"
+	}
+	relative := substring(normalized, len(prefix), len(normalized))
+	parts := split(relative, "/")
+	current := normalized_root
+	for part in parts {
+		if part != "" && part != "." {
+			if current == "/" {
+				current = current + part
+			} else {
+				current = current + "/" + part
+			}
+			if path_exists(current) && path_is_symlink(current) {
+				return current
+			}
+		}
+	}
+	return ""
+}
+
+func resolve_allowed_roots(cfg) {
+	project_root := dict_get_or(cfg, "project_root", ".")
+	raw_roots := dict_get_or(cfg, "api_ingest_allowed_roots", ["."])
+	if type(raw_roots) != "array" {
+		raw_roots = [raw_roots]
+	}
+	resolved := []
+	for root in raw_roots {
+		if type(root) == "string" && trim(root) != "" {
+			resolved := push(resolved, resolve_path(root, project_root))
+		}
+	}
+	if len(resolved) == 0 {
+		resolved := push(resolved, resolve_path(".", project_root))
+	}
+	return resolved
+}
+
+export validate_api_ingest_path := func(requested_path, cfg) {
+	if type(requested_path) != "string" || trim(requested_path) == "" {
+		return {
+			"ok": false,
+			"status": 400,
+			"error": "invalid_ingest_path",
+			"message": "Ingest path must be a non-empty string",
+			"details": {
+				"actual_type": type(requested_path)
+			}
+		}
+	}
+
+	project_root := dict_get_or(cfg, "project_root", ".")
+	resolved_path := resolve_path(requested_path, project_root)
+	allowed_roots := resolve_allowed_roots(cfg)
+
+	allowed := false
+	matched_root := ""
+	for root in allowed_roots {
+		if path_within_root(resolved_path, root) {
+			allowed = true
+			matched_root = root
+			break
+		}
+	}
+
+	if allowed == false {
+		return {
+			"ok": false,
+			"status": 403,
+			"error": "ingest_path_forbidden",
+			"message": "Requested ingest path is outside allowed roots",
+			"details": {
+				"requested_path": requested_path,
+				"resolved_path": resolved_path,
+				"allowed_roots": allowed_roots
+			}
+		}
+	}
+
+	symlink_component := first_symlink_component_within(resolved_path, matched_root)
+	if symlink_component != "" {
+		return {
+			"ok": false,
+			"status": 403,
+			"error": "ingest_path_symlink_forbidden",
+			"message": "Requested ingest path traverses a symbolic link",
+			"details": {
+				"requested_path": requested_path,
+				"resolved_path": resolved_path,
+				"symlink_component": symlink_component
+			}
+		}
+	}
+
+	return {
+		"ok": true,
+		"path": resolved_path,
+		"allowed_roots": allowed_roots
+	}
+}
+
+export validate_api_recursive := func(raw_value) {
+	if type(raw_value) != "bool" {
+		return {
+			"ok": false,
+			"error": "invalid_recursive",
+			"message": "Optional 'recursive' must be a boolean",
+			"details": {
+				"actual_type": type(raw_value)
+			}
+		}
+	}
+	return {
+		"ok": true,
+		"value": raw_value
+	}
+}
+
+export validate_api_query_text := func(raw_value) {
+	if type(raw_value) != "string" {
+		return {
+			"ok": false,
+			"error": "invalid_query",
+			"message": "Request body 'query' must be a string",
+			"details": {
+				"actual_type": type(raw_value)
+			}
+		}
+	}
+	if trim(raw_value) == "" {
+		return {
+			"ok": false,
+			"error": "missing_query",
+			"message": "Request body must include a non-empty 'query' string",
+			"details": {}
+		}
+	}
+	return {
+		"ok": true,
+		"value": raw_value
+	}
+}
+
+func session_history_limit(cfg) {
+	limit := dict_get_or(cfg, "session_history_max_turns", 4)
+	if limit < 1 {
+		return 1
+	}
+	return limit
+}
+
+func bounded_history(history, limit) {
+	if type(history) != "array" {
+		return []
+	}
+	if len(history) <= limit {
+		return history
+	}
+	start := len(history) - limit
+	return slice(history, start, len(history))
+}
+
+export get_session_history := func(state, session_id, cfg) {
+	if type(session_id) != "string" || trim(session_id) == "" {
+		return []
+	}
+	sessions := dict_get_or(state, "sessions", {})
+	if type(sessions) != "dict" {
+		return []
+	}
+	history := dict_get_or(sessions, session_id, [])
+	return bounded_history(history, session_history_limit(cfg))
+}
+
+export append_session_turn := func(state, session_id, turn, cfg) {
+	state = load_api_runtime_state(state)
+	if type(session_id) != "string" || trim(session_id) == "" {
+		return state
+	}
+
+	query := trim(to_string(dict_get_or(turn, "query", "")))
+	answer := trim(to_string(dict_get_or(turn, "answer", "")))
+	if query == "" && answer == "" {
+		return state
+	}
+
+	sessions := dict_get_or(state, "sessions", {})
+	if type(sessions) != "dict" {
+		sessions = {}
+	}
+
+	history := dict_get_or(sessions, session_id, [])
+	if type(history) != "array" {
+		history = []
+	}
+
+	history = push(history, {
+		"query": query,
+		"answer": answer,
+		"ts": current_timestamp()
+	})
+	history = bounded_history(history, session_history_limit(cfg))
+	sessions[session_id] := history
+	state["sessions"] := sessions
+	state = persist_api_runtime_state(state)
+	return state
+}
+
+func ingest_idempotency_header(cfg) {
+	header := to_lower(trim(to_string(dict_get_or(cfg, "api_ingest_idempotency_header", "x-idempotency-key"))))
+	if header == "" {
+		return "x-idempotency-key"
+	}
+	return header
+}
+
+func raw_ingest_idempotency_key(req, data, cfg) {
+	if dict_get_or(cfg, "api_ingest_idempotency_enabled", true) == false {
+		return ""
+	}
+	raw := trim(req_header(req, ingest_idempotency_header(cfg)))
+	if raw == "" {
+		raw = trim(to_string(dict_get_or(data, "idempotency_key", "")))
+	}
+	if raw == "" {
+		return ""
+	}
+	if len(raw) > 128 {
+		raw = substring(raw, 0, 128)
+	}
+	return raw
+}
+
+func scoped_ingest_idempotency_key(namespace, raw_key) {
+	ns := to_lower(trim(to_string(namespace)))
+	if ns == "" {
+		ns = "default"
+	}
+	return ns + "::" + raw_key
+}
+
+func ingest_idempotency_window_ms(cfg) {
+	window_sec := dict_get_or(cfg, "api_ingest_idempotency_window_sec", 900)
+	if window_sec < 1 {
+		window_sec = 1
+	}
+	return window_sec * 1000
+}
+
+func prune_ingest_idempotency(state, cfg) {
+	state = load_api_runtime_state(state)
+	entries := dict_get_or(state, "ingest_idempotency", {})
+	if type(entries) != "dict" {
+		entries = {}
+	}
+	now_ts := current_timestamp()
+	for key in keys(entries) {
+		entry := dict_get_or(entries, key, {})
+		expires_at := dict_get_or(entry, "expires_at", 0)
+		if expires_at > 0 && expires_at <= now_ts {
+			entries = dict_without_key(entries, key)
+		}
+	}
+	state["ingest_idempotency"] := entries
+	state = persist_api_runtime_state(state)
+	return state
+}
+
+func lookup_ingest_idempotency(state, scoped_key) {
+	entries := dict_get_or(state, "ingest_idempotency", {})
+	if type(entries) != "dict" {
+		return {}
+	}
+	if has_key(entries, scoped_key) == 0 {
+		return {}
+	}
+	return dict_get_or(entries, scoped_key, {})
+}
+
+func register_ingest_idempotency(state, scoped_key, raw_key, job_id, namespace, path_value, recursive, cfg) {
+	state = load_api_runtime_state(state)
+	entries := dict_get_or(state, "ingest_idempotency", {})
+	if type(entries) != "dict" {
+		entries = {}
+	}
+	now_ts := current_timestamp()
+	entry := {
+		"key": raw_key,
+		"scoped_key": scoped_key,
+		"job_id": job_id,
+		"namespace": namespace,
+		"path": path_value,
+		"recursive": recursive,
+		"created_at": now_ts,
+		"expires_at": now_ts + ingest_idempotency_window_ms(cfg)
+	}
+	entries[scoped_key] := entry
+	state["ingest_idempotency"] := entries
+	state = persist_api_runtime_state(state)
+	return state
+}
+
+func build_ingest_job_id(path_value, recursive, jobs) {
+	seed := path_value + ":" + to_string(recursive) + ":" + to_string(current_timestamp()) + ":" + to_string(len(keys(jobs)))
+	return substring(sha256(seed), 0, 20)
+}
+
+export create_ingest_job := func(state, path_value, recursive, namespace) {
+	state = load_api_runtime_state(state)
+	jobs := dict_get_or(state, "ingest_jobs", {})
+	if type(jobs) != "dict" {
+		jobs = {}
+	}
+
+	job_id := build_ingest_job_id(path_value, recursive, jobs)
+	now_ts := current_timestamp()
+	job := {
+		"job_id": job_id,
+		"status": "submitted",
+		"path": path_value,
+		"namespace": namespace,
+		"recursive": recursive,
+		"submitted_at": now_ts,
+		"updated_at": now_ts
+	}
+
+	jobs[job_id] := job
+	state["ingest_jobs"] := jobs
+	state = persist_api_runtime_state(state)
+
+	return {
+		"state": state,
+		"job": job
+	}
+}
+
+export set_ingest_job_status := func(state, job_id, status, payload) {
+	state = load_api_runtime_state(state)
+	jobs := dict_get_or(state, "ingest_jobs", {})
+	if type(jobs) != "dict" {
+		return state
+	}
+	if has_key(jobs, job_id) == 0 {
+		return state
+	}
+
+	job := jobs[job_id]
+	job["status"] := status
+	job["updated_at"] := current_timestamp()
+
+	if status == "running" {
+		job["started_at"] := current_timestamp()
+	}
+	if status == "succeeded" {
+		job["completed_at"] := current_timestamp()
+		job["result"] := payload
+	}
+	if status == "failed" {
+		job["completed_at"] := current_timestamp()
+		job["error"] := payload
+	}
+
+	jobs[job_id] := job
+	state["ingest_jobs"] := jobs
+	state = persist_api_runtime_state(state)
+	return state
+}
+
+export get_ingest_job := func(state, job_id) {
+	jobs := dict_get_or(state, "ingest_jobs", {})
+	if type(jobs) != "dict" {
+		return null
+	}
+	if has_key(jobs, job_id) == 0 {
+		return null
+	}
+	return jobs[job_id]
+}
+
+func ingest_jobs_mode(cfg) {
+	mode := to_lower(trim(to_string(dict_get_or(cfg, "api_ingest_jobs_mode", "inline"))))
+	if mode != "inline" && mode != "queue" {
+		mode = "inline"
+	}
+	return mode
+}
+
+func ingest_worker_batch_size(cfg) {
+	size := dict_get_or(cfg, "api_ingest_worker_batch_size", 1)
+	if size < 1 {
+		size = 1
+	}
+	if size > 20 {
+		size = 20
+	}
+	return size
+}
+
+func ingest_worker_max_running(cfg) {
+	limit := dict_get_or(cfg, "api_ingest_worker_max_running", 1)
+	if limit < 1 {
+		limit = 1
+	}
+	if limit > 10 {
+		limit = 10
+	}
+	return limit
+}
+
+func queue_has_job(job_ids, target_job_id) {
+	i := 0
+	while i < len(job_ids) {
+		if to_string(job_ids[i]) == target_job_id {
+			return true
+		}
+		i = i + 1
+	}
+	return false
+}
+
+func enqueue_ingest_job(state, job_id) {
+	state = load_api_runtime_state(state)
+	queue := dict_get_or(state, "ingest_queue", [])
+	if type(queue) != "array" {
+		queue = []
+	}
+	if queue_has_job(queue, job_id) == false {
+		queue = push(queue, job_id)
+	}
+	state["ingest_queue"] := queue
+	state = persist_api_runtime_state(state)
+	return state
+}
+
+func pop_next_submitted_ingest_job(state) {
+	state = load_api_runtime_state(state)
+	queue := dict_get_or(state, "ingest_queue", [])
+	if type(queue) != "array" {
+		queue = []
+	}
+	jobs := dict_get_or(state, "ingest_jobs", {})
+	if type(jobs) != "dict" {
+		jobs = {}
+	}
+
+	next_job_id := ""
+	next_queue := []
+	i := 0
+	while i < len(queue) {
+		candidate := trim(to_string(queue[i]))
+		if candidate != "" {
+			job := dict_get_or(jobs, candidate, {})
+			status := to_lower(trim(to_string(dict_get_or(job, "status", ""))))
+			if status == "submitted" && next_job_id == "" {
+				next_job_id = candidate
+			} else if status == "submitted" {
+				next_queue = push(next_queue, candidate)
+			}
+		}
+		i = i + 1
+	}
+
+	state["ingest_queue"] := next_queue
+	state = persist_api_runtime_state(state)
+	return {
+		"state": state,
+		"job_id": next_job_id
+	}
+}
+
+func count_running_jobs(state) {
+	jobs := dict_get_or(state, "ingest_jobs", {})
+	if type(jobs) != "dict" {
+		return 0
+	}
+	running := 0
+	for job_id in keys(jobs) {
+		job := dict_get_or(jobs, job_id, {})
+		status := to_lower(trim(to_string(dict_get_or(job, "status", ""))))
+		if status == "running" {
+			running = running + 1
+		}
+	}
+	return running
+}
+
+func process_queued_ingest_job(state, cfg, job_id) {
+	job := get_ingest_job(state, job_id)
+	if type(job) == "null" {
+		return state
+	}
+
+	namespace := dict_get_or(job, "namespace", dict_get_or(cfg, "namespace", "default"))
+	resolved_path := dict_get_or(job, "path", ".")
+	recursive := dict_get_or(job, "recursive", true)
+
+	ns_cfg := cfg_with_namespace(cfg, namespace)
+	if dict_get_or(ns_cfg, "ok", false) == false {
+		state = set_ingest_job_status(state, job_id, "failed", {
+			"message": dict_get_or(ns_cfg, "message", "Invalid namespace for queued ingest job")
+		})
+		state = increment_metric_counter(state, "ingest_errors")
+		return state
+	}
+	namespace_cfg := dict_get_or(ns_cfg, "cfg", cfg)
+	path_scope := validate_api_ingest_path(resolved_path, namespace_cfg)
+	if dict_get_or(path_scope, "ok", false) == false {
+		state = set_ingest_job_status(state, job_id, "failed", {
+			"code": dict_get_or(path_scope, "error", "ingest_path_forbidden"),
+			"message": dict_get_or(path_scope, "message", "Queued ingest path failed execution-time validation"),
+			"details": dict_get_or(path_scope, "details", {}),
+			"worker_mode": "queue"
+		})
+		state = increment_metric_counter(state, "ingest_errors")
+		audit_emit(cfg, "ingest_operation", "failure", {"mode": "queue_worker", "namespace": namespace, "path": resolved_path, "job_id": job_id, "code": dict_get_or(path_scope, "error", "ingest_path_forbidden"), "stage": "path_scope_revalidation"})
+		return state
+	}
+	resolved_path = dict_get_or(path_scope, "path", resolved_path)
+
+	state = increment_metric_counter(state, "ingest_requests")
+	started_at := current_timestamp()
+	state = set_ingest_job_status(state, job_id, "running", {
+		"started_at": started_at,
+		"worker_mode": "queue"
+	})
+
+	result := null
+	ingest_error := null
+	try {
+		result := build_rag_index(resolved_path, namespace_cfg, recursive)
+	} except e {
+		ingest_error := e
+	}
+
+	if type(ingest_error) == "null" {
+		ingest_guardrail := evaluate_ingest_result_guardrail(result)
+		if dict_get_or(ingest_guardrail, "ok", false) == false {
+			state = set_ingest_job_status(state, job_id, "failed", {
+				"code": dict_get_or(ingest_guardrail, "error", "ingest_guardrail_exceeded"),
+				"message": dict_get_or(ingest_guardrail, "message", "Ingest request exceeded configured guardrail"),
+				"details": dict_get_or(ingest_guardrail, "details", {}),
+				"worker_mode": "queue"
+			})
+			state = increment_metric_counter(state, "ingest_errors")
+			audit_emit(cfg, "ingest_operation", "failure", {"mode": "queue_worker", "namespace": namespace, "path": resolved_path, "job_id": job_id, "code": dict_get_or(ingest_guardrail, "error", "ingest_guardrail_exceeded"), "stage": "guardrail"})
+		} else {
+			ingest_quota := evaluate_tenant_ingest_quotas(cfg, namespace, result)
+			if dict_get_or(ingest_quota, "ok", false) == false {
+				state = set_ingest_job_status(state, job_id, "failed", {
+					"code": dict_get_or(ingest_quota, "error", "tenant_ingest_quota_exceeded"),
+					"message": dict_get_or(ingest_quota, "message", "Tenant ingest quota exceeded"),
+					"details": dict_get_or(ingest_quota, "details", {}),
+					"worker_mode": "queue"
+				})
+				state = increment_metric_counter(state, "ingest_errors")
+				state = increment_tenant_quota_rejection(state, namespace, dict_get_or(ingest_quota, "quota_type", "ingest_volume"))
+				audit_emit(cfg, "ingest_operation", "failure", {"mode": "queue_worker", "namespace": namespace, "path": resolved_path, "job_id": job_id, "code": dict_get_or(ingest_quota, "error", "tenant_ingest_quota_exceeded"), "stage": "quota"})
+			} else {
+				indexes := dict_get_or(state, "indexes", {})
+				indexes[namespace] := dict_get_or(result, "index", dict_get_or(indexes, namespace, {}))
+				state["indexes"] := indexes
+				state["last_ingest"] := current_timestamp()
+				state = invalidate_caches_after_ingest(state, namespace)
+				last_map := dict_get_or(state, "last_ingest_by_namespace", {})
+				last_map[namespace] := state["last_ingest"]
+				state["last_ingest_by_namespace"] := last_map
+				state = persist_api_runtime_state(state)
+				state = set_ingest_job_status(state, job_id, "succeeded", {
+					"namespace": namespace,
+					"index_path": dict_get_or(namespace_cfg, "index_path", ""),
+					"summary": dict_get_or(result, "summary", {}),
+					"chunks": dict_get_or(result, "chunks", 0),
+					"stats": dict_get_or(dict_get_or(result, "ingest", {}), "stats", {}),
+					"errors": dict_get_or(dict_get_or(result, "ingest", {}), "errors", []),
+					"worker_mode": "queue"
+				})
+				audit_emit(cfg, "ingest_operation", "success", {"mode": "queue_worker", "namespace": namespace, "path": resolved_path, "job_id": job_id, "chunks": dict_get_or(result, "chunks", 0)})
+			}
+		}
+	} else {
+		state = set_ingest_job_status(state, job_id, "failed", {
+			"message": to_string(ingest_error),
+			"worker_mode": "queue"
+		})
+		state = increment_metric_counter(state, "ingest_errors")
+		audit_emit(cfg, "ingest_operation", "failure", {"mode": "queue_worker", "namespace": namespace, "path": resolved_path, "job_id": job_id, "error": to_string(ingest_error)})
+	}
+
+	state = increment_latency_metric(state, "ingest_latency_ms", current_timestamp() - started_at)
+	return state
+}
+
+func run_ingest_worker_cycle(state, cfg) {
+	if ingest_jobs_mode(cfg) != "queue" {
+		return {
+			"state": state,
+			"processed": 0
+		}
+	}
+
+	max_jobs := ingest_worker_batch_size(cfg)
+	max_running := ingest_worker_max_running(cfg)
+	processed := 0
+
+	while processed < max_jobs {
+		if count_running_jobs(state) >= max_running {
+			break
+		}
+		next_job := pop_next_submitted_ingest_job(state)
+		state = dict_get_or(next_job, "state", state)
+		job_id := dict_get_or(next_job, "job_id", "")
+		if trim(to_string(job_id)) == "" {
+			break
+		}
+		state = process_queued_ingest_job(state, cfg, trim(to_string(job_id)))
+		processed = processed + 1
+	}
+
+	return {
+		"state": state,
+		"processed": processed
+	}
+}
+
+export start_api_server := func(cfg) {
+	startup_diagnostics := validate_config(cfg)
+	if dict_get_or(startup_diagnostics, "ok", false) == false {
+		print(to_json({"ok": false, "error": "invalid_configuration", "message": "API configuration validation failed before listen", "diagnostics": startup_diagnostics}))
+		exit(1)
+	}
+
+	host := dict_get_or(cfg, "api_host", "127.0.0.1")
+	port := dict_get_or(cfg, "api_port", 8787)
+	access_log := dict_get_or(cfg, "api_access_log", true)
+	default_ns_result := cfg_with_namespace(cfg, dict_get_or(cfg, "namespace", "default"))
+	default_ns_cfg := dict_get_or(default_ns_result, "cfg", cfg)
+	default_namespace := dict_get_or(default_ns_result, "namespace", dict_get_or(cfg, "namespace", "default"))
+
+	state := {
+		"indexes": {
+			default_namespace: load_or_initialize_index(default_ns_cfg)
+		},
+		"started_at_unix_ms": current_timestamp(),
+		"startup_deadline_ms": current_timestamp() + dict_get_or(cfg, "api_startup_grace_ms", 1000),
+		"drain": {
+			"enabled": false,
+			"started_at": 0,
+			"reason": ""
+		},
+		"last_ingest": null,
+		"last_ingest_by_namespace": {},
+		"rate": {},
+		"tenant_query_rate": {},
+		"abuse_blocked_ips": {},
+		"sessions": {},
+		"ingest_jobs": {},
+		"ingest_queue": [],
+		"ingest_idempotency": {},
+		"query_cache": {
+			"entries": {},
+			"order": [],
+			"generation_by_namespace": {}
+		},
+		"retention_policies": {},
+		"legal_holds": {},
+		"metrics": {
+			"ingest_requests": 0,
+			"query_requests": 0,
+			"ingest_errors": 0,
+			"query_errors": 0,
+			"inflight_requests": 0,
+			"ingest_latency_ms": new_latency_buckets(),
+			"query_latency_ms": new_latency_buckets()
+		}
+	}
+	state["_runtime_state_path"] := "./results/api_state_" + to_string(port) + ".json"
+	state["_runtime_encryption_cfg"] := {
+		"at_rest_encryption_enabled": dict_get_or(cfg, "at_rest_encryption_enabled", false),
+		"at_rest_encryption_key": dict_get_or(cfg, "at_rest_encryption_key", ""),
+		"at_rest_encryption_key_file": dict_get_or(cfg, "at_rest_encryption_key_file", ""),
+		"at_rest_encryption_openssl_bin": dict_get_or(cfg, "at_rest_encryption_openssl_bin", "openssl"),
+		"strict_config": dict_get_or(cfg, "strict_config", false),
+		"runtime_environment": dict_get_or(cfg, "runtime_environment", "development")
+	}
+	if file_exists(dict_get_or(state, "_runtime_state_path", "")) {
+		delete_file(dict_get_or(state, "_runtime_state_path", ""))
+	}
+
+	audit_startup := validate_audit_startup(cfg)
+	if dict_get_or(audit_startup, "ok", false) == false {
+		print(to_json({"ok": false, "error": "audit_integrity_check_failed", "message": "Security audit chain validation failed; refusing to listen"}))
+		exit(1)
+	}
+
+	print("Kujo RAG API listening on http://" + host + ":" + to_string(port))
+	print("Index path: " + dict_get_or(cfg, "index_path", "./data/rag_index.json"))
+	audit_emit(cfg, "config_snapshot", "recorded", {
+		"host": host,
+		"port": port,
+		"namespace": default_namespace,
+		"index_path": dict_get_or(cfg, "index_path", "./data/rag_index.json"),
+		"auth_provider": dict_get_or(cfg, "api_auth_provider", "bearer"),
+		"rbac_enabled": dict_get_or(cfg, "api_rbac_enabled", false)
+	})
+
+	server := http_listen(host, port)
+
+	server := server.route("OPTIONS", "/health", func(req) {
+		return cors_preflight_response(req, cfg)
+	})
+
+	server := server.route("OPTIONS", "/live", func(req) {
+		return cors_preflight_response(req, cfg)
+	})
+
+	server := server.route("OPTIONS", "/ready", func(req) {
+		return cors_preflight_response(req, cfg)
+	})
+
+	server := server.route("OPTIONS", "/startup", func(req) {
+		return cors_preflight_response(req, cfg)
+	})
+
+	server := server.route("OPTIONS", "/ingest", func(req) {
+		return cors_preflight_response(req, cfg)
+	})
+
+	server := server.route("OPTIONS", "/ingest/jobs", func(req) {
+		return cors_preflight_response(req, cfg)
+	})
+
+	server := server.route("OPTIONS", "/ingest/jobs/status", func(req) {
+		return cors_preflight_response(req, cfg)
+	})
+
+	server := server.route("OPTIONS", "/ingest/jobs/worker/tick", func(req) {
+		return cors_preflight_response(req, cfg)
+	})
+
+	server := server.route("OPTIONS", "/query", func(req) {
+		return cors_preflight_response(req, cfg)
+	})
+
+	server := server.route("OPTIONS", "/metrics", func(req) {
+		return cors_preflight_response(req, cfg)
+	})
+
+	server := server.route("OPTIONS", "/retention", func(req) {
+		return cors_preflight_response(req, cfg)
+	})
+
+	server := server.route("OPTIONS", "/retention/policy", func(req) {
+		return cors_preflight_response(req, cfg)
+	})
+
+	server := server.route("OPTIONS", "/retention/purge", func(req) {
+		return cors_preflight_response(req, cfg)
+	})
+
+	server := server.route("OPTIONS", "/retention/legal-hold/start", func(req) {
+		return cors_preflight_response(req, cfg)
+	})
+
+	server := server.route("OPTIONS", "/retention/legal-hold/stop", func(req) {
+		return cors_preflight_response(req, cfg)
+	})
+
+	server := server.route("OPTIONS", "/privacy/export", func(req) {
+		return cors_preflight_response(req, cfg)
+	})
+
+	server := server.route("OPTIONS", "/privacy/delete", func(req) {
+		return cors_preflight_response(req, cfg)
+	})
+
+	server := server.route("OPTIONS", "/drain", func(req) {
+		return cors_preflight_response(req, cfg)
+	})
+
+	server := server.route("OPTIONS", "/drain/start", func(req) {
+		return cors_preflight_response(req, cfg)
+	})
+
+	server := server.route("OPTIONS", "/drain/stop", func(req) {
+		return cors_preflight_response(req, cfg)
+	})
+
+	server := server.route("OPTIONS", "/", func(req) {
+		return cors_preflight_response(req, cfg)
+	})
+
+	server := server.route("GET", "/health", func(req) {
+		rate := rate_check(state, cfg, req)
+		state = dict_get_or(rate, "state", state)
+		if rate["ok"] == false {
+				return rate_limit_error(req, cfg, access_log, rate)
+		}
+
+		total_chunks := 0
+		indexes := dict_get_or(state, "indexes", {})
+		if type(indexes) == "dict" {
+			for key in keys(indexes) {
+				index_payload := dict_get_or(indexes, key, {})
+				total_chunks = total_chunks + len(dict_get_or(index_payload, "chunks", []))
+			}
+		}
+
+		summary := {
+			"status": "ok",
+			"index_chunks": total_chunks,
+			"namespaces": len(keys(dict_get_or(state, "indexes", {}))),
+			"updated_at": dict_get_or(state, "last_ingest", "")
+		}
+		log_access(access_log, req, 200, {"chunks": summary["index_chunks"]})
+		return json_ok(req, cfg, summary)
+	})
+
+	server := server.route("GET", "/live", func(req) {
+		rate := rate_check(state, cfg, req)
+		state = dict_get_or(rate, "state", state)
+		if rate["ok"] == false {
+			return rate_limit_error(req, cfg, access_log, rate)
+		}
+
+		payload := {
+			"status": "alive",
+			"ts": current_timestamp()
+		}
+		log_access(access_log, req, 200, {"live": true})
+		return json_ok(req, cfg, payload)
+	})
+
+	server := server.route("GET", "/startup", func(req) {
+		rate := rate_check(state, cfg, req)
+		state = dict_get_or(rate, "state", state)
+		if rate["ok"] == false {
+			return rate_limit_error(req, cfg, access_log, rate)
+		}
+
+		complete := startup_complete(state, cfg)
+		payload := {
+			"status": "starting",
+			"startup_complete": complete,
+			"startup_deadline_ms": dict_get_or(state, "startup_deadline_ms", 0),
+			"now_unix_ms": current_timestamp()
+		}
+		if complete {
+			payload["status"] := "started"
+			log_access(access_log, req, 200, {"startup": "started"})
+			return json_ok(req, cfg, payload)
+		}
+
+		log_access(access_log, req, 503, {"startup": "starting"})
+		return json_err(req, cfg, 503, "startup_incomplete", "Service startup is still in progress", payload)
+	})
+
+	server := server.route("GET", "/ready", func(req) {
+		rate := rate_check(state, cfg, req)
+		state = dict_get_or(rate, "state", state)
+		if rate["ok"] == false {
+			return rate_limit_error(req, cfg, access_log, rate)
+		}
+
+		snapshot := readiness_snapshot(state, cfg)
+		if dict_get_or(snapshot, "ready", false) == true {
+			log_access(access_log, req, 200, {"ready": true})
+			return json_ok(req, cfg, snapshot)
+		}
+
+		log_access(access_log, req, 503, {"ready": false, "reason": dict_get_or(snapshot, "reason", "unknown")})
+		return json_err(req, cfg, 503, "service_not_ready", "Service is not ready to accept traffic", snapshot)
+	})
+
+	server := server.route("POST", "/ingest", func(req) {
+		started_at := current_timestamp()
+		state = increment_metric_counter(state, "ingest_requests")
+
+		rate := rate_check(state, cfg, req)
+		state = dict_get_or(rate, "state", state)
+		if rate["ok"] == false {
+			state = increment_metric_counter(state, "ingest_errors")
+			state = increment_latency_metric(state, "ingest_latency_ms", current_timestamp() - started_at)
+				return rate_limit_error(req, cfg, access_log, rate)
+		}
+
+		if dict_get_or(cfg, "api_drain_reject_mutations", true) && drain_enabled(state) {
+			state = increment_metric_counter(state, "ingest_errors")
+			state = increment_latency_metric(state, "ingest_latency_ms", current_timestamp() - started_at)
+			return drain_mode_error(req, cfg, access_log, state, "ingest")
+		}
+
+		auth := validate_api_auth(req, cfg)
+		audit_auth_decision(cfg, req, auth)
+		if auth["ok"] == false {
+			state = increment_metric_counter(state, "ingest_errors")
+			state = increment_metric_counter(state, "auth_failures")
+			state = increment_latency_metric(state, "ingest_latency_ms", current_timestamp() - started_at)
+			status := dict_get_or(auth, "status", 401)
+			code := dict_get_or(auth, "error", "unauthorized")
+			message := dict_get_or(auth, "message", "Unauthorized")
+			trace_emit(cfg, req, "ingest.request", "auth", "error", started_at, {"code": code})
+			audit_emit(cfg, "ingest_operation", "failure", {"code": code, "status": status, "stage": "auth"})
+			log_access(access_log, req, status, {"code": code})
+			return json_err(req, cfg, status, code, message, {"provider": dict_get_or(auth, "provider", "unknown")})
+		}
+
+		parsed := parse_api_json_body(req, cfg)
+		if parsed["ok"] == false {
+			state = increment_metric_counter(state, "ingest_errors")
+			state = increment_latency_metric(state, "ingest_latency_ms", current_timestamp() - started_at)
+			audit_emit(cfg, "ingest_operation", "failure", {"code": parsed["error"], "status": 400, "stage": "parse"})
+			log_access(access_log, req, 400, {"code": parsed["error"]})
+			return json_err(req, cfg, 400, parsed["error"], parsed["message"], dict_get_or(parsed, "details", {}))
+		}
+		data := parsed["data"]
+
+		ns_cfg := resolve_namespace_cfg(cfg, data)
+		if dict_get_or(ns_cfg, "ok", false) == false {
+			state = increment_metric_counter(state, "ingest_errors")
+			state = increment_latency_metric(state, "ingest_latency_ms", current_timestamp() - started_at)
+			status := dict_get_or(ns_cfg, "status", 400)
+			code := dict_get_or(ns_cfg, "error", "invalid_namespace")
+			message := dict_get_or(ns_cfg, "message", "Invalid namespace")
+			audit_emit(cfg, "ingest_operation", "failure", {"code": code, "status": status, "stage": "namespace"})
+			log_access(access_log, req, status, {"code": code})
+			return json_err(req, cfg, status, code, message, dict_get_or(ns_cfg, "details", {}))
+		}
+		namespace := dict_get_or(ns_cfg, "namespace", dict_get_or(cfg, "namespace", "default"))
+		namespace_cfg := dict_get_or(ns_cfg, "cfg", cfg)
+		namespace_cfg := dict_get_or(ns_cfg, "cfg", cfg)
+		namespace_cfg := dict_get_or(ns_cfg, "cfg", cfg)
+
+		rbac := validate_api_rbac(req, cfg, auth, "ingest", namespace)
+		audit_rbac_decision(cfg, req, rbac, "ingest", namespace)
+		if dict_get_or(rbac, "ok", false) == false {
+			state = increment_metric_counter(state, "ingest_errors")
+			state = increment_latency_metric(state, "ingest_latency_ms", current_timestamp() - started_at)
+			status := dict_get_or(rbac, "status", 403)
+			code := dict_get_or(rbac, "error", "rbac_forbidden")
+			message := dict_get_or(rbac, "message", "Forbidden")
+			audit_emit(cfg, "ingest_operation", "failure", {"code": code, "status": status, "stage": "rbac"})
+			log_access(access_log, req, status, {"code": code})
+			return json_err(req, cfg, status, code, message, dict_get_or(rbac, "details", {}))
+		}
+
+		path := dict_get_or(data, "path", ".")
+		path_scope := validate_api_ingest_path(path, namespace_cfg)
+		if path_scope["ok"] == false {
+			state = increment_metric_counter(state, "ingest_errors")
+			state = increment_latency_metric(state, "ingest_latency_ms", current_timestamp() - started_at)
+			status := dict_get_or(path_scope, "status", 403)
+			audit_emit(cfg, "ingest_operation", "failure", {"code": dict_get_or(path_scope, "error", "ingest_path_forbidden"), "status": status, "stage": "path_scope"})
+			log_access(access_log, req, status, {"code": dict_get_or(path_scope, "error", "ingest_path_forbidden")})
+			return json_err(req, cfg, status, dict_get_or(path_scope, "error", "ingest_path_forbidden"), dict_get_or(path_scope, "message", "Forbidden ingest path"), dict_get_or(path_scope, "details", {}))
+		}
+
+		resolved_path := dict_get_or(path_scope, "path", path)
+		recursive_result := validate_api_recursive(dict_get_or(data, "recursive", true))
+		if dict_get_or(recursive_result, "ok", false) == false {
+			state = increment_metric_counter(state, "ingest_errors")
+			state = increment_latency_metric(state, "ingest_latency_ms", current_timestamp() - started_at)
+			code := dict_get_or(recursive_result, "error", "invalid_recursive")
+			audit_emit(cfg, "ingest_operation", "failure", {"code": code, "status": 400, "stage": "validation"})
+			log_access(access_log, req, 400, {"code": code})
+			return json_err(req, cfg, 400, code, dict_get_or(recursive_result, "message", "Invalid recursive value"), dict_get_or(recursive_result, "details", {}))
+		}
+		recursive := dict_get_or(recursive_result, "value", true)
+		build_started := current_timestamp()
+		result := build_rag_index(resolved_path, namespace_cfg, recursive)
+		trace_emit(cfg, req, "ingest.build_index", "index", "ok", build_started, {"namespace": namespace, "path": resolved_path, "chunks": dict_get_or(result, "chunks", 0)})
+
+		ingest_guardrail := evaluate_ingest_result_guardrail(result)
+		if dict_get_or(ingest_guardrail, "ok", false) == false {
+			state = increment_metric_counter(state, "ingest_errors")
+			state = increment_latency_metric(state, "ingest_latency_ms", current_timestamp() - started_at)
+			status := dict_get_or(ingest_guardrail, "status", 413)
+			code := dict_get_or(ingest_guardrail, "error", "ingest_guardrail_exceeded")
+			message := dict_get_or(ingest_guardrail, "message", "Ingest request exceeded configured guardrail")
+			details := dict_get_or(ingest_guardrail, "details", {})
+			trace_emit(cfg, req, "ingest.request", "guardrail", "error", started_at, {"namespace": namespace, "code": code})
+			audit_emit(cfg, "ingest_operation", "failure", {"code": code, "status": status, "stage": "guardrail", "namespace": namespace})
+			log_access(access_log, req, status, {"code": code, "namespace": namespace})
+			return json_err(req, cfg, status, code, message, details)
+		}
+
+		ingest_quota := evaluate_tenant_ingest_quotas(cfg, namespace, result)
+		if dict_get_or(ingest_quota, "ok", false) == false {
+			state = increment_metric_counter(state, "ingest_errors")
+			state = increment_latency_metric(state, "ingest_latency_ms", current_timestamp() - started_at)
+			state = increment_tenant_quota_rejection(state, namespace, dict_get_or(ingest_quota, "quota_type", "ingest_volume"))
+			status := dict_get_or(ingest_quota, "status", 429)
+			code := dict_get_or(ingest_quota, "error", "tenant_ingest_quota_exceeded")
+			message := dict_get_or(ingest_quota, "message", "Tenant ingest quota exceeded")
+			details := dict_get_or(ingest_quota, "details", {})
+			trace_emit(cfg, req, "ingest.request", "quota", "error", started_at, {"namespace": namespace, "code": code})
+			audit_emit(cfg, "ingest_operation", "failure", {"code": code, "status": status, "stage": "quota", "namespace": namespace})
+			log_access(access_log, req, status, {"code": code, "namespace": namespace})
+			return json_err(req, cfg, status, code, message, details)
+		}
+
+		indexes := dict_get_or(state, "indexes", {})
+		indexes[namespace] := dict_get_or(result, "index", dict_get_or(indexes, namespace, {}))
+		state["indexes"] := indexes
+		state["last_ingest"] := current_timestamp()
+		state = invalidate_caches_after_ingest(state, namespace)
+		last_map := dict_get_or(state, "last_ingest_by_namespace", {})
+		last_map[namespace] := state["last_ingest"]
+		state["last_ingest_by_namespace"] := last_map
+		state = persist_api_runtime_state(state)
+
+		response_data := {
+			"namespace": namespace,
+			"index_path": dict_get_or(namespace_cfg, "index_path", ""),
+			"path": resolved_path,
+			"requested_path": path,
+			"recursive": recursive,
+			"summary": dict_get_or(result, "summary", {}),
+			"chunks": dict_get_or(result, "chunks", 0),
+			"stats": dict_get_or(dict_get_or(result, "ingest", {}), "stats", {}),
+			"errors": dict_get_or(dict_get_or(result, "ingest", {}), "errors", [])
+		}
+		state = increment_latency_metric(state, "ingest_latency_ms", current_timestamp() - started_at)
+		state = increment_tenant_metric(state, "tenant_ingest_requests", namespace)
+		trace_emit(cfg, req, "ingest.request", "handler", "ok", started_at, {"namespace": namespace, "path": resolved_path, "chunks": dict_get_or(response_data, "chunks", 0)})
+		audit_emit(cfg, "ingest_operation", "success", {"namespace": namespace, "path": resolved_path, "chunks": dict_get_or(response_data, "chunks", 0)})
+		log_access(access_log, req, 200, {"chunks": dict_get_or(response_data, "chunks", 0)})
+		return json_ok(req, cfg, response_data)
+	})
+
+	server := server.route("POST", "/ingest/jobs", func(req) {
+		rate := rate_check(state, cfg, req)
+		state = dict_get_or(rate, "state", state)
+		if rate["ok"] == false {
+				return rate_limit_error(req, cfg, access_log, rate)
+		}
+
+		if dict_get_or(cfg, "api_drain_reject_mutations", true) && drain_enabled(state) {
+			return drain_mode_error(req, cfg, access_log, state, "ingest_jobs")
+		}
+
+		auth := validate_api_auth(req, cfg)
+		audit_auth_decision(cfg, req, auth)
+		if auth["ok"] == false {
+			status := dict_get_or(auth, "status", 401)
+			code := dict_get_or(auth, "error", "unauthorized")
+			message := dict_get_or(auth, "message", "Unauthorized")
+			audit_emit(cfg, "ingest_operation", "failure", {"code": code, "status": status, "stage": "auth"})
+			log_access(access_log, req, status, {"code": code})
+			return json_err(req, cfg, status, code, message, {"provider": dict_get_or(auth, "provider", "unknown")})
+		}
+
+		parsed := parse_api_json_body(req, cfg)
+		if parsed["ok"] == false {
+			audit_emit(cfg, "ingest_operation", "failure", {"code": parsed["error"], "status": 400, "stage": "parse"})
+			log_access(access_log, req, 400, {"code": parsed["error"]})
+			return json_err(req, cfg, 400, parsed["error"], parsed["message"], dict_get_or(parsed, "details", {}))
+		}
+		data := parsed["data"]
+
+		ns_cfg := resolve_namespace_cfg(cfg, data)
+		if dict_get_or(ns_cfg, "ok", false) == false {
+			status := dict_get_or(ns_cfg, "status", 400)
+			code := dict_get_or(ns_cfg, "error", "invalid_namespace")
+			message := dict_get_or(ns_cfg, "message", "Invalid namespace")
+			audit_emit(cfg, "ingest_operation", "failure", {"code": code, "status": status, "stage": "namespace"})
+			log_access(access_log, req, status, {"code": code})
+			return json_err(req, cfg, status, code, message, dict_get_or(ns_cfg, "details", {}))
+		}
+		namespace := dict_get_or(ns_cfg, "namespace", dict_get_or(cfg, "namespace", "default"))
+		namespace_cfg := dict_get_or(ns_cfg, "cfg", cfg)
+
+		rbac := validate_api_rbac(req, cfg, auth, "ingest", namespace)
+		audit_rbac_decision(cfg, req, rbac, "ingest", namespace)
+		if dict_get_or(rbac, "ok", false) == false {
+			status := dict_get_or(rbac, "status", 403)
+			code := dict_get_or(rbac, "error", "rbac_forbidden")
+			message := dict_get_or(rbac, "message", "Forbidden")
+			audit_emit(cfg, "ingest_operation", "failure", {"code": code, "status": status, "stage": "rbac"})
+			log_access(access_log, req, status, {"code": code})
+			return json_err(req, cfg, status, code, message, dict_get_or(rbac, "details", {}))
+		}
+
+		path := dict_get_or(data, "path", ".")
+		path_scope := validate_api_ingest_path(path, namespace_cfg)
+		if path_scope["ok"] == false {
+			status := dict_get_or(path_scope, "status", 403)
+			audit_emit(cfg, "ingest_operation", "failure", {"code": dict_get_or(path_scope, "error", "ingest_path_forbidden"), "status": status, "stage": "path_scope"})
+			log_access(access_log, req, status, {"code": dict_get_or(path_scope, "error", "ingest_path_forbidden")})
+			return json_err(req, cfg, status, dict_get_or(path_scope, "error", "ingest_path_forbidden"), dict_get_or(path_scope, "message", "Forbidden ingest path"), dict_get_or(path_scope, "details", {}))
+		}
+
+		resolved_path := dict_get_or(path_scope, "path", path)
+		recursive_result := validate_api_recursive(dict_get_or(data, "recursive", true))
+		if dict_get_or(recursive_result, "ok", false) == false {
+			code := dict_get_or(recursive_result, "error", "invalid_recursive")
+			audit_emit(cfg, "ingest_operation", "failure", {"code": code, "status": 400, "stage": "validation"})
+			log_access(access_log, req, 400, {"code": code})
+			return json_err(req, cfg, 400, code, dict_get_or(recursive_result, "message", "Invalid recursive value"), dict_get_or(recursive_result, "details", {}))
+		}
+		recursive := dict_get_or(recursive_result, "value", true)
+		state = prune_ingest_idempotency(state, cfg)
+
+		raw_idempotency_key := raw_ingest_idempotency_key(req, data, cfg)
+		scoped_idempotency_key := ""
+		idempotency_entry := {}
+		if raw_idempotency_key != "" {
+			scoped_idempotency_key = scoped_ingest_idempotency_key(namespace, raw_idempotency_key)
+			idempotency_entry = lookup_ingest_idempotency(state, scoped_idempotency_key)
+			existing_job_id := trim(to_string(dict_get_or(idempotency_entry, "job_id", "")))
+			if existing_job_id != "" {
+				existing_job := get_ingest_job(state, existing_job_id)
+				if type(existing_job) != "null" {
+					audit_emit(cfg, "ingest_operation", "deduplicated", {
+						"mode": "job",
+						"namespace": namespace,
+						"path": resolved_path,
+						"job_id": existing_job_id,
+						"idempotency_key": raw_idempotency_key
+					})
+					log_access(access_log, req, 200, {"job_id": existing_job_id, "status": dict_get_or(existing_job, "status", "submitted"), "deduplicated": true})
+					return json_ok(req, cfg, {
+						"job_id": existing_job_id,
+						"status_endpoint": "/ingest/jobs/status",
+						"job": existing_job,
+						"idempotency": {
+							"enabled": dict_get_or(cfg, "api_ingest_idempotency_enabled", true),
+							"key": raw_idempotency_key,
+							"deduplicated": true,
+							"window_sec": dict_get_or(cfg, "api_ingest_idempotency_window_sec", 900),
+							"expires_at": dict_get_or(idempotency_entry, "expires_at", 0)
+						}
+					})
+				}
+			}
+		}
+
+		created := create_ingest_job(state, resolved_path, recursive, namespace)
+		state = dict_get_or(created, "state", state)
+		job := dict_get_or(created, "job", {})
+		job_id := dict_get_or(job, "job_id", "")
+		if raw_idempotency_key != "" && scoped_idempotency_key != "" {
+			state = register_ingest_idempotency(state, scoped_idempotency_key, raw_idempotency_key, job_id, namespace, resolved_path, recursive, cfg)
+			idempotency_entry = lookup_ingest_idempotency(state, scoped_idempotency_key)
+		}
+
+		worker_mode := ingest_jobs_mode(cfg)
+		if worker_mode == "queue" {
+			state = enqueue_ingest_job(state, job_id)
+			current_job := get_ingest_job(state, job_id)
+			audit_emit(cfg, "ingest_operation", "submitted", {"mode": "queue", "namespace": namespace, "path": resolved_path, "job_id": job_id})
+			log_access(access_log, req, 202, {"job_id": job_id, "status": dict_get_or(current_job, "status", "submitted"), "mode": "queue"})
+			return json_ok_status(req, cfg, 202, {
+					"job_id": job_id,
+					"status_endpoint": "/ingest/jobs/status",
+					"worker_mode": "queue",
+					"job": current_job,
+					"idempotency": {
+						"enabled": dict_get_or(cfg, "api_ingest_idempotency_enabled", true),
+						"key": raw_idempotency_key,
+						"deduplicated": false,
+						"window_sec": dict_get_or(cfg, "api_ingest_idempotency_window_sec", 900),
+						"expires_at": dict_get_or(idempotency_entry, "expires_at", 0)
+					}
+			})
+		}
+
+		state = set_ingest_job_status(state, job_id, "running", {
+			"started_at": current_timestamp()
+		})
+
+		result := null
+		ingest_error := null
+		try {
+			result := build_rag_index(resolved_path, namespace_cfg, recursive)
+		} except e {
+			ingest_error := e
+		}
+
+		if type(ingest_error) == "null" {
+			ingest_guardrail := evaluate_ingest_result_guardrail(result)
+			if dict_get_or(ingest_guardrail, "ok", false) == false {
+				state = set_ingest_job_status(state, job_id, "failed", {
+					"code": dict_get_or(ingest_guardrail, "error", "ingest_guardrail_exceeded"),
+					"message": dict_get_or(ingest_guardrail, "message", "Ingest request exceeded configured guardrail"),
+					"details": dict_get_or(ingest_guardrail, "details", {}),
+					"worker_mode": "inline"
+				})
+				state = increment_metric_counter(state, "ingest_errors")
+				audit_emit(cfg, "ingest_operation", "failure", {"mode": "job", "namespace": namespace, "path": resolved_path, "job_id": job_id, "code": dict_get_or(ingest_guardrail, "error", "ingest_guardrail_exceeded"), "stage": "guardrail"})
+			} else {
+				ingest_quota := evaluate_tenant_ingest_quotas(cfg, namespace, result)
+				if dict_get_or(ingest_quota, "ok", false) == false {
+					state = set_ingest_job_status(state, job_id, "failed", {
+						"code": dict_get_or(ingest_quota, "error", "tenant_ingest_quota_exceeded"),
+						"message": dict_get_or(ingest_quota, "message", "Tenant ingest quota exceeded"),
+						"details": dict_get_or(ingest_quota, "details", {}),
+						"worker_mode": "inline"
+					})
+					state = increment_metric_counter(state, "ingest_errors")
+					state = increment_tenant_quota_rejection(state, namespace, dict_get_or(ingest_quota, "quota_type", "ingest_volume"))
+					audit_emit(cfg, "ingest_operation", "failure", {"mode": "job", "namespace": namespace, "path": resolved_path, "job_id": job_id, "code": dict_get_or(ingest_quota, "error", "tenant_ingest_quota_exceeded"), "stage": "quota"})
+				} else {
+					indexes := dict_get_or(state, "indexes", {})
+					indexes[namespace] := dict_get_or(result, "index", dict_get_or(indexes, namespace, {}))
+					state["indexes"] := indexes
+					state["last_ingest"] := current_timestamp()
+					state = invalidate_caches_after_ingest(state, namespace)
+					last_map := dict_get_or(state, "last_ingest_by_namespace", {})
+					last_map[namespace] := state["last_ingest"]
+					state["last_ingest_by_namespace"] := last_map
+					state = persist_api_runtime_state(state)
+					state = set_ingest_job_status(state, job_id, "succeeded", {
+						"namespace": namespace,
+						"index_path": dict_get_or(namespace_cfg, "index_path", ""),
+						"summary": dict_get_or(result, "summary", {}),
+						"chunks": dict_get_or(result, "chunks", 0),
+						"stats": dict_get_or(dict_get_or(result, "ingest", {}), "stats", {}),
+						"errors": dict_get_or(dict_get_or(result, "ingest", {}), "errors", []),
+						"worker_mode": "inline"
+					})
+					audit_emit(cfg, "ingest_operation", "success", {"mode": "job", "namespace": namespace, "path": resolved_path, "job_id": job_id, "chunks": dict_get_or(result, "chunks", 0)})
+				}
+			}
+		} else {
+			state = set_ingest_job_status(state, job_id, "failed", {
+				"message": to_string(ingest_error),
+				"worker_mode": "inline"
+			})
+			audit_emit(cfg, "ingest_operation", "failure", {"mode": "job", "namespace": namespace, "path": resolved_path, "job_id": job_id, "error": to_string(ingest_error)})
+		}
+
+		current_job := get_ingest_job(state, job_id)
+		log_access(access_log, req, 202, {"job_id": job_id, "status": dict_get_or(current_job, "status", "submitted"), "mode": "inline"})
+		return json_ok_status(req, cfg, 202, {
+				"job_id": job_id,
+				"status_endpoint": "/ingest/jobs/status",
+				"worker_mode": "inline",
+				"job": current_job,
+				"idempotency": {
+					"enabled": dict_get_or(cfg, "api_ingest_idempotency_enabled", true),
+					"key": raw_idempotency_key,
+					"deduplicated": false,
+					"window_sec": dict_get_or(cfg, "api_ingest_idempotency_window_sec", 900),
+					"expires_at": dict_get_or(idempotency_entry, "expires_at", 0)
+				}
+		})
+	})
+
+	server := server.route("POST", "/ingest/jobs/status", func(req) {
+		rate := rate_check(state, cfg, req)
+		state = dict_get_or(rate, "state", state)
+		if rate["ok"] == false {
+				return rate_limit_error(req, cfg, access_log, rate)
+		}
+
+		auth := validate_api_auth(req, cfg)
+		audit_auth_decision(cfg, req, auth)
+		if auth["ok"] == false {
+			status := dict_get_or(auth, "status", 401)
+			code := dict_get_or(auth, "error", "unauthorized")
+			message := dict_get_or(auth, "message", "Unauthorized")
+			log_access(access_log, req, status, {"code": code})
+			return json_err(req, cfg, status, code, message, {"provider": dict_get_or(auth, "provider", "unknown")})
+		}
+
+		rbac := validate_api_rbac(req, cfg, auth, "ingest", "*")
+		audit_rbac_decision(cfg, req, rbac, "ingest", "*")
+		if dict_get_or(rbac, "ok", false) == false {
+			status := dict_get_or(rbac, "status", 403)
+			code := dict_get_or(rbac, "error", "rbac_forbidden")
+			message := dict_get_or(rbac, "message", "Forbidden")
+			log_access(access_log, req, status, {"code": code})
+			return json_err(req, cfg, status, code, message, dict_get_or(rbac, "details", {}))
+		}
+
+		worker_cycle_processed := 0
+		if ingest_jobs_mode(cfg) == "queue" {
+			worker := run_ingest_worker_cycle(state, cfg)
+			state = dict_get_or(worker, "state", state)
+			worker_cycle_processed = dict_get_or(worker, "processed", 0)
+		}
+
+		parsed := parse_api_json_body(req, cfg)
+		if parsed["ok"] == false {
+			log_access(access_log, req, 400, {"code": parsed["error"]})
+			return json_err(req, cfg, 400, parsed["error"], parsed["message"], dict_get_or(parsed, "details", {}))
+		}
+		data := parsed["data"]
+
+		job_id := dict_get_or(data, "job_id", "")
+		if type(job_id) != "string" || trim(job_id) == "" {
+			log_access(access_log, req, 400, {"code": "missing_job_id"})
+			return json_err(req, cfg, 400, "missing_job_id", "Request body must include a non-empty 'job_id' string", {})
+		}
+
+		job := get_ingest_job(state, trim(job_id))
+		if type(job) == "null" {
+			log_access(access_log, req, 404, {"code": "ingest_job_not_found"})
+			return json_err(req, cfg, 404, "ingest_job_not_found", "Ingest job was not found", {
+				"job_id": trim(job_id)
+			})
+		}
+
+		log_access(access_log, req, 200, {"job_id": trim(job_id), "status": dict_get_or(job, "status", "unknown"), "worker_processed": worker_cycle_processed})
+		return json_ok(req, cfg, {
+			"job": job,
+			"worker": {
+				"mode": ingest_jobs_mode(cfg),
+				"processed_jobs": worker_cycle_processed
+			}
+		})
+	})
+
+	server := server.route("POST", "/ingest/jobs/worker/tick", func(req) {
+		rate := rate_check(state, cfg, req)
+		state = dict_get_or(rate, "state", state)
+		if rate["ok"] == false {
+				return rate_limit_error(req, cfg, access_log, rate)
+		}
+
+		auth := validate_api_auth(req, cfg)
+		audit_auth_decision(cfg, req, auth)
+		if auth["ok"] == false {
+			status := dict_get_or(auth, "status", 401)
+			code := dict_get_or(auth, "error", "unauthorized")
+			message := dict_get_or(auth, "message", "Unauthorized")
+			log_access(access_log, req, status, {"code": code})
+			return json_err(req, cfg, status, code, message, {"provider": dict_get_or(auth, "provider", "unknown")})
+		}
+
+		rbac := validate_api_rbac(req, cfg, auth, "admin", "*")
+		audit_rbac_decision(cfg, req, rbac, "admin", "*")
+		if dict_get_or(rbac, "ok", false) == false {
+			status := dict_get_or(rbac, "status", 403)
+			code := dict_get_or(rbac, "error", "rbac_forbidden")
+			message := dict_get_or(rbac, "message", "Forbidden")
+			log_access(access_log, req, status, {"code": code})
+			return json_err(req, cfg, status, code, message, dict_get_or(rbac, "details", {}))
+		}
+
+		worker := run_ingest_worker_cycle(state, cfg)
+		state = dict_get_or(worker, "state", state)
+		processed := dict_get_or(worker, "processed", 0)
+		payload := {
+			"worker_mode": ingest_jobs_mode(cfg),
+			"processed_jobs": processed,
+			"queue_depth": count_ingest_queue_depth(state)
+		}
+		log_access(access_log, req, 200, payload)
+		return json_ok(req, cfg, payload)
+	})
+
+	server := server.route("POST", "/query", func(req) {
+		started_at := current_timestamp()
+		state = increment_metric_counter(state, "query_requests")
+
+		rate := rate_check(state, cfg, req)
+		state = dict_get_or(rate, "state", state)
+		if rate["ok"] == false {
+			state = increment_metric_counter(state, "query_errors")
+			state = increment_latency_metric(state, "query_latency_ms", current_timestamp() - started_at)
+				return rate_limit_error(req, cfg, access_log, rate)
+		}
+
+		if dict_get_or(cfg, "api_drain_reject_mutations", true) && drain_enabled(state) {
+			state = increment_metric_counter(state, "query_errors")
+			state = increment_latency_metric(state, "query_latency_ms", current_timestamp() - started_at)
+			return drain_mode_error(req, cfg, access_log, state, "query")
+		}
+
+		auth := validate_api_auth(req, cfg)
+		audit_auth_decision(cfg, req, auth)
+		if auth["ok"] == false {
+			state = increment_metric_counter(state, "query_errors")
+			state = increment_metric_counter(state, "auth_failures")
+			state = increment_latency_metric(state, "query_latency_ms", current_timestamp() - started_at)
+			status := dict_get_or(auth, "status", 401)
+			code := dict_get_or(auth, "error", "unauthorized")
+			message := dict_get_or(auth, "message", "Unauthorized")
+			trace_emit(cfg, req, "query.request", "auth", "error", started_at, {"code": code})
+			log_access(access_log, req, status, {"code": code})
+			return json_err(req, cfg, status, code, message, {"provider": dict_get_or(auth, "provider", "unknown")})
+		}
+
+		parsed := parse_api_json_body(req, cfg)
+		if parsed["ok"] == false {
+			state = increment_metric_counter(state, "query_errors")
+			state = increment_latency_metric(state, "query_latency_ms", current_timestamp() - started_at)
+			log_access(access_log, req, 400, {"code": parsed["error"]})
+			return json_err(req, cfg, 400, parsed["error"], parsed["message"], dict_get_or(parsed, "details", {}))
+		}
+		data := parsed["data"]
+
+		ns_cfg := resolve_namespace_cfg(cfg, data)
+		if dict_get_or(ns_cfg, "ok", false) == false {
+			state = increment_metric_counter(state, "query_errors")
+			state = increment_latency_metric(state, "query_latency_ms", current_timestamp() - started_at)
+			status := dict_get_or(ns_cfg, "status", 400)
+			code := dict_get_or(ns_cfg, "error", "invalid_namespace")
+			message := dict_get_or(ns_cfg, "message", "Invalid namespace")
+			log_access(access_log, req, status, {"code": code})
+			return json_err(req, cfg, status, code, message, dict_get_or(ns_cfg, "details", {}))
+		}
+		namespace := dict_get_or(ns_cfg, "namespace", dict_get_or(cfg, "namespace", "default"))
+		namespace_cfg := dict_get_or(ns_cfg, "cfg", cfg)
+
+		rbac := validate_api_rbac(req, cfg, auth, "query", namespace)
+		audit_rbac_decision(cfg, req, rbac, "query", namespace)
+		if dict_get_or(rbac, "ok", false) == false {
+			state = increment_metric_counter(state, "query_errors")
+			state = increment_latency_metric(state, "query_latency_ms", current_timestamp() - started_at)
+			status := dict_get_or(rbac, "status", 403)
+			code := dict_get_or(rbac, "error", "rbac_forbidden")
+			message := dict_get_or(rbac, "message", "Forbidden")
+			log_access(access_log, req, status, {"code": code})
+			return json_err(req, cfg, status, code, message, dict_get_or(rbac, "details", {}))
+		}
+
+		query_result := validate_api_query_text(dict_get_or(data, "query", ""))
+		if dict_get_or(query_result, "ok", false) == false {
+			state = increment_metric_counter(state, "query_errors")
+			state = increment_latency_metric(state, "query_latency_ms", current_timestamp() - started_at)
+			code := dict_get_or(query_result, "error", "invalid_query")
+			log_access(access_log, req, 400, {"code": code})
+			audit_emit(cfg, "query_operation", "failure", {"code": code, "status": 400, "namespace": namespace})
+			return json_err(req, cfg, 400, code, dict_get_or(query_result, "message", "Invalid query"), dict_get_or(query_result, "details", {}))
+		}
+		query := dict_get_or(query_result, "value", "")
+
+		filters := dict_get_or(data, "filters", null)
+		if type(filters) != "null" && type(filters) != "dict" {
+			state = increment_metric_counter(state, "query_errors")
+			state = increment_latency_metric(state, "query_latency_ms", current_timestamp() - started_at)
+			log_access(access_log, req, 400, {"code": "invalid_filters"})
+			audit_emit(cfg, "query_operation", "failure", {"code": "invalid_filters", "status": 400, "namespace": namespace})
+			return json_err(req, cfg, 400, "invalid_filters", "Optional 'filters' must be a JSON object", {})
+		}
+
+		raw_federation := dict_get_or(data, "federation", null)
+		federation_plan := normalize_federation_plan(raw_federation, namespace)
+		if dict_get_or(federation_plan, "ok", false) == false {
+			state = increment_metric_counter(state, "query_errors")
+			state = increment_latency_metric(state, "query_latency_ms", current_timestamp() - started_at)
+			status := dict_get_or(federation_plan, "status", 400)
+			code := dict_get_or(federation_plan, "error", "invalid_federation")
+			message := dict_get_or(federation_plan, "message", "Invalid federation config")
+			log_access(access_log, req, status, {"code": code})
+			audit_emit(cfg, "query_operation", "failure", {"code": code, "status": status, "namespace": namespace})
+			return json_err(req, cfg, status, code, message, dict_get_or(federation_plan, "details", {}))
+		}
+
+		raw_response_policy := dict_get_or(data, "response_policy", null)
+		response_policy_plan := normalize_response_policy_request(raw_response_policy)
+		if dict_get_or(response_policy_plan, "ok", false) == false {
+			state = increment_metric_counter(state, "query_errors")
+			state = increment_latency_metric(state, "query_latency_ms", current_timestamp() - started_at)
+			status := dict_get_or(response_policy_plan, "status", 400)
+			code := dict_get_or(response_policy_plan, "error", "invalid_response_policy")
+			message := dict_get_or(response_policy_plan, "message", "Invalid response policy")
+			log_access(access_log, req, status, {"code": code})
+			audit_emit(cfg, "query_operation", "failure", {"code": code, "status": status, "namespace": namespace})
+			return json_err(req, cfg, status, code, message, dict_get_or(response_policy_plan, "details", {}))
+		}
+
+		raw_retrieval_explanation := dict_get_or(data, "include_retrieval_explanation", null)
+		retrieval_explanation_plan := normalize_retrieval_explanation_request(raw_retrieval_explanation, namespace_cfg)
+		if dict_get_or(retrieval_explanation_plan, "ok", false) == false {
+			state = increment_metric_counter(state, "query_errors")
+			state = increment_latency_metric(state, "query_latency_ms", current_timestamp() - started_at)
+			status := dict_get_or(retrieval_explanation_plan, "status", 400)
+			code := dict_get_or(retrieval_explanation_plan, "error", "invalid_retrieval_explanation_flag")
+			message := dict_get_or(retrieval_explanation_plan, "message", "Invalid retrieval explanation flag")
+			log_access(access_log, req, status, {"code": code})
+			audit_emit(cfg, "query_operation", "failure", {"code": code, "status": status, "namespace": namespace})
+			return json_err(req, cfg, status, code, message, dict_get_or(retrieval_explanation_plan, "details", {}))
+		}
+
+		session_id := dict_get_or(data, "session_id", "")
+		if type(session_id) != "string" {
+			state = increment_metric_counter(state, "query_errors")
+			state = increment_latency_metric(state, "query_latency_ms", current_timestamp() - started_at)
+			log_access(access_log, req, 400, {"code": "invalid_session_id"})
+			audit_emit(cfg, "query_operation", "failure", {"code": "invalid_session_id", "status": 400, "namespace": namespace})
+			return json_err(req, cfg, 400, "invalid_session_id", "Optional 'session_id' must be a string", {})
+		}
+		session_id = trim(session_id)
+		session_history := []
+		scoped_session_id := ""
+		if session_id != "" {
+			scoped_session_id = session_key(namespace, session_id)
+			session_history = get_session_history(state, scoped_session_id, namespace_cfg)
+		}
+
+		max_chars := dict_get_or(cfg, "api_max_query_chars", 4000)
+		if len(query) > max_chars {
+			state = increment_metric_counter(state, "query_errors")
+			state = increment_latency_metric(state, "query_latency_ms", current_timestamp() - started_at)
+			log_access(access_log, req, 400, {"code": "query_too_large"})
+			audit_emit(cfg, "query_operation", "failure", {"code": "query_too_large", "status": 400, "namespace": namespace})
+			return json_err(req, cfg, 400, "query_too_large", "Query exceeds allowed size", {
+				"max_chars": max_chars,
+				"actual_chars": len(query)
+			})
+		}
+
+		query_guardrail := evaluate_query_guardrails(namespace_cfg, namespace, query, filters, session_history)
+		if dict_get_or(query_guardrail, "ok", false) == false {
+			state = increment_metric_counter(state, "query_errors")
+			state = increment_latency_metric(state, "query_latency_ms", current_timestamp() - started_at)
+			status := dict_get_or(query_guardrail, "status", 413)
+			code := dict_get_or(query_guardrail, "error", "query_complexity_exceeded")
+			message := dict_get_or(query_guardrail, "message", "Query exceeds configured guardrail")
+			details := dict_get_or(query_guardrail, "details", {})
+			trace_emit(cfg, req, "query.request", "guardrail", "error", started_at, {"namespace": namespace, "code": code})
+			audit_emit(cfg, "query_operation", "failure", {"code": code, "status": status, "namespace": namespace, "stage": "guardrail"})
+			log_access(access_log, req, status, {"code": code, "namespace": namespace})
+			return json_err(req, cfg, status, code, message, details)
+		}
+
+		query_quota := check_tenant_query_rate_quota(state, cfg, namespace)
+		state = dict_get_or(query_quota, "state", state)
+		if dict_get_or(query_quota, "ok", false) == false {
+			state = increment_metric_counter(state, "query_errors")
+			state = increment_latency_metric(state, "query_latency_ms", current_timestamp() - started_at)
+			state = increment_tenant_quota_rejection(state, namespace, dict_get_or(query_quota, "quota_type", "query_rate"))
+			status := dict_get_or(query_quota, "status", 429)
+			code := dict_get_or(query_quota, "error", "tenant_query_quota_exceeded")
+			message := dict_get_or(query_quota, "message", "Tenant query quota exceeded")
+			details := dict_get_or(query_quota, "details", {})
+			trace_emit(cfg, req, "query.request", "quota", "error", started_at, {"namespace": namespace, "code": code})
+			audit_emit(cfg, "query_operation", "failure", {"code": code, "status": status, "namespace": namespace, "stage": "quota"})
+			log_access(access_log, req, status, {"code": code, "namespace": namespace})
+			return json_err(req, cfg, status, code, message, details)
+		}
+
+		plan_targets := dict_get_or(federation_plan, "targets", [])
+		federated_targets := []
+		target_idx := 0
+		while target_idx < len(plan_targets) {
+			target := plan_targets[target_idx]
+			target_namespace := trim(to_string(dict_get_or(target, "namespace", "")))
+			target_weight := normalize_federation_weight(dict_get_or(target, "weight", 1.0))
+			is_primary := dict_get_or(target, "primary", false)
+
+			target_ns_result := cfg_with_namespace(cfg, target_namespace)
+			if dict_get_or(target_ns_result, "ok", false) == false {
+				state = increment_metric_counter(state, "query_errors")
+				state = increment_latency_metric(state, "query_latency_ms", current_timestamp() - started_at)
+				code := "invalid_federation_namespace"
+				message := "Federation target namespace is invalid"
+				log_access(access_log, req, 400, {"code": code, "target_namespace": target_namespace})
+				audit_emit(cfg, "query_operation", "failure", {"code": code, "status": 400, "namespace": namespace})
+				return json_err(req, cfg, 400, code, message, {
+					"target_namespace": target_namespace,
+					"details": dict_get_or(target_ns_result, "details", {})
+				})
+			}
+
+			target_cfg := dict_get_or(target_ns_result, "cfg", cfg)
+			target_rbac := validate_api_rbac(req, cfg, auth, "query", target_namespace)
+			if dict_get_or(target_rbac, "ok", false) == false {
+				state = increment_metric_counter(state, "query_errors")
+				state = increment_latency_metric(state, "query_latency_ms", current_timestamp() - started_at)
+				status := dict_get_or(target_rbac, "status", 403)
+				code := dict_get_or(target_rbac, "error", "rbac_forbidden")
+				message := dict_get_or(target_rbac, "message", "Forbidden")
+				log_access(access_log, req, status, {"code": code, "target_namespace": target_namespace})
+				audit_emit(cfg, "query_operation", "failure", {"code": code, "status": status, "namespace": namespace, "target_namespace": target_namespace})
+				return json_err(req, cfg, status, code, message, dict_get_or(target_rbac, "details", {}))
+			}
+
+			indexed := ensure_index_for_namespace(state, target_namespace, target_cfg)
+			state = dict_get_or(indexed, "state", state)
+			target_index := dict_get_or(indexed, "index", {})
+			federated_targets = push(federated_targets, {
+				"namespace": target_namespace,
+				"index_path": dict_get_or(target_cfg, "index_path", ""),
+				"weight": target_weight,
+				"primary": is_primary,
+				"index": target_index
+			})
+			target_idx = target_idx + 1
+		}
+
+		federated_mode := dict_get_or(federation_plan, "explicit", false) || len(federated_targets) > 1
+		response_policy_explicit := dict_get_or(response_policy_plan, "explicit", false)
+		retrieval_explanation_explicit := dict_get_or(retrieval_explanation_plan, "explicit", false)
+		runtime_query_cfg := cfg_with_response_policy(namespace_cfg, dict_get_or(response_policy_plan, "policy", {}))
+		runtime_query_cfg = cfg_with_retrieval_explanation(runtime_query_cfg, dict_get_or(retrieval_explanation_plan, "enabled", false))
+		runtime_query_cfg["retrieval_preferences"] := normalize_retrieval_preferences(dict_get_or(data, "retrieval_preferences", {}))
+		cache_allowed := federated_mode == false && response_policy_explicit == false && retrieval_explanation_explicit == false
+
+		if cache_allowed {
+			cache_result := query_cache_lookup(state, namespace, query, filters, session_history, runtime_query_cfg)
+			state = dict_get_or(cache_result, "state", state)
+			if dict_get_or(cache_result, "hit", false) {
+				result := dict_get_or(cache_result, "result", {})
+				state = increment_metric_counter(state, "cache_hits")
+				result["cache"] := {
+					"hit": true
+				}
+				result["namespace"] := namespace
+				result["index_path"] := dict_get_or(namespace_cfg, "index_path", "")
+				if session_id != "" {
+					state = append_session_turn(state, scoped_session_id, {
+						"query": query,
+						"answer": dict_get_or(result, "answer", "")
+					}, namespace_cfg)
+					result["session_id"] := session_id
+				}
+				state = increment_latency_metric(state, "query_latency_ms", current_timestamp() - started_at)
+				state = increment_tenant_metric(state, "tenant_query_requests", namespace)
+				trace_emit(cfg, req, "query.request", "handler", "ok", started_at, {"namespace": namespace, "count": dict_get_or(result, "count", 0), "cache_hit": true})
+				audit_emit(cfg, "query_operation", "success", {"namespace": namespace, "count": dict_get_or(result, "count", 0), "cache_hit": true})
+				log_access(access_log, req, 200, {"count": dict_get_or(result, "count", 0), "cache_hit": true})
+				return json_ok(req, cfg, result)
+			}
+			state = increment_metric_counter(state, "cache_misses")
+		} else {
+			state = increment_metric_counter(state, "cache_misses")
+		}
+
+		retrieval_started := current_timestamp()
+		result := {}
+		if federated_mode {
+			result = query_rag_federated(federated_targets, query, runtime_query_cfg, filters, session_history, {
+				"merge_strategy": dict_get_or(federation_plan, "merge_strategy", "weighted_score"),
+				"fallback_policy": dict_get_or(federation_plan, "fallback_policy", "best_effort")
+			})
+		} else {
+			active_index := {}
+			if len(federated_targets) > 0 {
+				active_index = dict_get_or(federated_targets[0], "index", {})
+			}
+			result = query_rag(active_index, query, runtime_query_cfg, filters, session_history)
+		}
+		stage_timings := dict_get_or(result, "stage_timings_ms", {})
+		state = record_query_stage_metrics(state, stage_timings)
+		if cache_allowed {
+			state = query_cache_store(state, namespace, query, filters, session_history, result, runtime_query_cfg)
+		}
+		emit_query_stage_traces(cfg, req, namespace, stage_timings, false)
+		trace_emit(cfg, req, "query.retrieval", "retrieval", "ok", retrieval_started, {"namespace": namespace, "query_chars": len(query), "count": dict_get_or(result, "count", 0), "federated": federated_mode})
+		result["cache"] := {
+			"hit": false,
+			"enabled": cache_allowed
+		}
+		result["namespace"] := namespace
+		result["index_path"] := dict_get_or(namespace_cfg, "index_path", "")
+		if federated_mode == false {
+			result["federation"] := {
+				"enabled": false,
+				"merge_strategy": "weighted_score",
+				"fallback_policy": "best_effort",
+				"selected_mode": "single_namespace",
+				"targets": [{
+					"namespace": namespace,
+					"index_path": dict_get_or(namespace_cfg, "index_path", ""),
+					"weight": 1.0,
+					"primary": true,
+					"result_count": dict_get_or(result, "count", 0)
+				}]
+			}
+		}
+		if session_id != "" {
+			state = append_session_turn(state, scoped_session_id, {
+				"query": query,
+				"answer": dict_get_or(result, "answer", "")
+			}, namespace_cfg)
+			result["session_id"] := session_id
+		}
+		state = increment_latency_metric(state, "query_latency_ms", current_timestamp() - started_at)
+		state = increment_tenant_metric(state, "tenant_query_requests", namespace)
+		trace_emit(cfg, req, "query.request", "handler", "ok", started_at, {"namespace": namespace, "count": dict_get_or(result, "count", 0)})
+		audit_emit(cfg, "query_operation", "success", {"namespace": namespace, "count": dict_get_or(result, "count", 0)})
+		log_access(access_log, req, 200, {"count": dict_get_or(result, "count", 0)})
+		return json_ok(req, cfg, result)
+	})
+
+	server := server.route("GET", "/metrics", func(req) {
+		rate := rate_check(state, cfg, req)
+		state = dict_get_or(rate, "state", state)
+		if rate["ok"] == false {
+				return rate_limit_error(req, cfg, access_log, rate)
+		}
+
+		auth := validate_api_auth(req, cfg)
+		audit_auth_decision(cfg, req, auth)
+		if auth["ok"] == false {
+			status := dict_get_or(auth, "status", 401)
+			code := dict_get_or(auth, "error", "unauthorized")
+			message := dict_get_or(auth, "message", "Unauthorized")
+			log_access(access_log, req, status, {"code": code})
+			return json_err(req, cfg, status, code, message, {"provider": dict_get_or(auth, "provider", "unknown")})
+		}
+
+		rbac := validate_api_rbac(req, cfg, auth, "admin", dict_get_or(cfg, "namespace", "default"))
+		audit_rbac_decision(cfg, req, rbac, "admin", dict_get_or(cfg, "namespace", "default"))
+		if dict_get_or(rbac, "ok", false) == false {
+			status := dict_get_or(rbac, "status", 403)
+			code := dict_get_or(rbac, "error", "rbac_forbidden")
+			message := dict_get_or(rbac, "message", "Forbidden")
+			log_access(access_log, req, status, {"code": code})
+			return json_err(req, cfg, status, code, message, dict_get_or(rbac, "details", {}))
+		}
+
+		payload := metrics_snapshot(state, cfg)
+		audit_emit(cfg, "admin_operation", "success", {"path": "/metrics", "metrics": true})
+		log_access(access_log, req, 200, {"metrics": true})
+		return json_ok(req, cfg, payload)
+	})
+
+	server := server.route("GET", "/retention", func(req) {
+		rate := rate_check(state, cfg, req)
+		state = dict_get_or(rate, "state", state)
+		if rate["ok"] == false {
+			return rate_limit_error(req, cfg, access_log, rate)
+		}
+
+		auth := validate_api_auth(req, cfg)
+		audit_auth_decision(cfg, req, auth)
+		if auth["ok"] == false {
+			status := dict_get_or(auth, "status", 401)
+			code := dict_get_or(auth, "error", "unauthorized")
+			message := dict_get_or(auth, "message", "Unauthorized")
+			log_access(access_log, req, status, {"code": code})
+			return json_err(req, cfg, status, code, message, {"provider": dict_get_or(auth, "provider", "unknown")})
+		}
+
+		rbac := validate_api_rbac(req, cfg, auth, "admin", dict_get_or(cfg, "namespace", "default"))
+		audit_rbac_decision(cfg, req, rbac, "admin", dict_get_or(cfg, "namespace", "default"))
+		if dict_get_or(rbac, "ok", false) == false {
+			status := dict_get_or(rbac, "status", 403)
+			code := dict_get_or(rbac, "error", "rbac_forbidden")
+			message := dict_get_or(rbac, "message", "Forbidden")
+			log_access(access_log, req, status, {"code": code})
+			return json_err(req, cfg, status, code, message, dict_get_or(rbac, "details", {}))
+		}
+
+		state = ensure_retention_state(state)
+		payload := {
+			"enabled": to_bool(dict_get_or(cfg, "retention_policy_enabled", false)),
+			"default_ttl_days": normalize_retention_ttl_days(dict_get_or(cfg, "retention_default_ttl_days", 365), 365),
+			"legal_hold_enabled": to_bool(dict_get_or(cfg, "retention_legal_hold_enabled", true)),
+			"policies": dict_get_or(state, "retention_policies", {}),
+			"legal_holds": dict_get_or(state, "legal_holds", {})
+		}
+		audit_emit(cfg, "admin_operation", "success", {"path": "/retention", "retention": true})
+		log_access(access_log, req, 200, {"retention": true})
+		return json_ok(req, cfg, payload)
+	})
+
+	server := server.route("POST", "/retention/policy", func(req) {
+		rate := rate_check(state, cfg, req)
+		state = dict_get_or(rate, "state", state)
+		if rate["ok"] == false {
+			return rate_limit_error(req, cfg, access_log, rate)
+		}
+
+		if dict_get_or(cfg, "api_drain_reject_mutations", true) && drain_enabled(state) {
+			return drain_mode_error(req, cfg, access_log, state, "retention_policy")
+		}
+
+		auth := validate_api_auth(req, cfg)
+		audit_auth_decision(cfg, req, auth)
+		if auth["ok"] == false {
+			status := dict_get_or(auth, "status", 401)
+			code := dict_get_or(auth, "error", "unauthorized")
+			message := dict_get_or(auth, "message", "Unauthorized")
+			log_access(access_log, req, status, {"code": code})
+			return json_err(req, cfg, status, code, message, {"provider": dict_get_or(auth, "provider", "unknown")})
+		}
+
+		parsed := parse_api_json_body(req, cfg)
+		if parsed["ok"] == false {
+			log_access(access_log, req, 400, {"code": parsed["error"]})
+			return json_err(req, cfg, 400, parsed["error"], parsed["message"], dict_get_or(parsed, "details", {}))
+		}
+		data := parsed["data"]
+
+		ns_cfg := resolve_namespace_cfg(cfg, data)
+		if dict_get_or(ns_cfg, "ok", false) == false {
+			status := dict_get_or(ns_cfg, "status", 400)
+			code := dict_get_or(ns_cfg, "error", "invalid_namespace")
+			message := dict_get_or(ns_cfg, "message", "Invalid namespace")
+			log_access(access_log, req, status, {"code": code})
+			return json_err(req, cfg, status, code, message, dict_get_or(ns_cfg, "details", {}))
+		}
+		namespace := dict_get_or(ns_cfg, "namespace", dict_get_or(cfg, "namespace", "default"))
+		namespace_cfg := dict_get_or(ns_cfg, "cfg", cfg)
+
+		rbac := validate_api_rbac(req, cfg, auth, "admin", namespace)
+		audit_rbac_decision(cfg, req, rbac, "admin", namespace)
+		if dict_get_or(rbac, "ok", false) == false {
+			status := dict_get_or(rbac, "status", 403)
+			code := dict_get_or(rbac, "error", "rbac_forbidden")
+			message := dict_get_or(rbac, "message", "Forbidden")
+			log_access(access_log, req, status, {"code": code})
+			return json_err(req, cfg, status, code, message, dict_get_or(rbac, "details", {}))
+		}
+
+		policy_payload := namespace_retention_policy(state, namespace_cfg, namespace)
+		state = dict_get_or(policy_payload, "state", state)
+		current_policy := dict_get_or(policy_payload, "policy", retention_policy_default(namespace_cfg))
+
+		enabled := to_bool(dict_get_or(current_policy, "enabled", false))
+		if has_key(data, "enabled") == 1 {
+			if type(dict_get_or(data, "enabled", false)) != "bool" {
+				log_access(access_log, req, 400, {"code": "invalid_retention_enabled"})
+				return json_err(req, cfg, 400, "invalid_retention_enabled", "retention policy 'enabled' must be a boolean", {})
+			}
+			enabled = dict_get_or(data, "enabled", false)
+		}
+
+		ttl_days := normalize_retention_ttl_days(dict_get_or(current_policy, "ttl_days", 365), 365)
+		if has_key(data, "ttl_days") == 1 {
+			raw_ttl := dict_get_or(data, "ttl_days", ttl_days)
+			raw_type := type(raw_ttl)
+			if raw_type != "int" && raw_type != "float" {
+				log_access(access_log, req, 400, {"code": "invalid_retention_ttl_days"})
+				return json_err(req, cfg, 400, "invalid_retention_ttl_days", "retention policy 'ttl_days' must be numeric", {})
+			}
+			ttl_days = normalize_retention_ttl_days(raw_ttl, ttl_days)
+		}
+
+		state = set_namespace_retention_policy(state, namespace, enabled, ttl_days)
+		policy_payload = namespace_retention_policy(state, namespace_cfg, namespace)
+		state = dict_get_or(policy_payload, "state", state)
+		updated_policy := dict_get_or(policy_payload, "policy", {})
+
+		response_data := {
+			"namespace": namespace,
+			"index_path": dict_get_or(namespace_cfg, "index_path", ""),
+			"policy": updated_policy
+		}
+		audit_emit(cfg, "admin_operation", "success", {"path": "/retention/policy", "namespace": namespace, "enabled": enabled, "ttl_days": ttl_days})
+		log_access(access_log, req, 200, {"retention_policy": true, "namespace": namespace, "enabled": enabled})
+		return json_ok(req, cfg, response_data)
+	})
+
+	server := server.route("POST", "/retention/legal-hold/start", func(req) {
+		rate := rate_check(state, cfg, req)
+		state = dict_get_or(rate, "state", state)
+		if rate["ok"] == false {
+			return rate_limit_error(req, cfg, access_log, rate)
+		}
+
+		if dict_get_or(cfg, "api_drain_reject_mutations", true) && drain_enabled(state) {
+			return drain_mode_error(req, cfg, access_log, state, "retention_legal_hold_start")
+		}
+
+		auth := validate_api_auth(req, cfg)
+		audit_auth_decision(cfg, req, auth)
+		if auth["ok"] == false {
+			status := dict_get_or(auth, "status", 401)
+			code := dict_get_or(auth, "error", "unauthorized")
+			message := dict_get_or(auth, "message", "Unauthorized")
+			log_access(access_log, req, status, {"code": code})
+			return json_err(req, cfg, status, code, message, {"provider": dict_get_or(auth, "provider", "unknown")})
+		}
+
+		if to_bool(dict_get_or(cfg, "retention_legal_hold_enabled", true)) == false {
+			log_access(access_log, req, 400, {"code": "legal_hold_disabled"})
+			return json_err(req, cfg, 400, "legal_hold_disabled", "Legal-hold controls are disabled by configuration", {})
+		}
+
+		parsed := parse_api_json_body(req, cfg)
+		if parsed["ok"] == false {
+			log_access(access_log, req, 400, {"code": parsed["error"]})
+			return json_err(req, cfg, 400, parsed["error"], parsed["message"], dict_get_or(parsed, "details", {}))
+		}
+		data := parsed["data"]
+
+		ns_cfg := resolve_namespace_cfg(cfg, data)
+		if dict_get_or(ns_cfg, "ok", false) == false {
+			status := dict_get_or(ns_cfg, "status", 400)
+			code := dict_get_or(ns_cfg, "error", "invalid_namespace")
+			message := dict_get_or(ns_cfg, "message", "Invalid namespace")
+			log_access(access_log, req, status, {"code": code})
+			return json_err(req, cfg, status, code, message, dict_get_or(ns_cfg, "details", {}))
+		}
+		namespace := dict_get_or(ns_cfg, "namespace", dict_get_or(cfg, "namespace", "default"))
+		namespace_cfg := dict_get_or(ns_cfg, "cfg", cfg)
+
+		rbac := validate_api_rbac(req, cfg, auth, "admin", namespace)
+		audit_rbac_decision(cfg, req, rbac, "admin", namespace)
+		if dict_get_or(rbac, "ok", false) == false {
+			status := dict_get_or(rbac, "status", 403)
+			code := dict_get_or(rbac, "error", "rbac_forbidden")
+			message := dict_get_or(rbac, "message", "Forbidden")
+			log_access(access_log, req, status, {"code": code})
+			return json_err(req, cfg, status, code, message, dict_get_or(rbac, "details", {}))
+		}
+
+		reason := trim(to_string(dict_get_or(data, "reason", "manual_legal_hold")))
+		if reason == "" {
+			reason = "manual_legal_hold"
+		}
+		start_error := null
+		hold := {}
+		try {
+			state = set_namespace_legal_hold(state, namespace, true, reason)
+			persisted_hold := persist_namespace_legal_hold_index(state, namespace, namespace_cfg, true, reason)
+			state = dict_get_or(persisted_hold, "state", state)
+			hold_payload := effective_namespace_legal_hold(state, cfg, namespace, namespace_cfg)
+			state = dict_get_or(hold_payload, "state", state)
+			hold = dict_get_or(hold_payload, "hold", {})
+		} except e {
+			start_error = e
+		}
+
+		if type(start_error) != "null" {
+			log_access(access_log, req, 500, {"code": "retention_legal_hold_start_failed", "namespace": namespace})
+			audit_emit(cfg, "admin_operation", "failure", {"path": "/retention/legal-hold/start", "namespace": namespace, "reason": reason, "error": to_string(start_error)})
+			return json_err(req, cfg, 500, "retention_legal_hold_start_failed", "Failed to start legal hold", {
+				"namespace": namespace,
+				"reason": reason,
+				"error": to_string(start_error)
+			})
+		}
+
+		response_data := {
+			"namespace": namespace,
+			"hold": hold
+		}
+		audit_emit(cfg, "admin_operation", "success", {"path": "/retention/legal-hold/start", "namespace": namespace, "reason": reason})
+		log_access(access_log, req, 200, {"retention_legal_hold": "start", "namespace": namespace})
+		return json_ok(req, cfg, response_data)
+	})
+
+	server := server.route("POST", "/retention/legal-hold/stop", func(req) {
+		rate := rate_check(state, cfg, req)
+		state = dict_get_or(rate, "state", state)
+		if rate["ok"] == false {
+			return rate_limit_error(req, cfg, access_log, rate)
+		}
+
+		if dict_get_or(cfg, "api_drain_reject_mutations", true) && drain_enabled(state) {
+			return drain_mode_error(req, cfg, access_log, state, "retention_legal_hold_stop")
+		}
+
+		auth := validate_api_auth(req, cfg)
+		audit_auth_decision(cfg, req, auth)
+		if auth["ok"] == false {
+			status := dict_get_or(auth, "status", 401)
+			code := dict_get_or(auth, "error", "unauthorized")
+			message := dict_get_or(auth, "message", "Unauthorized")
+			log_access(access_log, req, status, {"code": code})
+			return json_err(req, cfg, status, code, message, {"provider": dict_get_or(auth, "provider", "unknown")})
+		}
+
+		parsed := parse_api_json_body(req, cfg)
+		if parsed["ok"] == false {
+			log_access(access_log, req, 400, {"code": parsed["error"]})
+			return json_err(req, cfg, 400, parsed["error"], parsed["message"], dict_get_or(parsed, "details", {}))
+		}
+		data := parsed["data"]
+
+		ns_cfg := resolve_namespace_cfg(cfg, data)
+		if dict_get_or(ns_cfg, "ok", false) == false {
+			status := dict_get_or(ns_cfg, "status", 400)
+			code := dict_get_or(ns_cfg, "error", "invalid_namespace")
+			message := dict_get_or(ns_cfg, "message", "Invalid namespace")
+			log_access(access_log, req, status, {"code": code})
+			return json_err(req, cfg, status, code, message, dict_get_or(ns_cfg, "details", {}))
+		}
+		namespace := dict_get_or(ns_cfg, "namespace", dict_get_or(cfg, "namespace", "default"))
+		namespace_cfg := dict_get_or(ns_cfg, "cfg", cfg)
+
+		rbac := validate_api_rbac(req, cfg, auth, "admin", namespace)
+		audit_rbac_decision(cfg, req, rbac, "admin", namespace)
+		if dict_get_or(rbac, "ok", false) == false {
+			status := dict_get_or(rbac, "status", 403)
+			code := dict_get_or(rbac, "error", "rbac_forbidden")
+			message := dict_get_or(rbac, "message", "Forbidden")
+			log_access(access_log, req, status, {"code": code})
+			return json_err(req, cfg, status, code, message, dict_get_or(rbac, "details", {}))
+		}
+
+		reason := trim(to_string(dict_get_or(data, "reason", "legal_hold_released")))
+		if reason == "" {
+			reason = "legal_hold_released"
+		}
+		stop_error := null
+		hold := {}
+		try {
+			state = set_namespace_legal_hold(state, namespace, false, reason)
+			persisted_hold := persist_namespace_legal_hold_index(state, namespace, namespace_cfg, false, reason)
+			state = dict_get_or(persisted_hold, "state", state)
+			hold_payload := effective_namespace_legal_hold(state, cfg, namespace, namespace_cfg)
+			state = dict_get_or(hold_payload, "state", state)
+			hold = dict_get_or(hold_payload, "hold", {})
+		} except e {
+			stop_error = e
+		}
+
+		if type(stop_error) != "null" {
+			log_access(access_log, req, 500, {"code": "retention_legal_hold_stop_failed", "namespace": namespace})
+			audit_emit(cfg, "admin_operation", "failure", {"path": "/retention/legal-hold/stop", "namespace": namespace, "reason": reason, "error": to_string(stop_error)})
+			return json_err(req, cfg, 500, "retention_legal_hold_stop_failed", "Failed to stop legal hold", {
+				"namespace": namespace,
+				"reason": reason,
+				"error": to_string(stop_error)
+			})
+		}
+
+		response_data := {
+			"namespace": namespace,
+			"hold": hold
+		}
+		audit_emit(cfg, "admin_operation", "success", {"path": "/retention/legal-hold/stop", "namespace": namespace, "reason": reason})
+		log_access(access_log, req, 200, {"retention_legal_hold": "stop", "namespace": namespace})
+		return json_ok(req, cfg, response_data)
+	})
+
+	server := server.route("POST", "/retention/purge", func(req) {
+		rate := rate_check(state, cfg, req)
+		state = dict_get_or(rate, "state", state)
+		if rate["ok"] == false {
+			return rate_limit_error(req, cfg, access_log, rate)
+		}
+
+		if dict_get_or(cfg, "api_drain_reject_mutations", true) && drain_enabled(state) {
+			return drain_mode_error(req, cfg, access_log, state, "retention_purge")
+		}
+
+		auth := validate_api_auth(req, cfg)
+		audit_auth_decision(cfg, req, auth)
+		if auth["ok"] == false {
+			status := dict_get_or(auth, "status", 401)
+			code := dict_get_or(auth, "error", "unauthorized")
+			message := dict_get_or(auth, "message", "Unauthorized")
+			log_access(access_log, req, status, {"code": code})
+			return json_err(req, cfg, status, code, message, {"provider": dict_get_or(auth, "provider", "unknown")})
+		}
+
+		parsed := parse_api_json_body(req, cfg)
+		if parsed["ok"] == false {
+			log_access(access_log, req, 400, {"code": parsed["error"]})
+			return json_err(req, cfg, 400, parsed["error"], parsed["message"], dict_get_or(parsed, "details", {}))
+		}
+		data := parsed["data"]
+
+		ns_cfg := resolve_namespace_cfg(cfg, data)
+		if dict_get_or(ns_cfg, "ok", false) == false {
+			status := dict_get_or(ns_cfg, "status", 400)
+			code := dict_get_or(ns_cfg, "error", "invalid_namespace")
+			message := dict_get_or(ns_cfg, "message", "Invalid namespace")
+			log_access(access_log, req, status, {"code": code})
+			return json_err(req, cfg, status, code, message, dict_get_or(ns_cfg, "details", {}))
+		}
+		namespace := dict_get_or(ns_cfg, "namespace", dict_get_or(cfg, "namespace", "default"))
+		namespace_cfg := dict_get_or(ns_cfg, "cfg", cfg)
+
+		rbac := validate_api_rbac(req, cfg, auth, "admin", namespace)
+		audit_rbac_decision(cfg, req, rbac, "admin", namespace)
+		if dict_get_or(rbac, "ok", false) == false {
+			status := dict_get_or(rbac, "status", 403)
+			code := dict_get_or(rbac, "error", "rbac_forbidden")
+			message := dict_get_or(rbac, "message", "Forbidden")
+			log_access(access_log, req, status, {"code": code})
+			return json_err(req, cfg, status, code, message, dict_get_or(rbac, "details", {}))
+		}
+
+		policy_payload := namespace_retention_policy(state, namespace_cfg, namespace)
+		state = dict_get_or(policy_payload, "state", state)
+		policy := dict_get_or(policy_payload, "policy", retention_policy_default(namespace_cfg))
+
+		hold_payload := effective_namespace_legal_hold(state, cfg, namespace, namespace_cfg)
+		state = dict_get_or(hold_payload, "state", state)
+		hold := dict_get_or(hold_payload, "hold", {})
+		if to_bool(dict_get_or(hold, "enabled", false)) {
+			reason := to_string(dict_get_or(hold, "reason", "legal_hold_active"))
+			log_access(access_log, req, 409, {"code": "legal_hold_active", "namespace": namespace})
+			response := json_response(409, {
+				"ok": false,
+				"request_id": ensure_request_id(req),
+				"correlation_id": ensure_correlation_id(req),
+				"error": {
+					"code": "legal_hold_active",
+					"message": "Retention purge is blocked by legal hold",
+					"details": {
+						"namespace": namespace,
+						"reason": reason
+					}
+				}
+			})
+			response = with_request_ids(response, req)
+			return with_cors(response, req, cfg)
+		}
+
+		if to_bool(dict_get_or(policy, "enabled", false)) == false {
+			response_data := {
+				"namespace": namespace,
+				"index_path": dict_get_or(namespace_cfg, "index_path", ""),
+				"policy": policy,
+				"legal_hold": hold,
+				"skipped": true,
+				"reason": "retention_policy_disabled"
+			}
+			audit_emit(cfg, "admin_operation", "success", {"path": "/retention/purge", "namespace": namespace, "skipped": true})
+			log_access(access_log, req, 200, {"retention_purge": true, "namespace": namespace, "skipped": true})
+			return json_ok(req, cfg, response_data)
+		}
+
+		indexed := ensure_index_for_namespace(state, namespace, namespace_cfg)
+		state = dict_get_or(indexed, "state", state)
+		index_payload := dict_get_or(indexed, "index", {})
+		now_ms := current_timestamp()
+		ttl_days := normalize_retention_ttl_days(dict_get_or(policy, "ttl_days", 365), 365)
+		retention_result := apply_retention_policy(index_payload, now_ms, ttl_days, false)
+		updated_index := dict_get_or(retention_result, "index", index_payload)
+		retention_persisted := save_index_with_backend(namespace_cfg, updated_index)
+		if retention_persisted != true {
+			audit_emit(cfg, "admin_operation", "failure", {"path": "/retention/purge", "namespace": namespace, "code": "retention_persistence_failed"})
+			return json_err(req, cfg, 500, "retention_persistence_failed", "Retention purge could not be persisted to the configured vector backend", {
+				"namespace": namespace
+			})
+		}
+
+		indexes := dict_get_or(state, "indexes", {})
+		indexes[namespace] = updated_index
+		state["indexes"] = indexes
+		state = invalidate_caches_after_ingest(state, namespace)
+		state = persist_api_runtime_state(state)
+
+		response_data := {
+			"namespace": namespace,
+			"index_path": dict_get_or(namespace_cfg, "index_path", ""),
+			"policy": policy,
+			"legal_hold": hold,
+			"purge": {
+				"ttl_days": ttl_days,
+				"cutoff_ms": dict_get_or(retention_result, "cutoff_ms", 0),
+				"purged_chunks": dict_get_or(retention_result, "purged_chunks", 0),
+				"purged_vectors": dict_get_or(retention_result, "purged_vectors", 0),
+				"purged_lexical": dict_get_or(retention_result, "purged_lexical", 0),
+				"retained_chunks": dict_get_or(retention_result, "retained_chunks", len(dict_get_or(updated_index, "chunks", [])))
+			}
+		}
+		audit_emit(cfg, "admin_operation", "success", {"path": "/retention/purge", "namespace": namespace, "purged_chunks": dict_get_or(dict_get_or(response_data, "purge", {}), "purged_chunks", 0)})
+		log_access(access_log, req, 200, {"retention_purge": true, "namespace": namespace, "purged_chunks": dict_get_or(dict_get_or(response_data, "purge", {}), "purged_chunks", 0)})
+		return json_ok(req, cfg, response_data)
+	})
+
+	server := server.route("POST", "/privacy/export", func(req) {
+		rate := rate_check(state, cfg, req)
+		state = dict_get_or(rate, "state", state)
+		if rate["ok"] == false {
+			return rate_limit_error(req, cfg, access_log, rate)
+		}
+
+		auth := validate_api_auth(req, cfg)
+		audit_auth_decision(cfg, req, auth)
+		if auth["ok"] == false {
+			status := dict_get_or(auth, "status", 401)
+			code := dict_get_or(auth, "error", "unauthorized")
+			message := dict_get_or(auth, "message", "Unauthorized")
+			log_access(access_log, req, status, {"code": code})
+			return json_err(req, cfg, status, code, message, {"provider": dict_get_or(auth, "provider", "unknown")})
+		}
+
+		parsed := parse_api_json_body(req, cfg)
+		if parsed["ok"] == false {
+			log_access(access_log, req, 400, {"code": parsed["error"]})
+			return json_err(req, cfg, 400, parsed["error"], parsed["message"], dict_get_or(parsed, "details", {}))
+		}
+		data := parsed["data"]
+
+		ns_cfg := resolve_namespace_cfg(cfg, data)
+		if dict_get_or(ns_cfg, "ok", false) == false {
+			status := dict_get_or(ns_cfg, "status", 400)
+			code := dict_get_or(ns_cfg, "error", "invalid_namespace")
+			message := dict_get_or(ns_cfg, "message", "Invalid namespace")
+			log_access(access_log, req, status, {"code": code})
+			return json_err(req, cfg, status, code, message, dict_get_or(ns_cfg, "details", {}))
+		}
+		namespace := dict_get_or(ns_cfg, "namespace", dict_get_or(cfg, "namespace", "default"))
+		namespace_cfg := dict_get_or(ns_cfg, "cfg", cfg)
+
+		rbac := validate_api_rbac(req, cfg, auth, "admin", namespace)
+		audit_rbac_decision(cfg, req, rbac, "admin", namespace)
+		if dict_get_or(rbac, "ok", false) == false {
+			status := dict_get_or(rbac, "status", 403)
+			code := dict_get_or(rbac, "error", "rbac_forbidden")
+			message := dict_get_or(rbac, "message", "Forbidden")
+			log_access(access_log, req, status, {"code": code})
+			return json_err(req, cfg, status, code, message, dict_get_or(rbac, "details", {}))
+		}
+
+		export_type := trim(to_string(dict_get_or(data, "export_type", "namespace_snapshot")))
+		if export_type == "" {
+			export_type = "namespace_snapshot"
+		}
+
+		indexed := ensure_index_for_namespace(state, namespace, namespace_cfg)
+		state = dict_get_or(indexed, "state", state)
+		index_payload := dict_get_or(indexed, "index", {})
+		summary := summarize_namespace_index(index_payload)
+		artifact := write_privacy_export_artifact(namespace, index_payload, export_type, cfg)
+		if dict_get_or(artifact, "ok", false) == false {
+			audit_emit(cfg, "admin_operation", "failure", {"path": "/privacy/export", "namespace": namespace, "code": "privacy_artifact_write_failed"})
+			return json_err(req, cfg, 500, "privacy_artifact_write_failed", "Privacy export could not be protected and persisted", {
+				"namespace": namespace,
+				"error": dict_get_or(artifact, "error", {})
+			})
+		}
+
+		response_data := {
+			"namespace": namespace,
+			"index_path": dict_get_or(namespace_cfg, "index_path", ""),
+			"export": artifact,
+			"summary": summary,
+			"scope": ["chunks", "vectors", "lexical", "documents_index"]
+		}
+		audit_emit(cfg, "admin_operation", "success", {"path": "/privacy/export", "namespace": namespace, "chunk_count": dict_get_or(summary, "chunk_count", 0), "artifact_path": dict_get_or(artifact, "path", "")})
+		log_access(access_log, req, 200, {"privacy_export": true, "namespace": namespace, "chunk_count": dict_get_or(summary, "chunk_count", 0)})
+		return json_ok(req, cfg, response_data)
+	})
+
+	server := server.route("POST", "/privacy/delete", func(req) {
+		rate := rate_check(state, cfg, req)
+		state = dict_get_or(rate, "state", state)
+		if rate["ok"] == false {
+			return rate_limit_error(req, cfg, access_log, rate)
+		}
+
+		if dict_get_or(cfg, "api_drain_reject_mutations", true) && drain_enabled(state) {
+			return drain_mode_error(req, cfg, access_log, state, "privacy_delete")
+		}
+
+		auth := validate_api_auth(req, cfg)
+		audit_auth_decision(cfg, req, auth)
+		if auth["ok"] == false {
+			status := dict_get_or(auth, "status", 401)
+			code := dict_get_or(auth, "error", "unauthorized")
+			message := dict_get_or(auth, "message", "Unauthorized")
+			log_access(access_log, req, status, {"code": code})
+			return json_err(req, cfg, status, code, message, {"provider": dict_get_or(auth, "provider", "unknown")})
+		}
+
+		parsed := parse_api_json_body(req, cfg)
+		if parsed["ok"] == false {
+			log_access(access_log, req, 400, {"code": parsed["error"]})
+			return json_err(req, cfg, 400, parsed["error"], parsed["message"], dict_get_or(parsed, "details", {}))
+		}
+		data := parsed["data"]
+
+		ns_cfg := resolve_namespace_cfg(cfg, data)
+		if dict_get_or(ns_cfg, "ok", false) == false {
+			status := dict_get_or(ns_cfg, "status", 400)
+			code := dict_get_or(ns_cfg, "error", "invalid_namespace")
+			message := dict_get_or(ns_cfg, "message", "Invalid namespace")
+			log_access(access_log, req, status, {"code": code})
+			return json_err(req, cfg, status, code, message, dict_get_or(ns_cfg, "details", {}))
+		}
+		namespace := dict_get_or(ns_cfg, "namespace", dict_get_or(cfg, "namespace", "default"))
+		namespace_cfg := dict_get_or(ns_cfg, "cfg", cfg)
+
+		rbac := validate_api_rbac(req, cfg, auth, "admin", namespace)
+		audit_rbac_decision(cfg, req, rbac, "admin", namespace)
+		if dict_get_or(rbac, "ok", false) == false {
+			status := dict_get_or(rbac, "status", 403)
+			code := dict_get_or(rbac, "error", "rbac_forbidden")
+			message := dict_get_or(rbac, "message", "Forbidden")
+			log_access(access_log, req, status, {"code": code})
+			return json_err(req, cfg, status, code, message, dict_get_or(rbac, "details", {}))
+		}
+
+		hold_payload := effective_namespace_legal_hold(state, cfg, namespace, namespace_cfg)
+		state = dict_get_or(hold_payload, "state", state)
+		hold := dict_get_or(hold_payload, "hold", {})
+		if to_bool(dict_get_or(hold, "enabled", false)) {
+			reason := to_string(dict_get_or(hold, "reason", "legal_hold_active"))
+			log_access(access_log, req, 409, {"code": "legal_hold_active", "namespace": namespace})
+			response := json_response(409, {
+				"ok": false,
+				"request_id": ensure_request_id(req),
+				"correlation_id": ensure_correlation_id(req),
+				"error": {
+					"code": "legal_hold_active",
+					"message": "Privacy deletion is blocked by legal hold",
+					"details": {
+						"namespace": namespace,
+						"reason": reason
+					}
+				}
+			})
+			response = with_request_ids(response, req)
+			return with_cors(response, req, cfg)
+		}
+
+		delete_reason := trim(to_string(dict_get_or(data, "reason", "privacy_delete_request")))
+		if delete_reason == "" {
+			delete_reason = "privacy_delete_request"
+		}
+
+		delete_error := null
+		delete_response := null
+		try {
+			indexed := ensure_index_for_namespace(state, namespace, namespace_cfg)
+			state = dict_get_or(indexed, "state", state)
+			current_index := dict_get_or(indexed, "index", {})
+			pre_delete_summary := summarize_namespace_index(current_index)
+			pre_delete_export := write_privacy_export_artifact(namespace, current_index, "delete_preflight", cfg)
+			if dict_get_or(pre_delete_export, "ok", false) == false {
+				delete_error = "privacy_preflight_artifact_write_failed"
+			} else {
+				deleted_index := build_deleted_namespace_index(current_index, namespace)
+				delete_persisted := save_index_with_backend(namespace_cfg, deleted_index)
+				if delete_persisted != true {
+					delete_error = "privacy_delete_persistence_failed"
+				} else {
+					indexes := dict_get_or(state, "indexes", {})
+					indexes[namespace] := deleted_index
+					state["indexes"] := indexes
+					state = apply_namespace_privacy_delete(state, namespace)
+					state = persist_api_runtime_state(state)
+
+					post_delete_summary := summarize_namespace_index(deleted_index)
+					delete_receipt := write_privacy_export_artifact(namespace, deleted_index, "delete_receipt", cfg)
+					if dict_get_or(delete_receipt, "ok", false) == false {
+						delete_error = "privacy_delete_receipt_write_failed"
+					} else {
+						response_data := {
+							"namespace": namespace,
+							"index_path": dict_get_or(namespace_cfg, "index_path", ""),
+							"delete_reason": delete_reason,
+							"deleted": true,
+							"pre_delete_export": pre_delete_export,
+							"deletion_receipt": delete_receipt,
+							"summary_before": pre_delete_summary,
+							"summary_after": post_delete_summary,
+							"deleted_scopes": ["chunks", "vectors", "lexical", "documents_index", "sessions", "ingest_jobs", "ingest_queue", "ingest_idempotency", "query_cache", "retention_controls", "tenant_runtime_metrics"]
+						}
+						audit_emit(cfg, "admin_operation", "success", {"path": "/privacy/delete", "namespace": namespace, "reason": delete_reason, "deleted_chunks": dict_get_or(pre_delete_summary, "chunk_count", 0), "receipt_path": dict_get_or(delete_receipt, "path", "")})
+						log_access(access_log, req, 200, {"privacy_delete": true, "namespace": namespace, "deleted_chunks": dict_get_or(pre_delete_summary, "chunk_count", 0)})
+						delete_response = json_ok(req, cfg, response_data)
+					}
+				}
+			}
+		} except e {
+			delete_error = e
+		}
+
+		if type(delete_error) != "null" {
+			log_access(access_log, req, 500, {"code": "privacy_delete_failed", "namespace": namespace})
+			audit_emit(cfg, "admin_operation", "failure", {"path": "/privacy/delete", "namespace": namespace, "reason": delete_reason, "error": to_string(delete_error)})
+			return json_err(req, cfg, 500, "privacy_delete_failed", "Privacy delete workflow failed", {
+				"namespace": namespace,
+				"reason": delete_reason,
+				"error": to_string(delete_error)
+			})
+		}
+
+		return delete_response
+	})
+
+	server := server.route("GET", "/drain", func(req) {
+		rate := rate_check(state, cfg, req)
+		state = dict_get_or(rate, "state", state)
+		if rate["ok"] == false {
+				return rate_limit_error(req, cfg, access_log, rate)
+		}
+
+		auth := validate_api_auth(req, cfg)
+		audit_auth_decision(cfg, req, auth)
+		if auth["ok"] == false {
+			status := dict_get_or(auth, "status", 401)
+			code := dict_get_or(auth, "error", "unauthorized")
+			message := dict_get_or(auth, "message", "Unauthorized")
+			log_access(access_log, req, status, {"code": code})
+			return json_err(req, cfg, status, code, message, {"provider": dict_get_or(auth, "provider", "unknown")})
+		}
+
+		rbac := validate_api_rbac(req, cfg, auth, "admin", dict_get_or(cfg, "namespace", "default"))
+		audit_rbac_decision(cfg, req, rbac, "admin", dict_get_or(cfg, "namespace", "default"))
+		if dict_get_or(rbac, "ok", false) == false {
+			status := dict_get_or(rbac, "status", 403)
+			code := dict_get_or(rbac, "error", "rbac_forbidden")
+			message := dict_get_or(rbac, "message", "Forbidden")
+			log_access(access_log, req, status, {"code": code})
+			return json_err(req, cfg, status, code, message, dict_get_or(rbac, "details", {}))
+		}
+
+		payload := drain_state_snapshot(state, cfg)
+		audit_emit(cfg, "drain_mode", "status", payload)
+		log_access(access_log, req, 200, {"drain": true, "enabled": dict_get_or(payload, "enabled", false)})
+		return json_ok(req, cfg, payload)
+	})
+
+	server := server.route("POST", "/drain/start", func(req) {
+		rate := rate_check(state, cfg, req)
+		state = dict_get_or(rate, "state", state)
+		if rate["ok"] == false {
+				return rate_limit_error(req, cfg, access_log, rate)
+		}
+
+		auth := validate_api_auth(req, cfg)
+		audit_auth_decision(cfg, req, auth)
+		if auth["ok"] == false {
+			status := dict_get_or(auth, "status", 401)
+			code := dict_get_or(auth, "error", "unauthorized")
+			message := dict_get_or(auth, "message", "Unauthorized")
+			log_access(access_log, req, status, {"code": code})
+			return json_err(req, cfg, status, code, message, {"provider": dict_get_or(auth, "provider", "unknown")})
+		}
+
+		rbac := validate_api_rbac(req, cfg, auth, "admin", dict_get_or(cfg, "namespace", "default"))
+		audit_rbac_decision(cfg, req, rbac, "admin", dict_get_or(cfg, "namespace", "default"))
+		if dict_get_or(rbac, "ok", false) == false {
+			status := dict_get_or(rbac, "status", 403)
+			code := dict_get_or(rbac, "error", "rbac_forbidden")
+			message := dict_get_or(rbac, "message", "Forbidden")
+			log_access(access_log, req, status, {"code": code})
+			return json_err(req, cfg, status, code, message, dict_get_or(rbac, "details", {}))
+		}
+
+		reason := "operator_requested"
+		body_raw := trim(to_string(dict_get_or(req, "body", "")))
+		if body_raw != "" {
+			parsed := parse_api_json_body(req, cfg)
+			if parsed["ok"] == false {
+				log_access(access_log, req, 400, {"code": parsed["error"]})
+				return json_err(req, cfg, 400, parsed["error"], parsed["message"], dict_get_or(parsed, "details", {}))
+			}
+			data := parsed["data"]
+			reason = trim(to_string(dict_get_or(data, "reason", reason)))
+			if reason == "" {
+				reason = "operator_requested"
+			}
+		}
+
+		state = set_drain_state(state, true, reason)
+		payload := drain_state_snapshot(state, cfg)
+		audit_emit(cfg, "drain_mode", "started", payload)
+		log_access(access_log, req, 200, {"drain": "started", "reason": reason})
+		return json_ok(req, cfg, payload)
+	})
+
+	server := server.route("POST", "/drain/stop", func(req) {
+		rate := rate_check(state, cfg, req)
+		state = dict_get_or(rate, "state", state)
+		if rate["ok"] == false {
+				return rate_limit_error(req, cfg, access_log, rate)
+		}
+
+		auth := validate_api_auth(req, cfg)
+		audit_auth_decision(cfg, req, auth)
+		if auth["ok"] == false {
+			status := dict_get_or(auth, "status", 401)
+			code := dict_get_or(auth, "error", "unauthorized")
+			message := dict_get_or(auth, "message", "Unauthorized")
+			log_access(access_log, req, status, {"code": code})
+			return json_err(req, cfg, status, code, message, {"provider": dict_get_or(auth, "provider", "unknown")})
+		}
+
+		rbac := validate_api_rbac(req, cfg, auth, "admin", dict_get_or(cfg, "namespace", "default"))
+		audit_rbac_decision(cfg, req, rbac, "admin", dict_get_or(cfg, "namespace", "default"))
+		if dict_get_or(rbac, "ok", false) == false {
+			status := dict_get_or(rbac, "status", 403)
+			code := dict_get_or(rbac, "error", "rbac_forbidden")
+			message := dict_get_or(rbac, "message", "Forbidden")
+			log_access(access_log, req, status, {"code": code})
+			return json_err(req, cfg, status, code, message, dict_get_or(rbac, "details", {}))
+		}
+
+		state = set_drain_state(state, false, "")
+		payload := drain_state_snapshot(state, cfg)
+		audit_emit(cfg, "drain_mode", "stopped", payload)
+		log_access(access_log, req, 200, {"drain": "stopped"})
+		return json_ok(req, cfg, payload)
+	})
+
+	server := server.route("GET", "/", func(req) {
+		rate := rate_check(state, cfg, req)
+		state = dict_get_or(rate, "state", state)
+		if rate["ok"] == false {
+				return rate_limit_error(req, cfg, access_log, rate)
+		}
+
+		auth := validate_api_auth(req, cfg)
+		audit_auth_decision(cfg, req, auth)
+		if auth["ok"] == false {
+			status := dict_get_or(auth, "status", 401)
+			code := dict_get_or(auth, "error", "unauthorized")
+			message := dict_get_or(auth, "message", "Unauthorized")
+			log_access(access_log, req, status, {"code": code})
+			return json_err(req, cfg, status, code, message, {"provider": dict_get_or(auth, "provider", "unknown")})
+		}
+
+		rbac := validate_api_rbac(req, cfg, auth, "admin", dict_get_or(cfg, "namespace", "default"))
+		audit_rbac_decision(cfg, req, rbac, "admin", dict_get_or(cfg, "namespace", "default"))
+		if dict_get_or(rbac, "ok", false) == false {
+			status := dict_get_or(rbac, "status", 403)
+			code := dict_get_or(rbac, "error", "rbac_forbidden")
+			message := dict_get_or(rbac, "message", "Forbidden")
+			log_access(access_log, req, status, {"code": code})
+			return json_err(req, cfg, status, code, message, dict_get_or(rbac, "details", {}))
+		}
+
+		payload := {
+			"name": "kujo-rag",
+			"version": "1.0.0",
+			"namespace_default": dict_get_or(cfg, "namespace", "default"),
+			"ingest_worker_mode": ingest_jobs_mode(cfg),
+			"endpoints": {
+				"health": "GET /health",
+				"liveness": "GET /live",
+				"readiness": "GET /ready",
+				"startup": "GET /startup",
+				"retention": "GET /retention",
+				"retention_policy": "POST /retention/policy",
+				"retention_legal_hold_start": "POST /retention/legal-hold/start",
+				"retention_legal_hold_stop": "POST /retention/legal-hold/stop",
+				"retention_purge": "POST /retention/purge",
+				"privacy_export": "POST /privacy/export",
+				"privacy_delete": "POST /privacy/delete",
+				"drain_status": "GET /drain",
+				"drain_start": "POST /drain/start",
+				"drain_stop": "POST /drain/stop",
+				"metrics": "GET /metrics",
+				"ingest": "POST /ingest",
+				"ingest_jobs": "POST /ingest/jobs",
+				"ingest_job_status": "POST /ingest/jobs/status",
+				"ingest_worker_tick": "POST /ingest/jobs/worker/tick",
+				"query": "POST /query"
+			}
+		}
+		audit_emit(cfg, "admin_operation", "success", {"path": "/", "root": true})
+		log_access(access_log, req, 200, {"root": true})
+		return json_ok(req, cfg, payload)
+	})
+
+	server.listen()
+}

@@ -1,0 +1,1002 @@
+from src.common import dict_get_or, num_or, str_or, bool_or, clamp
+
+export default_config := func() {
+	return {
+		"index_path": "./data/rag_index.json",
+		"namespace": "default",
+		"namespace_index_isolation": true,
+		"vector_backend": "local_json",
+		"vector_backend_memory_key": "",
+		"vector_backend_qdrant_url": "",
+		"vector_backend_qdrant_collection": "kujo_rag",
+		"vector_backend_qdrant_api_key": "",
+		"vector_backend_qdrant_sync_enabled": false,
+		"vector_backend_qdrant_timeout_ms": 8000,
+		"vector_backend_qdrant_fail_open": true,
+		"vector_backend_qdrant_allowed_hosts": [],
+		"vector_backend_qdrant_mirror_path": "",
+		"vector_backend_qdrant_sync_mode": "legacy_replace",
+		"vector_backend_qdrant_alias": "",
+		"vector_backend_qdrant_journal_path": "",
+		"vector_backend_qdrant_gc_enabled": false,
+		"vector_backend_qdrant_gc_grace_sec": 86400,
+		"vector_backend_qdrant_gc_max_per_save": 1,
+		"at_rest_encryption_enabled": false,
+		"at_rest_encryption_key": "",
+		"at_rest_encryption_key_file": "",
+		"at_rest_encryption_openssl_bin": "openssl",
+		"embedding_provider": "hash",
+		"embedding_dims": 256,
+		"chunk_strategy": "line",
+		"chunk_size": 900,
+		"chunk_overlap": 150,
+		"chunk_presets_enabled": false,
+		"markdown_examples_enabled": false,
+		"chunk_presets": {},
+		"top_k": 6,
+		"hybrid_alpha": 0.65,
+		"hybrid_beta": 0.35,
+		"rerank_strategy": "none",
+		"rerank_mmr_lambda": 0.7,
+		"query_expansion": true,
+		"pdf_extractor_command": "pdftotext",
+		"parser_timeout_ms": 30000,
+		"parser_sandbox_max_bytes": 5000000,
+		"api_host": "127.0.0.1",
+		"api_allow_non_loopback": false,
+		"api_port": 8787,
+		"api_max_body_bytes": 1048576,
+		"api_max_query_chars": 4000,
+		"api_guardrail_query_max_complexity": 18000,
+		"api_guardrail_query_max_filter_keys": 32,
+		"api_guardrail_query_max_session_chars": 12000,
+		"api_guardrail_ingest_max_files": 5000,
+		"api_guardrail_ingest_max_total_bytes": 50000000,
+		"api_cors_enabled": false,
+		"api_cors_allowed_origins": [],
+		"api_auth_provider": "bearer",
+		"api_bearer_token": "",
+		"api_bearer_token_next": "",
+		"api_bearer_revoked_tokens": [],
+		"api_jwt_issuer": "",
+		"api_jwt_audience": "",
+		"api_jwt_clock_skew_sec": 60,
+		"api_trusted_proxy_secret": "",
+		"api_trusted_proxy_secret_header": "x-kujo-proxy-secret",
+		"api_trusted_proxy_ips": ["127.0.0.1", "::1"],
+		"api_rbac_enabled": false,
+		"api_rbac_default_role": "reader",
+		"api_rbac_role_header": "x-kujo-role",
+		"api_rbac_namespace_header": "x-kujo-namespace",
+		"api_rbac_policy": {
+			"admin": ["ingest", "query", "admin", "export"],
+			"writer": ["ingest", "query"],
+			"reader": ["query"]
+		},
+		"api_audit_enabled": false,
+		"api_audit_path": "./results/security_audit.log",
+		"api_audit_external_sink_mode": "append_file",
+		"api_audit_fail_closed": false,
+		"api_audit_integrity_key": "",
+		"api_redaction_enabled": true,
+		"api_redaction_mask": "[REDACTED]",
+		"api_redaction_keys": ["authorization", "token", "api_key", "apikey", "secret", "password", "passphrase", "x-api-key", "set-cookie", "cookie", "bearer", "openai_api_key"],
+		"api_redaction_values": [],
+		"api_rate_limit_window_sec": 60,
+		"api_rate_limit_max_requests": 120,
+		"api_rate_limit_burst_window_sec": 5,
+		"api_rate_limit_burst_max_requests": 30,
+		"api_rate_limit_bucket_ttl_sec": 300,
+		"api_rate_limit_max_keys": 5000,
+		"api_rate_limit_backend": "memory",
+		"api_rate_limit_backend_file": "./results/rate_limit_state.json",
+		"api_tenant_quota_enabled": false,
+		"api_tenant_query_rate_window_sec": 60,
+		"api_tenant_query_rate_max_requests": 120,
+		"api_tenant_ingest_max_chunks_per_request": 50000,
+		"api_tenant_storage_max_chunks": 200000,
+		"api_startup_grace_ms": 1000,
+		"api_readiness_force_unready": false,
+		"api_drain_reject_mutations": true,
+		"api_drain_pre_stop_ms": 5000,
+		"api_ingest_idempotency_enabled": true,
+		"api_ingest_idempotency_window_sec": 900,
+		"api_ingest_idempotency_header": "x-idempotency-key",
+		"api_ingest_jobs_mode": "inline",
+		"api_ingest_worker_batch_size": 1,
+		"api_ingest_worker_max_running": 1,
+		"api_query_cache_enabled": true,
+		"api_query_cache_ttl_sec": 300,
+		"api_query_cache_max_entries": 1000,
+		"query_safe_response_enabled": true,
+		"query_safe_response_min_overlap_ratio": 0.15,
+		"query_safe_response_message": "I cannot answer safely from the available local context.",
+		"query_intent_rewrite_enabled": true,
+		"query_retrieval_explanation_enabled": false,
+		"retention_policy_enabled": false,
+		"retention_default_ttl_days": 365,
+		"retention_legal_hold_enabled": true,
+		"embedding_cache_enabled": true,
+		"embedding_cache_max_entries": 10000,
+		"api_abuse_blocklist_ips": [],
+		"api_anomaly_hook_enabled": false,
+		"api_anomaly_auto_block_enabled": false,
+		"api_anomaly_violation_threshold": 3,
+		"api_anomaly_block_ttl_sec": 900,
+		"session_history_max_turns": 4,
+		"api_access_log": true,
+		"otel_enabled": false,
+		"otel_service_name": "kujo-rag",
+		"otel_otlp_endpoint": "",
+		"otel_export_mode": "audit",
+		"strict_config": false,
+		"runtime_environment": "development",
+		"project_root": ".",
+		"api_ingest_allowed_roots": ["."],
+		"ingest_extensions": ["md", "mdx", "markdown", "txt", "pdf", "kujo", "py", "json", "csv", "html", "htm", "xml", "yaml", "yml", "log"],
+		"max_file_bytes": 5000000
+	}
+}
+
+func normalize_namespace(namespace_value) {
+	if type(namespace_value) != "string" {
+		return ""
+	}
+	ns := to_lower(trim(namespace_value))
+	if ns == "" {
+		return ""
+	}
+	if len(ns) > 64 {
+		return ""
+	}
+	invalid := regex_replace(ns, "[a-z0-9_-]", "")
+	if invalid != "" {
+		return ""
+	}
+	return ns
+}
+
+func namespaced_index_path(index_path, namespace_value, isolate) {
+	if isolate == false {
+		return index_path
+	}
+	if namespace_value == "" || namespace_value == "default" {
+		return index_path
+	}
+	ext := path_extension(index_path)
+	if ext == "" {
+		return index_path + "__" + namespace_value
+	}
+	ext_with_dot := "." + ext
+	base := substring(index_path, 0, len(index_path) - len(ext_with_dot))
+	namespace_suffix := "__" + namespace_value
+	if ends_with(base, namespace_suffix) {
+		return index_path
+	}
+	return base + "__" + namespace_value + ext_with_dot
+}
+
+export cfg_with_namespace := func(cfg, namespace_value) {
+	base_namespace := dict_get_or(cfg, "namespace", "default")
+	target_namespace := namespace_value
+	if type(target_namespace) != "string" || trim(target_namespace) == "" {
+		target_namespace = base_namespace
+	}
+	normalized := normalize_namespace(target_namespace)
+	if normalized == "" {
+		return {
+			"ok": false,
+			"error": "invalid_namespace",
+			"message": "Namespace must be 1-64 chars and match [a-z0-9_-]",
+			"details": {
+				"namespace": target_namespace
+			}
+		}
+	}
+
+	updated := {}
+	for key in keys(cfg) {
+		updated[key] := cfg[key]
+	}
+
+	isolate := dict_get_or(updated, "namespace_index_isolation", true)
+	updated["namespace"] := normalized
+	updated["index_path"] := namespaced_index_path(dict_get_or(updated, "index_path", "./data/rag_index.json"), normalized, isolate)
+
+	return {
+		"ok": true,
+		"namespace": normalized,
+		"cfg": updated
+	}
+}
+
+func parse_int_or(value, default_value) {
+	err := null
+	parsed := default_value
+	try {
+		parsed := parse_int(value)
+	} except e {
+		err := e
+	}
+	if type(err) != "null" {
+		return default_value
+	}
+	return parsed
+}
+
+func parse_float_or(value, default_value) {
+	err := null
+	parsed := default_value
+	try {
+		parsed := parse_float(value)
+	} except e {
+		err := e
+	}
+	if type(err) != "null" {
+		return default_value
+	}
+	return parsed
+}
+
+func parse_bool_or(value, default_value) {
+	if type(value) != "string" {
+		return default_value
+	}
+	lower := to_lower(trim(value))
+	if lower == "1" || lower == "true" || lower == "yes" || lower == "on" {
+		return true
+	}
+	if lower == "0" || lower == "false" || lower == "no" || lower == "off" {
+		return false
+	}
+	return default_value
+}
+
+func is_safe_command_token(value) {
+	if type(value) != "string" {
+		return false
+	}
+	candidate := trim(value)
+	if candidate == "" {
+		return false
+	}
+	invalid := regex_replace(candidate, "[A-Za-z0-9_./-]", "")
+	return invalid == ""
+}
+
+func parse_csv_string_array(value, default_value) {
+	if type(value) != "string" {
+		return default_value
+	}
+	raw := trim(value)
+	if raw == "" {
+		return default_value
+	}
+	items := split(raw, ",")
+	parsed := []
+	for item in items {
+		entry := trim(item)
+		if entry != "" {
+			parsed := push(parsed, entry)
+		}
+	}
+	if len(parsed) == 0 {
+		return default_value
+	}
+	return parsed
+}
+
+func is_loopback_host(host_value) {
+	host := to_lower(trim(to_string(host_value)))
+	return host == "127.0.0.1" || host == "localhost" || host == "::1" || host == "[::1]"
+}
+
+func array_contains_string(values, expected) {
+	if type(values) != "array" {
+		return false
+	}
+	needle := to_lower(trim(to_string(expected)))
+	for value in values {
+		if to_lower(trim(to_string(value))) == needle {
+			return true
+		}
+	}
+	return false
+}
+
+func url_host(url_value) {
+	url := trim(to_string(url_value))
+	scheme_sep := index_of(url, "://")
+	if scheme_sep < 0 {
+		return ""
+	}
+	authority_and_path := substring(url, scheme_sep + 3, len(url))
+	authority_parts := split(authority_and_path, "/")
+	if len(authority_parts) == 0 {
+		return ""
+	}
+	authority := trim(authority_parts[0])
+	if authority == "" || index_of(authority, "@") >= 0 {
+		return ""
+	}
+	if starts_with(authority, "[") {
+		close_index := index_of(authority, "]")
+		if close_index <= 1 {
+			return ""
+		}
+		return to_lower(substring(authority, 1, close_index))
+	}
+	host_parts := split(authority, ":")
+	if len(host_parts) == 0 {
+		return ""
+	}
+	return to_lower(trim(host_parts[0]))
+}
+
+func parse_json_dict_or(value, default_value) {
+	if type(value) != "string" {
+		return default_value
+	}
+	raw := trim(value)
+	if raw == "" {
+		return default_value
+	}
+	err := null
+	parsed := default_value
+	try {
+		parsed := parse_json(raw)
+	} except e {
+		err := e
+	}
+	if type(err) != "null" {
+		return default_value
+	}
+	if type(parsed) != "dict" {
+		return default_value
+	}
+	return parsed
+}
+
+export load_config := func(overrides) {
+	cfg := default_config()
+
+	cfg["index_path"] := env_or("KUJO_RAG_INDEX_PATH", cfg["index_path"])
+	cfg["namespace"] := env_or("KUJO_RAG_NAMESPACE", cfg["namespace"])
+	cfg["namespace_index_isolation"] := parse_bool_or(env_or("KUJO_RAG_NAMESPACE_INDEX_ISOLATION", "true"), cfg["namespace_index_isolation"])
+	cfg["vector_backend"] := to_lower(trim(env_or("KUJO_RAG_VECTOR_BACKEND", cfg["vector_backend"])))
+	cfg["vector_backend_memory_key"] := env_or("KUJO_RAG_VECTOR_BACKEND_MEMORY_KEY", cfg["vector_backend_memory_key"])
+	cfg["vector_backend_qdrant_url"] := trim(env_or("KUJO_RAG_VECTOR_BACKEND_QDRANT_URL", cfg["vector_backend_qdrant_url"]))
+	cfg["vector_backend_qdrant_collection"] := to_lower(trim(env_or("KUJO_RAG_VECTOR_BACKEND_QDRANT_COLLECTION", cfg["vector_backend_qdrant_collection"])))
+	cfg["vector_backend_qdrant_api_key"] := env_or("KUJO_RAG_VECTOR_BACKEND_QDRANT_API_KEY", cfg["vector_backend_qdrant_api_key"])
+	cfg["vector_backend_qdrant_sync_enabled"] := parse_bool_or(env_or("KUJO_RAG_VECTOR_BACKEND_QDRANT_SYNC_ENABLED", "false"), cfg["vector_backend_qdrant_sync_enabled"])
+	cfg["vector_backend_qdrant_timeout_ms"] := parse_int_or(env_or("KUJO_RAG_VECTOR_BACKEND_QDRANT_TIMEOUT_MS", to_string(cfg["vector_backend_qdrant_timeout_ms"])), cfg["vector_backend_qdrant_timeout_ms"])
+	cfg["vector_backend_qdrant_fail_open"] := parse_bool_or(env_or("KUJO_RAG_VECTOR_BACKEND_QDRANT_FAIL_OPEN", "true"), cfg["vector_backend_qdrant_fail_open"])
+	cfg["vector_backend_qdrant_allowed_hosts"] := parse_csv_string_array(env_or("KUJO_RAG_VECTOR_BACKEND_QDRANT_ALLOWED_HOSTS", ""), dict_get_or(cfg, "vector_backend_qdrant_allowed_hosts", []))
+	cfg["vector_backend_qdrant_mirror_path"] := trim(env_or("KUJO_RAG_VECTOR_BACKEND_QDRANT_MIRROR_PATH", cfg["vector_backend_qdrant_mirror_path"]))
+	cfg["vector_backend_qdrant_sync_mode"] := to_lower(trim(env_or("KUJO_RAG_VECTOR_BACKEND_QDRANT_SYNC_MODE", cfg["vector_backend_qdrant_sync_mode"])))
+	cfg["vector_backend_qdrant_alias"] := to_lower(trim(env_or("KUJO_RAG_VECTOR_BACKEND_QDRANT_ALIAS", cfg["vector_backend_qdrant_alias"])))
+	cfg["vector_backend_qdrant_journal_path"] := trim(env_or("KUJO_RAG_VECTOR_BACKEND_QDRANT_JOURNAL_PATH", cfg["vector_backend_qdrant_journal_path"]))
+	cfg["vector_backend_qdrant_gc_enabled"] := parse_bool_or(env_or("KUJO_RAG_VECTOR_BACKEND_QDRANT_GC_ENABLED", "false"), cfg["vector_backend_qdrant_gc_enabled"])
+	cfg["vector_backend_qdrant_gc_grace_sec"] := parse_int_or(env_or("KUJO_RAG_VECTOR_BACKEND_QDRANT_GC_GRACE_SEC", to_string(cfg["vector_backend_qdrant_gc_grace_sec"])), cfg["vector_backend_qdrant_gc_grace_sec"])
+	cfg["vector_backend_qdrant_gc_max_per_save"] := parse_int_or(env_or("KUJO_RAG_VECTOR_BACKEND_QDRANT_GC_MAX_PER_SAVE", to_string(cfg["vector_backend_qdrant_gc_max_per_save"])), cfg["vector_backend_qdrant_gc_max_per_save"])
+	cfg["at_rest_encryption_enabled"] := parse_bool_or(env_or("KUJO_RAG_AT_REST_ENCRYPTION_ENABLED", "false"), cfg["at_rest_encryption_enabled"])
+	cfg["at_rest_encryption_key"] := env_or("KUJO_RAG_AT_REST_ENCRYPTION_KEY", cfg["at_rest_encryption_key"])
+	cfg["at_rest_encryption_key_file"] := env_or("KUJO_RAG_AT_REST_ENCRYPTION_KEY_FILE", cfg["at_rest_encryption_key_file"])
+	cfg["at_rest_encryption_openssl_bin"] := trim(env_or("KUJO_RAG_AT_REST_ENCRYPTION_OPENSSL_BIN", cfg["at_rest_encryption_openssl_bin"]))
+	cfg["embedding_provider"] := env_or("KUJO_RAG_EMBEDDING_PROVIDER", cfg["embedding_provider"])
+	cfg["embedding_dims"] := parse_int_or(env_or("KUJO_RAG_EMBEDDING_DIMS", to_string(cfg["embedding_dims"])), cfg["embedding_dims"])
+	cfg["chunk_strategy"] := env_or("KUJO_RAG_CHUNK_STRATEGY", cfg["chunk_strategy"])
+	cfg["chunk_size"] := parse_int_or(env_or("KUJO_RAG_CHUNK_SIZE", to_string(cfg["chunk_size"])), cfg["chunk_size"])
+	cfg["chunk_overlap"] := parse_int_or(env_or("KUJO_RAG_CHUNK_OVERLAP", to_string(cfg["chunk_overlap"])), cfg["chunk_overlap"])
+	cfg["markdown_examples_enabled"] := parse_bool_or(env_or("KUJO_RAG_MARKDOWN_EXAMPLES_ENABLED", "false"), false)
+	cfg["chunk_presets_enabled"] := parse_bool_or(env_or("KUJO_RAG_CHUNK_PRESETS_ENABLED", to_string(cfg["chunk_presets_enabled"])), cfg["chunk_presets_enabled"])
+	cfg["chunk_presets"] := parse_json_dict_or(env_or("KUJO_RAG_CHUNK_PRESETS_JSON", ""), cfg["chunk_presets"])
+	cfg["top_k"] := parse_int_or(env_or("KUJO_RAG_TOP_K", to_string(cfg["top_k"])), cfg["top_k"])
+	cfg["hybrid_alpha"] := parse_float_or(env_or("KUJO_RAG_HYBRID_ALPHA", to_string(cfg["hybrid_alpha"])), cfg["hybrid_alpha"])
+	cfg["hybrid_beta"] := parse_float_or(env_or("KUJO_RAG_HYBRID_BETA", to_string(cfg["hybrid_beta"])), cfg["hybrid_beta"])
+	cfg["rerank_strategy"] := to_lower(trim(env_or("KUJO_RAG_RERANK_STRATEGY", cfg["rerank_strategy"])))
+	cfg["rerank_mmr_lambda"] := parse_float_or(env_or("KUJO_RAG_RERANK_MMR_LAMBDA", to_string(cfg["rerank_mmr_lambda"])), cfg["rerank_mmr_lambda"])
+	cfg["query_expansion"] := parse_bool_or(env_or("KUJO_RAG_QUERY_EXPANSION", "true"), cfg["query_expansion"])
+	cfg["api_host"] := env_or("KUJO_RAG_API_HOST", cfg["api_host"])
+	cfg["api_allow_non_loopback"] := parse_bool_or(env_or("KUJO_RAG_API_ALLOW_NON_LOOPBACK", "false"), cfg["api_allow_non_loopback"])
+	cfg["api_port"] := parse_int_or(env_or("KUJO_RAG_API_PORT", to_string(cfg["api_port"])), cfg["api_port"])
+	cfg["api_max_body_bytes"] := parse_int_or(env_or("KUJO_RAG_API_MAX_BODY_BYTES", to_string(cfg["api_max_body_bytes"])), cfg["api_max_body_bytes"])
+	cfg["api_max_query_chars"] := parse_int_or(env_or("KUJO_RAG_API_MAX_QUERY_CHARS", to_string(cfg["api_max_query_chars"])), cfg["api_max_query_chars"])
+	cfg["api_guardrail_query_max_complexity"] := parse_int_or(env_or("KUJO_RAG_API_GUARDRAIL_QUERY_MAX_COMPLEXITY", to_string(cfg["api_guardrail_query_max_complexity"])), cfg["api_guardrail_query_max_complexity"])
+	cfg["api_guardrail_query_max_filter_keys"] := parse_int_or(env_or("KUJO_RAG_API_GUARDRAIL_QUERY_MAX_FILTER_KEYS", to_string(cfg["api_guardrail_query_max_filter_keys"])), cfg["api_guardrail_query_max_filter_keys"])
+	cfg["api_guardrail_query_max_session_chars"] := parse_int_or(env_or("KUJO_RAG_API_GUARDRAIL_QUERY_MAX_SESSION_CHARS", to_string(cfg["api_guardrail_query_max_session_chars"])), cfg["api_guardrail_query_max_session_chars"])
+	cfg["api_guardrail_ingest_max_files"] := parse_int_or(env_or("KUJO_RAG_API_GUARDRAIL_INGEST_MAX_FILES", to_string(cfg["api_guardrail_ingest_max_files"])), cfg["api_guardrail_ingest_max_files"])
+	cfg["api_guardrail_ingest_max_total_bytes"] := parse_int_or(env_or("KUJO_RAG_API_GUARDRAIL_INGEST_MAX_TOTAL_BYTES", to_string(cfg["api_guardrail_ingest_max_total_bytes"])), cfg["api_guardrail_ingest_max_total_bytes"])
+	cfg["api_cors_enabled"] := parse_bool_or(env_or("KUJO_RAG_API_CORS_ENABLED", "false"), cfg["api_cors_enabled"])
+	cfg["api_cors_allowed_origins"] := parse_csv_string_array(env_or("KUJO_RAG_API_CORS_ALLOWED_ORIGINS", ""), cfg["api_cors_allowed_origins"])
+	cfg["api_auth_provider"] := to_lower(trim(env_or("KUJO_RAG_API_AUTH_PROVIDER", cfg["api_auth_provider"])))
+	cfg["api_bearer_token"] := env_or("KUJO_RAG_API_BEARER_TOKEN", cfg["api_bearer_token"])
+	cfg["api_bearer_token_next"] := env_or("KUJO_RAG_API_BEARER_TOKEN_NEXT", cfg["api_bearer_token_next"])
+	cfg["api_bearer_revoked_tokens"] := parse_csv_string_array(env_or("KUJO_RAG_API_BEARER_REVOKED_TOKENS", ""), cfg["api_bearer_revoked_tokens"])
+	cfg["api_jwt_issuer"] := trim(env_or("KUJO_RAG_API_JWT_ISSUER", cfg["api_jwt_issuer"]))
+	cfg["api_jwt_audience"] := trim(env_or("KUJO_RAG_API_JWT_AUDIENCE", cfg["api_jwt_audience"]))
+	cfg["api_jwt_clock_skew_sec"] := parse_int_or(env_or("KUJO_RAG_API_JWT_CLOCK_SKEW_SEC", to_string(cfg["api_jwt_clock_skew_sec"])), cfg["api_jwt_clock_skew_sec"])
+	cfg["api_trusted_proxy_secret"] := env_or("KUJO_RAG_API_TRUSTED_PROXY_SECRET", cfg["api_trusted_proxy_secret"])
+	cfg["api_trusted_proxy_secret_header"] := to_lower(trim(env_or("KUJO_RAG_API_TRUSTED_PROXY_SECRET_HEADER", cfg["api_trusted_proxy_secret_header"])))
+	cfg["api_trusted_proxy_ips"] := parse_csv_string_array(env_or("KUJO_RAG_API_TRUSTED_PROXY_IPS", ""), cfg["api_trusted_proxy_ips"])
+	cfg["api_rbac_enabled"] := parse_bool_or(env_or("KUJO_RAG_API_RBAC_ENABLED", "false"), cfg["api_rbac_enabled"])
+	cfg["api_rbac_default_role"] := to_lower(trim(env_or("KUJO_RAG_API_RBAC_DEFAULT_ROLE", cfg["api_rbac_default_role"])))
+	cfg["api_rbac_role_header"] := to_lower(trim(env_or("KUJO_RAG_API_RBAC_ROLE_HEADER", cfg["api_rbac_role_header"])))
+	cfg["api_rbac_namespace_header"] := to_lower(trim(env_or("KUJO_RAG_API_RBAC_NAMESPACE_HEADER", cfg["api_rbac_namespace_header"])))
+	cfg["api_rbac_policy"] := parse_json_dict_or(env_or("KUJO_RAG_API_RBAC_POLICY_JSON", ""), cfg["api_rbac_policy"])
+	cfg["api_audit_enabled"] := parse_bool_or(env_or("KUJO_RAG_API_AUDIT_ENABLED", "false"), cfg["api_audit_enabled"])
+	cfg["api_audit_path"] := env_or("KUJO_RAG_API_AUDIT_PATH", cfg["api_audit_path"])
+	cfg["api_audit_external_sink_mode"] := to_lower(trim(env_or("KUJO_RAG_API_AUDIT_EXTERNAL_SINK_MODE", cfg["api_audit_external_sink_mode"])))
+	cfg["api_audit_fail_closed"] := parse_bool_or(env_or("KUJO_RAG_API_AUDIT_FAIL_CLOSED", "false"), cfg["api_audit_fail_closed"])
+	cfg["api_audit_integrity_key"] := env_or("KUJO_RAG_API_AUDIT_INTEGRITY_KEY", cfg["api_audit_integrity_key"])
+	cfg["api_redaction_enabled"] := parse_bool_or(env_or("KUJO_RAG_API_REDACTION_ENABLED", "true"), cfg["api_redaction_enabled"])
+	cfg["api_redaction_mask"] := env_or("KUJO_RAG_API_REDACTION_MASK", cfg["api_redaction_mask"])
+	cfg["api_redaction_keys"] := parse_csv_string_array(env_or("KUJO_RAG_API_REDACTION_KEYS", ""), cfg["api_redaction_keys"])
+	cfg["api_redaction_values"] := parse_csv_string_array(env_or("KUJO_RAG_API_REDACTION_VALUES", ""), cfg["api_redaction_values"])
+	cfg["api_rate_limit_window_sec"] := parse_int_or(env_or("KUJO_RAG_API_RATE_LIMIT_WINDOW_SEC", to_string(cfg["api_rate_limit_window_sec"])), cfg["api_rate_limit_window_sec"])
+	cfg["api_rate_limit_max_requests"] := parse_int_or(env_or("KUJO_RAG_API_RATE_LIMIT_MAX_REQUESTS", to_string(cfg["api_rate_limit_max_requests"])), cfg["api_rate_limit_max_requests"])
+	cfg["api_rate_limit_burst_window_sec"] := parse_int_or(env_or("KUJO_RAG_API_RATE_LIMIT_BURST_WINDOW_SEC", to_string(cfg["api_rate_limit_burst_window_sec"])), cfg["api_rate_limit_burst_window_sec"])
+	cfg["api_rate_limit_burst_max_requests"] := parse_int_or(env_or("KUJO_RAG_API_RATE_LIMIT_BURST_MAX_REQUESTS", to_string(cfg["api_rate_limit_burst_max_requests"])), cfg["api_rate_limit_burst_max_requests"])
+	cfg["api_rate_limit_bucket_ttl_sec"] := parse_int_or(env_or("KUJO_RAG_API_RATE_LIMIT_BUCKET_TTL_SEC", to_string(cfg["api_rate_limit_bucket_ttl_sec"])), cfg["api_rate_limit_bucket_ttl_sec"])
+	cfg["api_rate_limit_max_keys"] := parse_int_or(env_or("KUJO_RAG_API_RATE_LIMIT_MAX_KEYS", to_string(cfg["api_rate_limit_max_keys"])), cfg["api_rate_limit_max_keys"])
+	cfg["api_rate_limit_backend"] := to_lower(trim(env_or("KUJO_RAG_API_RATE_LIMIT_BACKEND", cfg["api_rate_limit_backend"])))
+	cfg["api_rate_limit_backend_file"] := trim(env_or("KUJO_RAG_API_RATE_LIMIT_BACKEND_FILE", cfg["api_rate_limit_backend_file"]))
+	cfg["api_tenant_quota_enabled"] := parse_bool_or(env_or("KUJO_RAG_API_TENANT_QUOTA_ENABLED", "false"), cfg["api_tenant_quota_enabled"])
+	cfg["api_tenant_query_rate_window_sec"] := parse_int_or(env_or("KUJO_RAG_API_TENANT_QUERY_RATE_WINDOW_SEC", to_string(cfg["api_tenant_query_rate_window_sec"])), cfg["api_tenant_query_rate_window_sec"])
+	cfg["api_tenant_query_rate_max_requests"] := parse_int_or(env_or("KUJO_RAG_API_TENANT_QUERY_RATE_MAX_REQUESTS", to_string(cfg["api_tenant_query_rate_max_requests"])), cfg["api_tenant_query_rate_max_requests"])
+	cfg["api_tenant_ingest_max_chunks_per_request"] := parse_int_or(env_or("KUJO_RAG_API_TENANT_INGEST_MAX_CHUNKS_PER_REQUEST", to_string(cfg["api_tenant_ingest_max_chunks_per_request"])), cfg["api_tenant_ingest_max_chunks_per_request"])
+	cfg["api_tenant_storage_max_chunks"] := parse_int_or(env_or("KUJO_RAG_API_TENANT_STORAGE_MAX_CHUNKS", to_string(cfg["api_tenant_storage_max_chunks"])), cfg["api_tenant_storage_max_chunks"])
+	cfg["api_startup_grace_ms"] := parse_int_or(env_or("KUJO_RAG_API_STARTUP_GRACE_MS", to_string(cfg["api_startup_grace_ms"])), cfg["api_startup_grace_ms"])
+	cfg["api_readiness_force_unready"] := parse_bool_or(env_or("KUJO_RAG_API_READINESS_FORCE_UNREADY", "false"), cfg["api_readiness_force_unready"])
+	cfg["api_drain_reject_mutations"] := parse_bool_or(env_or("KUJO_RAG_API_DRAIN_REJECT_MUTATIONS", "true"), cfg["api_drain_reject_mutations"])
+	cfg["api_drain_pre_stop_ms"] := parse_int_or(env_or("KUJO_RAG_API_DRAIN_PRE_STOP_MS", to_string(cfg["api_drain_pre_stop_ms"])), cfg["api_drain_pre_stop_ms"])
+	cfg["api_ingest_idempotency_enabled"] := parse_bool_or(env_or("KUJO_RAG_API_INGEST_IDEMPOTENCY_ENABLED", "true"), cfg["api_ingest_idempotency_enabled"])
+	cfg["api_ingest_idempotency_window_sec"] := parse_int_or(env_or("KUJO_RAG_API_INGEST_IDEMPOTENCY_WINDOW_SEC", to_string(cfg["api_ingest_idempotency_window_sec"])), cfg["api_ingest_idempotency_window_sec"])
+	cfg["api_ingest_idempotency_header"] := to_lower(trim(env_or("KUJO_RAG_API_INGEST_IDEMPOTENCY_HEADER", cfg["api_ingest_idempotency_header"])))
+	cfg["api_ingest_jobs_mode"] := to_lower(trim(env_or("KUJO_RAG_API_INGEST_JOBS_MODE", cfg["api_ingest_jobs_mode"])))
+	cfg["api_ingest_worker_batch_size"] := parse_int_or(env_or("KUJO_RAG_API_INGEST_WORKER_BATCH_SIZE", to_string(cfg["api_ingest_worker_batch_size"])), cfg["api_ingest_worker_batch_size"])
+	cfg["api_ingest_worker_max_running"] := parse_int_or(env_or("KUJO_RAG_API_INGEST_WORKER_MAX_RUNNING", to_string(cfg["api_ingest_worker_max_running"])), cfg["api_ingest_worker_max_running"])
+	cfg["api_query_cache_enabled"] := parse_bool_or(env_or("KUJO_RAG_API_QUERY_CACHE_ENABLED", "true"), cfg["api_query_cache_enabled"])
+	cfg["api_query_cache_ttl_sec"] := parse_int_or(env_or("KUJO_RAG_API_QUERY_CACHE_TTL_SEC", to_string(cfg["api_query_cache_ttl_sec"])), cfg["api_query_cache_ttl_sec"])
+	cfg["api_query_cache_max_entries"] := parse_int_or(env_or("KUJO_RAG_API_QUERY_CACHE_MAX_ENTRIES", to_string(cfg["api_query_cache_max_entries"])), cfg["api_query_cache_max_entries"])
+	cfg["query_safe_response_enabled"] := parse_bool_or(env_or("KUJO_RAG_QUERY_SAFE_RESPONSE_ENABLED", "true"), cfg["query_safe_response_enabled"])
+	cfg["query_safe_response_min_overlap_ratio"] := parse_float_or(env_or("KUJO_RAG_QUERY_SAFE_RESPONSE_MIN_OVERLAP_RATIO", to_string(cfg["query_safe_response_min_overlap_ratio"])), cfg["query_safe_response_min_overlap_ratio"])
+	cfg["query_safe_response_message"] := trim(env_or("KUJO_RAG_QUERY_SAFE_RESPONSE_MESSAGE", cfg["query_safe_response_message"]))
+	cfg["query_intent_rewrite_enabled"] := parse_bool_or(env_or("KUJO_RAG_QUERY_INTENT_REWRITE_ENABLED", "true"), cfg["query_intent_rewrite_enabled"])
+	cfg["query_retrieval_explanation_enabled"] := parse_bool_or(env_or("KUJO_RAG_QUERY_RETRIEVAL_EXPLANATION_ENABLED", to_string(cfg["query_retrieval_explanation_enabled"])), cfg["query_retrieval_explanation_enabled"])
+	cfg["retention_policy_enabled"] := parse_bool_or(env_or("KUJO_RAG_RETENTION_POLICY_ENABLED", to_string(cfg["retention_policy_enabled"])), cfg["retention_policy_enabled"])
+	cfg["retention_default_ttl_days"] := parse_int_or(env_or("KUJO_RAG_RETENTION_DEFAULT_TTL_DAYS", to_string(cfg["retention_default_ttl_days"])), cfg["retention_default_ttl_days"])
+	if cfg["retention_default_ttl_days"] < 1 {
+		cfg["retention_default_ttl_days"] = 1
+	}
+	if cfg["retention_default_ttl_days"] > 36500 {
+		cfg["retention_default_ttl_days"] = 36500
+	}
+	cfg["retention_legal_hold_enabled"] := parse_bool_or(env_or("KUJO_RAG_RETENTION_LEGAL_HOLD_ENABLED", to_string(cfg["retention_legal_hold_enabled"])), cfg["retention_legal_hold_enabled"])
+	cfg["embedding_cache_enabled"] := parse_bool_or(env_or("KUJO_RAG_EMBEDDING_CACHE_ENABLED", "true"), cfg["embedding_cache_enabled"])
+	cfg["embedding_cache_max_entries"] := parse_int_or(env_or("KUJO_RAG_EMBEDDING_CACHE_MAX_ENTRIES", to_string(cfg["embedding_cache_max_entries"])), cfg["embedding_cache_max_entries"])
+	cfg["api_abuse_blocklist_ips"] := parse_csv_string_array(env_or("KUJO_RAG_API_ABUSE_BLOCKLIST_IPS", ""), cfg["api_abuse_blocklist_ips"])
+	cfg["api_anomaly_hook_enabled"] := parse_bool_or(env_or("KUJO_RAG_API_ANOMALY_HOOK_ENABLED", "false"), cfg["api_anomaly_hook_enabled"])
+	cfg["api_anomaly_auto_block_enabled"] := parse_bool_or(env_or("KUJO_RAG_API_ANOMALY_AUTO_BLOCK_ENABLED", "false"), cfg["api_anomaly_auto_block_enabled"])
+	cfg["api_anomaly_violation_threshold"] := parse_int_or(env_or("KUJO_RAG_API_ANOMALY_VIOLATION_THRESHOLD", to_string(cfg["api_anomaly_violation_threshold"])), cfg["api_anomaly_violation_threshold"])
+	cfg["api_anomaly_block_ttl_sec"] := parse_int_or(env_or("KUJO_RAG_API_ANOMALY_BLOCK_TTL_SEC", to_string(cfg["api_anomaly_block_ttl_sec"])), cfg["api_anomaly_block_ttl_sec"])
+	cfg["session_history_max_turns"] := parse_int_or(env_or("KUJO_RAG_SESSION_HISTORY_MAX_TURNS", to_string(cfg["session_history_max_turns"])), cfg["session_history_max_turns"])
+	cfg["api_access_log"] := parse_bool_or(env_or("KUJO_RAG_API_ACCESS_LOG", "true"), cfg["api_access_log"])
+	cfg["otel_enabled"] := parse_bool_or(env_or("KUJO_RAG_OTEL_ENABLED", "false"), cfg["otel_enabled"])
+	cfg["otel_service_name"] := env_or("KUJO_RAG_OTEL_SERVICE_NAME", cfg["otel_service_name"])
+	cfg["otel_otlp_endpoint"] := env_or("KUJO_RAG_OTEL_OTLP_ENDPOINT", cfg["otel_otlp_endpoint"])
+	cfg["otel_export_mode"] := to_lower(trim(env_or("KUJO_RAG_OTEL_EXPORT_MODE", cfg["otel_export_mode"])))
+	cfg["strict_config"] := parse_bool_or(env_or("KUJO_RAG_STRICT_CONFIG", "false"), cfg["strict_config"])
+	cfg["runtime_environment"] := to_lower(trim(env_or("KUJO_RAG_ENV", cfg["runtime_environment"])))
+	cfg["project_root"] := env_or("PWD", cfg["project_root"])
+	cfg["api_ingest_allowed_roots"] := parse_csv_string_array(env_or("KUJO_RAG_API_INGEST_ALLOWED_ROOTS", ""), cfg["api_ingest_allowed_roots"])
+	cfg["pdf_extractor_command"] := env_or("KUJO_RAG_PDF_EXTRACTOR", cfg["pdf_extractor_command"])
+	cfg["parser_timeout_ms"] := parse_int_or(env_or("KUJO_RAG_PARSER_TIMEOUT_MS", to_string(cfg["parser_timeout_ms"])), cfg["parser_timeout_ms"])
+	cfg["parser_sandbox_max_bytes"] := parse_int_or(env_or("KUJO_RAG_PARSER_SANDBOX_MAX_BYTES", to_string(cfg["parser_sandbox_max_bytes"])), cfg["parser_sandbox_max_bytes"])
+	cfg["max_file_bytes"] := parse_int_or(env_or("KUJO_RAG_MAX_FILE_BYTES", to_string(cfg["max_file_bytes"])), cfg["max_file_bytes"])
+
+	if type(overrides) == "dict" {
+		for key in keys(overrides) {
+			cfg[key] := overrides[key]
+		}
+	}
+
+	cfg["embedding_dims"] := clamp(cfg["embedding_dims"], 16, 4096)
+	cfg["chunk_size"] := clamp(cfg["chunk_size"], 100, 10000)
+	cfg["chunk_overlap"] := clamp(cfg["chunk_overlap"], 0, cfg["chunk_size"] - 1)
+	cfg["top_k"] := clamp(cfg["top_k"], 1, 50)
+	cfg["hybrid_alpha"] := clamp(cfg["hybrid_alpha"], 0.0, 1.0)
+	cfg["hybrid_beta"] := clamp(cfg["hybrid_beta"], 0.0, 1.0)
+	cfg["rerank_mmr_lambda"] := clamp(cfg["rerank_mmr_lambda"], 0.0, 1.0)
+	cfg["api_max_body_bytes"] := clamp(cfg["api_max_body_bytes"], 1024, 10485760)
+	cfg["api_max_query_chars"] := clamp(cfg["api_max_query_chars"], 64, 20000)
+	cfg["api_guardrail_query_max_complexity"] := clamp(cfg["api_guardrail_query_max_complexity"], 256, 500000)
+	cfg["api_guardrail_query_max_filter_keys"] := clamp(cfg["api_guardrail_query_max_filter_keys"], 1, 512)
+	cfg["api_guardrail_query_max_session_chars"] := clamp(cfg["api_guardrail_query_max_session_chars"], 256, 500000)
+	cfg["api_guardrail_ingest_max_files"] := clamp(cfg["api_guardrail_ingest_max_files"], 1, 200000)
+	cfg["api_guardrail_ingest_max_total_bytes"] := clamp(cfg["api_guardrail_ingest_max_total_bytes"], 1024, 1073741824)
+	cfg["api_rate_limit_window_sec"] := clamp(cfg["api_rate_limit_window_sec"], 1, 3600)
+	cfg["api_rate_limit_max_requests"] := clamp(cfg["api_rate_limit_max_requests"], 1, 10000)
+	cfg["api_rate_limit_burst_window_sec"] := clamp(cfg["api_rate_limit_burst_window_sec"], 1, 300)
+	cfg["api_rate_limit_burst_max_requests"] := clamp(cfg["api_rate_limit_burst_max_requests"], 1, 10000)
+	cfg["api_rate_limit_bucket_ttl_sec"] := clamp(cfg["api_rate_limit_bucket_ttl_sec"], 1, 86400)
+	cfg["api_rate_limit_max_keys"] := clamp(cfg["api_rate_limit_max_keys"], 10, 200000)
+	cfg["parser_timeout_ms"] := clamp(cfg["parser_timeout_ms"], 1000, 120000)
+	cfg["parser_sandbox_max_bytes"] := clamp(cfg["parser_sandbox_max_bytes"], 1024, 8388608)
+	cfg["api_tenant_query_rate_window_sec"] := clamp(cfg["api_tenant_query_rate_window_sec"], 1, 3600)
+	cfg["api_tenant_query_rate_max_requests"] := clamp(cfg["api_tenant_query_rate_max_requests"], 1, 100000)
+	cfg["api_tenant_ingest_max_chunks_per_request"] := clamp(cfg["api_tenant_ingest_max_chunks_per_request"], 1, 1000000)
+	cfg["api_tenant_storage_max_chunks"] := clamp(cfg["api_tenant_storage_max_chunks"], 1, 5000000)
+	cfg["api_startup_grace_ms"] := clamp(cfg["api_startup_grace_ms"], 0, 120000)
+	cfg["api_drain_pre_stop_ms"] := clamp(cfg["api_drain_pre_stop_ms"], 0, 120000)
+	cfg["api_ingest_idempotency_window_sec"] := clamp(cfg["api_ingest_idempotency_window_sec"], 1, 86400)
+	cfg["api_ingest_worker_batch_size"] := clamp(cfg["api_ingest_worker_batch_size"], 1, 20)
+	cfg["api_ingest_worker_max_running"] := clamp(cfg["api_ingest_worker_max_running"], 1, 10)
+	cfg["api_query_cache_ttl_sec"] := clamp(cfg["api_query_cache_ttl_sec"], 1, 86400)
+	cfg["api_query_cache_max_entries"] := clamp(cfg["api_query_cache_max_entries"], 1, 200000)
+	cfg["query_safe_response_min_overlap_ratio"] := clamp(cfg["query_safe_response_min_overlap_ratio"], 0.0, 1.0)
+	if cfg["query_safe_response_message"] == "" {
+		cfg["query_safe_response_message"] = "I cannot answer safely from the available local context."
+	}
+	cfg["embedding_cache_max_entries"] := clamp(cfg["embedding_cache_max_entries"], 1, 200000)
+	cfg["api_anomaly_violation_threshold"] := clamp(cfg["api_anomaly_violation_threshold"], 1, 1000)
+	cfg["api_anomaly_block_ttl_sec"] := clamp(cfg["api_anomaly_block_ttl_sec"], 1, 86400)
+	cfg["api_jwt_clock_skew_sec"] := clamp(cfg["api_jwt_clock_skew_sec"], 0, 600)
+	cfg["session_history_max_turns"] := clamp(cfg["session_history_max_turns"], 1, 20)
+	cfg["vector_backend_qdrant_timeout_ms"] := clamp(cfg["vector_backend_qdrant_timeout_ms"], 1000, 120000)
+	cfg["vector_backend_qdrant_gc_grace_sec"] := clamp(cfg["vector_backend_qdrant_gc_grace_sec"], 60, 2592000)
+	cfg["vector_backend_qdrant_gc_max_per_save"] := clamp(cfg["vector_backend_qdrant_gc_max_per_save"], 1, 10)
+	if cfg["otel_export_mode"] != "audit" && cfg["otel_export_mode"] != "none" {
+		cfg["otel_export_mode"] = "audit"
+	}
+
+	if cfg["rerank_strategy"] != "none" && cfg["rerank_strategy"] != "mmr" {
+		cfg["rerank_strategy"] := "none"
+	}
+
+	if cfg["vector_backend"] != "local_json" && cfg["vector_backend"] != "memory" && cfg["vector_backend"] != "qdrant_http" {
+		cfg["vector_backend"] = "local_json"
+	}
+	if cfg["api_auth_provider"] != "none" && cfg["api_auth_provider"] != "bearer" && cfg["api_auth_provider"] != "jwt_proxy" {
+		cfg["api_auth_provider"] = "bearer"
+	}
+
+	if cfg["api_rate_limit_backend"] != "memory" && cfg["api_rate_limit_backend"] != "shared_file" {
+		cfg["api_rate_limit_backend"] = "memory"
+	}
+
+	if cfg["api_ingest_jobs_mode"] != "inline" && cfg["api_ingest_jobs_mode"] != "queue" {
+		cfg["api_ingest_jobs_mode"] = "inline"
+	}
+	if trim(to_string(cfg["api_rate_limit_backend_file"])) == "" {
+		cfg["api_rate_limit_backend_file"] = "./results/rate_limit_state.json"
+	}
+
+	ns_result := cfg_with_namespace(cfg, dict_get_or(cfg, "namespace", "default"))
+	if dict_get_or(ns_result, "ok", false) == true {
+		cfg = dict_get_or(ns_result, "cfg", cfg)
+	} else {
+		fallback := cfg_with_namespace(cfg, "default")
+		cfg = dict_get_or(fallback, "cfg", cfg)
+	}
+
+	return cfg
+}
+
+export validate_config := func(cfg) {
+	errors := []
+	warnings := []
+
+	if type(cfg) != "dict" {
+		errors = push(errors, {
+			"code": "config_not_dict",
+			"field": "config",
+			"message": "Loaded configuration must be a dictionary"
+		})
+		return {
+			"ok": false,
+			"strict_mode": true,
+			"environment": "unknown",
+			"checked_at_unix_ms": current_timestamp(),
+			"errors": errors,
+			"warnings": warnings
+		}
+	}
+
+	index_path := str_or(dict_get_or(cfg, "index_path", ""), "")
+	if trim(index_path) == "" {
+		errors = push(errors, {
+			"code": "index_path_required",
+			"field": "index_path",
+			"message": "index_path must be a non-empty path"
+		})
+	}
+
+	api_host := str_or(dict_get_or(cfg, "api_host", ""), "")
+	if trim(api_host) == "" {
+		errors = push(errors, {
+			"code": "api_host_required",
+			"field": "api_host",
+			"message": "api_host must be a non-empty host value"
+		})
+	}
+
+	api_port := num_or(dict_get_or(cfg, "api_port", 0), 0)
+	if api_port < 1 || api_port > 65535 {
+		errors = push(errors, {
+			"code": "api_port_out_of_range",
+			"field": "api_port",
+			"message": "api_port must be between 1 and 65535",
+			"actual": api_port
+		})
+	}
+
+	allowed_roots := dict_get_or(cfg, "api_ingest_allowed_roots", [])
+	if type(allowed_roots) != "array" || len(allowed_roots) == 0 {
+		errors = push(errors, {
+			"code": "ingest_allowed_roots_required",
+			"field": "api_ingest_allowed_roots",
+			"message": "api_ingest_allowed_roots must include at least one allowed root"
+		})
+	}
+
+	environment := to_lower(str_or(dict_get_or(cfg, "runtime_environment", "development"), "development"))
+	if environment == "" {
+		environment = "development"
+	}
+
+	strict_cfg := bool_or(dict_get_or(cfg, "strict_config", false), false)
+	strict_mode := strict_cfg || environment == "production"
+	auth_provider := str_or(dict_get_or(cfg, "api_auth_provider", "bearer"), "bearer")
+	rbac_enabled := bool_or(dict_get_or(cfg, "api_rbac_enabled", false), false)
+	audit_enabled := bool_or(dict_get_or(cfg, "api_audit_enabled", false), false)
+	audit_path := trim(str_or(dict_get_or(cfg, "api_audit_path", ""), ""))
+	audit_sink_mode := to_lower(trim(str_or(dict_get_or(cfg, "api_audit_external_sink_mode", "append_file"), "append_file")))
+	vector_backend := to_lower(trim(str_or(dict_get_or(cfg, "vector_backend", "local_json"), "local_json")))
+	qdrant_url := trim(str_or(dict_get_or(cfg, "vector_backend_qdrant_url", ""), ""))
+	qdrant_collection := trim(str_or(dict_get_or(cfg, "vector_backend_qdrant_collection", ""), ""))
+	qdrant_sync_enabled := bool_or(dict_get_or(cfg, "vector_backend_qdrant_sync_enabled", false), false)
+	qdrant_fail_open := bool_or(dict_get_or(cfg, "vector_backend_qdrant_fail_open", true), true)
+	qdrant_sync_mode := to_lower(trim(str_or(dict_get_or(cfg, "vector_backend_qdrant_sync_mode", "legacy_replace"), "legacy_replace")))
+	qdrant_allowed_hosts := dict_get_or(cfg, "vector_backend_qdrant_allowed_hosts", [])
+	qdrant_host := url_host(qdrant_url)
+	encryption_enabled := bool_or(dict_get_or(cfg, "at_rest_encryption_enabled", false), false)
+	encryption_key := trim(str_or(dict_get_or(cfg, "at_rest_encryption_key", ""), ""))
+	encryption_key_file := trim(str_or(dict_get_or(cfg, "at_rest_encryption_key_file", ""), ""))
+	encryption_openssl_bin := trim(str_or(dict_get_or(cfg, "at_rest_encryption_openssl_bin", "openssl"), "openssl"))
+
+	if is_loopback_host(api_host) == false && bool_or(dict_get_or(cfg, "api_allow_non_loopback", false), false) == false {
+		errors = push(errors, {
+			"code": "non_loopback_requires_explicit_opt_in",
+			"field": "api_allow_non_loopback",
+			"message": "Non-loopback API binding requires KUJO_RAG_API_ALLOW_NON_LOOPBACK=true"
+		})
+	}
+
+	if auth_provider == "jwt_proxy" {
+		proxy_secret := trim(str_or(dict_get_or(cfg, "api_trusted_proxy_secret", ""), ""))
+		proxy_secret_header := trim(str_or(dict_get_or(cfg, "api_trusted_proxy_secret_header", ""), ""))
+		trusted_proxy_ips := dict_get_or(cfg, "api_trusted_proxy_ips", [])
+		if proxy_secret == "" {
+			errors = push(errors, {
+				"code": "trusted_proxy_secret_required",
+				"field": "api_trusted_proxy_secret",
+				"message": "jwt_proxy mode requires KUJO_RAG_API_TRUSTED_PROXY_SECRET"
+			})
+		}
+		if proxy_secret_header == "" {
+			errors = push(errors, {
+				"code": "trusted_proxy_secret_header_required",
+				"field": "api_trusted_proxy_secret_header",
+				"message": "jwt_proxy mode requires a trusted proxy secret header name"
+			})
+		}
+		if type(trusted_proxy_ips) != "array" || len(trusted_proxy_ips) == 0 {
+			errors = push(errors, {
+				"code": "trusted_proxy_ips_required",
+				"field": "api_trusted_proxy_ips",
+				"message": "jwt_proxy mode requires at least one trusted proxy peer IP"
+			})
+		}
+	}
+
+	if vector_backend == "qdrant_http" {
+		if qdrant_sync_mode != "legacy_replace" && qdrant_sync_mode != "staged_alias" {
+			errors = push(errors, {
+				"code": "invalid_qdrant_sync_mode",
+				"field": "vector_backend_qdrant_sync_mode",
+				"message": "Qdrant sync mode must be legacy_replace or staged_alias"
+			})
+		}
+		if qdrant_collection == "" {
+			errors = push(errors, {
+				"code": "qdrant_collection_required",
+				"field": "vector_backend_qdrant_collection",
+				"message": "qdrant_http backend requires non-empty vector_backend_qdrant_collection"
+			})
+		}
+
+		if qdrant_sync_enabled && qdrant_url == "" {
+			errors = push(errors, {
+				"code": "qdrant_url_required",
+				"field": "vector_backend_qdrant_url",
+				"message": "qdrant_http backend with sync enabled requires non-empty vector_backend_qdrant_url"
+			})
+		}
+
+		if qdrant_sync_enabled == false {
+			warnings = push(warnings, {
+				"code": "qdrant_sync_disabled",
+				"field": "vector_backend_qdrant_sync_enabled",
+				"message": "qdrant_http backend is running in mirror-only mode because sync is disabled"
+			})
+		}
+
+		if qdrant_url != "" {
+			if starts_with(qdrant_url, "http://") == false && starts_with(qdrant_url, "https://") == false {
+				warnings = push(warnings, {
+					"code": "qdrant_url_unusual",
+					"field": "vector_backend_qdrant_url",
+					"message": "vector_backend_qdrant_url should usually start with http:// or https://"
+				})
+			}
+			if qdrant_host == "" {
+				errors = push(errors, {
+					"code": "invalid_qdrant_url",
+					"field": "vector_backend_qdrant_url",
+					"message": "vector_backend_qdrant_url must contain a valid host and must not include userinfo"
+				})
+			}
+		}
+	}
+
+	if encryption_enabled {
+		if encryption_key == "" && encryption_key_file == "" {
+			errors = push(errors, {
+				"code": "encryption_key_required",
+				"field": "at_rest_encryption_key",
+				"message": "at_rest_encryption_enabled=true requires KUJO_RAG_AT_REST_ENCRYPTION_KEY or KUJO_RAG_AT_REST_ENCRYPTION_KEY_FILE"
+			})
+		}
+
+		if encryption_key_file != "" && file_exists(encryption_key_file) == false {
+			errors = push(errors, {
+				"code": "encryption_key_file_not_found",
+				"field": "at_rest_encryption_key_file",
+				"message": "Configured at-rest encryption key file does not exist",
+				"actual": encryption_key_file
+			})
+		}
+
+		if is_safe_command_token(encryption_openssl_bin) == false {
+			errors = push(errors, {
+				"code": "invalid_encryption_openssl_bin",
+				"field": "at_rest_encryption_openssl_bin",
+				"message": "Encryption OpenSSL binary token contains invalid characters"
+			})
+		}
+	}
+
+	if strict_mode {
+		if encryption_enabled == false {
+			errors = push(errors, {
+				"code": "strict_requires_at_rest_encryption",
+				"field": "at_rest_encryption_enabled",
+				"message": "Strict mode requires at_rest_encryption_enabled=true"
+			})
+		}
+
+		if encryption_key == "" && encryption_key_file == "" {
+			errors = push(errors, {
+				"code": "strict_requires_encryption_key",
+				"field": "at_rest_encryption_key",
+				"message": "Strict mode requires an at-rest encryption key or key file"
+			})
+		}
+
+		if auth_provider == "none" {
+			errors = push(errors, {
+				"code": "strict_disallows_no_auth",
+				"field": "api_auth_provider",
+				"message": "Strict mode does not allow api_auth_provider=none"
+			})
+		} else if auth_provider == "bearer" {
+			active_token := str_or(dict_get_or(cfg, "api_bearer_token", ""), "")
+			next_token := str_or(dict_get_or(cfg, "api_bearer_token_next", ""), "")
+			if active_token == "" && next_token == "" {
+				errors = push(errors, {
+					"code": "strict_requires_api_bearer_token",
+					"field": "api_bearer_token",
+					"message": "Strict mode requires KUJO_RAG_API_BEARER_TOKEN or KUJO_RAG_API_BEARER_TOKEN_NEXT when api_auth_provider=bearer"
+				})
+			}
+		} else if auth_provider == "jwt_proxy" {
+			if str_or(dict_get_or(cfg, "api_jwt_issuer", ""), "") == "" {
+				errors = push(errors, {
+					"code": "strict_requires_jwt_issuer",
+					"field": "api_jwt_issuer",
+					"message": "Strict mode requires KUJO_RAG_API_JWT_ISSUER when api_auth_provider=jwt_proxy"
+				})
+			}
+			if str_or(dict_get_or(cfg, "api_jwt_audience", ""), "") == "" {
+				errors = push(errors, {
+					"code": "strict_requires_jwt_audience",
+					"field": "api_jwt_audience",
+					"message": "Strict mode requires KUJO_RAG_API_JWT_AUDIENCE when api_auth_provider=jwt_proxy"
+				})
+			}
+		}
+
+		if rbac_enabled == false {
+			errors = push(errors, {
+				"code": "strict_requires_rbac",
+				"field": "api_rbac_enabled",
+				"message": "Strict mode requires RBAC enforcement"
+			})
+		}
+		if audit_enabled == false {
+			errors = push(errors, {
+				"code": "strict_requires_audit",
+				"field": "api_audit_enabled",
+				"message": "Strict mode requires tamper-evident audit logging"
+			})
+		}
+		if bool_or(dict_get_or(cfg, "api_audit_fail_closed", false), false) == false {
+			errors = push(errors, {
+				"code": "strict_requires_audit_fail_closed",
+				"field": "api_audit_fail_closed",
+				"message": "Strict mode requires fail-closed audit writes"
+			})
+		}
+		if trim(str_or(dict_get_or(cfg, "api_audit_integrity_key", ""), "")) == "" {
+			errors = push(errors, {
+				"code": "strict_requires_audit_integrity_key",
+				"field": "api_audit_integrity_key",
+				"message": "Strict mode requires a secret key for keyed audit-chain integrity"
+			})
+		}
+		if bool_or(dict_get_or(cfg, "api_redaction_enabled", false), false) == false {
+			errors = push(errors, {
+				"code": "strict_requires_redaction",
+				"field": "api_redaction_enabled",
+				"message": "Strict mode requires sensitive-data redaction"
+			})
+		}
+
+		if vector_backend == "qdrant_http" && qdrant_sync_enabled {
+			if qdrant_sync_mode != "staged_alias" {
+				errors = push(errors, {
+					"code": "strict_requires_qdrant_staged_alias",
+					"field": "vector_backend_qdrant_sync_mode",
+					"message": "Strict Qdrant synchronization requires staged_alias mode"
+				})
+			}
+			if starts_with(to_lower(qdrant_url), "https://") == false {
+				errors = push(errors, {
+					"code": "strict_requires_qdrant_https",
+					"field": "vector_backend_qdrant_url",
+					"message": "Strict Qdrant synchronization requires an HTTPS endpoint"
+				})
+			}
+			if qdrant_fail_open {
+				errors = push(errors, {
+					"code": "strict_disallows_qdrant_fail_open",
+					"field": "vector_backend_qdrant_fail_open",
+					"message": "Strict Qdrant synchronization must fail closed"
+				})
+			}
+			if type(qdrant_allowed_hosts) != "array" || len(qdrant_allowed_hosts) == 0 || array_contains_string(qdrant_allowed_hosts, qdrant_host) == false {
+				errors = push(errors, {
+					"code": "strict_requires_qdrant_host_allowlist",
+					"field": "vector_backend_qdrant_allowed_hosts",
+					"message": "Strict Qdrant synchronization requires the endpoint host in KUJO_RAG_VECTOR_BACKEND_QDRANT_ALLOWED_HOSTS",
+					"actual": qdrant_host
+				})
+			}
+		}
+
+		namespace := str_or(dict_get_or(cfg, "namespace", "default"), "default")
+		if namespace == "default" {
+			errors = push(errors, {
+				"code": "strict_requires_namespace_override",
+				"field": "namespace",
+				"message": "Strict mode requires a non-default namespace"
+			})
+		}
+
+		if index_path == "./data/rag_index.json" {
+			errors = push(errors, {
+				"code": "strict_requires_index_path_override",
+				"field": "index_path",
+				"message": "Strict mode requires overriding the default index_path"
+			})
+		}
+	}
+
+	if rbac_enabled {
+		rbac_policy := dict_get_or(cfg, "api_rbac_policy", {})
+		if type(rbac_policy) != "dict" || len(keys(rbac_policy)) == 0 {
+			errors = push(errors, {
+				"code": "invalid_rbac_policy",
+				"field": "api_rbac_policy",
+				"message": "RBAC enabled requires a non-empty api_rbac_policy map"
+			})
+		}
+
+		rbac_default_role := str_or(dict_get_or(cfg, "api_rbac_default_role", "reader"), "reader")
+		if has_key(rbac_policy, rbac_default_role) == 0 {
+			errors = push(errors, {
+				"code": "invalid_rbac_default_role",
+				"field": "api_rbac_default_role",
+				"message": "api_rbac_default_role must exist in api_rbac_policy"
+			})
+		}
+		if strict_mode {
+			default_actions := dict_get_or(rbac_policy, rbac_default_role, [])
+			if array_contains_string(default_actions, "admin") || array_contains_string(default_actions, "export") || array_contains_string(default_actions, "*") {
+				errors = push(errors, {
+					"code": "strict_disallows_privileged_rbac_default",
+					"field": "api_rbac_default_role",
+					"message": "Strict mode default RBAC role must not grant admin, export, or wildcard actions"
+				})
+			}
+		}
+
+		role_header := str_or(dict_get_or(cfg, "api_rbac_role_header", "x-kujo-role"), "x-kujo-role")
+		namespace_header := str_or(dict_get_or(cfg, "api_rbac_namespace_header", "x-kujo-namespace"), "x-kujo-namespace")
+		if role_header == "" || namespace_header == "" {
+			errors = push(errors, {
+				"code": "invalid_rbac_headers",
+				"field": "api_rbac_role_header",
+				"message": "RBAC header names must be non-empty"
+			})
+		}
+	}
+
+	if audit_enabled {
+		if audit_path == "" {
+			errors = push(errors, {
+				"code": "invalid_audit_path",
+				"field": "api_audit_path",
+				"message": "api_audit_enabled=true requires non-empty api_audit_path"
+			})
+		}
+
+		if audit_sink_mode != "append_file" {
+			errors = push(errors, {
+				"code": "invalid_audit_sink_mode",
+				"field": "api_audit_external_sink_mode",
+				"message": "api_audit_external_sink_mode must be append_file"
+			})
+		}
+	}
+
+	if environment != "production" && strict_cfg == false {
+		warnings = push(warnings, {
+			"code": "strict_mode_disabled",
+			"field": "strict_config",
+			"message": "Strict configuration checks are disabled; recommended for local development only"
+		})
+	}
+
+	return {
+		"ok": len(errors) == 0,
+		"strict_mode": strict_mode,
+		"environment": environment,
+		"checked_at_unix_ms": current_timestamp(),
+		"errors": errors,
+		"warnings": warnings
+	}
+}
+
+export ensure_runtime_dirs := func(cfg) {
+	index_path := dict_get_or(cfg, "index_path", "./data/rag_index.json")
+	dir := dirname(index_path)
+	if dir == "" || dir == "." {
+		return true
+	}
+	if path_exists(dir) == false {
+		create_dir(dir)
+	}
+	return true
+}

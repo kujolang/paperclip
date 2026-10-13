@@ -1,0 +1,39 @@
+export load_dot_env := func(path) {
+	if file_exists(path) == false {
+		return {
+			"loaded": 0,
+			"path": path
+		}
+	}
+
+	lines := split(read_file(path), "\n")
+	loaded := 0
+	for raw in lines {
+		line := trim(raw)
+		if line != "" {
+			if starts_with(line, "#") == false {
+				eq := index_of(line, "=")
+				if eq > 0 {
+					key := trim(substring(line, 0, eq))
+					value := trim(substring(line, eq + 1, len(line)))
+					if starts_with(value, "\"") && ends_with(value, "\"") {
+						value := substring(value, 1, len(value) - 1)
+					}
+					if starts_with(value, "'") && ends_with(value, "'") {
+						value := substring(value, 1, len(value) - 1)
+					}
+					current := env(key)
+					if type(current) == "null" || current == "" {
+						env_set(key, value)
+						loaded := loaded + 1
+					}
+				}
+			}
+		}
+	}
+
+	return {
+		"loaded": loaded,
+		"path": path
+	}
+}

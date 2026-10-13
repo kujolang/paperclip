@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "bundleVersion": "0.10.1",
+  "bundleVersion": "0.11.0",
   "runtime": {
     "minimumVersion": "1.8.1"
   },
@@ -474,6 +474,41 @@
         "src/tools/tool.kujo",
         "src/workflows/loader.kujo",
         "src/workflows/workflow.kujo"
+      ],
+      "outputContracts": []
+    },
+    {
+      "id": "rag",
+      "repository": "https://github.com/kujolang/rag",
+      "sourceDirectory": "rag",
+      "gitCommit": "85743f88c152d7c65f59d4697111faf85e36d8eb",
+      "version": "1.0.0",
+      "entrypoint": "main.kujo",
+      "files": [
+        "LICENSE",
+        "VERSION",
+        "main.kujo",
+        "src/audit_log.kujo",
+        "src/bootstrap.kujo",
+        "src/chunking.kujo",
+        "src/cli_args.kujo",
+        "src/common.kujo",
+        "src/config.kujo",
+        "src/connectors.kujo",
+        "src/embeddings.kujo",
+        "src/env_loader.kujo",
+        "src/ingestion.kujo",
+        "src/parsers.kujo",
+        "src/privacy_workflows.kujo",
+        "src/query_api.kujo",
+        "src/rag_engine.kujo",
+        "src/release_eval.kujo",
+        "src/retention_policy.kujo",
+        "src/retrieval.kujo",
+        "src/retrieval_preferences.kujo",
+        "src/tests_helpers.kujo",
+        "src/vector_backend.kujo",
+        "src/vector_store.kujo"
       ],
       "outputContracts": []
     }

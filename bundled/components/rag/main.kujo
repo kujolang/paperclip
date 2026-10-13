@@ -1,0 +1,229 @@
+from src.retrieval_preferences import normalize_retrieval_preferences
+from src.env_loader import load_dot_env
+from src.config import load_config, ensure_runtime_dirs, cfg_with_namespace, validate_config
+from src.common import dict_get_or
+from src.cli_args import parse_cli, bool_from_flag, parse_int_flag
+from src.rag_engine import build_rag_index, load_or_initialize_index, query_rag
+from src.query_api import start_api_server
+from src.bootstrap import bootstrap_repository
+from src.vector_backend import rollback_qdrant_generation
+
+func print_lines(lines) {
+	for line in lines {
+		print(line)
+	}
+}
+
+func exit_with_json(payload, status_code) {
+	print(to_json(payload))
+	exit(status_code)
+}
+
+func invalid_namespace_payload(ns_result) {
+	return {
+		"ok": false,
+		"error": dict_get_or(ns_result, "error", "invalid_namespace"),
+		"message": dict_get_or(ns_result, "message", "Invalid namespace"),
+		"details": dict_get_or(ns_result, "details", {})
+	}
+}
+
+func print_help() {
+	print_lines([
+		"Kujo RAG Starter Kit",
+		"",
+		"Usage:",
+		"  kujo run main.kujo --interpreter ingest --path ./docs --recursive true",
+		"  kujo run main.kujo --interpreter ingest --path ./docs --namespace team_a",
+		"  kujo run main.kujo --interpreter query --question \"What is Kujo?\"",
+		"  kujo run main.kujo --interpreter query --question \"What is Kujo?\" --namespace team_a",
+		"  kujo run main.kujo --interpreter serve --port 8787",
+		"  kujo run main.kujo --interpreter demo",
+		"  kujo run main.kujo --interpreter bootstrap --target ./results/bootstrap_repo",
+		"  kujo run main.kujo --interpreter qdrant-rollback --confirm true",
+		"",
+		"Commands:",
+		"  ingest   Build the index from local files",
+		"  query    Run hybrid retrieval and return citations",
+		"  serve    Start HTTP API",
+		"  demo     Run Kujo docs assistant demo",
+		"  bootstrap Generate an adoption-ready starter template",
+		"  qdrant-rollback Restore the immediately previous staged Qdrant generation"
+	])
+}
+
+func command_ingest(parsed, cfg) {
+	flags := parsed["flags"]
+	path := dict_get_or(flags, "path", ".")
+	recursive := bool_from_flag(flags, "recursive", true)
+	namespace_value := dict_get_or(flags, "namespace", dict_get_or(cfg, "namespace", "default"))
+	ns_result := cfg_with_namespace(cfg, namespace_value)
+	if dict_get_or(ns_result, "ok", false) == false {
+		exit_with_json(invalid_namespace_payload(ns_result), 1)
+	}
+	active_cfg := dict_get_or(ns_result, "cfg", cfg)
+	active_namespace := dict_get_or(ns_result, "namespace", dict_get_or(cfg, "namespace", "default"))
+
+	result := build_rag_index(path, active_cfg, recursive)
+	if dict_get_or(result, "ok", true) == false {
+		exit_with_json({
+			"ok": false,
+			"command": "ingest",
+			"namespace": active_namespace,
+			"index_path": dict_get_or(active_cfg, "index_path", ""),
+			"error": dict_get_or(result, "error", {
+				"code": "index_persistence_failed",
+				"message": "Index persistence failed",
+				"details": {}
+			})
+		}, 1)
+	}
+	print(to_json({
+		"ok": true,
+		"command": "ingest",
+		"namespace": active_namespace,
+		"index_path": dict_get_or(active_cfg, "index_path", ""),
+		"path": path,
+		"recursive": recursive,
+		"summary": dict_get_or(result, "summary", {}),
+		"stats": dict_get_or(dict_get_or(result, "ingest", {}), "stats", {}),
+		"errors": dict_get_or(dict_get_or(result, "ingest", {}), "errors", [])
+	}))
+}
+
+func command_query(parsed, cfg) {
+	flags := parsed["flags"]
+	namespace_value := dict_get_or(flags, "namespace", dict_get_or(cfg, "namespace", "default"))
+	ns_result := cfg_with_namespace(cfg, namespace_value)
+	if dict_get_or(ns_result, "ok", false) == false {
+		exit_with_json(invalid_namespace_payload(ns_result), 1)
+	}
+	active_cfg := dict_get_or(ns_result, "cfg", cfg)
+	active_namespace := dict_get_or(ns_result, "namespace", dict_get_or(cfg, "namespace", "default"))
+
+	question := dict_get_or(flags, "question", "")
+	if question == "" {
+		positionals := parsed["positionals"]
+		if len(positionals) > 0 {
+			question := join(positionals, " ")
+		}
+	}
+	if trim(question) == "" {
+		exit_with_json({
+			"ok": false,
+			"error": "missing_question",
+			"message": "Provide --question or trailing query text"
+		}, 1)
+	}
+
+	active_cfg["retrieval_preferences"] := normalize_retrieval_preferences({"programming_language": dict_get_or(flags, "programming-language", "")})
+	index := load_or_initialize_index(active_cfg)
+	result := query_rag(index, question, active_cfg, null, null)
+	result["namespace"] := active_namespace
+	print(to_json(result))
+}
+
+func command_demo(cfg) {
+	demo_path := "./examples/kujo_docs"
+	question := "What is Kujo and what does it optimize for?"
+	ns_result := cfg_with_namespace(cfg, dict_get_or(cfg, "namespace", "default"))
+	active_cfg := dict_get_or(ns_result, "cfg", cfg)
+	active_namespace := dict_get_or(ns_result, "namespace", dict_get_or(cfg, "namespace", "default"))
+
+	index_result := build_rag_index(demo_path, active_cfg, true)
+	if dict_get_or(index_result, "ok", true) == false {
+		exit_with_json({"ok": false, "command": "demo", "error": dict_get_or(index_result, "error", {})}, 1)
+	}
+	index := dict_get_or(index_result, "index", {})
+	result := query_rag(index, question, active_cfg, null, null)
+	print(to_json({
+		"demo": true,
+		"namespace": active_namespace,
+		"question": question,
+		"answer": dict_get_or(result, "answer", ""),
+		"citations": dict_get_or(result, "citations", [])
+	}))
+}
+
+func command_serve(parsed, cfg) {
+	flags := parsed["flags"]
+	port_result := parse_int_flag(flags, "port", dict_get_or(cfg, "api_port", 8787))
+	if port_result["ok"] == false {
+		exit_with_json({
+			"ok": false,
+			"error": dict_get_or(port_result, "error", "invalid_int_flag"),
+			"message": dict_get_or(port_result, "message", "Invalid numeric flag value"),
+			"details": dict_get_or(port_result, "details", {})
+		}, 1)
+	}
+	cfg["api_port"] := dict_get_or(port_result, "value", dict_get_or(cfg, "api_port", 8787))
+	if has_key(flags, "host") == 1 {
+		cfg["api_host"] := flags["host"]
+	}
+	serve_diagnostics := validate_config(cfg)
+	if dict_get_or(serve_diagnostics, "ok", false) == false {
+		exit_with_json({
+			"ok": false,
+			"error": "invalid_configuration",
+			"message": "Serve configuration validation failed after applying CLI overrides",
+			"diagnostics": serve_diagnostics
+		}, 1)
+	}
+	start_api_server(cfg)
+}
+
+func command_bootstrap(parsed) {
+	flags := parsed["flags"]
+	target := dict_get_or(flags, "target", "./results/bootstrap_repo")
+	result := bootstrap_repository(target)
+	print(to_json(result))
+}
+
+func command_qdrant_rollback(parsed, cfg) {
+	flags := parsed["flags"]
+	if bool_from_flag(flags, "confirm", false) == false {
+		exit_with_json({"ok": false, "error": "rollback_confirmation_required", "message": "Pass --confirm true to change the active Qdrant generation"}, 1)
+	}
+	if has_key(flags, "namespace") == 1 {
+		exit_with_json({"ok": false, "error": "qdrant_rollback_namespace_unsupported", "message": "Rollback targets the explicitly configured Qdrant collection and does not accept --namespace"}, 1)
+	}
+	result := rollback_qdrant_generation(cfg)
+	if dict_get_or(result, "ok", false) == false {
+		exit_with_json(result, 1)
+	}
+	result["command"] := "qdrant-rollback"
+	print(to_json(result))
+}
+
+# Entry point
+_ := load_dot_env(".env")
+cfg := load_config({})
+cfg_diagnostics := validate_config(cfg)
+if dict_get_or(cfg_diagnostics, "ok", false) == false {
+	exit_with_json({
+		"ok": false,
+		"error": "invalid_configuration",
+		"message": "Startup configuration validation failed",
+		"diagnostics": cfg_diagnostics
+	}, 1)
+}
+_ = ensure_runtime_dirs(cfg)
+
+parsed := parse_cli(args())
+command := to_lower(dict_get_or(parsed, "command", "help"))
+
+if command == "ingest" {
+	command_ingest(parsed, cfg)
+} else if command == "query" {
+	command_query(parsed, cfg)
+} else if command == "serve" {
+	command_serve(parsed, cfg)
+} else if command == "demo" {
+	command_demo(cfg)
+} else if command == "bootstrap" {
+	command_bootstrap(parsed)
+} else if command == "qdrant-rollback" {
+	command_qdrant_rollback(parsed, cfg)
+} else {
+	print_help()
+}

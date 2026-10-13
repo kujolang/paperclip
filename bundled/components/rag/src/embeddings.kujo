@@ -1,0 +1,458 @@
+from src.common import dict_get_or, tokenize, magnitude, read_json_file_or, write_json_file
+
+func embedding_provider_registry() {
+	return {
+		"hash": "hash",
+		"ai": "ai",
+		"openai": "ai"
+	}
+}
+
+func embedding_cache_enabled(cfg) {
+	return dict_get_or(cfg, "embedding_cache_enabled", true)
+}
+
+func embedding_cache_max_entries(cfg) {
+	limit := dict_get_or(cfg, "embedding_cache_max_entries", 10000)
+	if limit < 1 {
+		limit = 1
+	}
+	if limit > 200000 {
+		limit = 200000
+	}
+	return limit
+}
+
+func embedding_cache_state_path() {
+	return "./results/embedding_cache_state.json"
+}
+
+func default_embedding_cache_state() {
+	return {
+		"entries": {},
+		"order": [],
+		"stats": {
+			"hits": 0,
+			"misses": 0
+		}
+	}
+}
+
+func normalize_embedding_cache_state(raw_state) {
+	state := raw_state
+	if type(state) != "dict" {
+		state = default_embedding_cache_state()
+	}
+	entries := dict_get_or(state, "entries", {})
+	if type(entries) != "dict" {
+		entries = {}
+	}
+	order := dict_get_or(state, "order", [])
+	if type(order) != "array" {
+		order = []
+	}
+	stats := dict_get_or(state, "stats", {})
+	if type(stats) != "dict" {
+		stats = {}
+	}
+	stats["hits"] := dict_get_or(stats, "hits", 0)
+	stats["misses"] := dict_get_or(stats, "misses", 0)
+	state["entries"] := entries
+	state["order"] := order
+	state["stats"] := stats
+	return state
+}
+
+func load_embedding_cache_state() {
+	state := read_json_file_or(embedding_cache_state_path(), default_embedding_cache_state())
+	return normalize_embedding_cache_state(state)
+}
+
+func save_embedding_cache_state(state) {
+	path_value := embedding_cache_state_path()
+	dir := dirname(path_value)
+	if dir != "" && dir != "." {
+		if path_exists(dir) == false {
+			create_dir(dir)
+		}
+	}
+	write_json_file(path_value, normalize_embedding_cache_state(state))
+	return true
+}
+
+func embedding_cache_key(provider, dims, text) {
+	return to_lower(trim(to_string(provider))) + "::" + to_string(dims) + "::" + sha256(to_string(text))
+}
+
+func embedding_cache_lookup(state, key) {
+	entries := dict_get_or(state, "entries", {})
+	if type(entries) != "dict" {
+		return {
+			"ok": false,
+			"vector": []
+		}
+	}
+	if has_key(entries, key) == 0 {
+		return {
+			"ok": false,
+			"vector": []
+		}
+	}
+	return {
+		"ok": true,
+		"vector": dict_get_or(entries, key, [])
+	}
+}
+
+func embedding_cache_store(state, key, vector, cfg) {
+	entries := dict_get_or(state, "entries", {})
+	if type(entries) != "dict" {
+		entries = {}
+	}
+	order := dict_get_or(state, "order", [])
+	if type(order) != "array" {
+		order = []
+	}
+
+	if has_key(entries, key) == 0 {
+		order = push(order, key)
+	}
+	entries[key] := vector
+
+	max_entries := embedding_cache_max_entries(cfg)
+	while len(order) > max_entries {
+		evict_key := to_string(order[0])
+		entries = dict_without_key(entries, evict_key)
+		order = slice(order, 1, len(order))
+	}
+
+	state["entries"] := entries
+	state["order"] := order
+	return state
+}
+
+func resolve_provider_name(cfg) {
+	provider := to_lower(dict_get_or(cfg, "embedding_provider", "hash"))
+	registry := embedding_provider_registry()
+	if has_key(registry, provider) == 0 {
+		return {
+			"requested": provider,
+			"resolved": "hash",
+			"known": false
+		}
+	}
+	return {
+		"requested": provider,
+		"resolved": registry[provider],
+		"known": true
+	}
+}
+
+export get_embedding_provider_registry := func() {
+	return embedding_provider_registry()
+}
+
+export clear_embedding_cache := func() {
+	save_embedding_cache_state(default_embedding_cache_state())
+	return true
+}
+
+export embedding_cache_metrics := func() {
+	state := load_embedding_cache_state()
+	entries := dict_get_or(state, "entries", {})
+	if type(entries) != "dict" {
+		entries = {}
+	}
+	stats := dict_get_or(state, "stats", {})
+	return {
+		"hits": dict_get_or(stats, "hits", 0),
+		"misses": dict_get_or(stats, "misses", 0),
+		"size": len(keys(entries))
+	}
+}
+
+func embedding_error(code, message, details) {
+	err := {
+		"code": code,
+		"message": message,
+		"details": details
+	}
+	return err
+}
+
+func hash_fallback_with_error(texts, cfg, err_obj) {
+	out := hash_embed_many(texts, cfg)
+	out["error"] := err_obj
+	return out
+}
+
+func hex_char_value(ch) {
+	if ch == "0" { return 0 }
+	if ch == "1" { return 1 }
+	if ch == "2" { return 2 }
+	if ch == "3" { return 3 }
+	if ch == "4" { return 4 }
+	if ch == "5" { return 5 }
+	if ch == "6" { return 6 }
+	if ch == "7" { return 7 }
+	if ch == "8" { return 8 }
+	if ch == "9" { return 9 }
+	if ch == "a" { return 10 }
+	if ch == "b" { return 11 }
+	if ch == "c" { return 12 }
+	if ch == "d" { return 13 }
+	if ch == "e" { return 14 }
+	if ch == "f" { return 15 }
+	return 0
+}
+
+func hex_to_int(hex_text) {
+	value := 0
+	i := 0
+	while i < len(hex_text) {
+		ch := to_lower(substring(hex_text, i, i + 1))
+		value := (value * 16) + hex_char_value(ch)
+		i := i + 1
+	}
+	return value
+}
+
+func zero_vector(dims) {
+	vec := []
+	i := 0
+	while i < dims {
+		vec := push(vec, 0.0)
+		i := i + 1
+	}
+	return vec
+}
+
+func normalize(vec) {
+	m := magnitude(vec)
+	if m <= 0.0 {
+		return vec
+	}
+	out := []
+	for value in vec {
+		out := push(out, to_float(value) / m)
+	}
+	return out
+}
+
+func hash_embed_one(text, dims) {
+	vec := zero_vector(dims)
+	tokens := tokenize(text)
+	for token in tokens {
+		h := sha256(token)
+		n := hex_to_int(substring(h, 0, 8))
+		idx := n % dims
+		vec[idx] := to_float(vec[idx]) + 1.0
+	}
+	return normalize(vec)
+}
+
+func hash_embed_many(texts, cfg) {
+	dims := dict_get_or(cfg, "embedding_dims", 256)
+	vectors := []
+	for text in texts {
+		vectors := push(vectors, hash_embed_one(text, dims))
+	}
+	return {
+		"provider": "hash",
+		"vectors": vectors,
+		"meta": {
+			"dims": dims
+		}
+	}
+}
+
+func ai_embed_many_or_fallback(texts, cfg) {
+	endpoint := dict_get_or(cfg, "ai_embed_endpoint", env_or("KUJO_RAG_AI_EMBED_ENDPOINT", ""))
+	model := dict_get_or(cfg, "ai_embed_model", env_or("KUJO_RAG_AI_EMBED_MODEL", ""))
+	api_key := dict_get_or(cfg, "openai_api_key", env_or("OPENAI_API_KEY", ""))
+
+	if endpoint == "" || model == "" {
+		return hash_fallback_with_error(texts, cfg, embedding_error("ai_provider_not_configured", "AI embedding provider is missing endpoint or model configuration", {
+			"endpoint_set": endpoint != "",
+			"model_set": model != ""
+		}))
+	}
+
+	vectors := []
+	failed := false
+	failure_reason := ""
+	for text in texts {
+		result := null
+		call_error := null
+		try {
+			result := ai_embedding(text, {
+				"endpoint": endpoint,
+				"model": model,
+				"api_key": api_key
+			})
+		} except e {
+			call_error := e
+		}
+
+		ok := false
+		emb := []
+		if type(call_error) == "null" && type(result) == "dict" {
+			if has_key(result, "embedding") == 1 {
+				emb := result["embedding"]
+				ok := true
+			}
+			if has_key(result, "ok") == 1 {
+				if result["ok"] == true && has_key(result, "embedding") == 1 {
+					emb := result["embedding"]
+					ok := true
+				}
+			}
+		}
+
+		if type(call_error) != "null" || ok == false {
+			failed := true
+			if type(call_error) != "null" {
+				failure_reason = to_string(call_error)
+			} else {
+				failure_reason = "AI embedding response did not include embedding vector"
+			}
+		}
+		if ok {
+			vectors := push(vectors, normalize(emb))
+		}
+	}
+
+	if failed || len(vectors) != len(texts) {
+		return hash_fallback_with_error(texts, cfg, embedding_error("ai_embedding_failed", "AI embedding provider failed, using hash fallback", {
+			"reason": failure_reason,
+			"requested_provider": "ai",
+			"fallback_provider": "hash"
+		}))
+	}
+
+	return {
+		"provider": "ai_embedding",
+		"vectors": vectors,
+		"meta": {
+			"endpoint": endpoint,
+			"model": model
+		}
+	}
+}
+
+export embed_texts := func(texts, cfg) {
+	provider_info := resolve_provider_name(cfg)
+	requested_provider := dict_get_or(provider_info, "requested", "hash")
+	resolved_provider := dict_get_or(provider_info, "resolved", "hash")
+	registry := embedding_provider_registry()
+	cache_hits := 0
+
+	if embedding_cache_enabled(cfg) {
+		cache_state := load_embedding_cache_state()
+		stats := dict_get_or(cache_state, "stats", {})
+		dims := dict_get_or(cfg, "embedding_dims", 256)
+		cached_vectors := []
+		all_hit := true
+		i := 0
+		while i < len(texts) {
+			text_value := to_string(texts[i])
+			cache_key := embedding_cache_key(resolved_provider, dims, text_value)
+			cached := embedding_cache_lookup(cache_state, cache_key)
+			if dict_get_or(cached, "ok", false) {
+				cached_vectors = push(cached_vectors, dict_get_or(cached, "vector", []))
+				cache_hits = cache_hits + 1
+			} else {
+				all_hit = false
+			}
+			i = i + 1
+		}
+
+		if all_hit {
+			stats["hits"] := dict_get_or(stats, "hits", 0) + cache_hits
+			cache_state["stats"] := stats
+			save_embedding_cache_state(cache_state)
+			cached_result := {
+				"provider": resolved_provider,
+				"vectors": cached_vectors,
+				"meta": {
+					"dims": dims,
+					"cache": "hit"
+				}
+			}
+			if dict_get_or(provider_info, "known", false) == false {
+				cached_result["error"] := embedding_error("unknown_embedding_provider", "Unknown embedding provider requested; using hash fallback", {
+					"requested_provider": requested_provider,
+					"supported_providers": keys(registry),
+					"fallback_provider": "hash"
+				})
+			}
+			return cached_result
+		}
+	}
+
+	embeddings := null
+	if dict_get_or(provider_info, "known", false) == false {
+		embeddings = hash_fallback_with_error(texts, cfg, embedding_error("unknown_embedding_provider", "Unknown embedding provider requested; using hash fallback", {
+			"requested_provider": requested_provider,
+			"supported_providers": keys(registry),
+			"fallback_provider": "hash"
+		}))
+	} else if resolved_provider == "ai" {
+		embeddings = ai_embed_many_or_fallback(texts, cfg)
+	} else {
+		embeddings = hash_embed_many(texts, cfg)
+	}
+
+	if embedding_cache_enabled(cfg) {
+		cache_state := load_embedding_cache_state()
+		stats := dict_get_or(cache_state, "stats", {})
+		dims := dict_get_or(cfg, "embedding_dims", 256)
+		vectors := dict_get_or(embeddings, "vectors", [])
+		provider_used := dict_get_or(embeddings, "provider", resolved_provider)
+		i := 0
+		while i < len(texts) && i < len(vectors) {
+			cache_key := embedding_cache_key(provider_used, dims, to_string(texts[i]))
+			cache_state = embedding_cache_store(cache_state, cache_key, vectors[i], cfg)
+			i = i + 1
+		}
+		stats["hits"] := dict_get_or(stats, "hits", 0) + cache_hits
+		stats["misses"] := dict_get_or(stats, "misses", 0) + (len(texts) - cache_hits)
+		cache_state["stats"] := stats
+		save_embedding_cache_state(cache_state)
+	}
+
+	return embeddings
+}
+
+export embed_chunks := func(chunks, cfg) {
+	texts := []
+	for chunk in chunks {
+		texts := push(texts, dict_get_or(chunk, "text", ""))
+	}
+	embeddings := embed_texts(texts, cfg)
+	vectors := dict_get_or(embeddings, "vectors", [])
+
+	result := []
+	i := 0
+	while i < len(chunks) {
+		chunk := chunks[i]
+		vec := []
+		if i < len(vectors) {
+			vec := vectors[i]
+		}
+		record := {
+			"chunk_id": dict_get_or(chunk, "chunk_id", ""),
+			"embedding": vec,
+			"provider": dict_get_or(embeddings, "provider", "hash")
+		}
+		result := push(result, record)
+		i := i + 1
+	}
+
+	return {
+		"vectors": result,
+		"provider": dict_get_or(embeddings, "provider", "hash"),
+		"meta": dict_get_or(embeddings, "meta", {}),
+		"error": dict_get_or(embeddings, "error", null)
+	}
+}

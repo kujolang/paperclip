@@ -1,0 +1,379 @@
+# Shared utilities for Kujo RAG.
+
+export dict_get_or := func(obj, key, default_value) {
+	if type(obj) != "dict" {
+		return default_value
+	}
+	if has_key(obj, key) == 1 {
+		return obj[key]
+	}
+	return default_value
+}
+
+export str_or := func(value, default_value) {
+	if type(value) == "string" {
+		return value
+	}
+	return default_value
+}
+
+export num_or := func(value, default_value) {
+	if type(value) == "int" || type(value) == "float" {
+		return value
+	}
+	return default_value
+}
+
+# Resolve the caller's lexical path beneath a stable filesystem root. File
+# paths must not be canonicalized here: canonicalizing after authorization
+# would let a concurrently swapped symlink choose a different trusted path.
+# Keep the raw native root for the runtime call while slash-normalizing only
+# the descriptor-relative component. This preserves Windows verbatim roots.
+export filesystem_capability_scope := func(path_value) {
+	raw_input := to_string(path_value)
+	raw_base := path_absolute(".")
+	normalized_base := regex_replace(raw_base, "\\\\", "/")
+	is_windows := starts_with(normalized_base, "//?/")
+	if len(normalized_base) >= 3 && substring(normalized_base, 1, 3) == ":/" {
+		is_windows = true
+	}
+
+	normalized_input := raw_input
+	if is_windows {
+		normalized_input = regex_replace(raw_input, "\\\\", "/")
+	}
+	is_absolute := starts_with(normalized_input, "/")
+	if len(normalized_input) >= 3 && substring(normalized_input, 1, 3) == ":/" {
+		is_absolute = true
+	}
+
+	raw_root_source := raw_input
+	if is_absolute == false {
+		normalized_input = normalized_base + "/" + normalized_input
+		raw_root_source = raw_base
+	}
+
+	root := ""
+	body := normalized_input
+	if is_windows && starts_with(normalized_input, "//?/UNC/") {
+		unc_parts := split(substring(normalized_input, 8, len(normalized_input)), "/")
+		if len(unc_parts) >= 2 && unc_parts[0] != "" && unc_parts[1] != "" {
+			root_length := 8 + len(unc_parts[0]) + 1 + len(unc_parts[1]) + 1
+			root = substring(raw_root_source, 0, root_length)
+			body = substring(normalized_input, root_length, len(normalized_input))
+		}
+	} else if is_windows && starts_with(normalized_input, "//?/") && len(normalized_input) >= 7 && substring(normalized_input, 5, 7) == ":/" {
+		root = substring(raw_root_source, 0, 7)
+		body = substring(normalized_input, 7, len(normalized_input))
+	} else if is_windows && starts_with(normalized_input, "//") {
+		unc_parts := split(substring(normalized_input, 2, len(normalized_input)), "/")
+		if len(unc_parts) >= 2 && unc_parts[0] != "" && unc_parts[1] != "" {
+			root_length := 2 + len(unc_parts[0]) + 1 + len(unc_parts[1]) + 1
+			root = substring(raw_root_source, 0, root_length)
+			body = substring(normalized_input, root_length, len(normalized_input))
+		}
+	} else if is_windows && len(normalized_input) >= 3 && substring(normalized_input, 1, 3) == ":/" {
+		root = path_absolute(substring(raw_input, 0, 3))
+		body = substring(normalized_input, 3, len(normalized_input))
+	}
+
+	parts := split(body, "/")
+	clean_parts := []
+	for part in parts {
+		if part == "" || part == "." {
+			continue
+		}
+		if part == ".." {
+			if len(clean_parts) > 0 {
+				clean_parts = slice(clean_parts, 0, len(clean_parts) - 1)
+			}
+		} else {
+			clean_parts = push(clean_parts, part)
+		}
+	}
+
+	if is_windows == false {
+		if len(clean_parts) >= 2 {
+			# macOS and some Unix deployments expose stable top-level symlinks
+			# such as /tmp. Canonicalize that trusted system component once, then
+			# traverse every caller-controlled component descriptor-relatively.
+			root = path_absolute("/" + clean_parts[0])
+			clean_parts = slice(clean_parts, 1, len(clean_parts))
+		} else {
+			root = "/"
+		}
+	}
+	relative := join(clean_parts, "/")
+
+	return {
+		"root": root,
+		"relative": relative
+	}
+}
+
+export bool_or := func(value, default_value) {
+	if type(value) == "bool" {
+		return value
+	}
+	return default_value
+}
+
+export dict_without_key := func(obj, key) {
+	if type(obj) != "dict" {
+		return obj
+	}
+
+	removed := remove(obj, key)
+	if type(removed) != "array" || len(removed) == 0 {
+		return obj
+	}
+
+	next_obj := removed[0]
+	if type(next_obj) != "dict" {
+		return obj
+	}
+	return next_obj
+}
+
+export clamp := func(value, min_value, max_value) {
+	v := value
+	if v < min_value {
+		v := min_value
+	}
+	if v > max_value {
+		v := max_value
+	}
+	return v
+}
+
+export normalize_text := func(text) {
+	if type(text) != "string" {
+		return ""
+	}
+	clean := to_lower(text)
+	clean := regex_replace(clean, "[^a-z0-9\\s]", " ")
+	clean := regex_replace(clean, "\\s+", " ")
+	return trim(clean)
+}
+
+export tokenize := func(text) {
+	norm := normalize_text(text)
+	if norm == "" {
+		return []
+	}
+	raw := split(norm, " ")
+	tokens := []
+	for token in raw {
+		if token != "" {
+			tokens := push(tokens, token)
+		}
+	}
+	return tokens
+}
+
+export term_frequency := func(tokens) {
+	freq := {}
+	for token in tokens {
+		if token != "" {
+			count := dict_get_or(freq, token, 0)
+			freq[token] := count + 1
+		}
+	}
+	return freq
+}
+
+export dot_product := func(a, b) {
+	if type(a) != "array" || type(b) != "array" {
+		return 0.0
+	}
+	limit := len(a)
+	if len(b) < limit {
+		limit := len(b)
+	}
+	i := 0
+	total := 0.0
+	while i < limit {
+		total := total + (to_float(a[i]) * to_float(b[i]))
+		i := i + 1
+	}
+	return total
+}
+
+export magnitude := func(vec) {
+	if type(vec) != "array" {
+		return 0.0
+	}
+	total := 0.0
+	for n in vec {
+		v := to_float(n)
+		total := total + (v * v)
+	}
+	if total <= 0.0 {
+		return 0.0
+	}
+	return sqrt(total)
+}
+
+export cosine_similarity := func(a, b) {
+	denom := magnitude(a) * magnitude(b)
+	if denom <= 0.0 {
+		return 0.0
+	}
+	return dot_product(a, b) / denom
+}
+
+export rank_desc := func(items, score_key, top_k) {
+	if type(items) != "array" {
+		return []
+	}
+	if len(items) == 0 {
+		return []
+	}
+
+	limit := top_k
+	if limit < 1 {
+		return []
+	}
+	if limit > len(items) {
+		limit := len(items)
+	}
+
+	top := []
+	order := 0
+	for item in items {
+		score := num_or(dict_get_or(item, score_key, 0.0), 0.0)
+		entry := {
+			"item": item,
+			"score": score,
+			"order": order
+		}
+
+		insert_at := len(top)
+		i := 0
+		while i < len(top) {
+			current := top[i]
+			current_score := num_or(dict_get_or(current, "score", 0.0), 0.0)
+			current_order := dict_get_or(current, "order", 0)
+			if score > current_score || (score == current_score && order < current_order) {
+				insert_at := i
+				break
+			}
+			i := i + 1
+		}
+
+		before := slice(top, 0, insert_at)
+		after := slice(top, insert_at, len(top))
+		merged := []
+		for value in before {
+			merged := push(merged, value)
+		}
+		merged := push(merged, entry)
+		for value in after {
+			merged := push(merged, value)
+		}
+		top = merged
+		if len(top) > limit {
+			top = slice(top, 0, limit)
+		}
+
+		order := order + 1
+	}
+
+	result := []
+	i := 0
+	while i < len(top) {
+		result := push(result, dict_get_or(top[i], "item", {}))
+		i := i + 1
+	}
+	return result
+}
+
+export sort_strings_asc := func(values) {
+	if type(values) != "array" {
+		return []
+	}
+
+	sorted := []
+	for value in values {
+		candidate := to_string(value)
+		insert_at := len(sorted)
+		i := 0
+		while i < len(sorted) {
+			if candidate < sorted[i] {
+				insert_at = i
+				break
+			}
+			i = i + 1
+		}
+
+		before := slice(sorted, 0, insert_at)
+		after := slice(sorted, insert_at, len(sorted))
+		next := []
+		for item in before {
+			next = push(next, item)
+		}
+		next = push(next, candidate)
+		for item in after {
+			next = push(next, item)
+		}
+		sorted = next
+	}
+	return sorted
+}
+
+export stable_chunk_id := func(path, line_start, line_end, text) {
+	seed := path + ":" + to_string(line_start) + ":" + to_string(line_end) + ":" + text
+	hash := sha256(seed)
+	return substring(hash, 0, 20)
+}
+
+export read_json_file_result := func(path) {
+	if file_exists(path) == false {
+		return {
+			"ok": true,
+			"data": null,
+			"missing": true
+		}
+	}
+	err := null
+	data := null
+	try {
+		data := parse_json(read_file(path))
+	} except e {
+		err := e
+	}
+	if type(err) != "null" {
+		return {
+			"ok": false,
+			"error": {
+				"code": "json_file_load_failed",
+				"message": "JSON file could not be loaded",
+				"details": {
+					"path": path,
+					"reason": to_string(err)
+				}
+			}
+		}
+	}
+	return {
+		"ok": true,
+		"data": data,
+		"missing": false
+	}
+}
+
+export read_json_file_or := func(path, default_value) {
+	loaded := read_json_file_result(path)
+	if dict_get_or(loaded, "ok", false) == false || dict_get_or(loaded, "missing", false) {
+		return default_value
+	}
+	return dict_get_or(loaded, "data", default_value)
+}
+
+export write_json_file := func(path, value) {
+	if file_exists(path) {
+		delete_file(path)
+	}
+	write_file(path, to_json(value))
+	return true
+}

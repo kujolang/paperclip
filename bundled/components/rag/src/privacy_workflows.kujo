@@ -1,0 +1,119 @@
+from src.common import dict_get_or
+from src.vector_store import protect_json_at_rest
+
+func normalize_namespace_for_path(namespace) {
+	norm := to_lower(trim(to_string(namespace)))
+	if norm == "" {
+		norm = "default"
+	}
+	invalid := regex_replace(norm, "[a-z0-9_-]", "")
+	if invalid != "" {
+		norm = "ns_" + substring(sha256(norm), 0, 10)
+	}
+	return norm
+}
+
+func ensure_privacy_artifact_dir() {
+	if path_exists("./results") == false {
+		create_dir("./results")
+	}
+	if path_exists("./results/privacy") == false {
+		create_dir("./results/privacy")
+	}
+}
+
+export summarize_namespace_index := func(index) {
+	chunks := dict_get_or(index, "chunks", [])
+	vectors := dict_get_or(index, "vectors", [])
+	lexical := dict_get_or(index, "lexical", [])
+
+	doc_ids := {}
+	paths := {}
+	i := 0
+	while i < len(chunks) {
+		chunk := chunks[i]
+		doc_id := to_string(dict_get_or(chunk, "doc_id", ""))
+		if doc_id != "" {
+			doc_ids[doc_id] = true
+		}
+		path := to_string(dict_get_or(chunk, "path", ""))
+		if path != "" {
+			paths[path] = true
+		}
+		i = i + 1
+	}
+
+	return {
+		"chunk_count": len(chunks),
+		"vector_count": len(vectors),
+		"lexical_count": len(lexical),
+		"document_count": len(keys(doc_ids)),
+		"path_count": len(keys(paths))
+	}
+}
+
+export write_privacy_export_artifact := func(namespace, index, export_type, cfg) {
+	ensure_privacy_artifact_dir()
+	ns_slug := normalize_namespace_for_path(namespace)
+	type_slug := normalize_namespace_for_path(export_type)
+	ts := current_timestamp()
+	path := "./results/privacy/" + type_slug + "__" + ns_slug + "__" + to_string(ts) + ".json"
+
+	payload := {
+		"namespace": namespace,
+		"export_type": export_type,
+		"generated_at_ms": ts,
+		"summary": summarize_namespace_index(index),
+		"index": index
+	}
+
+	protected := protect_json_at_rest(payload, path, cfg)
+	if dict_get_or(protected, "ok", false) == false {
+		return {
+			"ok": false,
+			"error": dict_get_or(protected, "error", {
+				"code": "privacy_artifact_encryption_failed",
+				"message": "Privacy artifact could not be protected",
+				"details": {"path": path}
+			})
+		}
+	}
+	stored_value := dict_get_or(protected, "value", payload)
+	written := write_file_atomic(path, to_json(stored_value), true)
+	if written != true {
+		return {
+			"ok": false,
+			"error": {
+				"code": "privacy_artifact_write_failed",
+				"message": "Privacy artifact could not be written atomically",
+				"details": {"path": path}
+			}
+		}
+	}
+
+	return {
+		"ok": true,
+		"path": path,
+		"encrypted": dict_get_or(protected, "encrypted", false),
+		"generated_at_ms": ts,
+		"summary": dict_get_or(payload, "summary", {})
+	}
+}
+
+export build_deleted_namespace_index := func(index, namespace) {
+	meta := dict_get_or(index, "meta", {})
+	if type(meta) != "dict" {
+		meta = {}
+	}
+	meta["privacy_deleted"] = true
+	meta["privacy_deleted_namespace"] = namespace
+	meta["privacy_deleted_at_ms"] = current_timestamp()
+	meta["documents_index"] = {}
+
+	return {
+		"chunks": [],
+		"vectors": [],
+		"lexical": [],
+		"meta": meta
+	}
+}

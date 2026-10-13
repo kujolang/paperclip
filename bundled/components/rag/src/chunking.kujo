@@ -1,0 +1,494 @@
+from src.common import dict_get_or, tokenize, stable_chunk_id, num_or, bool_or, str_or, clamp
+
+func default_chunk_presets() {
+	return {
+		"markdown": {
+			"chunk_strategy": "line",
+			"chunk_size": 700,
+			"chunk_overlap": 120
+		},
+		"json": {
+			"chunk_strategy": "line",
+			"chunk_size": 220,
+			"chunk_overlap": 40
+		},
+		"csv": {
+			"chunk_strategy": "line",
+			"chunk_size": 220,
+			"chunk_overlap": 40
+		},
+		"html": {
+			"chunk_strategy": "line",
+			"chunk_size": 760,
+			"chunk_overlap": 120
+		},
+		"xml": {
+			"chunk_strategy": "line",
+			"chunk_size": 760,
+			"chunk_overlap": 120
+		},
+		"yaml": {
+			"chunk_strategy": "line",
+			"chunk_size": 640,
+			"chunk_overlap": 120
+		},
+		"log": {
+			"chunk_strategy": "fixed",
+			"chunk_size": 540,
+			"chunk_overlap": 80
+		},
+		"code": {
+			"chunk_strategy": "line",
+			"chunk_size": 760,
+			"chunk_overlap": 120
+		},
+		"pdf": {
+			"chunk_strategy": "fixed",
+			"chunk_size": 880,
+			"chunk_overlap": 120
+		}
+	}
+}
+
+func normalize_chunk_strategy(value, fallback) {
+	strategy := to_lower(trim(str_or(value, fallback)))
+	if strategy != "line" && strategy != "fixed" {
+		strategy = fallback
+	}
+	if strategy != "line" && strategy != "fixed" {
+		strategy = "line"
+	}
+	return strategy
+}
+
+func normalize_chunk_size(value, fallback) {
+	size := num_or(value, fallback)
+	size = clamp(size, 1, 10000)
+	return size
+}
+
+func normalize_chunk_overlap(value, fallback, size) {
+	overlap := num_or(value, fallback)
+	overlap = clamp(overlap, 0, size - 1)
+	return overlap
+}
+
+func normalized_chunking_values(values, current) {
+	strategy := normalize_chunk_strategy(dict_get_or(values, "chunk_strategy", dict_get_or(current, "chunk_strategy", "line")), dict_get_or(current, "chunk_strategy", "line"))
+	size := normalize_chunk_size(dict_get_or(values, "chunk_size", dict_get_or(current, "chunk_size", 900)), dict_get_or(current, "chunk_size", 900))
+	overlap := normalize_chunk_overlap(dict_get_or(values, "chunk_overlap", dict_get_or(current, "chunk_overlap", 150)), dict_get_or(current, "chunk_overlap", 150), size)
+	return {
+		"chunk_strategy": strategy,
+		"chunk_size": size,
+		"chunk_overlap": overlap
+	}
+}
+
+func inferred_preset_key_from_extension(path_value) {
+	ext := to_lower(path_extension(path_value))
+	if ext == "md" || ext == "mdx" || ext == "markdown" {
+		return "markdown"
+	}
+	if ext == "json" {
+		return "json"
+	}
+	if ext == "csv" {
+		return "csv"
+	}
+	if ext == "html" || ext == "htm" {
+		return "html"
+	}
+	if ext == "xml" {
+		return "xml"
+	}
+	if ext == "yaml" || ext == "yml" {
+		return "yaml"
+	}
+	if ext == "log" {
+		return "log"
+	}
+	if ext == "pdf" {
+		return "pdf"
+	}
+	if ext == "kujo" || ext == "py" || ext == "js" || ext == "ts" || ext == "tsx" || ext == "jsx" || ext == "go" || ext == "rs" || ext == "java" || ext == "c" || ext == "cc" || ext == "cpp" || ext == "h" || ext == "hpp" {
+		return "code"
+	}
+	return ""
+}
+
+func resolve_chunk_preset_key(doc) {
+	meta := dict_get_or(doc, "meta", {})
+	explicit_key := to_lower(trim(to_string(dict_get_or(meta, "chunk_preset_key", ""))))
+	if explicit_key != "" {
+		return explicit_key
+	}
+
+	structured_format := to_lower(trim(to_string(dict_get_or(meta, "structured_format", ""))))
+	if structured_format == "json" || structured_format == "csv" {
+		return structured_format
+	}
+
+	parser := to_lower(trim(to_string(dict_get_or(meta, "parser", ""))))
+	if parser == "markdown" {
+		return "markdown"
+	}
+	if parser == "structured_json" {
+		return "json"
+	}
+	if parser == "structured_csv" {
+		return "csv"
+	}
+	if parser == "html_text" {
+		return "html"
+	}
+	if parser == "xml_text" {
+		return "xml"
+	}
+	if parser == "yaml_text" {
+		return "yaml"
+	}
+	if parser == "log_text" {
+		return "log"
+	}
+	if parser == "pdf_shell" || parser == "pdf_fallback" {
+		return "pdf"
+	}
+
+	return inferred_preset_key_from_extension(dict_get_or(doc, "path", ""))
+}
+
+func resolve_preset_values(cfg, preset_key) {
+	presets := default_chunk_presets()
+	custom_presets := dict_get_or(cfg, "chunk_presets", {})
+	if type(custom_presets) == "dict" {
+		custom_keys := keys(custom_presets)
+		i := 0
+		while i < len(custom_keys) {
+			key := to_lower(trim(to_string(custom_keys[i])))
+			value := custom_presets[custom_keys[i]]
+			if key != "" && type(value) == "dict" {
+				presets[key] = value
+			}
+			i = i + 1
+		}
+	}
+
+	if preset_key != "" && has_key(presets, preset_key) == 1 {
+		return dict_get_or(presets, preset_key, {})
+	}
+	return {}
+}
+
+func resolve_chunking_profile(doc, cfg) {
+	baseline := normalized_chunking_values(cfg, {
+		"chunk_strategy": "line",
+		"chunk_size": 900,
+		"chunk_overlap": 150
+	})
+	profile := {
+		"chunk_strategy": dict_get_or(baseline, "chunk_strategy", "line"),
+		"chunk_size": dict_get_or(baseline, "chunk_size", 900),
+		"chunk_overlap": dict_get_or(baseline, "chunk_overlap", 150),
+		"preset_key": "",
+		"preset_applied": false,
+		"source": "baseline"
+	}
+
+	presets_enabled := bool_or(dict_get_or(cfg, "chunk_presets_enabled", false), false)
+	if presets_enabled {
+		preset_key := resolve_chunk_preset_key(doc)
+		preset_values := resolve_preset_values(cfg, preset_key)
+		if type(preset_values) == "dict" && len(keys(preset_values)) > 0 {
+			profile = normalized_chunking_values(preset_values, profile)
+			profile["preset_key"] = preset_key
+			profile["preset_applied"] = true
+			profile["source"] = "preset:" + preset_key
+		}
+	}
+
+	meta := dict_get_or(doc, "meta", {})
+	override := dict_get_or(meta, "chunking_override", {})
+	if type(override) == "dict" && len(keys(override)) > 0 {
+		profile = normalized_chunking_values(override, profile)
+		profile["source"] = "doc_override"
+	}
+
+	return profile
+}
+
+func annotate_chunk_profile(chunks, profile) {
+	annotated := []
+	i := 0
+	while i < len(chunks) {
+		chunk := chunks[i]
+		meta := dict_get_or(chunk, "meta", {})
+		if type(meta) != "dict" {
+			meta = {}
+		}
+		meta["chunk_profile_source"] = dict_get_or(profile, "source", "baseline")
+		meta["chunk_profile_key"] = dict_get_or(profile, "preset_key", "")
+		meta["chunk_profile_strategy"] = dict_get_or(profile, "chunk_strategy", "line")
+		meta["chunk_profile_size"] = dict_get_or(profile, "chunk_size", 900)
+		meta["chunk_profile_overlap"] = dict_get_or(profile, "chunk_overlap", 150)
+		meta["chunk_profile_presets_enabled"] = bool_or(dict_get_or(profile, "preset_applied", false), false)
+		chunk["meta"] = meta
+		annotated = push(annotated, chunk)
+		i = i + 1
+	}
+	return annotated
+}
+
+func count_text_lines(text) {
+	if type(text) != "string" || text == "" {
+		return 0
+	}
+	return len(split(text, "\n"))
+}
+
+func build_line_offset_lookup(doc) {
+	lines := dict_get_or(doc, "lines", [])
+	lookup := []
+	offset := 0
+	i := 0
+	while i < len(lines) {
+		entry := lines[i]
+		line_no := dict_get_or(entry, "line", i + 1)
+		line_text := dict_get_or(entry, "text", "")
+		start_offset := offset
+		end_offset := offset + len(line_text)
+		lookup := push(lookup, {
+			"line": line_no,
+			"start": start_offset,
+			"end": end_offset
+		})
+		offset := end_offset + 1
+		i := i + 1
+	}
+	return lookup
+}
+
+func start_line_for_char(offset, line_lookup) {
+	if len(line_lookup) == 0 {
+		return 1
+	}
+	for entry in line_lookup {
+		if offset <= dict_get_or(entry, "end", 0) {
+			return dict_get_or(entry, "line", 1)
+		}
+	}
+	last := line_lookup[len(line_lookup) - 1]
+	return dict_get_or(last, "line", 1)
+}
+
+func end_line_for_char(end_offset_exclusive, line_lookup) {
+	if len(line_lookup) == 0 {
+		return 1
+	}
+	target := end_offset_exclusive - 1
+	if target < 0 {
+		target := 0
+	}
+	for entry in line_lookup {
+		if target <= dict_get_or(entry, "end", 0) {
+			return dict_get_or(entry, "line", 1)
+		}
+	}
+	last := line_lookup[len(line_lookup) - 1]
+	return dict_get_or(last, "line", 1)
+}
+
+func chunk_from_lines(doc, start_line, end_line, text, strategy) {
+	tokens := tokenize(text)
+	chunk_id := stable_chunk_id(dict_get_or(doc, "path", ""), start_line, end_line, text)
+	chunk_meta := {}
+	doc_meta := dict_get_or(doc, "meta", {})
+	if type(doc_meta) == "dict" {
+		for key in keys(doc_meta) {
+			chunk_meta[key] := doc_meta[key]
+		}
+	}
+	if has_key(chunk_meta, "example_spans") {
+		relevant_spans := []
+		for span in chunk_meta["example_spans"] {
+			if span["line_end"] >= start_line && span["line_start"] <= end_line { relevant_spans = push(relevant_spans, span) }
+		}
+		chunk_meta["example_spans"] := relevant_spans
+	}
+	chunk_meta["strategy"] := strategy
+	chunk_meta["kind"] := dict_get_or(doc, "kind", "text")
+	return {
+		"chunk_id": chunk_id,
+		"doc_id": dict_get_or(doc, "doc_id", ""),
+		"path": dict_get_or(doc, "path", ""),
+		"text": text,
+		"line_start": start_line,
+		"line_end": end_line,
+		"token_count": len(tokens),
+		"tokens": tokens,
+		"meta": chunk_meta
+	}
+}
+
+func line_chunk(doc, cfg) {
+	lines := dict_get_or(doc, "lines", [])
+	chunk_size := dict_get_or(cfg, "chunk_size", 900)
+	chunk_overlap := dict_get_or(cfg, "chunk_overlap", 150)
+
+	chunks := []
+	buffer := ""
+	line_start := 1
+	line_end := 1
+	i := 0
+	while i < len(lines) {
+		entry := lines[i]
+		text := dict_get_or(entry, "text", "")
+		line_no := dict_get_or(entry, "line", i + 1)
+
+		if buffer == "" {
+			line_start := line_no
+		}
+
+		if buffer == "" {
+			buffer := text
+		} else {
+			buffer := buffer + "\n" + text
+		}
+		line_end := line_no
+
+		if len(buffer) >= chunk_size {
+			chunks := push(chunks, chunk_from_lines(doc, line_start, line_end, buffer, "line"))
+
+			overlap_text := ""
+			if chunk_overlap > 0 {
+				start := len(buffer) - chunk_overlap
+				if start < 0 {
+					start := 0
+				}
+				overlap_text := substring(buffer, start, len(buffer))
+				overlap_lines := count_text_lines(overlap_text)
+				if overlap_lines > 0 {
+					line_start := line_end - overlap_lines + 1
+					if line_start < 1 {
+						line_start := 1
+					}
+				}
+			}
+			buffer := overlap_text
+		}
+
+		i := i + 1
+	}
+
+	if trim(buffer) != "" {
+		chunks := push(chunks, chunk_from_lines(doc, line_start, line_end, buffer, "line"))
+	}
+
+	return chunks
+}
+
+func fixed_char_chunk(doc, cfg) {
+	text := dict_get_or(doc, "content", "")
+	chunk_size := dict_get_or(cfg, "chunk_size", 900)
+	chunk_overlap := dict_get_or(cfg, "chunk_overlap", 150)
+
+	chunks := []
+	if text == "" {
+		return chunks
+	}
+
+	start := 0
+	line_lookup := build_line_offset_lookup(doc)
+	while start < len(text) {
+		end := start + chunk_size
+		if end > len(text) {
+			end := len(text)
+		}
+		slice_text := substring(text, start, end)
+
+		start_line := start_line_for_char(start, line_lookup)
+		end_line := end_line_for_char(end, line_lookup)
+		if end_line < start_line {
+			end_line = start_line
+		}
+
+		chunks := push(chunks, chunk_from_lines(doc, start_line, end_line, slice_text, "fixed"))
+
+		if end >= len(text) {
+			start := len(text)
+		} else {
+			step := chunk_size - chunk_overlap
+			if step < 1 {
+				step := 1
+			}
+			start := start + step
+		}
+	}
+
+	return chunks
+}
+
+# Keep complete example fences together and preserve original line positions.
+# This opt-in profile uses a target size; a single complete fence can exceed it,
+# bounded by the parser's document byte limit. It does not duplicate overlap.
+func example_line_chunks(doc, cfg) {
+ example_lines := split(dict_get_or(doc, "content", ""), "\n")
+ example_meta := dict_get_or(doc, "meta", {})
+ example_spans := dict_get_or(example_meta, "example_spans", [])
+ example_chunks := []
+ example_buffer := []
+ example_start := 1
+ example_size := 0
+ example_idx := 0
+ while example_idx < len(example_lines) {
+  example_buffer = push(example_buffer, example_lines[example_idx])
+  example_size = example_size + len(example_lines[example_idx]) + 1
+  example_line := example_idx + 1
+  inside_example := false
+  for example_span in example_spans {
+   if example_line >= example_span["line_start"] && example_line < example_span["line_end"] { inside_example = true }
+  }
+  if example_size >= dict_get_or(cfg, "chunk_size", 900) && inside_example == false {
+   example_chunks = push(example_chunks, chunk_from_lines(doc, example_start, example_line, join(example_buffer, "\n"), "markdown_examples"))
+   example_buffer = []
+   example_size = 0
+   example_start = example_line + 1
+  }
+  example_idx = example_idx + 1
+ }
+ if len(example_buffer) > 0 && trim(join(example_buffer, "\n")) != "" {
+  example_chunks = push(example_chunks, chunk_from_lines(doc, example_start, len(example_lines), join(example_buffer, "\n"), "markdown_examples"))
+ }
+ return example_chunks
+}
+
+export chunk_document := func(doc, cfg) {
+	profile := resolve_chunking_profile(doc, cfg)
+	resolved_cfg := {
+		"chunk_strategy": dict_get_or(profile, "chunk_strategy", "line"),
+		"chunk_size": dict_get_or(profile, "chunk_size", 900),
+		"chunk_overlap": dict_get_or(profile, "chunk_overlap", 150)
+	}
+
+	strategy := to_lower(dict_get_or(resolved_cfg, "chunk_strategy", "line"))
+	doc_chunks := []
+	if dict_get_or(dict_get_or(doc, "meta", {}), "example_contract", "") == "kujo.fenced-examples/v1" {
+		doc_chunks = example_line_chunks(doc, resolved_cfg)
+	} else if strategy == "fixed" {
+		doc_chunks = fixed_char_chunk(doc, resolved_cfg)
+	} else {
+		doc_chunks = line_chunk(doc, resolved_cfg)
+	}
+
+	return annotate_chunk_profile(doc_chunks, profile)
+}
+
+export chunk_documents := func(documents, cfg) {
+	all_chunks := []
+	for doc in documents {
+		doc_chunks := chunk_document(doc, cfg)
+		for chunk in doc_chunks {
+			all_chunks := push(all_chunks, chunk)
+		}
+	}
+	return all_chunks
+}

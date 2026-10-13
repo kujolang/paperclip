@@ -73,11 +73,13 @@ Kujo retains up to 20 results per company/entity for 30 days in its Paperclip da
 | **Review Pack** | Measures change size, explains risk signals, and prepares a review handoff. | ChangeBucket and PatchBrief |
 | **Failure Evidence** | Turns supplied command details and logs into a bounded, redacted record. | CaseFile |
 
-The fourteen component snapshots are pinned, checksummed, and shipped with the plugin. The
+The fifteen component snapshots are pinned, checksummed, and shipped with the plugin. The
 plugin does not download component code while installing or running. The Eval snapshot
 provides human-approved execution on issue workspaces. The separately enabled
 Dispatch workflow panel runs shipped offline examples through durable host jobs,
-with exact human checkpoint decisions and retained state. A read-only checkpoint
+with exact human checkpoint decisions and retained state. The RAG snapshot and
+internal ingest/query adapter are under development; there is no public knowledge
+panel or agent tool yet. A read-only checkpoint
 receipt inspection can establish whether Dispatch recorded the exact approved
 decision after a lost response, without rerunning it. See
 [Run a Kujo workflow](docs/USAGE.md#run-a-kujo-workflow) for operator setup and limits.

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Pin canonical RAG 1.0.0 and add an internal offline ingest/query adapter with a portable private index, redacted corpus digests, source citations and explicit incomplete-ingestion rejection. Public knowledge controls and durable host storage remain in development.
+
 - Inspect exact native checkpoint receipts after lost responses without replaying decisions or rewriting uncertain host outcomes.
 
 - Add the opt-in Dispatch issue journey: preview shipped offline examples, request human confirmation, explicitly queue jobs, inspect retained native state, and submit exact revision-bound human checkpoint decisions. Company-configured private storage, bounded ownership, cancellation, canonical receipts and linked history are included; live providers and automated uncertain-effect reconciliation remain unsupported.

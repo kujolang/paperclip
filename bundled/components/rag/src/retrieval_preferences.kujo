@@ -1,0 +1,93 @@
+from src.common import dict_get_or
+
+# Kujo-specific optional request contract, not an HTTP language standard.
+export normalize_retrieval_preferences := func(value) {
+ if type(value) != "dict" { return {} }
+ language := dict_get_or(value, "programming_language", "")
+ if type(language) != "string" { return {} }
+ language = to_lower(trim(language))
+ if language == "c++" { language = "cpp" }
+ if language == "c#" { language = "csharp" }
+ if len(language) > 64 || regex_match(language, "^[a-z][a-z0-9_-]*$") == false { return {} }
+ return {"programming_language": language}
+}
+
+# Only complete fenced blocks with an explicit info-string are selectable.
+# Unknown/unlabelled and unterminated fences are retained as shared content.
+export markdown_example_spans := func(raw) {
+ lines := split(raw, "\n")
+ spans := []
+ languages := []
+ groups := {}
+ group := ""
+ marker := ""
+ start := 0
+ language := ""
+ i := 0
+ while i < len(lines) {
+  line := trim(lines[i])
+  if marker == "" {
+   if starts_with(line, "```") || starts_with(line, "~~~") {
+    fence_char := substring(line, 0, 1)
+    length := 0
+    while length < len(line) && substring(line, length, length + 1) == fence_char { length = length + 1 }
+    marker = substring(line, 0, length)
+    info := trim(substring(line, length, len(line)))
+    parts := split(info, " ")
+    language = dict_get_or(normalize_retrieval_preferences({"programming_language": parts[0]}), "programming_language", "")
+    group = ""
+    for part in parts {
+     if starts_with(part, "retrieval-example=") {
+      candidate := replace(part, "retrieval-example=", "")
+      if regex_match(candidate, "^[a-zA-Z][a-zA-Z0-9_-]{0,63}$") { group = candidate }
+     }
+    }
+    start = i + 1
+   }
+  } else if starts_with(line, marker) && trim(regex_replace(line, substring(marker, 0, 1), "")) == "" {
+   if language != "" && group != "" {
+    group_languages := dict_get_or(groups, group, [])
+    if contains(group_languages, language) == false { group_languages = push(group_languages, language) }
+    groups[group] := group_languages
+    spans = push(spans, {"line_start": start, "line_end": i + 1, "programming_language": language, "example_group": group})
+    if contains(languages, language) == false { languages = push(languages, language) }
+   }
+   marker = ""
+   language = ""
+  }
+  i = i + 1
+ }
+ return {"example_spans": spans, "example_groups": groups, "example_languages": languages, "example_contract": "kujo.fenced-examples/v1"}
+}
+
+export select_chunk_examples := func(chunk, preferences) {
+ selected_language := dict_get_or(preferences, "programming_language", "")
+ selected_meta := dict_get_or(chunk, "meta", {})
+ available := dict_get_or(selected_meta, "example_languages", [])
+ if selected_language == "" || contains(available, selected_language) == false { return chunk }
+ spans := dict_get_or(selected_meta, "example_spans", [])
+ groups := dict_get_or(selected_meta, "example_groups", {})
+ remove_spans := []
+ for span in spans {
+  if contains(dict_get_or(groups, dict_get_or(span, "example_group", ""), []), selected_language) && span["programming_language"] != selected_language { remove_spans = push(remove_spans, span) }
+ }
+ if len(remove_spans) == 0 { return chunk }
+ selected_lines := split(dict_get_or(chunk, "text", ""), "\n")
+ kept := []
+ start_line := dict_get_or(chunk, "line_start", 1)
+ idx := 0
+ span_idx := 0
+ while idx < len(selected_lines) {
+  source_line := start_line + idx
+  while span_idx < len(remove_spans) && source_line > remove_spans[span_idx]["line_end"] { span_idx = span_idx + 1 }
+  if span_idx < len(remove_spans) && source_line >= remove_spans[span_idx]["line_start"] {
+   idx = remove_spans[span_idx]["line_end"] - start_line + 1
+  } else {
+   kept = push(kept, selected_lines[idx])
+   idx = idx + 1
+  }
+ }
+ selected_chunk := chunk
+ selected_chunk["text"] := join(kept, "\n")
+ return selected_chunk
+}

@@ -1,0 +1,1096 @@
+from src.common import dict_get_or, num_or, str_or, bool_or
+from src.ingestion import ingest_documents
+from src.chunking import chunk_documents
+from src.embeddings import embed_chunks
+from src.vector_store import build_index, index_summary
+from src.vector_backend import load_index_with_backend, persist_index_with_backend
+from src.retrieval import hybrid_search_with_stage_timings
+
+func concat_arrays(left, right) {
+	out := []
+	if type(left) == "array" {
+		for item in left {
+			out := push(out, item)
+		}
+	}
+	if type(right) == "array" {
+		for item in right {
+			out := push(out, item)
+		}
+	}
+	return out
+}
+
+func document_content_hash(doc) {
+	path := dict_get_or(doc, "path", "")
+	content := dict_get_or(doc, "content", "")
+	return sha256(path + "\n" + content + to_string(dict_get_or(dict_get_or(doc, "meta", {}), "example_contract", "")))
+}
+
+func existing_documents_index(index) {
+	meta := dict_get_or(index, "meta", {})
+	docs_index := dict_get_or(meta, "documents_index", {})
+	if type(docs_index) != "dict" {
+		return {}
+	}
+	return docs_index
+}
+
+func classify_documents_for_incremental(documents, existing_doc_index) {
+	changed_docs := []
+	unchanged_docs := []
+	current_paths := {}
+
+	for doc in documents {
+		path := dict_get_or(doc, "path", "")
+		current_paths[path] := true
+		hash := document_content_hash(doc)
+		existing := dict_get_or(existing_doc_index, path, null)
+		existing_hash := ""
+		if type(existing) == "dict" {
+			existing_hash := dict_get_or(existing, "content_hash", "")
+		}
+		if existing_hash != "" && existing_hash == hash {
+			unchanged_docs := push(unchanged_docs, doc)
+		} else {
+			changed_docs := push(changed_docs, doc)
+		}
+	}
+
+	deleted_docs := 0
+	for path in keys(existing_doc_index) {
+		if has_key(current_paths, path) == 0 {
+			deleted_docs := deleted_docs + 1
+		}
+	}
+
+	return {
+		"changed_docs": changed_docs,
+		"unchanged_docs": unchanged_docs,
+		"deleted_docs": deleted_docs
+	}
+}
+
+func reusable_vectors_for_unchanged_docs(existing_index, unchanged_docs) {
+	unchanged_doc_ids := {}
+	for doc in unchanged_docs {
+		unchanged_doc_ids[dict_get_or(doc, "doc_id", "")] := true
+	}
+
+	reused_chunks := []
+	reused_chunk_ids := {}
+	for chunk in dict_get_or(existing_index, "chunks", []) {
+		doc_id := dict_get_or(chunk, "doc_id", "")
+		if has_key(unchanged_doc_ids, doc_id) == 1 {
+			reused_chunks := push(reused_chunks, chunk)
+			reused_chunk_ids[dict_get_or(chunk, "chunk_id", "")] := true
+		}
+	}
+
+	reused_vectors := []
+	for entry in dict_get_or(existing_index, "vectors", []) {
+		chunk_id := dict_get_or(entry, "chunk_id", "")
+		if has_key(reused_chunk_ids, chunk_id) == 1 {
+			reused_vectors := push(reused_vectors, entry)
+		}
+	}
+
+	return {
+		"chunks": reused_chunks,
+		"vectors": reused_vectors
+	}
+}
+
+func build_documents_index(index, documents) {
+	chunk_ids_by_path := {}
+	for chunk in dict_get_or(index, "chunks", []) {
+		path := dict_get_or(chunk, "path", "")
+		existing := dict_get_or(chunk_ids_by_path, path, [])
+		existing := push(existing, dict_get_or(chunk, "chunk_id", ""))
+		chunk_ids_by_path[path] := existing
+	}
+
+	doc_index := {}
+	for doc in documents {
+		path := dict_get_or(doc, "path", "")
+		doc_index[path] := {
+			"doc_id": dict_get_or(doc, "doc_id", ""),
+			"content_hash": document_content_hash(doc),
+			"chunk_ids": dict_get_or(chunk_ids_by_path, path, [])
+		}
+	}
+	return doc_index
+}
+
+func has_adversarial_query_pattern(query_text) {
+	patterns := [
+		"ignore previous instructions",
+		"ignore all instructions",
+		"reveal system prompt",
+		"system prompt",
+		"developer message",
+		"prompt injection",
+		"jailbreak",
+		"bypass safety",
+		"exfiltrate",
+		"api key",
+		"secret token"
+	]
+	needle := to_lower(trim(query_text))
+	i := 0
+	while i < len(patterns) {
+		if index_of(needle, patterns[i]) >= 0 {
+			return true
+		}
+		i = i + 1
+	}
+	return false
+}
+
+func tokenize_overlap_terms(text) {
+	cleaned := trim(regex_replace(to_lower(text), "[^a-z0-9]+", " "))
+	if cleaned == "" {
+		return []
+	}
+	stopwords := {
+		"the": true,
+		"and": true,
+		"for": true,
+		"with": true,
+		"from": true,
+		"into": true,
+		"that": true,
+		"this": true,
+		"what": true,
+		"which": true,
+		"when": true,
+		"where": true,
+		"how": true,
+		"why": true,
+		"does": true,
+		"must": true,
+		"have": true,
+		"about": true,
+		"used": true,
+		"during": true
+	}
+	parts := split(cleaned, " ")
+	seen := {}
+	tokens := []
+	i := 0
+	while i < len(parts) {
+		token := trim(parts[i])
+		if len(token) >= 3 {
+			if has_key(stopwords, token) == 0 && has_key(seen, token) == 0 {
+				seen[token] := true
+				tokens = push(tokens, token)
+			}
+		}
+		i = i + 1
+	}
+	return tokens
+}
+
+func citations_context_text(citations) {
+	context := ""
+	i := 0
+	while i < len(citations) {
+		citation := citations[i]
+		path := to_lower(str_or(dict_get_or(citation, "path", ""), ""))
+		snippet := to_lower(str_or(dict_get_or(citation, "snippet", ""), ""))
+		context = context + " " + path + " " + snippet
+		i = i + 1
+	}
+	return trim(context)
+}
+
+func estimate_query_overlap_ratio(query, citations) {
+	tokens := tokenize_overlap_terms(query)
+	if len(tokens) < 3 {
+		return 1.0
+	}
+	context := citations_context_text(citations)
+	if context == "" {
+		return 0.0
+	}
+	matched := 0
+	i := 0
+	while i < len(tokens) {
+		if index_of(context, tokens[i]) >= 0 {
+			matched = matched + 1
+		}
+		i = i + 1
+	}
+	return to_float(matched) / to_float(len(tokens))
+}
+
+func contains_any_token(text_value, tokens) {
+	lower_text := to_lower(trim(str_or(text_value, "")))
+	if lower_text == "" {
+		return false
+	}
+	i := 0
+	while i < len(tokens) {
+		token := to_lower(trim(to_string(tokens[i])))
+		if token != "" {
+			if contains(lower_text, token) {
+				return true
+			}
+		}
+		i = i + 1
+	}
+	return false
+}
+
+func classify_query_intent(query) {
+	if type(query) != "string" {
+		return "fact"
+	}
+
+	if contains_any_token(query, [" vs ", " versus ", "compare", "difference", "differences", "better than", "tradeoff"]) {
+		return "compare"
+	}
+
+	if contains_any_token(query, ["error", "failed", "failure", "fix", "debug", "issue", "troubleshoot", "exception", "timeout", "not working"]) {
+		return "troubleshooting"
+	}
+
+	if contains_any_token(query, ["where", "locate", "location", "path", "file", "which document", "which section", "find in"]) {
+		return "navigation"
+	}
+
+	return "fact"
+}
+
+func rewrite_query_for_intent(query, intent) {
+	base_query := trim(str_or(query, ""))
+	if base_query == "" {
+		return ""
+	}
+
+	if intent == "navigation" {
+		return base_query + " location path file section"
+	}
+	if intent == "troubleshooting" {
+		return base_query + " root cause remediation fix steps"
+	}
+	if intent == "compare" {
+		return base_query + " differences similarities tradeoffs"
+	}
+	return base_query
+}
+
+func query_with_intent_pipeline(query, cfg) {
+	intent := classify_query_intent(query)
+	rewrite_enabled := bool_or(dict_get_or(cfg, "query_intent_rewrite_enabled", true), true)
+	rewritten_query := trim(str_or(query, ""))
+	if rewrite_enabled {
+		rewritten_query = rewrite_query_for_intent(query, intent)
+	}
+	rewrite_applied := false
+	if rewrite_enabled {
+		rewrite_applied = rewritten_query != trim(str_or(query, ""))
+	}
+
+	return {
+		"intent": intent,
+		"rewrite_enabled": rewrite_enabled,
+		"original_query": trim(str_or(query, "")),
+		"rewritten_query": rewritten_query,
+		"rewrite_applied": rewrite_applied
+	}
+}
+
+func retrieval_explanation_reason(citation, rank, federation_enabled) {
+	reason := "Ranked by descending hybrid relevance score (higher is better)."
+	confidence := num_or(dict_get_or(citation, "confidence", 0.0), 0.0)
+	if rank == 1 {
+		reason = "Top-ranked by hybrid relevance score across retrieved candidates."
+	}
+	if confidence >= 0.75 {
+		reason = reason + " Confidence remained high after rerank."
+	}
+	if federation_enabled {
+		namespace := to_string(dict_get_or(citation, "federation_namespace", ""))
+		if namespace != "" {
+			reason = reason + " Federation weight applied from namespace " + namespace + "."
+		}
+	}
+	return reason
+}
+
+func build_retrieval_explanation(search_query, intent_payload, citations, stage_timings, federation_enabled) {
+	ranking := []
+	limit := len(citations)
+	if limit > 3 {
+		limit = 3
+	}
+
+	i := 0
+	while i < limit {
+		citation := citations[i]
+		rank := i + 1
+		ranking = push(ranking, {
+			"rank": rank,
+			"chunk_id": to_string(dict_get_or(citation, "chunk_id", "")),
+			"path": to_string(dict_get_or(citation, "path", "")),
+			"line_start": num_or(dict_get_or(citation, "line_start", 0), 0),
+			"line_end": num_or(dict_get_or(citation, "line_end", 0), 0),
+			"score": num_or(dict_get_or(citation, "score", 0.0), 0.0),
+			"confidence": num_or(dict_get_or(citation, "confidence", 0.0), 0.0),
+			"provenance_score": num_or(dict_get_or(citation, "provenance_score", 0.0), 0.0),
+			"reason": retrieval_explanation_reason(citation, rank, federation_enabled)
+		})
+		i = i + 1
+	}
+
+	summary := "Citations are ranked by hybrid relevance score, then deterministic tie-breakers."
+	if federation_enabled {
+		summary = "Citations are ranked by weighted hybrid relevance score (federation weight x base score), then deterministic tie-breakers."
+	}
+	if len(citations) == 0 {
+		summary = "No citations were available after policy checks."
+	}
+
+	return {
+		"enabled": true,
+		"summary": summary,
+		"intent": to_string(dict_get_or(intent_payload, "intent", "fact")),
+		"rewrite_applied": dict_get_or(intent_payload, "rewrite_applied", false),
+		"search_query": search_query,
+		"retrieval_model": "hybrid_dense_lexical",
+		"top_considered": len(citations),
+		"ranking": ranking,
+		"stage_timings_ms": stage_timings
+	}
+}
+
+func normalize_response_policy(raw_policy) {
+	style := "expanded"
+	safety_mode := "balanced"
+	min_confidence := 0.45
+	min_citations := 2
+
+	if type(raw_policy) == "dict" {
+		raw_style := to_lower(trim(to_string(dict_get_or(raw_policy, "style", style))))
+		if raw_style == "strict_extractive" || raw_style == "concise" || raw_style == "expanded" {
+			style = raw_style
+		}
+
+		raw_mode := to_lower(trim(to_string(dict_get_or(raw_policy, "safety_mode", safety_mode))))
+		if raw_mode == "balanced" || raw_mode == "strict" || raw_mode == "permissive" {
+			safety_mode = raw_mode
+		}
+
+		min_confidence = num_or(dict_get_or(raw_policy, "min_confidence", min_confidence), min_confidence)
+		if min_confidence < 0.0 {
+			min_confidence = 0.0
+		}
+		if min_confidence > 1.0 {
+			min_confidence = 1.0
+		}
+
+		min_citations = num_or(dict_get_or(raw_policy, "min_citations", min_citations), min_citations)
+		if min_citations < 1 {
+			min_citations = 1
+		}
+	}
+
+	return {
+		"style": style,
+		"safety_mode": safety_mode,
+		"min_confidence": min_confidence,
+		"min_citations": min_citations
+	}
+}
+
+func evaluate_safe_response_policy(query, citations, cfg, response_policy) {
+	policy := normalize_response_policy(response_policy)
+	safety_mode := dict_get_or(policy, "safety_mode", "balanced")
+
+	if bool_or(dict_get_or(cfg, "query_safe_response_enabled", true), true) == false && safety_mode != "strict" {
+		return {
+			"triggered": false,
+			"reason": "",
+			"overlap_ratio": 1.0,
+			"safety_mode": safety_mode
+		}
+	}
+
+	if has_adversarial_query_pattern(query) {
+		return {
+			"triggered": true,
+			"reason": "unsafe_or_unsupported_query",
+			"overlap_ratio": 0.0,
+			"safety_mode": safety_mode
+		}
+	}
+
+	if len(citations) == 0 {
+		return {
+			"triggered": true,
+			"reason": "insufficient_context",
+			"overlap_ratio": 0.0,
+			"safety_mode": safety_mode
+		}
+	}
+
+	overlap_ratio := estimate_query_overlap_ratio(query, citations)
+	if safety_mode != "permissive" {
+		min_overlap := num_or(dict_get_or(cfg, "query_safe_response_min_overlap_ratio", 0.15), 0.15)
+		if overlap_ratio < min_overlap {
+			return {
+				"triggered": true,
+				"reason": "insufficient_context",
+				"overlap_ratio": overlap_ratio,
+				"safety_mode": safety_mode
+			}
+		}
+	}
+
+	if safety_mode == "strict" {
+		min_citations := num_or(dict_get_or(policy, "min_citations", 2), 2)
+		if len(citations) < min_citations {
+			return {
+				"triggered": true,
+				"reason": "insufficient_context",
+				"overlap_ratio": overlap_ratio,
+				"safety_mode": safety_mode
+			}
+		}
+
+		confidence_summary := aggregate_confidence(citations)
+		avg_confidence := num_or(dict_get_or(confidence_summary, "avg", 0.0), 0.0)
+		min_confidence := num_or(dict_get_or(policy, "min_confidence", 0.45), 0.45)
+		if avg_confidence < min_confidence {
+			return {
+				"triggered": true,
+				"reason": "insufficient_context",
+				"overlap_ratio": overlap_ratio,
+				"safety_mode": safety_mode
+			}
+		}
+	}
+
+	return {
+		"triggered": false,
+		"reason": "",
+		"overlap_ratio": overlap_ratio,
+		"safety_mode": safety_mode
+	}
+}
+
+func build_safe_response_message(policy_reason, cfg) {
+	base_message := trim(str_or(dict_get_or(cfg, "query_safe_response_message", ""), ""))
+	if base_message == "" {
+		base_message = "I cannot answer safely from the available local context."
+	}
+	if policy_reason == "unsafe_or_unsupported_query" {
+		return base_message + " The request appears unsafe or unsupported."
+	}
+	return base_message
+}
+
+func citation_lines(citations) {
+	lines := []
+	for citation in citations {
+		path := dict_get_or(citation, "path", "")
+		start := dict_get_or(citation, "line_start", 1)
+		end := dict_get_or(citation, "line_end", 1)
+		snippet := dict_get_or(citation, "snippet", "")
+		entry := "- " + path + " (" + to_string(start) + "-" + to_string(end) + "): " + snippet
+		lines := push(lines, entry)
+	}
+	return lines
+}
+
+func deterministic_answer_from_style(query, citations, response_policy) {
+	policy := normalize_response_policy(response_policy)
+	style := dict_get_or(policy, "style", "expanded")
+	lines := citation_lines(citations)
+
+	if style == "strict_extractive" {
+		return join(lines, "\n")
+	}
+
+	if style == "concise" {
+		if len(lines) > 2 {
+			lines = slice(lines, 0, 2)
+		}
+		return "Concise answer based on top evidence:\n" + join(lines, "\n")
+	}
+
+	out := ["Answer draft based on retrieved sources:"]
+	out = push(out, "Question: " + query)
+	for line in lines {
+		out = push(out, line)
+	}
+	return join(out, "\n")
+}
+
+func synthesize_answer(query, citations, cfg, response_policy) {
+	if len(citations) == 0 {
+		return "I cannot answer safely from the available local context."
+	}
+
+	answer := deterministic_answer_from_style(query, citations, response_policy)
+
+	chat_endpoint := env_or("KUJO_RAG_CHAT_ENDPOINT", "")
+	chat_model := env_or("KUJO_RAG_CHAT_MODEL", "")
+	if chat_endpoint == "" || chat_model == "" {
+		return answer
+	}
+
+	prompt := "Question: " + query + "\n\nContext:\n" + join(citation_lines(citations), "\n") + "\n\nProvide a concise answer with factual grounding."
+	result := null
+	call_error := null
+	try {
+		result := ai_chat(prompt, {
+			"endpoint": chat_endpoint,
+			"model": chat_model,
+			"api_key": env_or("OPENAI_API_KEY", "")
+		})
+	} except e {
+		call_error := e
+	}
+	if type(call_error) == "null" && type(result) == "dict" {
+		if has_key(result, "output_text") == 1 {
+			if trim(result["output_text"]) != "" {
+				return result["output_text"]
+			}
+		}
+	}
+
+	return answer
+}
+
+export build_rag_index := func(root_path, cfg, recursive) {
+	existing_index := load_index_with_backend(cfg)
+	existing_doc_index := existing_documents_index(existing_index)
+
+	ingest := ingest_documents(root_path, cfg, recursive)
+	if dict_get_or(ingest, "aborted", false) == true {
+		summary := index_summary(existing_index)
+		summary["guardrail"] := dict_get_or(ingest, "guardrail", {})
+		return {
+			"index": existing_index,
+			"ingest": ingest,
+			"chunks": len(dict_get_or(existing_index, "chunks", [])),
+			"summary": summary,
+			"guardrail": dict_get_or(ingest, "guardrail", {})
+		}
+	}
+	documents := dict_get_or(ingest, "documents", [])
+	classification := classify_documents_for_incremental(documents, existing_doc_index)
+	changed_docs := dict_get_or(classification, "changed_docs", [])
+	unchanged_docs := dict_get_or(classification, "unchanged_docs", [])
+	deleted_docs := dict_get_or(classification, "deleted_docs", 0)
+
+	reused := reusable_vectors_for_unchanged_docs(existing_index, unchanged_docs)
+	changed_chunks := chunk_documents(changed_docs, cfg)
+	changed_vectors := embed_chunks(changed_chunks, cfg)
+
+	all_chunks := concat_arrays(dict_get_or(reused, "chunks", []), changed_chunks)
+	all_vectors := concat_arrays(dict_get_or(reused, "vectors", []), dict_get_or(changed_vectors, "vectors", []))
+
+	provider := dict_get_or(changed_vectors, "provider", "hash")
+	if len(changed_chunks) == 0 {
+		provider := dict_get_or(dict_get_or(existing_index, "meta", {}), "provider", "hash")
+	}
+
+	index := build_index(all_chunks, {
+		"vectors": all_vectors,
+		"provider": provider
+	}, cfg)
+
+	incremental := {
+		"reindexed_docs": len(changed_docs),
+		"unchanged_docs": len(unchanged_docs),
+		"deleted_docs": deleted_docs
+	}
+
+	meta := dict_get_or(index, "meta", {})
+	meta["documents_index"] := build_documents_index(index, documents)
+	meta["incremental"] := incremental
+	index["meta"] := meta
+
+	persistence := persist_index_with_backend(cfg, index)
+	if dict_get_or(persistence, "ok", false) == false {
+		return {
+			"ok": false,
+			"error": dict_get_or(persistence, "error", {
+				"code": "index_persistence_failed",
+				"message": "Index persistence failed",
+				"details": {}
+			}),
+			"persistence": persistence,
+			"ingest": ingest,
+			"chunks": len(all_chunks)
+		}
+	}
+
+	summary := index_summary(index)
+	summary["incremental"] := incremental
+
+	return {
+		"ok": true,
+		"index": index,
+		"ingest": ingest,
+		"chunks": len(all_chunks),
+		"summary": summary,
+		"persistence": persistence
+	}
+}
+
+export load_or_initialize_index := func(cfg) {
+	index := load_index_with_backend(cfg)
+	return index
+}
+
+func cfg_with_query_filters(cfg, filters) {
+	if type(filters) != "dict" {
+		return cfg
+	}
+	out := {}
+	for key in keys(cfg) {
+		out[key] := cfg[key]
+	}
+	out["query_filters"] := filters
+	return out
+}
+
+func normalize_session_history(raw_history, max_turns) {
+	history := []
+	if type(raw_history) != "array" {
+		return history
+	}
+
+	for turn in raw_history {
+		if type(turn) == "dict" {
+			q := trim(to_string(dict_get_or(turn, "query", "")))
+			a := trim(to_string(dict_get_or(turn, "answer", "")))
+			if q != "" || a != "" {
+				history := push(history, {
+					"query": q,
+					"answer": a
+				})
+			}
+		}
+	}
+
+	if len(history) > max_turns {
+		start := len(history) - max_turns
+		history := slice(history, start, len(history))
+	}
+
+	return history
+}
+
+func contextualize_query(query, history) {
+	if len(history) == 0 {
+		return query
+	}
+
+	lines := []
+	for turn in history {
+		q := dict_get_or(turn, "query", "")
+		a := dict_get_or(turn, "answer", "")
+		if q != "" {
+			lines := push(lines, "Previous question: " + q)
+		}
+		if a != "" {
+			lines := push(lines, "Previous answer: " + a)
+		}
+	}
+	lines := push(lines, "Current question: " + query)
+	return join(lines, "\n")
+}
+
+func confidence_band(value) {
+	if value >= 0.75 {
+		return "high"
+	}
+	if value >= 0.45 {
+		return "medium"
+	}
+	return "low"
+}
+
+func aggregate_confidence(citations) {
+	if type(citations) != "array" || len(citations) == 0 {
+		return {
+			"avg": 0.0,
+			"max": 0.0,
+			"count": 0,
+			"band": "low"
+		}
+	}
+
+	sum_conf := 0.0
+	max_conf := 0.0
+	count := 0
+	for citation in citations {
+		value := num_or(dict_get_or(citation, "confidence", 0.0), 0.0)
+		if value < 0.0 {
+			value = 0.0
+		}
+		if value > 1.0 {
+			value = 1.0
+		}
+		sum_conf = sum_conf + value
+		count = count + 1
+		if count == 1 || value > max_conf {
+			max_conf = value
+		}
+	}
+
+	avg_conf := 0.0
+	if count > 0 {
+		avg_conf = sum_conf / to_float(count)
+	}
+
+	return {
+		"avg": avg_conf,
+		"max": max_conf,
+		"count": count,
+		"band": confidence_band(avg_conf)
+	}
+}
+
+func normalize_stage_timings(raw_timings) {
+	timings := {
+		"tokenize": 0,
+		"embed": 0,
+		"retrieve": 0,
+		"rerank": 0,
+		"synthesize": 0
+	}
+
+	if type(raw_timings) != "dict" {
+		return timings
+	}
+
+	timings["tokenize"] = dict_get_or(raw_timings, "tokenize", 0)
+	timings["embed"] = dict_get_or(raw_timings, "embed", 0)
+	timings["retrieve"] = dict_get_or(raw_timings, "retrieve", 0)
+	timings["rerank"] = dict_get_or(raw_timings, "rerank", 0)
+	return timings
+}
+
+func merge_stage_timings(base, extra) {
+	merged := normalize_stage_timings(base)
+	extra_norm := normalize_stage_timings(extra)
+	merged["tokenize"] = dict_get_or(merged, "tokenize", 0) + dict_get_or(extra_norm, "tokenize", 0)
+	merged["embed"] = dict_get_or(merged, "embed", 0) + dict_get_or(extra_norm, "embed", 0)
+	merged["retrieve"] = dict_get_or(merged, "retrieve", 0) + dict_get_or(extra_norm, "retrieve", 0)
+	merged["rerank"] = dict_get_or(merged, "rerank", 0) + dict_get_or(extra_norm, "rerank", 0)
+	return merged
+}
+
+func normalize_federation_fallback_policy(raw_policy) {
+	policy := to_lower(trim(str_or(raw_policy, "best_effort")))
+	if policy != "best_effort" && policy != "primary_then_all" {
+		policy = "best_effort"
+	}
+	return policy
+}
+
+func normalize_federation_merge_strategy(raw_strategy) {
+	strategy := to_lower(trim(str_or(raw_strategy, "weighted_score")))
+	if strategy != "weighted_score" {
+		strategy = "weighted_score"
+	}
+	return strategy
+}
+
+func citation_before_for_federation(left, right) {
+	left_score := num_or(dict_get_or(left, "score", 0.0), 0.0)
+	right_score := num_or(dict_get_or(right, "score", 0.0), 0.0)
+	if left_score > right_score {
+		return true
+	}
+	if left_score < right_score {
+		return false
+	}
+
+	left_ns := to_lower(trim(to_string(dict_get_or(left, "federation_namespace", ""))))
+	right_ns := to_lower(trim(to_string(dict_get_or(right, "federation_namespace", ""))))
+	if left_ns < right_ns {
+		return true
+	}
+	if left_ns > right_ns {
+		return false
+	}
+
+	left_path := to_lower(trim(to_string(dict_get_or(left, "path", ""))))
+	right_path := to_lower(trim(to_string(dict_get_or(right, "path", ""))))
+	if left_path < right_path {
+		return true
+	}
+	if left_path > right_path {
+		return false
+	}
+
+	left_line := num_or(dict_get_or(left, "line_start", 0), 0)
+	right_line := num_or(dict_get_or(right, "line_start", 0), 0)
+	if left_line < right_line {
+		return true
+	}
+	if left_line > right_line {
+		return false
+	}
+
+	left_chunk := to_string(dict_get_or(left, "chunk_id", ""))
+	right_chunk := to_string(dict_get_or(right, "chunk_id", ""))
+	return left_chunk < right_chunk
+}
+
+func insert_sorted_federated_citation(sorted, citation) {
+	insert_idx := len(sorted)
+	i := 0
+	while i < len(sorted) {
+		if citation_before_for_federation(citation, sorted[i]) {
+			insert_idx = i
+			break
+		}
+		i = i + 1
+	}
+
+	merged := []
+	left := slice(sorted, 0, insert_idx)
+	right := slice(sorted, insert_idx, len(sorted))
+	li := 0
+	while li < len(left) {
+		merged = push(merged, left[li])
+		li = li + 1
+	}
+	merged = push(merged, citation)
+	ri := 0
+	while ri < len(right) {
+		merged = push(merged, right[ri])
+		ri = ri + 1
+	}
+	return merged
+}
+
+func sort_federated_citations(citations, top_k) {
+	sorted := []
+	i := 0
+	while i < len(citations) {
+		sorted = insert_sorted_federated_citation(sorted, citations[i])
+		i = i + 1
+	}
+
+	limit := top_k
+	if limit < 1 {
+		limit = 1
+	}
+	if len(sorted) > limit {
+		return slice(sorted, 0, limit)
+	}
+	return sorted
+}
+
+func weighted_federation_citations(raw_citations, namespace, index_path, weight) {
+	weighted := []
+	i := 0
+	while i < len(raw_citations) {
+		citation := raw_citations[i]
+		base_score := num_or(dict_get_or(citation, "score", 0.0), 0.0)
+		citation["federation_namespace"] = namespace
+		citation["federation_index_path"] = index_path
+		citation["federation_weight"] = weight
+		citation["federation_base_score"] = base_score
+		citation["score"] = base_score * weight
+		weighted = push(weighted, citation)
+		i = i + 1
+	}
+	return weighted
+}
+
+func summarize_federation_target(target, result_count) {
+	return {
+		"namespace": to_string(dict_get_or(target, "namespace", "")),
+		"index_path": to_string(dict_get_or(target, "index_path", "")),
+		"weight": num_or(dict_get_or(target, "weight", 1.0), 1.0),
+		"primary": dict_get_or(target, "primary", false),
+		"result_count": result_count
+	}
+}
+
+func resolve_federated_candidates(all_candidates, primary_candidates, fallback_policy) {
+	has_positive_primary := false
+	pi := 0
+	while pi < len(primary_candidates) {
+		if num_or(dict_get_or(primary_candidates[pi], "score", 0.0), 0.0) > 0.0 {
+			has_positive_primary = true
+			break
+		}
+		pi = pi + 1
+	}
+
+	if fallback_policy == "primary_then_all" {
+		if len(primary_candidates) > 0 && has_positive_primary {
+			return {
+				"selected_mode": "primary_only",
+				"candidates": primary_candidates
+			}
+		}
+		return {
+			"selected_mode": "fallback_all_targets",
+			"candidates": all_candidates
+		}
+	}
+
+	return {
+		"selected_mode": "best_effort",
+		"candidates": all_candidates
+	}
+}
+
+export query_rag := func(index, query, cfg, filters, raw_session_history) {
+	query_cfg := cfg_with_query_filters(cfg, filters)
+	response_policy := normalize_response_policy(dict_get_or(cfg, "query_response_policy", {}))
+	intent_payload := query_with_intent_pipeline(query, cfg)
+	history_limit := dict_get_or(cfg, "session_history_max_turns", 4)
+	if history_limit < 1 {
+		history_limit = 1
+	}
+	session_history := normalize_session_history(raw_session_history, history_limit)
+	search_query := contextualize_query(dict_get_or(intent_payload, "rewritten_query", query), session_history)
+	retrieval_payload := hybrid_search_with_stage_timings(index, search_query, query_cfg)
+	citations := dict_get_or(retrieval_payload, "results", [])
+	stage_timings := normalize_stage_timings(dict_get_or(retrieval_payload, "stage_timings_ms", {}))
+	policy := evaluate_safe_response_policy(query, citations, cfg, response_policy)
+	effective_citations := citations
+	if dict_get_or(policy, "triggered", false) == true {
+		effective_citations = []
+	}
+	confidence := aggregate_confidence(effective_citations)
+	synthesize_started := current_timestamp()
+	answer := ""
+	if dict_get_or(policy, "triggered", false) == true {
+		answer = build_safe_response_message(str_or(dict_get_or(policy, "reason", ""), ""), cfg)
+	} else {
+		answer = synthesize_answer(query, citations, cfg, response_policy)
+	}
+	stage_timings["synthesize"] := current_timestamp() - synthesize_started
+	retrieval_explanation_enabled := bool_or(dict_get_or(cfg, "query_retrieval_explanation_enabled", false), false)
+	result := {
+		"query": query,
+		"query_intent": intent_payload,
+		"search_query": search_query,
+		"filters": dict_get_or(query_cfg, "query_filters", {}),
+		"session_history_used": len(session_history),
+		"stage_timings_ms": stage_timings,
+		"confidence": dict_get_or(confidence, "avg", 0.0),
+		"confidence_band": dict_get_or(confidence, "band", "low"),
+		"confidence_summary": confidence,
+		"response_policy": response_policy,
+		"safe_response_policy": policy,
+		"answer": answer,
+		"citations": effective_citations,
+		"count": len(effective_citations)
+	}
+	if retrieval_explanation_enabled {
+		result["retrieval_explanation"] = build_retrieval_explanation(search_query, intent_payload, citations, stage_timings, false)
+	}
+	return result
+}
+
+export query_rag_federated := func(targets, query, cfg, filters, raw_session_history, federation_cfg) {
+	query_cfg := cfg_with_query_filters(cfg, filters)
+	response_policy := normalize_response_policy(dict_get_or(cfg, "query_response_policy", {}))
+	intent_payload := query_with_intent_pipeline(query, cfg)
+	history_limit := dict_get_or(cfg, "session_history_max_turns", 4)
+	if history_limit < 1 {
+		history_limit = 1
+	}
+	session_history := normalize_session_history(raw_session_history, history_limit)
+	search_query := contextualize_query(dict_get_or(intent_payload, "rewritten_query", query), session_history)
+	stage_timings := normalize_stage_timings({})
+
+	fallback_policy := normalize_federation_fallback_policy(dict_get_or(federation_cfg, "fallback_policy", "best_effort"))
+	merge_strategy := normalize_federation_merge_strategy(dict_get_or(federation_cfg, "merge_strategy", "weighted_score"))
+
+	all_candidates := []
+	primary_candidates := []
+	target_summaries := []
+
+	target_idx := 0
+	while target_idx < len(targets) {
+		target := targets[target_idx]
+		namespace := to_string(dict_get_or(target, "namespace", ""))
+		index_path := to_string(dict_get_or(target, "index_path", ""))
+		weight := num_or(dict_get_or(target, "weight", 1.0), 1.0)
+		if weight < 0.0 {
+			weight = 0.0
+		}
+		is_primary := dict_get_or(target, "primary", false)
+		index_payload := dict_get_or(target, "index", {})
+
+		retrieval_payload := hybrid_search_with_stage_timings(index_payload, search_query, query_cfg)
+		target_stage_timings := dict_get_or(retrieval_payload, "stage_timings_ms", {})
+		stage_timings = merge_stage_timings(stage_timings, target_stage_timings)
+
+		raw_citations := dict_get_or(retrieval_payload, "results", [])
+		weighted_citations := weighted_federation_citations(raw_citations, namespace, index_path, weight)
+		all_candidates = concat_arrays(all_candidates, weighted_citations)
+		if is_primary {
+			primary_candidates = concat_arrays(primary_candidates, weighted_citations)
+		}
+
+		target_summaries = push(target_summaries, summarize_federation_target(target, len(raw_citations)))
+		target_idx = target_idx + 1
+	}
+
+	selected_payload := resolve_federated_candidates(all_candidates, primary_candidates, fallback_policy)
+	selected_mode := dict_get_or(selected_payload, "selected_mode", "best_effort")
+	selected_candidates := dict_get_or(selected_payload, "candidates", [])
+
+	top_k := dict_get_or(cfg, "top_k", 6)
+	sorted_citations := sort_federated_citations(selected_candidates, top_k)
+	policy := evaluate_safe_response_policy(query, sorted_citations, cfg, response_policy)
+	effective_citations := sorted_citations
+	if dict_get_or(policy, "triggered", false) == true {
+		effective_citations = []
+	}
+
+	confidence := aggregate_confidence(effective_citations)
+	synthesize_started := current_timestamp()
+	answer := ""
+	if dict_get_or(policy, "triggered", false) == true {
+		answer = build_safe_response_message(str_or(dict_get_or(policy, "reason", ""), ""), cfg)
+	} else {
+		answer = synthesize_answer(query, sorted_citations, cfg, response_policy)
+	}
+	stage_timings["synthesize"] = current_timestamp() - synthesize_started
+	retrieval_explanation_enabled := bool_or(dict_get_or(cfg, "query_retrieval_explanation_enabled", false), false)
+	result := {
+		"query": query,
+		"query_intent": intent_payload,
+		"search_query": search_query,
+		"filters": dict_get_or(query_cfg, "query_filters", {}),
+		"session_history_used": len(session_history),
+		"stage_timings_ms": stage_timings,
+		"confidence": dict_get_or(confidence, "avg", 0.0),
+		"confidence_band": dict_get_or(confidence, "band", "low"),
+		"confidence_summary": confidence,
+		"response_policy": response_policy,
+		"safe_response_policy": policy,
+		"answer": answer,
+		"citations": effective_citations,
+		"count": len(effective_citations),
+		"federation": {
+			"enabled": true,
+			"merge_strategy": merge_strategy,
+			"fallback_policy": fallback_policy,
+			"selected_mode": selected_mode,
+			"targets": target_summaries
+		}
+	}
+	if retrieval_explanation_enabled {
+		result["retrieval_explanation"] = build_retrieval_explanation(search_query, intent_payload, sorted_citations, stage_timings, true)
+	}
+	return result
+}

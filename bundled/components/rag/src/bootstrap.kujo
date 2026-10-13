@@ -1,0 +1,83 @@
+from src.common import dict_get_or
+
+func ensure_dir(path) {
+	if path_exists(path) == false {
+		create_dir(path)
+	}
+	return true
+}
+
+func default_env_example() {
+	return join([
+		"KUJO_RAG_INDEX_PATH=./data/rag_index.json",
+		"KUJO_RAG_NAMESPACE=default",
+		"KUJO_RAG_NAMESPACE_INDEX_ISOLATION=true",
+		"KUJO_RAG_VECTOR_BACKEND=local_json",
+		"KUJO_RAG_VECTOR_BACKEND_QDRANT_URL=",
+		"KUJO_RAG_VECTOR_BACKEND_QDRANT_COLLECTION=kujo_rag",
+		"KUJO_RAG_VECTOR_BACKEND_QDRANT_SYNC_ENABLED=false",
+		"KUJO_RAG_EMBEDDING_PROVIDER=hash",
+		"KUJO_RAG_TOP_K=6",
+		"KUJO_RAG_CHUNK_STRATEGY=line",
+		"KUJO_RAG_API_HOST=127.0.0.1",
+		"KUJO_RAG_API_PORT=8787"
+	], "\n") + "\n"
+}
+
+func default_project_readme() {
+	return join([
+		"# Kujo RAG Bootstrap Template",
+		"",
+		"This folder was generated with the Kujo RAG bootstrap command.",
+		"",
+		"## Offline Quick Start",
+		"",
+		"1. Ensure this repository has `main.kujo` and `src/` modules available.",
+		"2. Copy `.env.example` to `.env` and adjust if needed.",
+		"3. Run ingest against the included `knowledge/` folder.",
+		"4. Run query in the same namespace.",
+		"",
+		"Example commands (run from kujo-rag repository root):",
+		"",
+		"kujo run main.kujo --interpreter ingest --path ./results/bootstrap_repo/knowledge --recursive true --namespace bootstrap",
+		"kujo run main.kujo --interpreter query --question \"What does this template provide?\" --namespace bootstrap",
+		""
+	], "\n")
+}
+
+func default_knowledge_markdown() {
+	return join([
+		"# Bootstrap Knowledge",
+		"",
+		"This project was initialized with the Kujo RAG bootstrap command.",
+		"It is configured for offline-first behavior using hash embeddings.",
+		""
+	], "\n")
+}
+
+export bootstrap_repository := func(target_path) {
+	target := trim(target_path)
+	if target == "" {
+		target = "./results/bootstrap_repo"
+	}
+
+	ensure_dir(target)
+	ensure_dir(target + "/knowledge")
+	ensure_dir(target + "/docs")
+
+	env_path := target + "/.env.example"
+	readme_path := target + "/README.md"
+	knowledge_path := target + "/knowledge/bootstrap.md"
+	docs_path := target + "/docs/README.md"
+
+	write_file(env_path, default_env_example())
+	write_file(readme_path, default_project_readme())
+	write_file(knowledge_path, default_knowledge_markdown())
+	write_file(docs_path, "Bootstrap documentation folder\n")
+
+	return {
+		"ok": true,
+		"target": target,
+		"created": [env_path, readme_path, knowledge_path, docs_path]
+	}
+}
