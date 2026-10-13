@@ -638,7 +638,13 @@ func create_case_dir(repo_root, cfg, case_name, force) {
 	}
 	mk_case := {"ok": true}
 	if !force || !path_exists(case_path) {
-		created := safe_spawn(["mkdir", "-m", "700", utility_path(case_path)])
+		mkdir_args := ["mkdir", "-m", "700", utility_path(case_path)]
+		if regex_match(case_path, "^[A-Za-z]:") {
+			# Windows uses inherited ACLs, not POSIX chmod modes. Keep plain
+			# mkdir (without -p) so an existing destination still fails.
+			mkdir_args = ["mkdir", utility_path(case_path)]
+		}
+		created := safe_spawn(mkdir_args)
 		mk_case = {"ok": proc_exitcode(created) == 0, "error": "case directory already exists or cannot be created: " + case_path + ": " + safe_to_string(proc_stderr(created))}
 	}
 	if !mk_case["ok"] {

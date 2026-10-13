@@ -37,3 +37,8 @@ v2 flags are not enabled implicitly.
 Context selection uses Scent dry-run JSON metadata. File contents are retrieved
 only through the separate bounded content operation; Scent does not need to
 write private POSIX artifacts for this workflow.
+
+CaseFile uses exclusive directory creation on all supported platforms. POSIX
+directories use mode0700; Windows directories inherit the parent ACL. The plugin
+captures into its temporary workspace under the host user's temporary directory,
+which must be private to that user. It does not change workspace ACLs.

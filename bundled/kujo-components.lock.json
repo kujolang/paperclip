@@ -87,7 +87,7 @@
     {
       "id": "failure-evidence",
       "repository": "https://github.com/kujolang/casefile",
-      "gitCommit": "dcf03a3acf13b3ac2424e20a04e28fd81989a3f3",
+      "gitCommit": "46dcab0bc7c673ebc53007eed528d83305cf9c71",
       "version": "1.0.0",
       "license": "MIT",
       "entrypoint": "casefile.kujo",
@@ -97,7 +97,7 @@
       ],
       "checksums": {
         "LICENSE": "4b6449939f8dce26dc5fb87756740a5977da9085517af127d9e634e6a6492506",
-        "casefile.kujo": "9af03d67e47c7d6862dff2a4e5a01edad05c2e628d27481dfd10870ca64fed5f"
+        "casefile.kujo": "d4567d8038ff3228a0fc92b35fe9e9a81443aa0083b3e4fabaf621b97659a2fc"
       },
       "outputContracts": [
         {
@@ -110,7 +110,7 @@
     {
       "id": "context",
       "repository": "https://github.com/kujolang/scent",
-      "gitCommit": "c55726dced8ebf57c3bd9bfca057d5ba3628ef80",
+      "gitCommit": "e6e62ff6c72da67f10f3dd8a9c7ae955c464760c",
       "version": "1.0.0",
       "license": "MIT",
       "entrypoint": "scent.kujo",
@@ -120,7 +120,7 @@
       ],
       "checksums": {
         "LICENSE": "4b6449939f8dce26dc5fb87756740a5977da9085517af127d9e634e6a6492506",
-        "scent.kujo": "79a3db4f8a3b3f83fa2db0af533402ee8df3812cdb45540537501b1035d80570"
+        "scent.kujo": "1eac8dd301e9f0b5cacdf9682f901e7e0fe0f8139ccba182c1633266578d4239"
       },
       "outputContracts": [
         {

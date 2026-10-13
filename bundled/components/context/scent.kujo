@@ -214,14 +214,20 @@ func resolve_path(base, path) {
 }
 
 func path_rel(root, full) {
-    prefix := root + "/"
-    if starts_with(full, prefix) {
-        return substring(full, len(prefix), len(full))
+    base := root
+    path := full
+    if regex_match(root, "^[A-Za-z]:") {
+        base = replace(root, "\\", "/")
+        path = replace(full, "\\", "/")
     }
-    if full == root {
+    prefix := base + "/"
+    if starts_with(path, prefix) {
+        return substring(path, len(prefix), len(path))
+    }
+    if path == base {
         return "."
     }
-    return full
+    return path
 }
 
 func has_parent_path_segment(path) {

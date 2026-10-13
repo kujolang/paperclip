@@ -8,6 +8,8 @@
 
 ## Unreleased
 
+- Fix Windows selection paths and CaseFile directory creation in the canonical component sources.
+
 - Consume metadata-only Scent dry-run selection without writing temporary context artifacts.
 
 - Refresh the pinned ChangeBucket, PatchBrief, CaseFile, and Scent sources, including

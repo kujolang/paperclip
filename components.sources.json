@@ -66,7 +66,7 @@
       "id": "failure-evidence",
       "repository": "https://github.com/kujolang/casefile",
       "sourceDirectory": "casefile",
-      "gitCommit": "dcf03a3acf13b3ac2424e20a04e28fd81989a3f3",
+      "gitCommit": "46dcab0bc7c673ebc53007eed528d83305cf9c71",
       "version": "1.0.0",
       "entrypoint": "casefile.kujo",
       "files": [
@@ -85,7 +85,7 @@
       "id": "context",
       "repository": "https://github.com/kujolang/scent",
       "sourceDirectory": "scent",
-      "gitCommit": "c55726dced8ebf57c3bd9bfca057d5ba3628ef80",
+      "gitCommit": "e6e62ff6c72da67f10f3dd8a9c7ae955c464760c",
       "version": "1.0.0",
       "entrypoint": "scent.kujo",
       "files": [
