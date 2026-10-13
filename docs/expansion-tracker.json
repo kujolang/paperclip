@@ -9,7 +9,7 @@
       "requirement": "Runtime health, feature states, repair guidance, clean/empty/missing workspace onboarding",
       "status": "in_progress",
       "evidence": [
-        "Runtime probe and company feature states merged in PR38. Workspace guidance, issue task defaults, and checked/runnable shipped example implemented; 53 tests and nine browser scenarios pass locally. A fresh local npm tarball install executed the example without a workspace. Full platform CI and real-host/newcomer acceptance remain to be verified."
+        "Runtime probe and company feature states merged in PR38; workspace guidance, issue defaults and real shipped example merged in PR40 at5936505. PR40 passed53 tests, nine browser scenarios, five native platforms, SDK matrix and security checks. Fresh local npm tarball example smoke passed. Real-host/public-release/newcomer acceptance remains pending."
       ]
     },
     {
@@ -25,7 +25,7 @@
       "requirement": "Scout/Scent repository understanding, issue-aware defaults, bounded contextual reads",
       "status": "in_progress",
       "evidence": [
-        "Scent metadata-only dry-run selection is integrated with separate bounded content access. Issue titles/descriptions now seed the editable UI task. Scout and broader repository understanding remain pending."
+        "Pinned Scout1.1.0 maps structure, languages, dependencies, routes and heuristic observations through company-scoped UI/tool operations. Private bounded reports omit snippets, preserve partial diagnostics, and support empty repositories. Scent metadata-only selection retains separate content reads. Local59 tests/ten browser scenarios pass; native CI and packed-consumer map smoke are pending. Broader task contracts/source navigation and full acceptance remain pending."
       ]
     },
     {

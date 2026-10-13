@@ -1,0 +1,155 @@
+func find_after(haystack, needle, start_pos) {
+    if start_pos < 0 {
+        start_pos := 0
+    }
+    if start_pos >= len(haystack) {
+        return -1
+    }
+
+    tail := substring(haystack, start_pos, len(haystack))
+    tail_pos := index_of(tail, needle)
+    if tail_pos < 0 {
+        return -1
+    }
+
+    return start_pos + tail_pos
+}
+
+func first_quoted_value(text) {
+    scan_pos := 0
+    while scan_pos < len(text) {
+        q_start := -1
+        q_mark := ""
+
+        d_quote := find_after(text, "\"", scan_pos)
+        s_quote := find_after(text, "'", scan_pos)
+        b_quote := find_after(text, "`", scan_pos)
+
+        if d_quote >= 0 {
+            q_start := d_quote
+            q_mark := "\""
+        }
+        if s_quote >= 0 && (q_start < 0 || s_quote < q_start) {
+            q_start := s_quote
+            q_mark := "'"
+        }
+        if b_quote >= 0 && (q_start < 0 || b_quote < q_start) {
+            q_start := b_quote
+            q_mark := "`"
+        }
+
+        if q_start < 0 {
+            return ""
+        }
+
+        q_end := find_after(text, q_mark, q_start + 1)
+        if q_end > q_start {
+            return substring(text, q_start + 1, q_end)
+        }
+
+        scan_pos := q_start + 1
+    }
+
+    return ""
+}
+
+func is_escaped_char(line, pos) {
+    if pos <= 0 {
+        return false
+    }
+
+    slash_count := 0
+    back_pos := pos - 1
+    while back_pos >= 0 {
+        if substring(line, back_pos, back_pos + 1) == "\\" {
+            slash_count := slash_count + 1
+            back_pos := back_pos - 1
+            continue
+        }
+        break
+    }
+
+    while slash_count >= 2 {
+        slash_count := slash_count - 2
+    }
+
+    return slash_count == 1
+}
+
+func is_inside_quoted_literal(line, pos) {
+    if pos < 0 {
+        return false
+    }
+
+    in_single := false
+    in_double := false
+    in_backtick := false
+
+    i_quote := 0
+    while i_quote < len(line) {
+        if i_quote == pos {
+            return in_single || in_double || in_backtick
+        }
+
+        q_char := substring(line, i_quote, i_quote + 1)
+        escaped := is_escaped_char(line, i_quote)
+
+        if !escaped {
+            if q_char == "\"" && !in_single && !in_backtick {
+                in_double := !in_double
+            }
+            if q_char == "'" && !in_double && !in_backtick {
+                in_single := !in_single
+            }
+            if q_char == "`" && !in_single && !in_double {
+                in_backtick := !in_backtick
+            }
+        }
+
+        i_quote := i_quote + 1
+    }
+
+    return false
+}
+
+func contains_unquoted_call(line, call_text) {
+    scan_from := 0
+    needle := to_string(call_text)
+    if needle == "" {
+        return false
+    }
+
+    while true {
+        call_pos := find_after(line, needle, scan_from)
+        if call_pos < 0 {
+            return false
+        }
+
+        if is_inside_quoted_literal(line, call_pos) {
+            scan_from := call_pos + len(needle)
+            continue
+        }
+
+        if call_pos == 0 {
+            return true
+        }
+
+        prev_char := substring(line, call_pos - 1, call_pos)
+        if index_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.$", prev_char) < 0 {
+            return true
+        }
+
+        scan_from := call_pos + len(needle)
+    }
+}
+
+func contains_dangerous_exec_call(line) {
+    return contains_unquoted_call(line, "exec(")
+}
+
+export find_after := find_after
+export first_quoted_value := first_quoted_value
+export is_escaped_char := is_escaped_char
+export is_inside_quoted_literal := is_inside_quoted_literal
+export contains_unquoted_call := contains_unquoted_call
+export contains_dangerous_exec_call := contains_dangerous_exec_call

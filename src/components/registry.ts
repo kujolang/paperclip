@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { KujoPluginError } from "../runtime/errors.js";
 import { isPathInside } from "../runtime/path.js";
 
-export type ComponentId = "changebucket" | "patchbrief" | "failure-evidence" | "context";
+export type ComponentId = "changebucket" | "patchbrief" | "failure-evidence" | "context" | "scout";
 
 export type ComponentInfo = {
   id: ComponentId;

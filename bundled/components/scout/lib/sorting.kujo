@@ -1,0 +1,119 @@
+# Stable bottom-up merge sort. Keys are computed once per input record.
+# Comparison count is O(n log n); input arrays and equal-key order are preserved.
+func sort_keyed(items, kind) {
+    values := []
+    for item in items {
+        key := item
+        if kind == "dependency" {
+            key := dependency_sort_key(item)
+        }
+        if kind == "route" {
+            key := route_sort_key(item)
+        }
+        values := push(values, {"key": key, "value": item})
+    }
+    width := 1
+    while width < len(values) {
+        merged := []
+        start := 0
+        while start < len(values) {
+            middle := min(start + width, len(values))
+            end := min(start + width + width, len(values))
+            left := start
+            right := middle
+            while left < middle || right < end {
+                take_left := right >= end
+                if left < middle && right < end {
+                    if kind == "security" {
+                        take_left := !security_finding_after(values[left]["value"], values[right]["value"])
+                    } else {
+                        take_left := values[left]["key"] <= values[right]["key"]
+                    }
+                }
+                if take_left {
+                    merged := push(merged, values[left])
+                    left := left + 1
+                } else {
+                    merged := push(merged, values[right])
+                    right := right + 1
+                }
+            }
+            start := end
+        }
+        values := merged
+        width := width * 2
+    }
+    result := []
+    for entry in values {
+        result := push(result, entry["value"])
+    }
+    return result
+}
+
+func dependency_sort_key(dep) {
+    return to_string(dep["module"]) + "|" + to_string(dep["type"]) + "|" + to_string(dep["source"])
+}
+
+func route_sort_key(route) {
+    return to_string(route["method"]) + "|" + to_string(route["path"]) + "|" + to_string(route["source"])
+}
+
+func security_severity_rank(severity) {
+    if severity == "critical" {
+        return "0"
+    }
+    if severity == "high" {
+        return "1"
+    }
+    if severity == "medium" {
+        return "2"
+    }
+    return "3"
+}
+
+func security_sort_key(finding) {
+    return security_severity_rank(to_string(finding["severity"])) + "|" + to_string(finding["file"]) + "|" + to_string(finding["line"])
+}
+
+func security_finding_after(left, right) {
+    left_rank := security_severity_rank(to_string(left["severity"]))
+    right_rank := security_severity_rank(to_string(right["severity"]))
+    if left_rank != right_rank {
+        return left_rank > right_rank
+    }
+
+    left_file := to_string(left["file"])
+    right_file := to_string(right["file"])
+    if left_file != right_file {
+        return left_file > right_file
+    }
+
+    left_line := to_int(left["line"])
+    right_line := to_int(right["line"])
+    if left_line != right_line {
+        return left_line > right_line
+    }
+
+    return to_string(left["label"]) > to_string(right["label"])
+}
+
+func sort_strings_asc(items) {
+    return sort_keyed(items, "string")
+}
+
+func sort_dependencies(items) {
+    return sort_keyed(items, "dependency")
+}
+
+func sort_routes(items) {
+    return sort_keyed(items, "route")
+}
+
+func sort_security_findings(items) {
+    return sort_keyed(items, "security")
+}
+
+export sort_strings_asc := sort_strings_asc
+export sort_dependencies := sort_dependencies
+export sort_routes := sort_routes
+export sort_security_findings := sort_security_findings

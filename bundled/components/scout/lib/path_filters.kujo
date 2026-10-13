@@ -1,0 +1,257 @@
+func basename_from_path(path_text) {
+    base_name := ""
+    path_parts := split(path_text, "/")
+    for part in path_parts {
+        if trim(part) != "" {
+            base_name := trim(part)
+        }
+    }
+    return base_name
+}
+
+func sanitize_slug(raw_name) {
+    source := trim(raw_name)
+    if source == "" || source == "." || source == ".." || source == "/" {
+        source := "project"
+    }
+
+    allowed_chars := "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_"
+    result := ""
+    last_dash := false
+
+    i_slug := 0
+    while i_slug < len(source) {
+        ch := substring(source, i_slug, i_slug + 1)
+        if ch == " " {
+            ch := "-"
+        }
+
+        if index_of(allowed_chars, ch) >= 0 {
+            result := result + ch
+            last_dash := false
+        }
+        if index_of(allowed_chars, ch) < 0 {
+            if !last_dash {
+                result := result + "-"
+                last_dash := true
+            }
+        }
+
+        i_slug := i_slug + 1
+    }
+
+    while starts_with(result, "-") {
+        result := substring(result, 1, len(result))
+    }
+    while ends_with(result, "-") {
+        result := substring(result, 0, len(result) - 1)
+    }
+
+    if result == "" {
+        result := "project"
+    }
+
+    return result
+}
+
+func normalize_filter_text(value) {
+    normalized := trim(value)
+    if starts_with(normalized, "./") {
+        normalized := substring(normalized, 2, len(normalized))
+    }
+    return normalized
+}
+
+func pattern_match(text, pattern) {
+    # A path is filesystem data: whitespace is significant, unlike rule padding.
+    target_text := text
+    if starts_with(target_text, "./") {
+        target_text := substring(target_text, 2, len(target_text))
+    }
+    rule := normalize_filter_text(pattern)
+
+    if rule == "" {
+        return false
+    }
+    if rule == "*" {
+        return true
+    }
+
+    if index_of(rule, "*") < 0 {
+        return target_text == rule
+    }
+
+    text_i := 0
+    rule_i := 0
+    star_i := -1
+    star_text_i := 0
+
+    while text_i < len(target_text) {
+        if rule_i < len(rule) && substring(rule, rule_i, rule_i + 1) == substring(target_text, text_i, text_i + 1) {
+            text_i := text_i + 1
+            rule_i := rule_i + 1
+        } else if rule_i < len(rule) && substring(rule, rule_i, rule_i + 1) == "*" {
+            star_i := rule_i
+            star_text_i := text_i
+            rule_i := rule_i + 1
+        } else if star_i >= 0 {
+            star_text_i := star_text_i + 1
+            text_i := star_text_i
+            rule_i := star_i + 1
+        } else {
+            return false
+        }
+    }
+
+    while rule_i < len(rule) && substring(rule, rule_i, rule_i + 1) == "*" {
+        rule_i := rule_i + 1
+    }
+
+    return rule_i == len(rule)
+}
+
+func any_pattern_match(text, patterns) {
+    pat_i := 0
+    while pat_i < len(patterns) {
+        if pattern_match(text, to_string(patterns[pat_i])) {
+            return true
+        }
+        pat_i := pat_i + 1
+    }
+    return false
+}
+
+func path_components(path_text) {
+    absolute_text := path_absolute(path_text)
+    raw_parts := split(absolute_text, "/")
+    components := []
+
+    part_i := 0
+    while part_i < len(raw_parts) {
+        part := to_string(raw_parts[part_i])
+        if part != "" {
+            components := push(components, part)
+        }
+        part_i := part_i + 1
+    }
+
+    return components
+}
+
+func is_path_within_target(full_path, target_abs) {
+    canonical_target := path_absolute(target_abs)
+    if canonical_target == "/" {
+        return true
+    }
+
+    target_parts := path_components(canonical_target)
+    full_parts := path_components(full_path)
+
+    if len(target_parts) == 0 {
+        return false
+    }
+    if len(full_parts) < len(target_parts) {
+        return false
+    }
+
+    i := 0
+    while i < len(target_parts) {
+        if full_parts[i] != target_parts[i] {
+            return false
+        }
+        i := i + 1
+    }
+
+    return true
+}
+
+# Inputs have already been canonicalized at discovery. Do not resolve them
+# again: a live repository can remove the entry between the two calls.
+func is_canonical_path_within_target(full_abs, target_abs) {
+    separator := "/"
+    if index_of(target_abs, "\\") >= 0 {
+        separator := "\\"
+    }
+    if target_abs == separator {
+        return starts_with(full_abs, separator)
+    }
+    if full_abs == target_abs {
+        return true
+    }
+    boundary := target_abs
+    if !ends_with(boundary, separator) {
+        boundary := boundary + separator
+    }
+    return starts_with(full_abs, boundary)
+}
+
+func relative_canonical_path_from_target(full_abs, target_abs) {
+    if full_abs == target_abs {
+        return "."
+    }
+    separator := "/"
+    if index_of(target_abs, "\\") >= 0 {
+        separator := "\\"
+    }
+    start := len(target_abs)
+    if !ends_with(target_abs, separator) {
+        start := start + 1
+    }
+    return join(split(substring(full_abs, start, len(full_abs)), "\\"), "/")
+}
+
+func relative_path_from_target(full_path, target_abs) {
+    full_abs := path_absolute(full_path)
+    canonical_target := path_absolute(target_abs)
+    if canonical_target == "/" {
+        return normalize_filter_text(full_abs)
+    }
+
+    target_parts := path_components(canonical_target)
+    full_parts := path_components(full_path)
+
+    if len(target_parts) == 0 || len(full_parts) < len(target_parts) {
+        return full_abs
+    }
+
+    i := 0
+    while i < len(target_parts) {
+        if full_parts[i] != target_parts[i] {
+            return full_abs
+        }
+        i := i + 1
+    }
+
+    remaining_parts := []
+    j := len(target_parts)
+    while j < len(full_parts) {
+        remaining_parts := push(remaining_parts, full_parts[j])
+        j := j + 1
+    }
+
+    if len(remaining_parts) == 0 {
+        return "."
+    }
+    return join(remaining_parts, "/")
+}
+
+func format_output_path(path_text, target_abs, path_mode) {
+    if path_mode == "absolute" {
+        return path_absolute(path_text)
+    }
+
+    relative := relative_path_from_target(path_text, target_abs)
+    return relative
+}
+
+export basename_from_path := basename_from_path
+export sanitize_slug := sanitize_slug
+export normalize_filter_text := normalize_filter_text
+export pattern_match := pattern_match
+export any_pattern_match := any_pattern_match
+export path_components := path_components
+export is_path_within_target := is_path_within_target
+export is_canonical_path_within_target := is_canonical_path_within_target
+export relative_canonical_path_from_target := relative_canonical_path_from_target
+export relative_path_from_target := relative_path_from_target
+export format_output_path := format_output_path

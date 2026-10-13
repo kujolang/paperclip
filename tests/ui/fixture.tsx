@@ -46,6 +46,15 @@ const detailData = parameters.get("state") === "populated"
   : { review: null, failure: null, context: null };
 window.__KUJO_FIXTURE_DATA__ = {
   ...detailData,
+  understanding: parameters.get("map") ? {
+    status: "partial", stale: true, provenance: { componentVersion: "1.1.0" },
+    fileTree: "# Project File Tree\n- [D] [workspace]\n  - [D] src\n    - [F] api.ts (TypeScript)",
+    intelligence: { metrics: { total_files: 12, total_lines: 340, languages: { TypeScript: 12 } },
+      dependencies: [{ module: "express", source: "src/api.ts" }], routes: [{ method: "GET", path: "/health", source: "src/api.ts" }],
+      security_findings: [{ severity: "medium", label: "Dynamic evaluation", file: "src/api.ts", line: 8 }],
+      parse_errors: [{ file: "src/large.ts", error: "truncated_100000b" }] },
+    warnings: ["Scout reports heuristic repository observations, not a security certification or proof that tests passed."],
+  } : null,
   suggestedTask: parameters.get("issueTask") ? "Investigate the OAuth callback" : "",
   workspace: { state: parameters.get("workspace") ?? "ready", message: parameters.get("workspace") === "missing"
     ? "Connect a local project workspace in Paperclip project settings, then check again."
@@ -55,6 +64,7 @@ window.__KUJO_FIXTURE_DATA__ = {
     status: parameters.get("runtime") === "broken" ? "error" : "ok",
     runtime: { status: parameters.get("runtime") === "broken" ? "error" : "ok", repair: "Repair the configured Kujo binary in plugin settings." },
     capabilities: {
+      understand: parameters.get("runtime") === "broken" ? "blocked" : "ready",
       examples: parameters.get("runtime") === "broken" ? "blocked" : "ready",
       review: parameters.get("runtime") === "broken" ? "blocked" : "ready",
       context: parameters.get("runtime") === "broken" ? "blocked" : "ready",

@@ -1,0 +1,10 @@
+# Scout v1.1.0 (Kujo-native)
+
+VERSION := "1.1.0"
+
+from lib.scout_runtime import SCOUT_RUNTIME_LOADED
+
+if SCOUT_RUNTIME_LOADED != true {
+    print("Error: failed to load Scout runtime module")
+    exit(1)
+}

@@ -1,7 +1,7 @@
 import { definePlugin, runWorker, type PluginContext, type ToolRunContext } from "@paperclipai/plugin-sdk";
 import { z } from "zod";
 import { parsePluginConfig } from "./config/schema.js";
-import { contextContentTool, contextTool, failureTool, reviewTool } from "./manifest.js";
+import { understandTool, contextContentTool, contextTool, failureTool, reviewTool } from "./manifest.js";
 import { generateReviewPack } from "./features/review/generate.js";
 import { reviewPackSchema, type ReviewPack } from "./features/review/schema.js";
 import { captureFailure } from "./features/failure/capture.js";
@@ -16,6 +16,9 @@ import { normalizeError } from "./runtime/errors.js";
 import { terminateActiveKujoProcesses } from "./runtime/execute-kujo.js";
 import { isSnapshotCurrent } from "./paperclip/git.js";
 import { runBundledExample } from "./features/onboarding/example.js";
+
+import { understandRepository } from "./features/understand/generate.js";
+import { understandingSchema } from "./features/understand/schema.js";
 
 const reviewInput = z.object({
   mode: z.enum(["working_tree", "range"]).default("working_tree"),
@@ -121,6 +124,22 @@ async function reviewForProject(ctx: PluginContext, runCtx: ToolRunContext, para
 }
 
 function registerTools(ctx: PluginContext) {
+  ctx.tools.register(understandTool.name, understandTool, async (raw, runCtx) => {
+    try {
+      z.object({}).strict().parse(raw);
+      const config = await configFor(ctx, runCtx.companyId);
+      const workspace = await resolveProjectWorkspace(ctx, runCtx.projectId, runCtx.companyId);
+      const pack = await understandRepository({ cwd: workspace.path, projectId: workspace.projectId, workspaceId: workspace.id, config });
+      await saveArtifact(ctx, { entityType: "project", entityId: runCtx.projectId, companyId: runCtx.companyId }, "understand-latest", pack);
+      await audit(ctx, { companyId: runCtx.companyId, operation: "repository.understood", entityType: "project", entityId: runCtx.projectId, artifactId: pack.id });
+      // The snapshot is private host evidence; do not expose its absolute Git root.
+      const { snapshot: _snapshot, ...data } = pack;
+      return { content: JSON.stringify(data), data };
+    } catch (error) {
+      const normalized = normalizeError(error);
+      return { error: normalized.message, data: { code: normalized.code } };
+    }
+  });
   ctx.tools.register(reviewTool.name, reviewTool, async (raw, runCtx) => {
     try {
       const pack = await reviewForProject(ctx, runCtx, reviewInput.parse(raw));
@@ -235,10 +254,11 @@ function registerUiBridge(ctx: PluginContext) {
     const suggestedTask = issue
       ? `${issue.title}\n\n${issue.description ?? ""}`.trim().slice(0, 10_000)
       : "Understand this repository and identify the best starting points for the next change.";
-    const [review, failure, context] = await Promise.all([
+    const [review, failure, context, understanding] = await Promise.all([
       config.features.review ? loadArtifact(ctx, target, "review-latest", reviewPackSchema) : null,
       config.features.failureEvidence ? loadArtifact(ctx, target, "failure-latest", failureEvidenceSchema) : null,
       config.features.context ? loadArtifact(ctx, target, "context-latest", contextPackSchema) : null,
+      config.features.understand ? loadArtifact(ctx, target, "understand-latest", understandingSchema) : null,
     ]);
     const ownedReview = review && (
       (target.entityType === "project" && review.projectId === target.entityId) ||
@@ -252,7 +272,21 @@ function registerUiBridge(ctx: PluginContext) {
     const ownedContext = context && workspace && context.projectId === workspace.projectId && context.workspaceId === workspace.id
       ? context
       : null;
-    return { review: ownedReview, failure: ownedFailure, context: ownedContext, readiness: await doctor(config), workspace: inspection?.readiness, suggestedTask };
+    const ownedUnderstanding = understanding && workspace && understanding.projectId === workspace.projectId && understanding.workspaceId === workspace.id
+      ? { ...understanding, stale: understanding.stale || !(await isSnapshotCurrent(workspace.path, understanding.snapshot)) } : null;
+    return { understanding: ownedUnderstanding, review: ownedReview, failure: ownedFailure, context: ownedContext, readiness: await doctor(config), workspace: inspection?.readiness, suggestedTask };
+  });
+
+  ctx.actions.register("understand-repository", async (params, actionCtx) => {
+    if (!actionCtx.companyId) throw new Error("Company context is required");
+    const target = actionTarget.parse(actionParams(params));
+    const config = await configFor(ctx, actionCtx.companyId);
+    const workspace = await resolveWorkspace(ctx, { ...target, companyId: actionCtx.companyId });
+    const pack = await understandRepository({ cwd: workspace.path, projectId: workspace.projectId, workspaceId: workspace.id,
+      ...(target.entityType === "issue" ? { issueId: target.entityId } : {}), config });
+    await saveArtifact(ctx, { ...target, companyId: actionCtx.companyId }, "understand-latest", pack);
+    await audit(ctx, { companyId: actionCtx.companyId, operation: "repository.understood", ...target, artifactId: pack.id });
+    return { status: pack.status, understandingId: pack.id };
   });
 
   ctx.actions.register("run-example", async (params, actionCtx) => {

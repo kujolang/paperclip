@@ -1,0 +1,192 @@
+func security_rule_id(label) {
+    if label == "Hardcoded credential" {
+        return "SCOUT-HARDCODED-CREDENTIAL"
+    }
+    if label == "Hardcoded token" {
+        return "SCOUT-HARDCODED-TOKEN"
+    }
+    if label == "Embedded private key" {
+        return "SCOUT-EMBEDDED-PRIVATE-KEY"
+    }
+    if label == "Dangerous code execution function" {
+        return "SCOUT-DANGEROUS-EXECUTION"
+    }
+    if label == "XSS sink usage" {
+        return "SCOUT-XSS-SINK"
+    }
+    if label == "Insecure deserialization" {
+        return "SCOUT-INSECURE-DESERIALIZATION"
+    }
+    if label == "Weak hash usage" {
+        return "SCOUT-WEAK-HASH"
+    }
+
+    return "SCOUT-GENERIC-SECURITY"
+}
+
+func security_sarif_level(severity) {
+    if severity == "critical" || severity == "high" {
+        return "error"
+    }
+    if severity == "medium" {
+        return "warning"
+    }
+    return "note"
+}
+
+func build_sarif_security_export(findings, security_patterns, version) {
+    sarif_rules := []
+    sarif_seen := {}
+
+    pattern_i := 0
+    while pattern_i < len(security_patterns) {
+        pattern := security_patterns[pattern_i]
+        rule_label := to_string(pattern["label"])
+        rule_id := security_rule_id(rule_label)
+        if has_key(sarif_seen, rule_id) == 0 {
+            sarif_seen[rule_id] := true
+            sarif_rules := push(sarif_rules, {
+                "id": rule_id,
+                "name": rule_label,
+                "shortDescription": {"text": rule_label},
+                "properties": {
+                    "security-severity": to_string(pattern["severity"])
+                }
+            })
+        }
+
+        pattern_i := pattern_i + 1
+    }
+
+    sarif_results := []
+    finding_i := 0
+    while finding_i < len(findings) {
+        finding := findings[finding_i]
+        finding_rule := security_rule_id(to_string(finding["label"]))
+        sarif_results := push(sarif_results, {
+            "ruleId": finding_rule,
+            "level": security_sarif_level(to_string(finding["severity"])),
+            "message": {
+                "text": to_string(finding["label"]) + ": " + to_string(finding["snippet"])
+            },
+            "locations": [{
+                "physicalLocation": {
+                    "artifactLocation": {
+                        "uri": to_string(finding["file"])
+                    },
+                    "region": {
+                        "startLine": finding["line"],
+                        "snippet": {
+                            "text": to_string(finding["snippet"])
+                        }
+                    }
+                }
+            }]
+        })
+
+        finding_i := finding_i + 1
+    }
+
+    return {
+        "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
+        "version": "2.1.0",
+        "runs": [{
+            "tool": {
+                "driver": {
+                    "name": "Scout",
+                    "version": version,
+                    "informationUri": "https://github.com/kujolang/scout/",
+                    "rules": sarif_rules
+                }
+            },
+            "results": sarif_results
+        }]
+    }
+}
+
+func build_jsonl_security_export(findings) {
+    jsonl_lines := []
+
+    jsonl_i := 0
+    while jsonl_i < len(findings) {
+        finding := findings[jsonl_i]
+        jsonl_lines := push(jsonl_lines, to_json({
+            "rule_id": security_rule_id(to_string(finding["label"])),
+            "severity": to_string(finding["severity"]),
+            "label": to_string(finding["label"]),
+            "file": to_string(finding["file"]),
+            "line": finding["line"],
+            "snippet": to_string(finding["snippet"])
+        }))
+
+        jsonl_i := jsonl_i + 1
+    }
+
+    if len(jsonl_lines) == 0 {
+        return ""
+    }
+
+    return join(jsonl_lines, "\n") + "\n"
+}
+
+func redact_security_snippet(snippet, label) {
+    snippet_text := trim(to_string(snippet))
+    label_text := to_string(label)
+
+    if label_text == "Embedded private key" {
+        return "<redacted private key material>"
+    }
+
+    if label_text == "Hardcoded credential" || label_text == "Hardcoded token" {
+        sep_pos := index_of(snippet_text, "=")
+        sep_char := "="
+
+        colon_pos := index_of(snippet_text, ":")
+        if colon_pos >= 0 && (sep_pos < 0 || colon_pos < sep_pos) {
+            sep_pos := colon_pos
+            sep_char := ":"
+        }
+
+        if sep_pos >= 0 {
+            prefix := trim(substring(snippet_text, 0, sep_pos))
+            # Only retain a simple assignment name, never arbitrary source before '='.
+            prefix_name := prefix
+            for declaration in ["const ", "let ", "var ", "export "] {
+                if starts_with(prefix_name, declaration) {
+                    prefix_name := trim(substring(prefix_name, len(declaration), len(prefix_name)))
+                    break
+                }
+            }
+            safe_prefix := prefix_name != ""
+            for prefix_char in split(prefix_name, "") {
+                if index_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.$", prefix_char) < 0 {
+                    safe_prefix := false
+                }
+            }
+            if safe_prefix {
+                return prefix + sep_char + " <redacted>"
+            }
+        }
+
+        return "<redacted " + lower(label_text) + ">"
+    }
+
+    return snippet_text
+}
+
+func build_security_fingerprint(file_path, line_number, label, severity, snippet) {
+    rule_id := security_rule_id(to_string(label))
+    fp_file := trim(to_string(file_path))
+    fp_line := trim(to_string(line_number))
+    fp_severity := trim(to_string(severity))
+    fp_snippet := trim(to_string(snippet))
+
+    return rule_id + "|" + fp_file + "|" + fp_line + "|" + fp_severity + "|" + fp_snippet
+}
+
+export security_rule_id := security_rule_id
+export security_sarif_level := security_sarif_level
+export build_sarif_security_export := build_sarif_security_export
+export build_jsonl_security_export := build_jsonl_security_export
+export redact_security_snippet := redact_security_snippet
+export build_security_fingerprint := build_security_fingerprint

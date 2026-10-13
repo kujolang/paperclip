@@ -8,6 +8,9 @@
 
 ## Unreleased
 
+- Add pinned Scout 1.1.0 repository understanding to project/issue panels and an agent tool, with private bounded reports, tenant-scoped storage, partial diagnostics and a company feature switch.
+- Detect edits to already-dirty files when checking workspace evidence freshness.
+
 - Keep run detail read-only by hiding the unsupported clear-data action.
 
 - Add first-use workspace guidance, company-scoped issue task defaults, and a

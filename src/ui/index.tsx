@@ -13,7 +13,9 @@ import type { DoctorReport } from "../health/doctor.js";
 import type { WorkspaceReadiness } from "../paperclip/workspace.js";
 import type { ExampleResult } from "../features/onboarding/example.js";
 
-type Detail = { review: ReviewPack | null; failure: FailureEvidence | null; context: ContextPack | null; readiness?: DoctorReport; workspace?: WorkspaceReadiness; suggestedTask?: string };
+import type { Understanding } from "../features/understand/schema.js";
+
+type Detail = { understanding?: Understanding | null; review: ReviewPack | null; failure: FailureEvidence | null; context: ContextPack | null; readiness?: DoctorReport; workspace?: WorkspaceReadiness; suggestedTask?: string };
 type PanelProps = PluginDetailTabProps & { compact?: boolean };
 
 const colors = {
@@ -285,6 +287,7 @@ function KujoPanel({ context, compact = false }: PanelProps) {
   const generateContext = usePluginAction("generate-context");
   const captureFailure = usePluginAction("capture-failure");
   const clearArtifacts = usePluginAction("clear-artifacts");
+  const understand = usePluginAction("understand-repository");
   const runExample = usePluginAction("run-example");
   const [example, setExample] = useState<ExampleResult | null>(null);
   const [task, setTask] = useState<string | null>(null);
@@ -313,7 +316,7 @@ function KujoPanel({ context, compact = false }: PanelProps) {
   if (loading) return <Spinner label="Loading Kujo workspace intelligence" />;
   if (error) return <div role="alert" style={{ ...card, color: colors.danger }}>Unable to load Kujo: {error.message}</div>;
 
-  const hasArtifacts = Boolean(data?.review || data?.failure || data?.context);
+  const hasArtifacts = data?.understanding || Boolean(data?.review || data?.failure || data?.context);
 
   return (
     <div style={{ ...panel, ...(compact ? { marginTop: 12 } : {}) }}>
@@ -339,6 +342,10 @@ function KujoPanel({ context, compact = false }: PanelProps) {
         <div role="status" style={muted}>{data.workspace.message}</div>
         <div style={muted}>Try a bundled Kujo program: structured data, a function, and JSON output. It runs locally without reading or changing your project files.</div>
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <ActionButton disabled={busy !== null || !workspaceAvailable || data.readiness?.capabilities.understand !== "ready"}
+            onClick={() => run("understand", () => understand({ entityType: context.entityType, entityId: context.entityId }))}>
+            {busy === "understand" ? "Mapping repository…" : "Understand this repository"}
+          </ActionButton>
           <ActionButton disabled={busy !== null || data.readiness?.capabilities.examples !== "ready"}
             onClick={() => run("example", async () => { setExample(await runExample({}) as ExampleResult); })}>
             {busy === "example" ? "Checking and running…" : "Try the Kujo example"}
@@ -351,6 +358,23 @@ function KujoPanel({ context, compact = false }: PanelProps) {
           <details><summary>View Kujo source</summary><pre style={{ overflow: "auto", fontSize: 12 }}>{example.source}</pre></details>
           <pre aria-label="Example output" style={{ whiteSpace: "pre-wrap" }}>{example.output}</pre>
         </div>}
+      </section>}
+
+      {data?.understanding && <section style={{ ...card, overflowWrap: "anywhere" }} aria-label="Repository understanding">
+        <SectionTitle title="Repository map" detail={`Scout ${data.understanding.provenance.componentVersion} · ${data.understanding.status === "partial" ? "Partial scan" : "Scan complete"}${data.understanding.stale ? " · STALE — scan again" : ""}`} />
+        <div>{data.understanding.intelligence.metrics.total_files} code files · {data.understanding.intelligence.metrics.total_lines} lines · {data.understanding.intelligence.dependencies.length} dependencies · {data.understanding.intelligence.routes.length} routes</div>
+        <div style={muted}>{Object.entries(data.understanding.intelligence.metrics.languages).map(([language, count]) => `${language}: ${count}`).join(" · ") || "No supported source files found"}</div>
+        <details open><summary>Project structure</summary><pre style={{ overflow: "auto", maxHeight: 280, fontSize: 12 }}>{data.understanding.fileTree}</pre></details>
+        <details><summary>Dependencies and routes</summary>
+          {data.understanding.intelligence.dependencies.map((item, index) => <div key={`d${index}`}><code>{item.module}</code> — {item.source}</div>)}
+          {data.understanding.intelligence.routes.map((item, index) => <div key={`r${index}`}><code>{item.method} {item.path}</code> — {item.source}</div>)}
+        </details>
+        <details><summary>Heuristic observations ({data.understanding.intelligence.security_findings.length}) and scan diagnostics ({data.understanding.intelligence.parse_errors.length})</summary>
+          {data.understanding.intelligence.security_findings.map((item, index) => <div key={`s${index}`}>{item.severity}: {item.label} — {item.file}:{item.line}</div>)}
+          {data.understanding.intelligence.parse_errors.map((item, index) => <div key={`e${index}`}>{item.file}: {item.error}</div>)}
+        </details>
+        {data.understanding.warnings.map((warning, index) => <div key={index} style={muted}>{warning}</div>)}
+        <div style={muted}>Next: use the task below to select relevant Context Pack files, then review their content before planning changes.</div>
       </section>}
 
       {canGenerate && (

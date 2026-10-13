@@ -89,3 +89,19 @@ test("empty workspace explains why context cannot be selected", async ({ page })
   await expect(page.getByRole("button", { name: /Generate Context Pack/ })).toBeDisabled();
   await expect(page.getByRole("button", { name: "Try the Kujo example" })).toBeEnabled();
 });
+
+
+test("repository map action and partial evidence remain understandable", async ({ page }) => {
+  await page.goto("/?surface=task&entity=issue&map=1");
+  await page.getByRole("button", { name: "Understand this repository" }).click();
+  await expect.poll(() => page.evaluate(() => window.__KUJO_ACTIONS__?.[0]?.action)).toBe("understand-repository");
+  await expect(page.getByText(/Partial scan.*STALE/)).toBeVisible();
+  await expect(page.getByText(/12 code files/)).toBeVisible();
+  await page.getByText("Dependencies and routes", { exact: true }).click();
+  await expect(page.getByText("GET /health", { exact: true })).toBeVisible();
+  await page.getByText(/Heuristic observations \(1\)/).click();
+  await expect(page.getByText("src/large.ts: truncated_100000b", { exact: true })).toBeVisible();
+  await expect(page.getByRole("region", { name: "Repository understanding" })).toHaveScreenshot("repository-map.png", { animations: "disabled", maxDiffPixelRatio: 0.02 });
+  await page.goto("/?entity=project&workspace=missing");
+  await expect(page.getByRole("button", { name: "Understand this repository" })).toBeDisabled();
+});
