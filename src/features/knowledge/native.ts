@@ -105,12 +105,19 @@ export async function ingestKnowledge(input: { namespace: string; files: Array<{
   });
 }
 
-export async function queryKnowledge(input: { namespace: string; retained: RetainedKnowledge; question: string; config: PluginConfig }): Promise<KnowledgeAnswer> {
+export function validateRetainedKnowledge(input: { namespace: string; retained: unknown }): RetainedKnowledge {
   const namespace = namespaceSchema.parse(input.namespace);
   const retained = retainedKnowledgeSchema.parse(input.retained);
-  const question = z.string().trim().min(1).max(4000).parse(input.question);
   if (retained.namespace !== namespace || retained.indexDigest !== digest(retained.index)
+    || Buffer.byteLength(retained.index) > MAX_INDEX
     || retained.corpusDigest !== digest(JSON.stringify(retained.files)) || retained.bridgeDigest !== digest(RAG_BRIDGE)) throw new Error("Knowledge index identity or integrity mismatch; ingest again");
+  return retained;
+}
+
+export async function queryKnowledge(input: { namespace: string; retained: RetainedKnowledge; question: string; config: PluginConfig }): Promise<KnowledgeAnswer> {
+  const retained = validateRetainedKnowledge(input);
+  const namespace = retained.namespace;
+  const question = z.string().trim().min(1).max(4000).parse(input.question);
   return withRag(input.config, async ({ directory, componentCommit, invoke }) => {
     if (retained.componentCommit !== componentCommit) throw new Error("Knowledge component changed; ingest again");
     await writeFile(join(directory, "retained-index.json"), retained.index, { mode: 0o600 });
