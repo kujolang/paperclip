@@ -58,6 +58,7 @@ Kujo retains up to 20 results per company/entity for 30 days in its Paperclip da
 
 | Workflow | What it does | Kujo component |
 | --- | --- | --- |
+| **Release readiness** | Detects missing metadata and documentation signals with a native gate; tests and linters are not executed. | ShipCheck |
 | **Artifact drift** | Compares documentation, metadata, examples and contracts; reports experimental drift leads and coverage. | Concord |
 | **Architecture boundaries** | Checks import boundaries against Fence policy and reports findings, coverage and the configured failure threshold. | Fence |
 | **Task contracts** | Validates a declared task contract and shows acceptance criteria and checks as not-run. | Spec |
@@ -67,7 +68,7 @@ Kujo retains up to 20 results per company/entity for 30 days in its Paperclip da
 | **Review Pack** | Measures change size, explains risk signals, and prepares a review handoff. | ChangeBucket and PatchBrief |
 | **Failure Evidence** | Turns supplied command details and logs into a bounded, redacted record. | CaseFile |
 
-The eight component snapshots are pinned, checksummed, and shipped with the plugin. The
+The nine component snapshots are pinned, checksummed, and shipped with the plugin. The
 plugin does not download component code while installing or running.
 
 ## Build with Kujo
@@ -81,6 +82,8 @@ The upcoming release requires Paperclip database namespace migrations and authen
 ## Verification evidence
 
 Enable **Verification** in company settings to review a Git-visible `.spec.json`, `.spec.yml`, `.spec.yaml` or `.spec.toml` task contract. The native Spec validator reports contract errors and warnings; strict mode treats warnings as failures. Acceptance criteria and declared checks remain **not-run**, and declared approval points do not grant approval. No workspace files or check commands are executed or changed.
+
+Select **Inspect release readiness** to review ShipCheck’s 16 repository, code-quality, documentation and release metadata signals. Git detection uses the real workspace; artifact checks use private copies. The native gate can pass with warnings, and omitted inputs make coverage partial. Essentials exposes this adapter when Verification is enabled, while other verification tools retain their own profile restrictions.
 
 Select **Inspect artifact drift** to compare README, manifests, changelog, task contracts, evaluation declarations, docs and examples with native Concord. Findings retain severity, confidence, source/target, expected/observed differences and suggested fixes. Omitted files and native discovery bounds produce partial results; these experimental leads require review.
 
@@ -98,10 +101,11 @@ The plugin ships pinned, checksummed Ability contracts/catalogs and generates it
 
 ## Agent tools
 
-Paperclip agents can call fourteen tools:
+Paperclip agents can call fifteen tools:
 
 | Tool | Use |
 | --- | --- |
+| `kujolang.paperclip:inspect-release-readiness` | Inspect native release metadata signals and coverage; never executes tests or certifies a release. |
 | `kujolang.paperclip:inspect-artifact-drift` | Inspect artifact alignment with native Concord; no project commands, examples or tests run. |
 | `kujolang.paperclip:inspect-architecture` | Inspect a bounded snapshot against the workspace Fence policy; no project commands or tests run. |
 | `kujolang.paperclip:inspect-task-contract` | Validate one Git-visible Spec contract; inspect declared outcomes without executing checks. |

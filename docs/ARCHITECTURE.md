@@ -80,3 +80,10 @@ uses isolated imports, and removes duplicate report grouping before host validat
 Root artifacts receive copy priority; copy coverage never claims that every copied
 file was inspected. Native discovery bounds or any host omission yield partial
 coverage. The `concord-latest` kind uses the existing scoped receipt/retention store.
+
+ShipCheck is the ninth pinned component. Its fixed bridge runs canonical
+`run_scan` on artifact copies, replaces only the `git-repo` observation with a
+canonical check of the original host workspace, and uses canonical `report_json`.
+It does not copy or fabricate `.git`, execute project modules, or resolve entry
+declarations. The adapter validates all16 unique check identities and summaries.
+`shipcheck-latest` shares the scoped immutable evidence store and retention policy.

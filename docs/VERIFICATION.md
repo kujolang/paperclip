@@ -32,11 +32,21 @@ Canonical reference preflight runs before native checks and blocks manifest entr
 
 `failed` means high/critical drift; `warnings` means low/medium leads; `passed` means no leads in the admitted scope. `not-run` means no recognizable artifacts were admitted, `blocked` means unsafe references, and `partial` takes precedence over findings when coverage is incomplete. Runtime or malformed-output failures return an error, never a pass. Common-secret redaction applies before company/entity-scoped history is saved. Exports retain the complete bounded result; the panel shows the first100 items per list.
 
+## Native release readiness
+
+Select **Inspect release readiness**, or call `kujolang.paperclip:inspect-release-readiness` with `{}`. Paperclip supplies company and workspace identity. Enable Verification; installed/essentials/review/ship/full profiles select this adapter. Build does not. Selecting ShipCheck through Essentials does not authorize Spec, Fence, Concord or evaluation imports: tool calls, panel sections and evidence reads enforce each projection independently.
+
+ShipCheck 1.0.0 is pinned at `0a9f5795e9498f3698d5da6bb66642544251dd37`. Its 16 native checks cover Git, README, license/ignore files, tests/lint/format/CI presence, installation/usage guidance, examples/docs, versions, changelog, Kennel metadata and entry declarations. A passing check is a detected signal. Tests, linters, examples, declared entry paths and release artifacts are not executed or validated.
+
+All artifact checks run against the same bounded private snapshot used by Concord/Fence:1,000 Git-visible paths,64KiB per text file,16MiB aggregate, no symlink traversal. Root files have admission priority, followed by conventional test/docs/example/CI directories. The snapshot has no fabricated Git repository: the fixed bridge replaces only its `git-repo` result with ShipCheck's bounded native Git check of the actual host workspace. Native report formatting, metadata parsing and gate calculations remain canonical. Host validation checks the exact16 unique check identities and summary consistency. Source copies are removed finally, and a second bounded snapshot plus Git observation detects stale inputs.
+
+Missing error-level signals produce `failed`; warning-only results produce `warnings` while the native metadata gate remains passed. All signals present produce `passed` only within this metadata scope. Any omitted, unreadable, sensitive, non-text or oversized candidate, rejected path or truncated inventory produces `partial`, even when the copied subset meets the native gate. A Git checkout with no artifacts fails the missing metadata checks; it does not claim that project tests were attempted. Runtime or malformed report failures are errors. The UI prioritizes blockers and warnings, with passing signals expandable. Retained, redacted `shipcheck-latest` records use the existing company/entity-scoped history, export and retention controls. A passing metadata gate does not certify or publish a release.
+
 ## Imported evaluation claims
 
 Enable `features.verification` in company settings. The installed/full/review/ship profiles expose **Import evaluation result** and the `import-verification` agent tool. Build and essentials profiles do not. The feature defaults off. Imports work without a local workspace or native Kujo runtime.
 
-Paste `kujo.evaluation-result/v1` JSON into the project or issue panel. Eval 2.0.0 emits this format as `evaluation-result.json`; other producers must supply the same contract. The import adapter does not convert legacy tool reports or invoke native tools. Native Spec, Fence and Concord inspection are described above; Eval and ShipCheck execution integrations remain separate work.
+Paste `kujo.evaluation-result/v1` JSON into the project or issue panel. Eval 2.0.0 emits this format as `evaluation-result.json`; other producers must supply the same contract. The import adapter does not convert legacy tool reports or invoke native tools. Native Spec, Fence, Concord and ShipCheck inspection are described above; approval-backed Eval execution remains separate work.
 
 The plugin validates the exact canonical JSON Schema pinned at Kujo commit `6695bd9beac4787c9d2db768e9f61dfdb26a95a5`, including date formats and evidence-reference shapes. Build checks verify the bundled schema and example bytes against `bundled/verification-sources.lock.json`. Schema validation establishes structure, not authenticity or applicability.
 

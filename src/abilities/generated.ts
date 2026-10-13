@@ -3820,6 +3820,110 @@ export const projections = [
         "source": "concord"
       }
     ]
+  },
+  {
+    "exportName": "shipcheckTool",
+    "id": "kujo.paperclip.shipcheck.inspect",
+    "feature": "verification",
+    "canonicalIds": [
+      "kujo.shipcheck.repository.scan"
+    ],
+    "components": [
+      "shipcheck"
+    ],
+    "profiles": [
+      "installed",
+      "essentials",
+      "review",
+      "ship",
+      "full"
+    ],
+    "tool": {
+      "name": "inspect-release-readiness",
+      "displayName": "Inspect Release Readiness",
+      "description": "Inspect canonical ShipCheck readiness signals on bounded artifact copies and actual host workspace Git metadata. Never executes tests or linters and does not certify a release.",
+      "parametersSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {}
+      }
+    },
+    "definition": {
+      "schema": "kujo.ability/v1",
+      "id": "kujo.paperclip.shipcheck.inspect",
+      "version": "1.0.0",
+      "title": "Inspect Release Readiness",
+      "description": "Inspect canonical ShipCheck readiness signals on bounded artifact copies and actual host workspace Git metadata. Never executes tests or linters and does not certify a release.",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {}
+      },
+      "output_schema": {
+        "type": "object",
+        "additionalProperties": true
+      },
+      "effects": [
+        {
+          "kind": "read",
+          "resource": "kujo.paperclip.workspace"
+        },
+        {
+          "kind": "write",
+          "resource": "kujo.paperclip.evidence"
+        },
+        {
+          "kind": "write",
+          "resource": "kujo.paperclip.activity"
+        }
+      ],
+      "idempotency": {
+        "mode": "none"
+      },
+      "semantics": {
+        "open_world": false,
+        "destructive": false,
+        "executes_code": false
+      }
+    },
+    "definitionDigest": "bbb0a6bdf155dcbb3f4d5c6ef2382d60288ff30b518f09d8a8c458baf332ae3a",
+    "canonicalDefinitions": [
+      {
+        "definition": {
+          "schema": "kujo.ability/v1",
+          "id": "kujo.shipcheck.repository.scan",
+          "version": "1.0.0",
+          "title": "Scan release readiness",
+          "description": "Run an informational ShipCheck release-readiness scan against a local repository.",
+          "input_schema": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string",
+                "maxLength": 4096,
+                "default": "."
+              }
+            },
+            "additionalProperties": false
+          },
+          "output_schema": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "effects": [
+            {
+              "kind": "read",
+              "resource": "kujo.repository.release"
+            }
+          ],
+          "idempotency": {
+            "mode": "intrinsic"
+          }
+        },
+        "definitionDigest": "493d9e2070db5b0a49733b255544d3b585e7c6d04a515a3933f40a738d37818d",
+        "source": "shipcheck"
+      }
+    ]
   }
 ] as const;
 export const catalogTool = projections[0].tool;
@@ -3836,4 +3940,5 @@ export const importVerificationTool = projections[10].tool;
 export const specTool = projections[11].tool;
 export const fenceTool = projections[12].tool;
 export const concordTool = projections[13].tool;
+export const shipcheckTool = projections[14].tool;
 export const projectedTools = projections.map((entry) => entry.tool);

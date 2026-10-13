@@ -1158,5 +1158,71 @@
         "executes_code": false
       }
     }
+  },
+  {
+    "exportName": "shipcheckTool",
+    "id": "kujo.paperclip.shipcheck.inspect",
+    "feature": "verification",
+    "canonicalIds": [
+      "kujo.shipcheck.repository.scan"
+    ],
+    "components": [
+      "shipcheck"
+    ],
+    "profiles": [
+      "installed",
+      "essentials",
+      "review",
+      "ship",
+      "full"
+    ],
+    "tool": {
+      "name": "inspect-release-readiness",
+      "displayName": "Inspect Release Readiness",
+      "description": "Inspect canonical ShipCheck readiness signals on bounded artifact copies and actual host workspace Git metadata. Never executes tests or linters and does not certify a release.",
+      "parametersSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {}
+      }
+    },
+    "definition": {
+      "schema": "kujo.ability/v1",
+      "id": "kujo.paperclip.shipcheck.inspect",
+      "version": "1.0.0",
+      "title": "Inspect Release Readiness",
+      "description": "Inspect canonical ShipCheck readiness signals on bounded artifact copies and actual host workspace Git metadata. Never executes tests or linters and does not certify a release.",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {}
+      },
+      "output_schema": {
+        "type": "object",
+        "additionalProperties": true
+      },
+      "effects": [
+        {
+          "kind": "read",
+          "resource": "kujo.paperclip.workspace"
+        },
+        {
+          "kind": "write",
+          "resource": "kujo.paperclip.evidence"
+        },
+        {
+          "kind": "write",
+          "resource": "kujo.paperclip.activity"
+        }
+      ],
+      "idempotency": {
+        "mode": "none"
+      },
+      "semantics": {
+        "open_world": false,
+        "destructive": false,
+        "executes_code": false
+      }
+    }
   }
 ]
