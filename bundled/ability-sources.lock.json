@@ -1,0 +1,57 @@
+{
+  "schemaVersion": 1,
+  "sources": [
+    {
+      "repository": "https://github.com/kujolang/ability",
+      "commit": "bcbecb49b147023877e83d5f2ea647dfede030b5",
+      "files": [
+        {
+          "sourcePath": "sdk/typescript/index.ts",
+          "path": "bundled/ability-contract/index.ts",
+          "sha256": "6577dda6be4afb78b8294f88b00e65a72da462ec3fa6959183233ac398eb5c04"
+        },
+        {
+          "sourcePath": "schema/ability.schema.json",
+          "path": "bundled/ability-contract/ability.schema.json",
+          "sha256": "9be20428a46bb5f6383b4c1d8b904e44f4d8e6f9286041e36651790336b74da2"
+        },
+        {
+          "sourcePath": "schema/ability-profile.schema.json",
+          "path": "bundled/ability-contract/ability-profile.schema.json",
+          "sha256": "d159599d9cc40f3efe9581fbcaa5978232af53e5751e5e5a0a1c5b5f35ca6150"
+        },
+        {
+          "sourcePath": "LICENSE",
+          "path": "bundled/ability-contract/LICENSE",
+          "sha256": "37488fedc85c43ba96a6dd438cade3f3c4293792dd97c89591c4832378c2b63d"
+        }
+      ]
+    },
+    {
+      "repository": "https://github.com/kujolang/kujo-cmd",
+      "commit": "7cedc7758cfd5214ec28c2ba62a20bd5cc3d8988",
+      "files": [
+        {
+          "sourcePath": "catalog/abilities.json",
+          "path": "bundled/ability-catalog/abilities.json",
+          "sha256": "7981517581a95c54f9f59cda4a84408e2551630db907598ee21d60ef4bcd89fc"
+        },
+        {
+          "sourcePath": "catalog/profiles.json",
+          "path": "bundled/ability-catalog/profiles.json",
+          "sha256": "97ca773cdc5c6e80c59ac66a2eaaf85c8471bf8c7fa5f7b0db8791ef672b4f36"
+        },
+        {
+          "sourcePath": "catalog/sources.json",
+          "path": "bundled/ability-catalog/sources.json",
+          "sha256": "898590ea22e0e190ea4830995e4fde5402d5666a2cc338d2916f45b98f8bf11a"
+        },
+        {
+          "sourcePath": "LICENSE",
+          "path": "bundled/ability-catalog/LICENSE",
+          "sha256": "609d2ce154ec24b93ad293213c716c69861864a3c2b7a3bbf83200c216b878a9"
+        }
+      ]
+    }
+  ]
+}

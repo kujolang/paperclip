@@ -1,0 +1,42 @@
+[
+  {
+    "schema": "kujo.ability-profile/v1",
+    "id": "kujo.profile.essentials",
+    "version": "1.0.0",
+    "description": "Low-risk catalog, receipts, repository inspection, change summaries, and release scans.",
+    "default": true,
+    "extends": [],
+    "ability_ids": ["kujo.ability.catalog.list", "kujo.ability.receipts.list", "kujo.scout.repository.inspect", "kujo.patchbrief.changes.summarize", "kujo.shipcheck.repository.scan"],
+    "metadata": { "label": "Essentials", "risk": "read-mostly" }
+  },
+  {
+    "schema": "kujo.ability-profile/v1",
+    "id": "kujo.profile.review",
+    "version": "1.0.0",
+    "description": "Architecture, task-contract, context, and change-footprint review tools.",
+    "default": false,
+    "extends": ["kujo.profile.essentials"],
+    "ability_ids": ["kujo.changebucket.changes.measure", "kujo.fence.architecture.check", "kujo.spec.contract.validate", "kujo.scent.context.pack", "kujo.concord.artifacts.scan", "kujo.versionseal.records.validate", "kujo.packwrite.pack.validate", "kujo.packwrite.pack.summary", "kujo.tribunal.proposal.validate", "kujo.dossier.records.validate", "kujo.dossier.records.report", "kujo.howl.showcase.validate", "kujo.lens.flow.validate"],
+    "metadata": { "label": "Review", "risk": "local-write" }
+  },
+  {
+    "schema": "kujo.ability-profile/v1",
+    "id": "kujo.profile.ship",
+    "version": "1.0.0",
+    "description": "Verification and durable run evidence for release work.",
+    "default": false,
+    "extends": ["kujo.profile.review"],
+    "ability_ids": ["kujo.eval.suite.run", "kujo.runledger.runs.report", "kujo.runledger.runs.start", "kujo.runledger.runs.finish", "kujo.casefile.failure.capture", "kujo.watchdog.telemetry.record", "kujo.redact.document.scan", "kujo.redact.document.sanitize", "kujo.tribunal.review.mock", "kujo.howl.showcase.render", "kujo.lens.page.check"],
+    "metadata": { "label": "Ship", "risk": "execute" }
+  },
+  {
+    "schema": "kujo.ability-profile/v1",
+    "id": "kujo.profile.full",
+    "version": "1.0.0",
+    "description": "All installed local Kujo capabilities, including orchestration, RAG, and optional Watchdog health.",
+    "default": false,
+    "extends": ["kujo.profile.ship"],
+    "ability_ids": ["kujo.dispatch.workflow.validate", "kujo.dispatch.workflow.run", "kujo.rag.knowledge.query", "kujo.rag.knowledge.ingest", "kujo.watchdog.service.health", "kujo.muzzle.workflow.run", "kujo.kennel.project.validate", "kujo.kennel.dependencies.install", "kujo.packwrite.pack.init"],
+    "metadata": { "label": "Full", "risk": "advanced" }
+  }
+]

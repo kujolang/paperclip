@@ -1,0 +1,192 @@
+[
+  {
+    "definition": {"schema":"kujo.ability/v1","id":"kujo.ability.catalog.list","version":"1.0.0","title":"List Kujo abilities","description":"List the canonical Kujo Abilities exposed by the active local profile.","input_schema":{"type":"object","properties":{},"additionalProperties":false},"output_schema":{"type":"object","additionalProperties":true},"effects":[{"kind":"read","resource":"kujo.ability.catalog"}],"idempotency":{"mode":"intrinsic"}},
+    "tool": {"name":"kujo_ability_catalog","description":"List the Kujo capabilities currently available in Command Code, including effects and canonical identity."},
+    "adapter":"catalog"
+  },
+  {
+    "definition": {"schema":"kujo.ability/v1","id":"kujo.ability.receipts.list","version":"1.0.0","title":"Inspect Ability receipts","description":"Read recent local Ability receipts for audit and run correlation.","input_schema":{"type":"object","properties":{"limit":{"type":"integer","minimum":1,"maximum":50},"include_result":{"type":"boolean","default":false}},"additionalProperties":false},"output_schema":{"type":"object","additionalProperties":true},"effects":[{"kind":"read","resource":"kujo.ability.receipts"}],"idempotency":{"mode":"intrinsic"}},
+    "tool": {"name":"kujo_ability_receipts","description":"Inspect recent local Kujo execution receipts, including effects, policy, approval, run, and model identity."},
+    "adapter":"receipts"
+  },
+  {
+    "definition": {"schema":"kujo.ability/v1","id":"kujo.scout.repository.inspect","version":"1.0.0","title":"Inspect repository with Scout","description":"Generate a bounded, agent-readable Scout repository intelligence pack.","input_schema":{"type":"object","properties":{"path":{"type":"string","maxLength":4096,"default":"."},"quick":{"type":"boolean","default":true},"output_dir":{"type":"string","maxLength":4096,"default":".kujo/scout"}},"additionalProperties":false},"output_schema":{"type":"object","additionalProperties":true},"effects":[{"kind":"read","resource":"kujo.repository.files"},{"kind":"write","resource":"kujo.scout.artifacts"}],"idempotency":{"mode":"keyed"}},
+    "tool": {"name":"kujo_scout_inspect","description":"Inspect a repository with canonical Kujo Scout and generate bounded context artifacts. Requires one-time approval because Scout writes a local report."},
+    "adapter":"scout","source":"scout"
+  },
+  {
+    "definition": {"schema":"kujo.ability/v1","id":"kujo.scent.context.pack","version":"1.0.0","title":"Build Scent context pack","description":"Build a token-budgeted, redacted local context pack for agent handoff.","input_schema":{"type":"object","required":["task"],"properties":{"path":{"type":"string","maxLength":4096,"default":"."},"task":{"type":"string","minLength":1,"maxLength":8192},"budget":{"type":"integer","minimum":256,"maximum":200000,"default":12000},"dry_run":{"type":"boolean","default":false}},"additionalProperties":false},"output_schema":{"type":"object","additionalProperties":true},"effects":[{"kind":"read","resource":"kujo.repository.files"},{"kind":"write","resource":"kujo.scent.artifacts"}],"idempotency":{"mode":"keyed"}},
+    "tool": {"name":"kujo_scent_pack","description":"Build a canonical Kujo Scent context pack for a task. Supports dry-run; writes only after one-time approval."},
+    "adapter":"scent","source":"scent"
+  },
+  {
+    "definition": {"schema":"kujo.ability/v1","id":"kujo.patchbrief.changes.summarize","version":"1.0.0","title":"Summarize git changes","description":"Summarize the current git diff into a structured PatchBrief.","input_schema":{"type":"object","properties":{"path":{"type":"string","maxLength":4096,"default":"."},"format":{"type":"string","enum":["json","markdown"],"default":"json"}},"additionalProperties":false},"output_schema":{"type":"object","additionalProperties":true},"effects":[{"kind":"read","resource":"kujo.repository.git"}],"idempotency":{"mode":"intrinsic"}},
+    "tool": {"name":"kujo_patchbrief_summarize","description":"Use canonical Kujo PatchBrief to summarize changed files, risk, and review guidance."},
+    "adapter":"patchbrief","source":"patchbrief"
+  },
+  {
+    "definition": {"schema":"kujo.ability/v1","id":"kujo.changebucket.changes.measure","version":"1.0.0","title":"Measure change footprint","description":"Measure changed files, churn, categories, and blast-radius signals with ChangeBucket.","input_schema":{"type":"object","properties":{"path":{"type":"string","maxLength":4096,"default":"."},"base":{"type":"string","maxLength":512,"default":"HEAD"},"max_files":{"type":"integer","minimum":1},"max_churn":{"type":"integer","minimum":1}},"additionalProperties":false},"output_schema":{"type":"object","additionalProperties":true},"effects":[{"kind":"read","resource":"kujo.repository.git"}],"idempotency":{"mode":"intrinsic"}},
+    "tool": {"name":"kujo_changebucket_measure","description":"Measure a git change footprint and optional budgets with canonical Kujo ChangeBucket."},
+    "adapter":"changebucket","source":"changebucket"
+  },
+  {
+    "definition": {"schema":"kujo.ability/v1","id":"kujo.shipcheck.repository.scan","version":"1.0.0","title":"Scan release readiness","description":"Run an informational ShipCheck release-readiness scan against a local repository.","input_schema":{"type":"object","properties":{"path":{"type":"string","maxLength":4096,"default":"."}},"additionalProperties":false},"output_schema":{"type":"object","additionalProperties":true},"effects":[{"kind":"read","resource":"kujo.repository.release"}],"idempotency":{"mode":"intrinsic"}},
+    "tool": {"name":"kujo_shipcheck_scan","description":"Run canonical Kujo ShipCheck and return its structured release-readiness report."},
+    "adapter":"shipcheck","source":"shipcheck"
+  },
+  {
+    "definition": {"schema":"kujo.ability/v1","id":"kujo.fence.architecture.check","version":"1.0.0","title":"Check architecture boundaries","description":"Check a repository against its Fence architecture policy.","input_schema":{"type":"object","properties":{"path":{"type":"string","maxLength":4096,"default":"."},"changed_only":{"type":"boolean","default":false},"baseline":{"type":"boolean","default":false}},"additionalProperties":false},"output_schema":{"type":"object","additionalProperties":true},"effects":[{"kind":"read","resource":"kujo.repository.architecture"}],"idempotency":{"mode":"intrinsic"}},
+    "tool": {"name":"kujo_fence_check","description":"Run canonical Kujo Fence against the repository's architecture policy."},
+    "adapter":"fence","source":"fence"
+  },
+  {
+    "definition": {"schema":"kujo.ability/v1","id":"kujo.spec.contract.validate","version":"1.0.0","title":"Validate task contract","description":"Validate a Kujo Spec task contract without changing it.","input_schema":{"type":"object","required":["file"],"properties":{"path":{"type":"string","maxLength":4096,"default":"."},"file":{"type":"string","minLength":1,"maxLength":4096},"strict":{"type":"boolean","default":false}},"additionalProperties":false},"output_schema":{"type":"object","additionalProperties":true},"effects":[{"kind":"read","resource":"kujo.spec.contract"}],"idempotency":{"mode":"intrinsic"}},
+    "tool": {"name":"kujo_spec_validate","description":"Validate a .spec.yml, .spec.toml, or .spec.json contract with canonical Kujo Spec."},
+    "adapter":"spec","source":"spec"
+  },
+  {
+    "definition": {"schema":"kujo.ability/v1","id":"kujo.eval.suite.run","version":"1.0.0","title":"Run Eval suite","description":"Execute a deterministic Kujo Eval suite and return structured verification evidence.","input_schema":{"type":"object","required":["config"],"properties":{"path":{"type":"string","maxLength":4096,"default":"."},"config":{"type":"string","minLength":1,"maxLength":4096},"output_dir":{"type":"string","maxLength":4096,"default":".kujo/eval"}},"additionalProperties":false},"output_schema":{"type":"object","additionalProperties":true},"effects":[{"kind":"external","resource":"kujo.eval.commands"},{"kind":"write","resource":"kujo.eval.artifacts"}],"idempotency":{"mode":"keyed"}},
+    "tool": {"name":"kujo_eval_run","description":"Run a canonical Kujo Eval suite. Eval may execute configured commands and requires one-time approval."},
+    "adapter":"eval","source":"eval"
+  },
+  {
+    "definition": {"schema":"kujo.ability/v1","id":"kujo.runledger.runs.report","version":"1.0.0","title":"Report agent runs","description":"Render the local RunLedger record set for the selected repository.","input_schema":{"type":"object","properties":{"path":{"type":"string","maxLength":4096,"default":"."},"task":{"type":"string","maxLength":8192}},"additionalProperties":false},"output_schema":{"type":"object","additionalProperties":true},"effects":[{"kind":"read","resource":"kujo.runledger.records"}],"idempotency":{"mode":"intrinsic"}},
+    "tool": {"name":"kujo_runledger_report","description":"Read and render canonical Kujo RunLedger receipts for local agent runs."},
+    "adapter":"runledger","source":"runledger"
+  },
+  {
+    "definition": {"schema":"kujo.ability/v1","id":"kujo.dispatch.workflow.validate","version":"1.0.0","title":"Validate Dispatch workflow","description":"Validate a Dispatch workflow and explain configuration errors without running agents.","input_schema":{"type":"object","required":["workflow_file"],"properties":{"path":{"type":"string","maxLength":4096,"default":"."},"workflow_file":{"type":"string","minLength":1,"maxLength":4096}},"additionalProperties":false},"output_schema":{"type":"object","additionalProperties":true},"effects":[{"kind":"read","resource":"kujo.dispatch.workflow"}],"idempotency":{"mode":"intrinsic"}},
+    "tool": {"name":"kujo_dispatch_validate","description":"Validate a canonical Kujo Dispatch workflow without executing its agents."},
+    "adapter":"dispatch","source":"dispatch"
+  },
+  {
+    "definition": {"schema":"kujo.ability/v1","id":"kujo.rag.knowledge.query","version":"1.0.0","title":"Query local Kujo RAG","description":"Query a locally installed Kujo RAG index and return citations.","input_schema":{"type":"object","required":["question"],"properties":{"path":{"type":"string","maxLength":4096,"default":"."},"question":{"type":"string","minLength":1,"maxLength":8192},"namespace":{"type":"string","maxLength":256,"default":"default"}},"additionalProperties":false},"output_schema":{"type":"object","additionalProperties":true},"effects":[{"kind":"read","resource":"kujo.rag.index"}],"idempotency":{"mode":"intrinsic"}},
+    "tool": {"name":"kujo_rag_query","description":"Query a local canonical Kujo RAG index. No Kujo-hosted service is used."},
+    "adapter":"rag","source":"rag"
+  },
+  {
+    "definition": {"schema":"kujo.ability/v1","id":"kujo.watchdog.service.health","version":"1.0.0","title":"Check local Watchdog","description":"Read health from an optional loopback-only Kujo Watchdog service.","input_schema":{"type":"object","properties":{"url":{"type":"string","maxLength":2048,"default":"http://127.0.0.1:7700"}},"additionalProperties":false},"output_schema":{"type":"object","additionalProperties":true},"effects":[{"kind":"read","resource":"kujo.watchdog.telemetry"}],"idempotency":{"mode":"intrinsic"}},
+    "tool": {"name":"kujo_watchdog_health","description":"Check the optional local Kujo Watchdog service. Only loopback URLs are accepted."},
+    "adapter":"watchdog","source":"watchdog"
+  },
+  {
+    "definition": {"schema":"kujo.ability/v1","id":"kujo.concord.artifacts.scan","version":"1.0.0","title":"Scan artifact drift","description":"Scan repository documentation, examples, evaluations, and metadata for drift with Concord.","input_schema":{"type":"object","properties":{"path":{"type":"string","maxLength":4096,"default":"."}},"additionalProperties":false},"output_schema":{"type":"object","additionalProperties":true},"effects":[{"kind":"read","resource":"kujo.repository.artifacts"}],"idempotency":{"mode":"intrinsic"}},
+    "tool": {"name":"kujo_concord_scan","description":"Run a read-only canonical Concord artifact-drift scan and return its JSON report."},
+    "adapter":"concord","source":"concord"
+  },
+  {
+    "definition": {"schema":"kujo.ability/v1","id":"kujo.casefile.failure.capture","version":"1.0.0","title":"Capture failure evidence","description":"Create a redacted CaseFile evidence bundle from an existing local log file.","input_schema":{"type":"object","required":["log_file"],"properties":{"path":{"type":"string","maxLength":4096,"default":"."},"log_file":{"type":"string","minLength":1,"maxLength":4096},"name":{"type":"string","maxLength":200,"default":"command-code-failure"},"notes":{"type":"string","maxLength":4000},"output_dir":{"type":"string","maxLength":4096,"default":".casefile/cases"}},"additionalProperties":false},"output_schema":{"type":"object","additionalProperties":true},"effects":[{"kind":"read","resource":"kujo.failure.logs"},{"kind":"write","resource":"kujo.casefile.artifacts"}],"idempotency":{"mode":"keyed"}},
+    "tool": {"name":"kujo_casefile_capture","description":"Capture an existing failure log into a redacted canonical CaseFile bundle. Requires one-time approval."},
+    "adapter":"casefile","source":"casefile"
+  },
+  {
+    "definition": {"schema":"kujo.ability/v1","id":"kujo.muzzle.workflow.run","version":"1.0.0","title":"Run quiet workflow","description":"Run a repository-defined Muzzle workflow with bounded output and its safety policy.","input_schema":{"type":"object","required":["workflow"],"properties":{"path":{"type":"string","maxLength":4096,"default":"."},"workflow":{"type":"string","minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9][A-Za-z0-9._-]*$"},"args":{"type":"array","maxItems":32,"items":{"type":"string","maxLength":2048}},"approve_network":{"type":"boolean","default":false}},"additionalProperties":false},"output_schema":{"type":"object","additionalProperties":true},"effects":[{"kind":"external","resource":"kujo.muzzle.workflow"},{"kind":"write","resource":"kujo.muzzle.logs"}],"idempotency":{"mode":"keyed"}},
+    "tool": {"name":"kujo_muzzle_run","description":"Run an allowlisted repository Muzzle workflow under enforced policy and bounded logging. Requires one-time approval."},
+    "adapter":"muzzle","source":"muzzle"
+  },
+  {
+    "definition": {"schema":"kujo.ability/v1","id":"kujo.kennel.project.validate","version":"1.0.0","title":"Validate Kennel project","description":"Validate the local Kennel manifest and dependency declarations without installing packages.","input_schema":{"type":"object","properties":{"path":{"type":"string","maxLength":4096,"default":"."}},"additionalProperties":false},"output_schema":{"type":"object","additionalProperties":true},"effects":[{"kind":"read","resource":"kujo.kennel.manifest"}],"idempotency":{"mode":"intrinsic"}},
+    "tool": {"name":"kujo_kennel_validate","description":"Validate a local Kennel package manifest and dependency declarations."},
+    "adapter":"kennel_validate","source":"kennel"
+  },
+  {
+    "definition": {"schema":"kujo.ability/v1","id":"kujo.kennel.dependencies.install","version":"1.0.0","title":"Install Kennel dependencies","description":"Resolve and install the dependencies declared by a local Kennel project.","input_schema":{"type":"object","properties":{"path":{"type":"string","maxLength":4096,"default":"."},"allow_mutable_ref":{"type":"boolean","default":false}},"additionalProperties":false},"output_schema":{"type":"object","additionalProperties":true},"effects":[{"kind":"external","resource":"kujo.kennel.registry"},{"kind":"write","resource":"kujo.kennel.dependencies"}],"idempotency":{"mode":"keyed"}},
+    "tool": {"name":"kujo_kennel_install","description":"Resolve and install Kennel dependencies. Mutable refs remain blocked unless explicitly requested; requires one-time approval."},
+    "adapter":"kennel_install","source":"kennel"
+  },
+  {
+    "definition": {"schema":"kujo.ability/v1","id":"kujo.dispatch.workflow.run","version":"1.0.0","title":"Run Dispatch workflow","description":"Execute a validated Dispatch workflow and retain its local run evidence.","input_schema":{"type":"object","required":["topic","workflow_file"],"properties":{"path":{"type":"string","maxLength":4096,"default":"."},"topic":{"type":"string","minLength":1,"maxLength":4000},"workflow_file":{"type":"string","minLength":1,"maxLength":4096},"input_json":{"type":"string","maxLength":32768,"default":"{}"},"output_dir":{"type":"string","maxLength":4096,"default":".kujo/dispatch"}},"additionalProperties":false},"output_schema":{"type":"object","additionalProperties":true},"effects":[{"kind":"external","resource":"kujo.dispatch.agents"},{"kind":"write","resource":"kujo.dispatch.runs"}],"idempotency":{"mode":"keyed"}},
+    "tool": {"name":"kujo_dispatch_run","description":"Execute a canonical Dispatch workflow non-interactively and retain run evidence. Requires one-time approval."},
+    "adapter":"dispatch_run","source":"dispatch"
+  },
+  {
+    "definition": {"schema":"kujo.ability/v1","id":"kujo.rag.knowledge.ingest","version":"1.0.0","title":"Ingest local knowledge","description":"Ingest a bounded local path into the configured Kujo RAG namespace.","input_schema":{"type":"object","required":["ingest_path"],"properties":{"path":{"type":"string","maxLength":4096,"default":"."},"ingest_path":{"type":"string","minLength":1,"maxLength":4096},"namespace":{"type":"string","maxLength":256,"default":"default"},"recursive":{"type":"boolean","default":true}},"additionalProperties":false},"output_schema":{"type":"object","additionalProperties":true},"effects":[{"kind":"external","resource":"kujo.rag.embeddings"},{"kind":"write","resource":"kujo.rag.index"}],"idempotency":{"mode":"keyed"}},
+    "tool": {"name":"kujo_rag_ingest","description":"Ingest local files into a canonical Kujo RAG namespace. Provider configuration may use external embeddings; requires one-time approval."},
+    "adapter":"rag_ingest","source":"rag"
+  },
+  {
+    "definition": {"schema":"kujo.ability/v1","id":"kujo.watchdog.telemetry.record","version":"1.0.0","title":"Record Watchdog telemetry","description":"Submit one metadata-only correlated event to an optional loopback Kujo Watchdog service.","input_schema":{"type":"object","required":["name"],"properties":{"name":{"type":"string","minLength":1,"maxLength":160},"status":{"type":"string","enum":["unset","ok","error","cancelled","timeout","denied"],"default":"ok"},"session_id":{"type":"string","maxLength":160},"run_id":{"type":"string","maxLength":160},"agent_id":{"type":"string","maxLength":160},"tool_call_id":{"type":"string","maxLength":160},"url":{"type":"string","maxLength":2048,"default":"http://127.0.0.1:7700"}},"additionalProperties":false},"output_schema":{"type":"object","additionalProperties":true},"effects":[{"kind":"external","resource":"kujo.watchdog.telemetry"}],"idempotency":{"mode":"keyed"}},
+    "tool": {"name":"kujo_watchdog_record","description":"Submit metadata-only session, run, agent, and tool correlation to loopback Watchdog. Requires one-time approval."},
+    "adapter":"watchdog_record","source":"watchdog"
+  },
+  {
+    "definition": {"schema":"kujo.ability/v1","id":"kujo.redact.document.scan","version":"1.0.0","title":"Scan document for sensitive data","description":"Scan a bounded local text or Markdown document with a canonical Redact policy and retain a metadata-only audit run.","input_schema":{"type":"object","required":["file","policy"],"properties":{"path":{"type":"string","maxLength":4096,"default":"."},"file":{"type":"string","minLength":1,"maxLength":4096},"policy":{"type":"string","minLength":1,"maxLength":4096},"audit_dir":{"type":"string","maxLength":4096,"default":".redact"}},"additionalProperties":false},"output_schema":{"type":"object","additionalProperties":true},"effects":[{"kind":"read","resource":"kujo.redact.documents"},{"kind":"write","resource":"kujo.redact.audit"}],"idempotency":{"mode":"keyed"}},
+    "tool": {"name":"kujo_redact_scan","description":"Scan a local .txt or .md document for sensitive data under a canonical policy and write a metadata-only audit. Requires one-time approval."},
+    "adapter":"redact_scan","source":"redact"
+  },
+  {
+    "definition": {"schema":"kujo.ability/v1","id":"kujo.redact.document.sanitize","version":"1.0.0","title":"Sanitize sensitive document","description":"Create a deterministic redacted copy of a bounded local text or Markdown document and verify the result.","input_schema":{"type":"object","required":["file","policy","output_file"],"properties":{"path":{"type":"string","maxLength":4096,"default":"."},"file":{"type":"string","minLength":1,"maxLength":4096},"policy":{"type":"string","minLength":1,"maxLength":4096},"output_file":{"type":"string","minLength":1,"maxLength":4096},"audit_dir":{"type":"string","maxLength":4096,"default":".redact"},"fail_on_risk":{"type":"string","enum":["medium","high"],"default":"high"}},"additionalProperties":false},"output_schema":{"type":"object","additionalProperties":true},"effects":[{"kind":"read","resource":"kujo.redact.documents"},{"kind":"write","resource":"kujo.redact.documents"},{"kind":"write","resource":"kujo.redact.audit"}],"idempotency":{"mode":"keyed"}},
+    "tool": {"name":"kujo_redact_sanitize","description":"Write and verify a sanitized copy using canonical Kujo Redact. Never stores raw detections; requires one-time approval."},
+    "adapter":"redact_sanitize","source":"redact"
+  },
+  {
+    "definition": {"schema":"kujo.ability/v1","id":"kujo.versionseal.records.validate","version":"1.0.0","title":"Validate VersionSeal records","description":"Validate the checksums and contracts in a local VersionSeal state directory without changing approvals.","input_schema":{"type":"object","properties":{"path":{"type":"string","maxLength":4096,"default":"."},"state_dir":{"type":"string","maxLength":4096,"default":".versionseal"},"record_id":{"type":"string","maxLength":160}},"additionalProperties":false},"output_schema":{"type":"object","additionalProperties":true},"effects":[{"kind":"read","resource":"kujo.versionseal.records"}],"idempotency":{"mode":"intrinsic"}},
+    "tool": {"name":"kujo_versionseal_validate","description":"Validate local VersionSeal record integrity. This tool cannot create, approve, reject, or revoke records."},
+    "adapter":"versionseal_validate","source":"versionseal"
+  },
+  {
+    "definition": {"schema":"kujo.ability/v1","id":"kujo.packwrite.pack.validate","version":"1.0.0","title":"Validate agent pack","description":"Deterministically validate an existing PackWrite agent execution pack.","input_schema":{"type":"object","properties":{"path":{"type":"string","maxLength":4096,"default":"."},"output_dir":{"type":"string","maxLength":4096,"default":"agent"},"config":{"type":"string","maxLength":4096}},"additionalProperties":false},"output_schema":{"type":"object","additionalProperties":true},"effects":[{"kind":"read","resource":"kujo.packwrite.pack"}],"idempotency":{"mode":"intrinsic"}},
+    "tool": {"name":"kujo_packwrite_validate","description":"Validate an existing canonical PackWrite execution pack and return its JSON report."},
+    "adapter":"packwrite_validate","source":"packwrite"
+  },
+  {
+    "definition": {"schema":"kujo.ability/v1","id":"kujo.packwrite.pack.summary","version":"1.0.0","title":"Summarize agent pack","description":"Summarize an existing PackWrite pack, including phases, missing files, warnings, and next action.","input_schema":{"type":"object","properties":{"path":{"type":"string","maxLength":4096,"default":"."},"output_dir":{"type":"string","maxLength":4096,"default":"agent"},"config":{"type":"string","maxLength":4096}},"additionalProperties":false},"output_schema":{"type":"object","additionalProperties":true},"effects":[{"kind":"read","resource":"kujo.packwrite.pack"}],"idempotency":{"mode":"intrinsic"}},
+    "tool": {"name":"kujo_packwrite_summary","description":"Read a canonical PackWrite execution pack summary without modifying it."},
+    "adapter":"packwrite_summary","source":"packwrite"
+  },
+  {
+    "definition": {"schema":"kujo.ability/v1","id":"kujo.packwrite.pack.init","version":"1.0.0","title":"Generate agent pack","description":"Generate and validate a PackWrite execution pack from a local mega-prompt through a configured provider.","input_schema":{"type":"object","required":["prompt_file","provider","model"],"properties":{"path":{"type":"string","maxLength":4096,"default":"."},"prompt_file":{"type":"string","minLength":1,"maxLength":4096},"provider":{"type":"string","enum":["deepseek","openai","local"]},"model":{"type":"string","minLength":1,"maxLength":256},"output_dir":{"type":"string","maxLength":4096,"default":"agent"},"config":{"type":"string","maxLength":4096},"overwrite":{"type":"boolean","default":false}},"additionalProperties":false},"output_schema":{"type":"object","additionalProperties":true},"effects":[{"kind":"external","resource":"kujo.packwrite.provider"},{"kind":"write","resource":"kujo.packwrite.pack"}],"idempotency":{"mode":"keyed"}},
+    "tool": {"name":"kujo_packwrite_init","description":"Generate and validate a PackWrite execution pack from a local prompt. Provider access and writes require one-time approval."},
+    "adapter":"packwrite_init","source":"packwrite"
+  },
+  {
+    "definition": {"schema":"kujo.ability/v1","id":"kujo.runledger.runs.start","version":"1.0.0","title":"Start RunLedger record","description":"Start a local RunLedger record for an agent run and capture its initial git state.","input_schema":{"type":"object","required":["provider","model","task"],"properties":{"path":{"type":"string","maxLength":4096,"default":"."},"provider":{"type":"string","minLength":1,"maxLength":200},"model":{"type":"string","minLength":1,"maxLength":200},"task":{"type":"string","minLength":1,"maxLength":2000},"prompt_file":{"type":"string","maxLength":4096},"ledger_dir":{"type":"string","maxLength":4096,"default":".runledger"}},"additionalProperties":false},"output_schema":{"type":"object","additionalProperties":true},"effects":[{"kind":"read","resource":"kujo.repository.git"},{"kind":"write","resource":"kujo.runledger.records"}],"idempotency":{"mode":"keyed"}},
+    "tool": {"name":"kujo_runledger_start","description":"Start a canonical local RunLedger record and capture initial git state. Requires one-time approval."},
+    "adapter":"runledger_start","source":"runledger"
+  },
+  {
+    "definition": {"schema":"kujo.ability/v1","id":"kujo.runledger.runs.finish","version":"1.0.0","title":"Finish RunLedger record","description":"Finalize a local RunLedger record with an explicit status and verdict.","input_schema":{"type":"object","required":["run_id","status","verdict"],"properties":{"path":{"type":"string","maxLength":4096,"default":"."},"run_id":{"type":"string","minLength":1,"maxLength":160,"pattern":"^[A-Za-z0-9][A-Za-z0-9._-]*$"},"status":{"type":"string","enum":["pass","partial","fail","abandoned"]},"verdict":{"type":"string","minLength":1,"maxLength":2000},"notes":{"type":"string","maxLength":2000},"ledger_dir":{"type":"string","maxLength":4096,"default":".runledger"}},"additionalProperties":false},"output_schema":{"type":"object","additionalProperties":true},"effects":[{"kind":"read","resource":"kujo.repository.git"},{"kind":"write","resource":"kujo.runledger.records"}],"idempotency":{"mode":"keyed"}},
+    "tool": {"name":"kujo_runledger_finish","description":"Finalize an existing RunLedger record with a caller-supplied status and verdict. Requires one-time approval."},
+    "adapter":"runledger_finish","source":"runledger"
+  },
+  {
+    "definition": {"schema":"kujo.ability/v1","id":"kujo.tribunal.proposal.validate","version":"1.0.0","title":"Validate decision proposal","description":"Validate a consequential decision proposal against Tribunal's bounded input contract without starting a hearing.","input_schema":{"type":"object","required":["file"],"properties":{"path":{"type":"string","maxLength":4096,"default":"."},"file":{"type":"string","minLength":1,"maxLength":4096}},"additionalProperties":false},"output_schema":{"type":"object","additionalProperties":true},"effects":[{"kind":"read","resource":"kujo.tribunal.proposal"}],"idempotency":{"mode":"intrinsic"}},
+    "tool": {"name":"kujo_tribunal_validate","description":"Validate a local decision proposal with canonical Kujo Tribunal without creating a hearing."},
+    "adapter":"tribunal_validate","source":"tribunal"
+  },
+  {
+    "definition": {"schema":"kujo.ability/v1","id":"kujo.tribunal.review.mock","version":"1.0.0","title":"Run offline decision hearing","description":"Run a deterministic credential-free Tribunal hearing and retain its sealed local decision evidence.","input_schema":{"type":"object","required":["file"],"properties":{"path":{"type":"string","maxLength":4096,"default":"."},"file":{"type":"string","minLength":1,"maxLength":4096},"panel":{"type":"string","enum":["executioner-only","fast-two-model","strategic-five"],"default":"fast-two-model"},"storage_dir":{"type":"string","maxLength":4096,"default":".tribunal"}},"additionalProperties":false},"output_schema":{"type":"object","additionalProperties":true},"effects":[{"kind":"read","resource":"kujo.tribunal.proposal"},{"kind":"write","resource":"kujo.tribunal.evidence"}],"idempotency":{"mode":"keyed"}},
+    "tool": {"name":"kujo_tribunal_review","description":"Run a deterministic offline Tribunal hearing and retain decision evidence. Requires one-time approval."},
+    "adapter":"tribunal_review","source":"tribunal"
+  },
+  {
+    "definition": {"schema":"kujo.ability/v1","id":"kujo.dossier.records.validate","version":"1.0.0","title":"Validate evidence ledger","description":"Validate record contracts, checksums, and append-only events in a local Dossier state directory.","input_schema":{"type":"object","properties":{"path":{"type":"string","maxLength":4096,"default":"."},"state_dir":{"type":"string","maxLength":4096,"default":".dossier"}},"additionalProperties":false},"output_schema":{"type":"object","additionalProperties":true},"effects":[{"kind":"read","resource":"kujo.dossier.records"}],"idempotency":{"mode":"intrinsic"}},
+    "tool": {"name":"kujo_dossier_validate","description":"Validate local canonical Dossier evidence records without modifying them."},
+    "adapter":"dossier_validate","source":"dossier"
+  },
+  {
+    "definition": {"schema":"kujo.ability/v1","id":"kujo.dossier.records.report","version":"1.0.0","title":"Report evidence ledger","description":"Read a bounded report of claims, sources, evidence, conflicts, quotations, consent, freshness, and rights records.","input_schema":{"type":"object","properties":{"path":{"type":"string","maxLength":4096,"default":"."},"state_dir":{"type":"string","maxLength":4096,"default":".dossier"},"limit":{"type":"integer","minimum":1,"maximum":1000,"default":100}},"additionalProperties":false},"output_schema":{"type":"object","additionalProperties":true},"effects":[{"kind":"read","resource":"kujo.dossier.records"}],"idempotency":{"mode":"intrinsic"}},
+    "tool": {"name":"kujo_dossier_report","description":"Read a bounded canonical Dossier evidence report without modifying its ledger."},
+    "adapter":"dossier_report","source":"dossier"
+  },
+  {
+    "definition": {"schema":"kujo.ability/v1","id":"kujo.howl.showcase.validate","version":"1.0.0","title":"Validate showcase manifest","description":"Validate a Howl showcase manifest and every referenced example without rendering artifacts.","input_schema":{"type":"object","properties":{"path":{"type":"string","maxLength":4096,"default":"."},"manifest":{"type":"string","maxLength":4096,"default":"howl.json"}},"additionalProperties":false},"output_schema":{"type":"object","additionalProperties":true},"effects":[{"kind":"read","resource":"kujo.howl.showcase"}],"idempotency":{"mode":"intrinsic"}},
+    "tool": {"name":"kujo_howl_validate","description":"Validate a canonical Howl manifest and its referenced examples without writing output."},
+    "adapter":"howl_validate","source":"howl"
+  },
+  {
+    "definition": {"schema":"kujo.ability/v1","id":"kujo.howl.showcase.render","version":"1.0.0","title":"Render showcase artifacts","description":"Render deterministic SVG, Markdown, or HTML showcase artifacts and a local gallery from a Howl manifest.","input_schema":{"type":"object","properties":{"path":{"type":"string","maxLength":4096,"default":"."},"manifest":{"type":"string","maxLength":4096,"default":"howl.json"},"output_dir":{"type":"string","maxLength":4096,"default":"dist/howl"},"format":{"type":"string","enum":["all","svg","html","markdown"],"default":"all"}},"additionalProperties":false},"output_schema":{"type":"object","additionalProperties":true},"effects":[{"kind":"read","resource":"kujo.howl.showcase"},{"kind":"write","resource":"kujo.howl.artifacts"}],"idempotency":{"mode":"keyed"}},
+    "tool": {"name":"kujo_howl_render","description":"Render deterministic canonical Howl showcase artifacts. Requires one-time approval."},
+    "adapter":"howl_render","source":"howl"
+  },
+  {
+    "definition": {"schema":"kujo.ability/v1","id":"kujo.lens.flow.validate","version":"1.0.0","title":"Validate browser flow","description":"Validate a Lens browser flow's structure and safety constraints without launching a browser.","input_schema":{"type":"object","required":["flow_file"],"properties":{"path":{"type":"string","maxLength":4096,"default":"."},"flow_file":{"type":"string","minLength":1,"maxLength":4096}},"additionalProperties":false},"output_schema":{"type":"object","additionalProperties":true},"effects":[{"kind":"read","resource":"kujo.lens.flow"}],"idempotency":{"mode":"intrinsic"}},
+    "tool": {"name":"kujo_lens_flow_validate","description":"Validate a canonical Lens browser flow without launching a browser or writing artifacts."},
+    "adapter":"lens_flow_validate","source":"lens"
+  },
+  {
+    "definition": {"schema":"kujo.ability/v1","id":"kujo.lens.page.check","version":"1.0.0","title":"Check rendered page","description":"Open a local or explicitly allowed external page in a real browser and retain deterministic Lens QA evidence.","input_schema":{"type":"object","required":["url"],"properties":{"path":{"type":"string","maxLength":4096,"default":"."},"url":{"type":"string","minLength":1,"maxLength":2048},"output_dir":{"type":"string","maxLength":4096,"default":".lens/runs/command-code"},"quick":{"type":"boolean","default":true},"html":{"type":"boolean","default":true},"allow_external":{"type":"boolean","default":false},"timeout_seconds":{"type":"integer","minimum":5,"maximum":300,"default":30}},"additionalProperties":false},"output_schema":{"type":"object","additionalProperties":true},"effects":[{"kind":"external","resource":"kujo.lens.browser"},{"kind":"write","resource":"kujo.lens.artifacts"}],"idempotency":{"mode":"keyed"}},
+    "tool": {"name":"kujo_lens_check","description":"Run canonical Lens in a real browser and retain QA evidence. External URLs require an explicit flag; execution requires one-time approval."},
+    "adapter":"lens_check","source":"lens"
+  }
+]
