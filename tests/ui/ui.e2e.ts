@@ -105,3 +105,38 @@ test("repository map action and partial evidence remain understandable", async (
   await page.goto("/?entity=project&workspace=missing");
   await expect(page.getByRole("button", { name: "Understand this repository" })).toBeDisabled();
 });
+
+
+test("language checks and formatting preview require a source choice", async ({ page }) => {
+  await page.goto("/?surface=task&entity=issue&language=1");
+  await expect(page.getByRole("button", { name: "Check and lint source" })).toBeDisabled();
+  await page.getByLabel("Kujo source", { exact: true }).selectOption("src/main.kujo");
+  await page.getByRole("button", { name: "Check and lint source" }).click();
+  await expect.poll(() => page.evaluate(() => window.__KUJO_ACTIONS__?.[0]?.action)).toBe("check-kujo-source");
+  await expect(page.getByText("Source check: failed · Lint: warnings")).toBeVisible();
+  await expect(page.getByText("src/main.kujo:2:9", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "src/main.kujo:2:9", exact: true }).click();
+  await expect(page.locator('[data-source-line="2"]')).toBeVisible();
+  await expect(page.getByText("Formatting changes available")).toBeVisible();
+  await expect(page.getByText("answer := 40 + 2", { exact: true })).toBeVisible();
+  await expect(page.getByText(/Preview only; no changes applied/)).toBeVisible();
+  await expect(page.getByRole("region", { name: "Build with Kujo" })).toHaveScreenshot("language-preview.png", { animations: "disabled", maxDiffPixelRatio: 0.02 });
+  await page.goto("/?surface=task&entity=issue&language=1&runtime=broken");
+  await page.getByLabel("Kujo source", { exact: true }).selectOption("src/main.kujo");
+  await expect(page.getByRole("button", { name: "Check and lint source" })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Preview formatting" })).toBeDisabled();
+});
+
+
+test("late source previews cannot populate a different company panel", async ({ page }) => {
+  await page.goto("/?surface=task&entity=issue&language=1");
+  await page.evaluate(() => { window.__KUJO_DELAY_FORMAT__ = true; });
+  await page.getByLabel("Kujo source", { exact: true }).selectOption("src/main.kujo");
+  await page.getByRole("button", { name: "Preview formatting" }).click();
+  await expect.poll(() => page.evaluate(() => typeof window.__KUJO_RESOLVE_FORMAT__)).toBe("function");
+  await page.evaluate(() => window.__KUJO_NAVIGATE__?.("other-company"));
+  await expect(page.getByLabel("Kujo source", { exact: true })).toHaveValue("");
+  await page.evaluate(() => window.__KUJO_RESOLVE_FORMAT__?.());
+  await expect(page.getByText("Formatting changes available")).toHaveCount(0);
+  await expect(page.getByLabel("Kujo source", { exact: true })).toHaveValue("");
+});

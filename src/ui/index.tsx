@@ -1,4 +1,4 @@
-import { useEffect, useState, type CSSProperties, type ReactNode } from "react";
+import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import {
   StatusBadge,
   Spinner,
@@ -15,7 +15,9 @@ import type { ExampleResult } from "../features/onboarding/example.js";
 
 import type { Understanding } from "../features/understand/schema.js";
 
-type Detail = { understanding?: Understanding | null; review: ReviewPack | null; failure: FailureEvidence | null; context: ContextPack | null; readiness?: DoctorReport; workspace?: WorkspaceReadiness; suggestedTask?: string };
+import type { LanguageReport, FormatPreview } from "../features/language/schema.js";
+
+type Detail = { language?: LanguageReport | null; sources?: { files: string[]; truncated: boolean }; understanding?: Understanding | null; review: ReviewPack | null; failure: FailureEvidence | null; context: ContextPack | null; readiness?: DoctorReport; workspace?: WorkspaceReadiness; suggestedTask?: string };
 type PanelProps = PluginDetailTabProps & { compact?: boolean };
 
 const colors = {
@@ -287,6 +289,15 @@ function KujoPanel({ context, compact = false }: PanelProps) {
   const generateContext = usePluginAction("generate-context");
   const captureFailure = usePluginAction("capture-failure");
   const clearArtifacts = usePluginAction("clear-artifacts");
+  const checkSource = usePluginAction("check-kujo-source");
+  const formatSource = usePluginAction("preview-kujo-format");
+  const targetKey = `${context.companyId}:${context.entityType}:${context.entityId}`;
+  const generation = useRef({ key: targetKey, value: 0 });
+  if (generation.current.key !== targetKey) generation.current = { key: targetKey, value: generation.current.value + 1 };
+  const originalSource = useRef<HTMLPreElement>(null);
+  const [focusLine, setFocusLine] = useState<number | null>(null);
+  const [sourcePath, setSourcePath] = useState("");
+  const [formatPreview, setFormatPreview] = useState<FormatPreview | null>(null);
   const understand = usePluginAction("understand-repository");
   const runExample = usePluginAction("run-example");
   const [example, setExample] = useState<ExampleResult | null>(null);
@@ -298,25 +309,37 @@ function KujoPanel({ context, compact = false }: PanelProps) {
   const canGenerate = context.entityType === "project" || context.entityType === "issue";
   const taskValue = task ?? data?.suggestedTask ?? "";
   const workspaceAvailable = data?.workspace?.state === "ready" || data?.workspace?.state === "empty";
-  useEffect(() => { setTask(null); setExample(null); setFailureTitle(""); setFailureLog(""); }, [context.entityId, context.entityType]);
+  useEffect(() => { setBusy(null); setActionError(null); setFocusLine(null); setSourcePath(""); setFormatPreview(null); setTask(null); setExample(null); setFailureTitle(""); setFailureLog(""); }, [targetKey]);
+
+  useEffect(() => {
+    if (focusLine && formatPreview) originalSource.current?.querySelector(`[data-source-line="${focusLine}"]`)?.scrollIntoView({ block: "center" });
+  }, [focusLine, formatPreview]);
 
   async function run(label: string, fn: () => Promise<unknown>) {
+    const requestGeneration = generation.current.value;
     setBusy(label);
     setActionError(null);
     try {
       await fn();
-      await refresh();
+      if (generation.current.value === requestGeneration) await refresh();
     } catch (value) {
-      setActionError(value instanceof Error ? value.message : String(value));
+      if (generation.current.value === requestGeneration) setActionError(value instanceof Error ? value.message : String(value));
     } finally {
-      setBusy(null);
+      if (generation.current.value === requestGeneration) setBusy(null);
     }
+  }
+
+  async function showFormat(path: string, line: number | null = null) {
+    const requestGeneration = generation.current.value;
+    const preview = await formatSource({ entityType: context.entityType, entityId: context.entityId, path }) as FormatPreview;
+    if (generation.current.value !== requestGeneration) return;
+    setSourcePath(path); setFocusLine(line); setFormatPreview(preview);
   }
 
   if (loading) return <Spinner label="Loading Kujo workspace intelligence" />;
   if (error) return <div role="alert" style={{ ...card, color: colors.danger }}>Unable to load Kujo: {error.message}</div>;
 
-  const hasArtifacts = data?.understanding || Boolean(data?.review || data?.failure || data?.context);
+  const hasArtifacts = data?.language || data?.understanding || Boolean(data?.review || data?.failure || data?.context);
 
   return (
     <div style={{ ...panel, ...(compact ? { marginTop: 12 } : {}) }}>
@@ -358,6 +381,47 @@ function KujoPanel({ context, compact = false }: PanelProps) {
           <details><summary>View Kujo source</summary><pre style={{ overflow: "auto", fontSize: 12 }}>{example.source}</pre></details>
           <pre aria-label="Example output" style={{ whiteSpace: "pre-wrap" }}>{example.output}</pre>
         </div>}
+      </section>}
+
+      {canGenerate && <section style={{ ...card, overflowWrap: "anywhere" }} aria-label="Build with Kujo">
+        <SectionTitle title="Build with Kujo" detail="Check your source and preview formatting before you make a change." />
+        <label style={{ ...eyebrow, display: "block" }}>Kujo source
+          <select disabled={busy !== null} aria-label="Kujo source" value={sourcePath} onChange={(event) => { setSourcePath(event.target.value); setFocusLine(null); setFormatPreview(null); }} style={input}>
+            <option value="">{data?.sources?.files.length ? "Choose a source file" : "No Git-visible .kujo files found"}</option>
+            {data?.sources?.files.map((path) => <option key={path} value={path}>{path}</option>)}
+          </select>
+        </label>
+        {data?.sources?.truncated && <div style={muted}>Showing the first 1,000 eligible source paths.</div>}
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <ActionButton disabled={busy !== null || !sourcePath || data?.readiness?.capabilities.language !== "ready"}
+            onClick={() => run("language", () => checkSource({ entityType: context.entityType, entityId: context.entityId, path: sourcePath }))}>
+            {busy === "language" ? "Checking source…" : "Check and lint source"}
+          </ActionButton>
+          <ActionButton tone="secondary" disabled={busy !== null || !sourcePath || data?.readiness?.capabilities.language !== "ready"}
+            onClick={() => run("format", () => showFormat(sourcePath))}>
+            {busy === "format" ? "Preparing preview…" : "Preview formatting"}
+          </ActionButton>
+        </div>
+        <div style={muted}>Checks do not run your program. Formatting previews read the selected source, redact common secrets, and leave project files unchanged.</div>
+        {formatPreview && <div aria-label="Formatting preview">
+          <strong>{formatPreview.changed ? "Formatting changes available" : "Already formatted"}{formatPreview.stale ? " · STALE — preview again" : ""}</strong>
+          <div style={muted}>{formatPreview.redactedCount} redactions · Preview only; no changes applied. Redacted text is unsuitable for automatic replacement.</div>
+          <details open={focusLine !== null}><summary>Original source</summary><pre ref={originalSource} style={{ overflow: "auto", maxHeight: 400 }}>{formatPreview.source.split("\n").map((line, index) => <div key={index} data-source-line={index + 1} style={focusLine === index + 1 ? { background: colors.border } : undefined}><span style={muted}>{index + 1} | </span>{line || " "}</div>)}</pre></details>
+          <details open><summary>Formatted preview</summary><pre style={{ overflow: "auto", maxHeight: 400 }}>{formatPreview.formatted}</pre></details>
+        </div>}
+      </section>}
+      {data?.language && <section style={{ ...card, overflowWrap: "anywhere" }} aria-label="Kujo diagnostics">
+        <SectionTitle title="Kujo diagnostics" detail={`${data.language.path} · Kujo ${data.language.runtimeVersion}${data.language.stale ? " · STALE — check again" : ""}`} />
+        <strong>Source check: {data.language.check} · Lint: {data.language.lint}</strong>
+        <div style={muted}>{data.language.scope}</div>
+        {data.language.diagnostics.map((diagnostic, index) => <div key={index}>
+          <button type="button" disabled={busy !== null || !canGenerate || data.readiness?.capabilities.language !== "ready"}
+            style={{ font: "inherit", color: "inherit", background: "none", border: 0, padding: 0, cursor: "pointer", textDecoration: "underline" }}
+            onClick={() => run("format", () => showFormat(data.language!.path, diagnostic.line ?? 1))}>
+            {data.language!.path}{diagnostic.line ? `:${diagnostic.line}:${diagnostic.column ?? 1}` : ""}
+          </button>
+          <div>{diagnostic.severity} · {diagnostic.tool} · {diagnostic.code}: {diagnostic.message}</div>
+        </div>)}
       </section>}
 
       {data?.understanding && <section style={{ ...card, overflowWrap: "anywhere" }} aria-label="Repository understanding">
