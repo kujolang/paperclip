@@ -1,0 +1,449 @@
+// src/reports.kujo
+// Summary computation and the human / JSON / Markdown report renderers.
+//
+// All string building uses single-string accumulation (out = out + ...) rather
+// than push+join, which can crash the VM on large outputs.
+
+from src.util import dict_get, dict_has, sort_strings, display_rows
+from src.meta import fence_version
+
+// ---- severity ranking ----
+func sev_rank(s) {
+    if s == "error" {
+        return 3
+    }
+    if s == "warning" {
+        return 2
+    }
+    if s == "info" {
+        return 1
+    }
+    return 0
+}
+
+func threshold_rank(fail_on) {
+    if fail_on == "error" {
+        return 3
+    }
+    if fail_on == "warning" {
+        return 2
+    }
+    // none
+    return 9
+}
+
+// Compute summary counts, status, and per-zone breakdown.
+export func summarize(result, cfg) {
+    let viols = result["violations"]
+    let n = len(viols)
+    mut errors = 0
+    mut warnings = 0
+    mut infos = 0
+    mut failing = 0
+    let thresh = threshold_rank(cfg["fail_on"])
+
+    mut i = 0
+    while i < n {
+        let s = viols[i]["severity"]
+        if s == "error" {
+            errors = errors + 1
+        }
+        if s == "warning" {
+            warnings = warnings + 1
+        }
+        if s == "info" {
+            infos = infos + 1
+        }
+        if sev_rank(s) >= thresh {
+            failing = failing + 1
+        }
+        i = i + 1
+    }
+
+    mut status = "passed"
+    if failing > 0 || len(dict_get(result, "skipped_files", [])) > 0 {
+        status = "failed"
+    }
+
+    return {
+        "files_scanned": result["files_scanned"],
+        "imports_checked": result["imports_checked"],
+        "violations": n,
+        "errors": errors,
+        "warnings": warnings,
+        "infos": infos,
+        "failing": failing,
+        "status": status,
+        "skipped_files": len(dict_get(result, "skipped_files", [])),
+        "ignored_violations": len(dict_get(result, "ignored_violations", [])),
+        "zones": zone_summary(cfg["zone_names"], result["zone_files"], viols)
+    }
+}
+
+func zone_summary(zone_names, zone_files, viols) {
+    let zn = len(zone_names)
+    mut out = []
+    mut i = 0
+    while i < zn {
+        let name = zone_names[i]
+        let files = dict_get(zone_files, name, 0)
+        let ze = count_zone(viols, name, "error")
+        let zw = count_zone(viols, name, "warning")
+        out = push(out, { "name": name, "files": files, "errors": ze, "warnings": zw })
+        i = i + 1
+    }
+    return out
+}
+
+func count_zone(viols, zone, severity) {
+    let n = len(viols)
+    mut c = 0
+    mut i = 0
+    while i < n {
+        if viols[i]["from_zone"] == zone {
+            if viols[i]["severity"] == severity {
+                c = c + 1
+            }
+        }
+        i = i + 1
+    }
+    return c
+}
+
+// ---- human renderer ----
+export func render_human(raw_result, raw_summary, config_path) {
+    mut result = raw_result
+    result["violations"] = display_rows(raw_result["violations"], false)
+    result["skipped_files"] = display_rows(dict_get(raw_result, "skipped_files", []), false)
+    mut summary = raw_summary
+    summary["zones"] = display_rows(raw_summary["zones"], false)
+    let viols = result["violations"]
+    mut o = ""
+    o = o + "Fence Report\n"
+    o = o + "============\n\n"
+    o = o + "Status: " + to_upper(summary["status"]) + "\n"
+    o = o + "Files scanned: " + to_string(summary["files_scanned"]) + "\n"
+    o = o + "Imports checked: " + to_string(summary["imports_checked"]) + "\n"
+    o = o + "Violations: " + to_string(summary["violations"]) + "\n"
+    o = o + "Errors: " + to_string(summary["errors"]) + "\n"
+    o = o + "Warnings: " + to_string(summary["warnings"]) + "\n"
+    o = o + "Skipped files: " + to_string(summary["skipped_files"]) + "\n"
+    o = o + "Ignored violations: " + to_string(summary["ignored_violations"]) + "\n"
+
+    if len(viols) > 0 {
+        o = o + "\nViolations\n----------\n"
+        o = o + human_violations(viols)
+    } else {
+        o = o + "\nNo violations found.\n"
+    }
+
+    o = o + "\nSummary by zone\n---------------\n"
+    o = o + human_zone_summary(summary["zones"])
+    if summary["skipped_files"] > 0 {
+        o = o + "\nSkipped files\n-------------\n"
+        o = o + skipped_human(dict_get(result, "skipped_files", []))
+    }
+    return o
+}
+
+func skipped_human(items) {
+    let n = len(items)
+    mut o = ""
+    mut i = 0
+    while i < n {
+        o = o + "- " + items[i]["file"] + ": " + items[i]["reason"] + "\n"
+        i = i + 1
+    }
+    return o
+}
+
+func human_violations(viols) {
+    let n = len(viols)
+    mut o = ""
+    mut i = 0
+    while i < n {
+        let v = viols[i]
+        o = o + "[" + to_upper(v["severity"]) + "] " + v["from_zone"] + " -> " + v["to_zone"] + " is not allowed\n"
+        o = o + "  File: " + v["file"] + ":" + to_string(dict_get(v, "line", 1)) + "\n"
+        if dict_get(v, "from_owner", "") != "" { o = o + "  Owner: " + v["from_owner"] + "\n" }
+        o = o + "  Import: " + v["import"] + "\n"
+        if v["resolved"] != "" {
+            o = o + "  Resolved: " + v["resolved"] + "\n"
+        }
+        o = o + "  Rule: " + v["rule"] + "\n"
+        o = o + "  Suggestion: " + v["suggestion"] + "\n\n"
+        i = i + 1
+    }
+    return o
+}
+
+func human_zone_summary(zones) {
+    let n = len(zones)
+    mut o = ""
+    mut i = 0
+    while i < n {
+        let z = zones[i]
+        let label = z["name"] + ": "
+        mut detail = "0"
+        if z["errors"] > 0 {
+            detail = to_string(z["errors"]) + " error"
+        } else {
+            if z["warnings"] > 0 {
+                detail = to_string(z["warnings"]) + " warning"
+            }
+        }
+        o = o + label + detail + "\n"
+        i = i + 1
+    }
+    return o
+}
+
+// ---- JSON renderer ----
+export func render_json(result, summary, config_path) {
+    let obj = {
+        "schema_version": 1,
+        "version": fence_version(),
+        "status": summary["status"],
+        "summary": {
+            "files_scanned": summary["files_scanned"],
+            "imports_checked": summary["imports_checked"],
+            "violations": summary["violations"],
+            "errors": summary["errors"],
+            "warnings": summary["warnings"]
+            ,"skipped_files": summary["skipped_files"]
+            ,"ignored_violations": summary["ignored_violations"]
+        },
+        "config": { "path": config_path },
+        "zones": summary["zones"],
+        "violations": result["violations"],
+        "skipped_files": dict_get(result, "skipped_files", []),
+        "ignored_violations": dict_get(result, "ignored_violations", [])
+    }
+    return to_json_pretty(obj)
+}
+
+// ---- SARIF 2.1.0 renderer ----
+// Minimal, deterministic SARIF for code-scanning integrations. One rule
+// ("fence.boundary-violation"); each violation becomes a result with an
+// artifactLocation. SARIF levels: error -> error, warning -> warning,
+// info -> note.
+export func render_sarif(result, summary, config_path) {
+    let driver = {
+        "name": "Fence",
+        "version": fence_version(),
+        "informationUri": "https://github.com/kujolang/fence",
+        "rules": [
+            {
+                "id": "fence.boundary-violation",
+                "name": "ArchitectureBoundaryViolation",
+                "shortDescription": { "text": "An import crosses a forbidden architecture boundary." }
+            }
+        ]
+    }
+    let obj = {
+        "version": "2.1.0",
+        "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
+        "runs": [
+            {
+                "tool": { "driver": driver },
+                "results": sarif_results(result["violations"]),
+                "invocations": [sarif_invocation(dict_get(result, "skipped_files", []))]
+            }
+        ]
+    }
+    return to_json_pretty(obj)
+}
+
+func sarif_invocation(skipped) {
+    return {
+        "executionSuccessful": len(skipped) == 0,
+        "toolExecutionNotifications": sarif_skipped_notifications(skipped)
+    }
+}
+
+func sarif_skipped_notifications(skipped) {
+    let n = len(skipped)
+    mut out = []
+    mut i = 0
+    while i < n {
+        out = push(out, {
+            "level": "warning",
+            "message": { "text": skipped[i]["reason"] },
+            "locations": [{ "physicalLocation": { "artifactLocation": { "uri": skipped[i]["file"] } } }]
+        })
+        i = i + 1
+    }
+    return out
+}
+
+func sarif_results(viols) {
+    let n = len(viols)
+    mut out = []
+    mut i = 0
+    while i < n {
+        let v = viols[i]
+        out = push(out, {
+            "ruleId": "fence.boundary-violation",
+            "level": sarif_level(v["severity"]),
+            "message": { "text": v["message"] + " (" + v["rule"] + "). " + v["suggestion"] },
+            "properties": {
+                "confidence": dict_get(v, "confidence", "best_effort"),
+                "fromZone": v["from_zone"],
+                "toZone": v["to_zone"],
+                "fromOwner": dict_get(v, "from_owner", ""),
+                "toOwner": dict_get(v, "to_owner", "")
+            },
+            "locations": [
+                {
+                    "physicalLocation": {
+                        "artifactLocation": { "uri": v["file"] },
+                        "region": { "startLine": dict_get(v, "line", 1) }
+                    }
+                }
+            ]
+        })
+        i = i + 1
+    }
+    return out
+}
+
+func sarif_level(severity) {
+    if severity == "error" {
+        return "error"
+    }
+    if severity == "warning" {
+        return "warning"
+    }
+    return "note"
+}
+
+// ---- Markdown renderer ----
+export func render_markdown(raw_result, raw_summary, config_path) {
+    mut result = raw_result
+    result["violations"] = display_rows(raw_result["violations"], true)
+    result["skipped_files"] = display_rows(dict_get(raw_result, "skipped_files", []), true)
+    mut summary = raw_summary
+    summary["zones"] = display_rows(raw_summary["zones"], true)
+    let viols = result["violations"]
+    mut o = ""
+    o = o + "# Fence Architecture Report\n\n"
+    o = o + "## Summary\n\n"
+    o = o + "- Status: **" + to_upper(summary["status"]) + "**\n"
+    o = o + "- Files scanned: " + to_string(summary["files_scanned"]) + "\n"
+    o = o + "- Imports checked: " + to_string(summary["imports_checked"]) + "\n"
+    o = o + "- Violations: " + to_string(summary["violations"]) + " (" + to_string(summary["errors"]) + " errors, " + to_string(summary["warnings"]) + " warnings)\n\n"
+    o = o + "- Skipped files: " + to_string(summary["skipped_files"]) + "\n\n"
+    o = o + "- Ignored violations: " + to_string(summary["ignored_violations"]) + "\n\n"
+
+    o = o + "## Violations\n\n"
+    o = o + md_severity_section(viols, "error")
+    o = o + "## Warnings\n\n"
+    o = o + md_severity_section(viols, "warning")
+
+    o = o + "## Zone Graph\n\n"
+    o = o + md_zone_graph(summary["zones"])
+
+    o = o + "## Recommended Fixes\n\n"
+    o = o + md_fixes(viols)
+
+    o = o + "## AI / Human Handoff\n\n"
+    o = o + md_handoff(summary, viols)
+    if summary["skipped_files"] > 0 {
+        o = o + "\n## Skipped Files\n\n"
+        o = o + skipped_markdown(dict_get(result, "skipped_files", []))
+    }
+    return o
+}
+
+func skipped_markdown(items) {
+    let n = len(items)
+    mut o = ""
+    mut i = 0
+    while i < n {
+        o = o + "- `" + items[i]["file"] + "`: " + items[i]["reason"] + "\n"
+        i = i + 1
+    }
+    return o
+}
+
+func md_severity_section(viols, severity) {
+    let n = len(viols)
+    mut o = ""
+    mut any = false
+    mut i = 0
+    while i < n {
+        let v = viols[i]
+        if v["severity"] == severity {
+            any = true
+            o = o + "- **" + v["from_zone"] + " -> " + v["to_zone"] + "** in `" + v["file"] + ":" + to_string(dict_get(v, "line", 1)) + "`\n"
+            o = o + "  - Import: `" + v["import"] + "`"
+            if v["resolved"] != "" {
+                o = o + " (resolves to `" + v["resolved"] + "`)"
+            }
+            o = o + "\n"
+            o = o + "  - Rule: " + v["rule"] + "\n"
+            o = o + "  - Fix: " + v["suggestion"] + "\n"
+        }
+        i = i + 1
+    }
+    if any == false {
+        o = o + "_None._\n"
+    }
+    o = o + "\n"
+    return o
+}
+
+func md_zone_graph(zones) {
+    let n = len(zones)
+    mut o = "```\n"
+    mut i = 0
+    while i < n {
+        let z = zones[i]
+        o = o + z["name"] + ": " + to_string(z["files"]) + " files, " + to_string(z["errors"]) + " errors, " + to_string(z["warnings"]) + " warnings\n"
+        i = i + 1
+    }
+    o = o + "```\n\n"
+    return o
+}
+
+func md_fixes(viols) {
+    let n = len(viols)
+    if n == 0 {
+        return "No fixes required.\n\n"
+    }
+    mut o = ""
+    mut i = 0
+    while i < n {
+        let v = viols[i]
+        o = o + to_string(i + 1) + ". `" + v["file"] + ":" + to_string(dict_get(v, "line", 1)) + "`: " + v["suggestion"] + "\n"
+        i = i + 1
+    }
+    o = o + "\n"
+    return o
+}
+
+func md_handoff(summary, viols) {
+    mut o = ""
+    if summary["skipped_files"] > 0 { return "Fence could not analyze every selected file. Resolve the skipped-file errors and rerun the check.\n" }
+    if summary["failing"] == 0 {
+        o = o + "Fence found no boundary violations at the configured threshold.\n"
+        return o
+    }
+    o = o + "Fence found architecture boundary violations.\n\n"
+    o = o + "Start by fixing error-level violations first:\n\n"
+    let n = len(viols)
+    mut shown = 0
+    mut i = 0
+    while i < n {
+        let v = viols[i]
+        if v["severity"] == "error" {
+            shown = shown + 1
+            o = o + to_string(shown) + ". `" + v["file"] + ":" + to_string(dict_get(v, "line", 1)) + "` depends on " + v["to_zone"] + " (" + v["suggestion"] + ")\n"
+        }
+        i = i + 1
+    }
+    o = o + "\n"
+    o = o + "Then re-run `kujo run fence.kujo -- check`.\n"
+    o = o + "Do not weaken `fence.toml` unless the architecture rule is actually wrong.\n"
+    return o
+}

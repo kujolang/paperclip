@@ -1,0 +1,173 @@
+// src/cycles.kujo
+// Detect dependency cycles among zones' allowed edges (can_depend_on).
+//
+// Uses Kahn's topological-sort algorithm (iterative, no recursion) to find
+// nodes that cannot be ordered — i.e. nodes that participate in a cycle. A
+// best-effort concrete cycle path is then reconstructed by walking forward
+// within the leftover set. Zone graphs are tiny, so this is cheap.
+
+from src.util import arr_has, sort_strings
+
+// Build adjacency over VALID zone targets only (drop self-edges and edges to
+// undefined zones — those are caught elsewhere).
+func build_adj(cfg) {
+    let zones = cfg["zones"]
+    let names = cfg["zone_names"]
+    let n = len(names)
+    mut adj = {}
+    mut i = 0
+    while i < n {
+        let name = names[i]
+        let targets = zones[name]["can_depend_on"]
+        let tn = len(targets)
+        mut clean = []
+        mut j = 0
+        while j < tn {
+            let t = targets[j]
+            if t != name {
+                if arr_has(names, t) {
+                    if arr_has(clean, t) == false {
+                        clean = push(clean, t)
+                    }
+                }
+            }
+            j = j + 1
+        }
+        adj[name] = clean
+        i = i + 1
+    }
+    return adj
+}
+
+// Return the sorted set of zones that participate in a cycle (may be empty).
+export func cycle_nodes(cfg) {
+    let names = cfg["zone_names"]
+    let adj = build_adj(cfg)
+    let n = len(names)
+
+    // Indegree over the cleaned adjacency.
+    mut indeg = {}
+    mut a = 0
+    while a < n {
+        indeg[names[a]] = 0
+        a = a + 1
+    }
+    mut b = 0
+    while b < n {
+        let outs = adj[names[b]]
+        let on = len(outs)
+        mut k = 0
+        while k < on {
+            let t = outs[k]
+            indeg[t] = indeg[t] + 1
+            k = k + 1
+        }
+        b = b + 1
+    }
+
+    // Kahn: repeatedly remove indegree-0 nodes.
+    mut removed = {}
+    mut changed = true
+    while changed {
+        changed = false
+        mut c = 0
+        while c < n {
+            let name = names[c]
+            if has_key(removed, name) == 0 {
+                if indeg[name] == 0 {
+                    removed[name] = 1
+                    changed = true
+                    let outs = adj[name]
+                    let on = len(outs)
+                    mut k = 0
+                    while k < on {
+                        let t = outs[k]
+                        indeg[t] = indeg[t] - 1
+                        k = k + 1
+                    }
+                }
+            }
+            c = c + 1
+        }
+    }
+
+    // Leftover nodes are in (or blocked by) cycles.
+    mut left = []
+    mut d = 0
+    while d < n {
+        if has_key(removed, names[d]) == 0 {
+            left = push(left, names[d])
+        }
+        d = d + 1
+    }
+    return sort_strings(left)
+}
+
+// Best-effort concrete cycle as a list like ["a", "b", "a"], or [] if none.
+export func one_cycle(cfg) {
+    let left = cycle_nodes(cfg)
+    if len(left) == 0 {
+        return []
+    }
+    let adj = build_adj(cfg)
+    let start = left[0]
+
+    mut path = [start]
+    mut current = start
+    mut guard = 0
+    let limit = len(left) + 1
+    while guard <= limit {
+        let nxt = predecessor(adj, current, left)
+        if nxt == "" {
+            return path
+        }
+        if arr_has(path, nxt) {
+            path = push(path, nxt)
+            return reversed(slice_from(path, nxt))
+        }
+        path = push(path, nxt)
+        current = nxt
+        guard = guard + 1
+    }
+    return path
+}
+
+// Every Kahn remainder node has an incoming edge from the remainder. Walking
+// predecessors cannot get stuck on a sink that is merely blocked by a cycle.
+func predecessor(adj, current, nodes) {
+    mut i = 0
+    while i < len(nodes) {
+        if arr_has(adj[nodes[i]], current) { return nodes[i] }
+        i = i + 1
+    }
+    return ""
+}
+
+func reversed(items) {
+    mut out = []
+    mut i = len(items) - 1
+    while i >= 0 { out = push(out, items[i]); i = i - 1 }
+    return out
+}
+
+// Return the sub-path starting at the first occurrence of `node`.
+func slice_from(path, node) {
+    let n = len(path)
+    mut start = 0
+    mut i = 0
+    while i < n {
+        if path[i] == node {
+            start = i
+            i = n
+        } else {
+            i = i + 1
+        }
+    }
+    mut out = []
+    mut j = start
+    while j < n {
+        out = push(out, path[j])
+        j = j + 1
+    }
+    return out
+}

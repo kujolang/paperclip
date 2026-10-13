@@ -1,0 +1,63 @@
+// src/output.kujo
+// Centralized, path-safe file writing for Fence.
+
+from src.paths import is_safe_output, normalize_sep
+
+// Write `content` to `path` after enforcing path safety.
+// Returns { ok: bool, error: string }. Never overwrites silently unless
+// `allow_overwrite` is true. Atomic publication preserves an existing file
+// when writing fails and never exposes a partially written report.
+export func write_safe(path, content, allow_overwrite) {
+    if is_safe_output(path) == false {
+        return { "ok": false, "error": "unsafe output path: " + path }
+    }
+    let normalized = normalize_sep(path)
+    if ends_with(normalized, "/") { return { "ok": false, "error": "output path must name a file: " + path } }
+    // Preserve harmless ./ and repeated separators accepted by the CLI, while
+    // handing the native boundary only normal components. Traversal was rejected above.
+    let parts = split(normalized, "/")
+    mut p = ""
+    mut i = 0
+    while i < len(parts) {
+        if parts[i] != "" && parts[i] != "." {
+            if p != "" { p = p + "/" }
+            p = p + parts[i]
+        }
+        i = i + 1
+    }
+
+    // Parent traversal, creation and atomic publication share native directory
+    // handles. There is deliberately no path-based fallback for old runtimes.
+    try {
+        write_file_atomic_beneath(".", p, content, allow_overwrite)
+    } except e {
+        return { "ok": false, "error": "cannot write output file: " + p }
+    }
+    return { "ok": true, "error": "" }
+}
+
+// Apply optional enterprise output-root policy before the standard path and
+// symlink checks. Empty roots preserve the v1-compatible default.
+export func write_safe_under(path, content, allow_overwrite, roots) {
+    if output_root_allowed(path, roots) == false {
+        return { "ok": false, "error": "output path is outside configured output_roots: " + path }
+    }
+    return write_safe(path, content, allow_overwrite)
+}
+
+export func output_root_allowed(path, roots) {
+    if len(roots) == 0 {
+        return true
+    }
+    let p = normalize_sep(path)
+    let n = len(roots)
+    mut i = 0
+    while i < n {
+        let root = normalize_sep(roots[i])
+        if p == root || starts_with(p, root + "/") {
+            return true
+        }
+        i = i + 1
+    }
+    return false
+}

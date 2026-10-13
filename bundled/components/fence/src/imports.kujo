@@ -1,0 +1,321 @@
+// src/imports.kujo
+// Best-effort, deterministic import extraction for the languages Fence scans.
+//
+// This is NOT a parser: it scans line by line with simple string/regex rules.
+// Each extractor returns an array of records:
+//   { kind: "import"|"from"|"require"|"dynamic"|"use"|"mod", path, raw, line }
+// `path` is the module/path string exactly as written in the source.
+//
+// Extractors covered here: Kujo, JavaScript/TypeScript, Python.
+// Rust/PHP/Go live in imports_ext.kujo (loaded via detect_imports).
+
+from src.paths import file_ext
+from src.imports_ext import extract_rust, extract_php, extract_go
+from src.parser_adapters import adapter_for, run_adapter
+
+func rec(kind, path, raw, line) {
+    return { "kind": kind, "path": path, "raw": raw, "line": line, "confidence": "best_effort", "detector": "builtin" }
+}
+
+// Split content into lines (handles \n; \r is trimmed per-line).
+func to_lines(content) {
+    return split(content, "\n")
+}
+
+func clean_line(line) {
+    return trim(replace(line, "\r", ""))
+}
+
+// Extract the contents of the first single/double-quoted string on the line.
+// Returns "" when there is no quoted string.
+export func first_quoted(s) {
+    mut i = 0
+    mut q = ""
+    mut start = -1
+    loop {
+        let ch = substring(s, i, i + 1)
+        if ch == "" {
+            return ""
+        }
+        if start < 0 {
+            if ch == "'" || ch == "\"" {
+                q = ch
+                start = i + 1
+            }
+        } else {
+            if ch == q {
+                return substring(s, start, i)
+            }
+        }
+        i = i + 1
+    }
+    return ""
+}
+
+// Strip trailing separators (`;`, `,`) and surrounding whitespace.
+func strip_trailing(tok) {
+    return regex_replace(trim(tok), "[;,]+$", "")
+}
+
+// ---- Kujo ----
+// import module_name
+// from module_name import a, b
+export func extract_kujo(content) {
+    let lines = to_lines(content)
+    let n = len(lines)
+    mut out = []
+    mut i = 0
+    while i < n {
+        let line = clean_line(lines[i])
+        if regex_match(line, "^from\\s+[A-Za-z0-9_.]+\\s+import\\b") {
+            let parts = regex_split(line, "\\s+")
+            out = push(out, rec("from", strip_trailing(parts[1]), line, i + 1))
+        } else {
+            if regex_match(line, "^import\\s+[A-Za-z0-9_.]+") {
+                let parts = regex_split(line, "\\s+")
+                out = push(out, rec("import", strip_trailing(parts[1]), line, i + 1))
+            }
+        }
+        i = i + 1
+    }
+    return out
+}
+
+// ---- Python ----
+// import foo / import foo.bar
+// from foo import bar / from . import x / from ..domain import y
+export func extract_python(content) {
+    let lines = to_lines(content)
+    let n = len(lines)
+    mut out = []
+    mut i = 0
+    while i < n {
+        let line = clean_line(lines[i])
+        if regex_match(line, "^from\\s+[.A-Za-z0-9_]+\\s+import\\b") {
+            let parts = regex_split(line, "\\s+")
+            out = push(out, rec("from", strip_trailing(parts[1]), line, i + 1))
+        } else {
+            if regex_match(line, "^import\\s+[A-Za-z0-9_.]+") {
+                out = add_python_imports(out, line, i + 1)
+            }
+        }
+        i = i + 1
+    }
+    return out
+}
+
+// Python allows `import os, package.module as alias`; emit one dependency per
+// imported module so grouped imports cannot hide an architecture crossing.
+func add_python_imports(out, line, line_number) {
+    mut res = out
+    let body = substring(line, 7, len(line))
+    let toks = split(body, ",")
+    let n = len(toks)
+    mut i = 0
+    while i < n {
+        let path = python_import_name(toks[i])
+        if path != "" {
+            res = push(res, rec("import", path, line, line_number))
+        }
+        i = i + 1
+    }
+    return res
+}
+
+func python_import_name(tok) {
+    let t = strip_trailing(tok)
+    if t == "" {
+        return ""
+    }
+    let parts = regex_split(t, "\\s+")
+    return strip_trailing(parts[0])
+}
+
+// ---- JavaScript / TypeScript ----
+// import x from "./x"
+// import { x } from "../x"
+// import "./side-effect"
+// export { x } from "./x"      (re-export)
+// const x = require("./x")
+// const x = await import("./x")
+//
+// Best-effort comment handling: whole-line `//` comments, single-line and
+// multi-line `/* ... */` block comments are skipped so commented-out imports
+// are not falsely reported. A trailing `// note` after a real import is fine
+// because first_quoted() picks the import's own quoted path.
+export func extract_javascript(content) {
+    let lines = to_lines(content)
+    let n = len(lines)
+    mut out = []
+    mut in_comment = false
+    mut pending = ""
+    mut pending_line = 0
+    mut i = 0
+    while i < n {
+        let line = clean_line(lines[i])
+        if in_comment {
+            if contains(line, "*/") == 1 {
+                in_comment = false
+                let close_at = index_of(line, "*/")
+                let after_comment = trim(substring(line, close_at + 2, len(line)))
+                if after_comment != "" {
+                    out = js_scan_line(out, after_comment, i + 1)
+                }
+            }
+        } else {
+            if is_js_comment_open(line) {
+                if contains(line, "*/") == 1 {
+                    let close_inline = index_of(line, "*/")
+                    let after_inline = trim(substring(line, close_inline + 2, len(line)))
+                    if after_inline != "" {
+                        out = js_scan_line(out, after_inline, i + 1)
+                    }
+                } else {
+                    in_comment = true
+                }
+            } else {
+                if is_line_comment(line) == false {
+                    if pending != "" {
+                        pending = pending + " " + line
+                        if first_quoted(pending) != "" {
+                            out = js_scan_line(out, pending, pending_line)
+                            pending = ""
+                            pending_line = 0
+                        }
+                    } else {
+                        if regex_match(line, "^(import|export)\\b") && first_quoted(line) == "" {
+                            pending = line
+                            pending_line = i + 1
+                        } else {
+                            out = js_scan_line(out, line, i + 1)
+                        }
+                    }
+                }
+            }
+        }
+        i = i + 1
+    }
+    return out
+}
+
+// A line that begins a block comment (and is therefore not code we scan).
+func is_js_comment_open(line) {
+    return starts_with(line, "/*")
+}
+
+// A whole-line `//` comment or a continuation `*` line inside a block.
+func is_line_comment(line) {
+    if starts_with(line, "//") {
+        return true
+    }
+    if starts_with(line, "*") {
+        return true
+    }
+    return false
+}
+
+func js_scan_line(out, line, line_number) {
+    if regex_match(line, "\\bfrom\\s*['\"]") {
+        let from_path = quoted_after(line, "from")
+        if from_path != "" {
+            return push(out, rec("from", from_path, line, line_number))
+        }
+    }
+    if regex_match(line, "\\brequire\\s*\\(\\s*['\"]") {
+        let require_path = quoted_after(line, "require")
+        if require_path != "" {
+            return push(out, rec("require", require_path, line, line_number))
+        }
+    }
+    if regex_match(line, "\\bimport\\s*\\(\\s*['\"]") {
+        let dynamic_path = quoted_after(line, "import")
+        if dynamic_path != "" {
+            return push(out, rec("dynamic", dynamic_path, line, line_number))
+        }
+    }
+    if regex_match(line, "^import\\s+['\"]") {
+        let side_effect_path = quoted_after(line, "import")
+        if side_effect_path != "" {
+            return push(out, rec("import", side_effect_path, line, line_number))
+        }
+    }
+    return out
+}
+
+// Extract the first quoted string after a matched import keyword, rather than
+// the first string on the whole line (which may belong to earlier code).
+func quoted_after(line, keyword) {
+    let at = index_of(line, keyword)
+    if at < 0 {
+        return ""
+    }
+    return first_quoted(substring(line, at + len(keyword), len(line)))
+}
+
+// Dispatch by extension. Returns [] for unknown/unsupported extensions.
+// An unreadable file (permissions, race) is skipped rather than aborting the
+// whole scan.
+export func detect_imports(file_path) {
+    return detect_imports_result(file_path)["imports"]
+}
+
+export func detect_imports_result(file_path) {
+    return detect_imports_with_adapters(file_path, {})
+}
+
+export func detect_imports_with_adapters(file_path, adapters) {
+    let adapter = adapter_for(file_path, adapters)
+    if len(adapter) > 0 { return run_adapter(file_path, adapter) }
+    mut content = ""
+    try {
+        content = read_file(file_path)
+    } except e {
+        return { "ok": false, "imports": [], "error": "unreadable source file", "file": file_path, "detector": "builtin" }
+    }
+    return { "ok": true, "imports": extract_for_ext(file_ext(file_path), content), "error": "", "file": file_path, "detector": "builtin" }
+}
+
+// Separated so it can be unit-tested without touching the filesystem.
+export func extract_for_ext(ext, content) {
+    if ext == ".kujo" {
+        return extract_kujo(content)
+    }
+    if ext == ".py" {
+        return extract_python(content)
+    }
+    if is_js_ext(ext) {
+        return extract_javascript(content)
+    }
+    if ext == ".rs" {
+        return extract_rust(content)
+    }
+    if ext == ".php" {
+        return extract_php(content)
+    }
+    if ext == ".go" {
+        return extract_go(content)
+    }
+    return []
+}
+
+func is_js_ext(ext) {
+    if ext == ".js" {
+        return true
+    }
+    if ext == ".jsx" {
+        return true
+    }
+    if ext == ".ts" {
+        return true
+    }
+    if ext == ".tsx" {
+        return true
+    }
+    if ext == ".mjs" {
+        return true
+    }
+    if ext == ".cjs" {
+        return true
+    }
+    return false
+}

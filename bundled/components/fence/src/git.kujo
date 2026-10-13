@@ -1,0 +1,133 @@
+// src/git.kujo
+// Minimal, safe Git integration for Fence.
+//
+// Only used by `--changed-only`/`--base` and `doctor`. Ref names are strictly
+// validated before structured argv calls. NUL-delimited paths preserve Git
+// filenames without quoting, line splitting, or whitespace trimming.
+
+
+// True when the current working directory is inside a Git repo.
+export func is_git_repo() {
+    if path_is_dir(".git") {
+        return true
+    }
+    let r = spawn_process(["git", "rev-parse", "--is-inside-work-tree"])
+    if r.success == true {
+        return trim(r.stdout) == "true"
+    }
+    return false
+}
+
+// Current branch name, or "" when unavailable.
+export func current_branch() {
+    let r = spawn_process(["git", "rev-parse", "--abbrev-ref", "HEAD"])
+    if r.success == true {
+        return trim(r.stdout)
+    }
+    return ""
+}
+
+// Validate a git ref: allow letters, digits, and a small safe punctuation set
+// (/ . _ - and ~ ^ for relative refs). Reject everything else, including
+// whitespace, quotes, semicolons, and shell metacharacters.
+export func valid_ref(ref) {
+    if ref == "" {
+        return false
+    }
+    if len(ref) > 200 {
+        return false
+    }
+    // Prevent option injection: even shell-safe refs such as `--help` would be
+    // interpreted by Git as flags when appended to `git diff --name-only`.
+    if starts_with(ref, "-") {
+        return false
+    }
+    if contains(ref, "..") == 1 || contains(ref, "//") == 1 || contains(ref, "@{") == 1 {
+        return false
+    }
+    if ends_with(ref, ".") || ends_with(ref, "/") || ends_with(ref, ".lock") {
+        return false
+    }
+    return regex_match(ref, "^[A-Za-z0-9._/~^-]+$")
+}
+
+// Return changed files relative to `base`. Returns:
+//   { ok, error, code, files }
+export func changed_files(base) {
+    if is_git_repo() == false {
+        return mk_err("not a Git repository (required for --changed-only)", 2)
+    }
+    if valid_ref(base) == false {
+        return mk_err("invalid --base ref: " + base, 2)
+    }
+
+    // Tracked changes vs base, plus staged/unstaged changes, plus untracked.
+    let diff = spawn_process(["git", "diff", "--name-only", "-z", base, "--"])
+    if diff.success == false || diff.stdout_truncated {
+        return mk_err("git diff failed or its output was truncated for base " + base + ". Verify the ref exists locally; in a shallow CI checkout, fetch the base branch with sufficient history before running Fence.", 4)
+    }
+    let untracked = spawn_process(["git", "ls-files", "--others", "--exclude-standard", "-z"])
+
+    if untracked.success == false || untracked.stdout_truncated {
+        return mk_err("git ls-files failed or its output was truncated; cannot select a complete changed-file set", 4)
+    }
+    let files = sort(append_unique(parse_paths(diff.stdout), parse_paths(untracked.stdout)))
+    return { "ok": true, "error": "", "code": 0, "files": files }
+}
+
+// Count of changed files vs HEAD (best-effort, for diagnostics). Returns -1 on
+// failure.
+export func changed_count() {
+    if is_git_repo() == false {
+        return -1
+    }
+    let diff = spawn_process(["git", "diff", "--name-only", "-z", "HEAD", "--"])
+    if diff.success == false || diff.stdout_truncated {
+        return -1
+    }
+    return len(parse_paths(diff.stdout))
+}
+
+func mk_err(msg, code) {
+    return { "ok": false, "error": msg, "code": code, "files": [] }
+}
+
+func parse_paths(text) {
+    let raw = split(text, parse_json("\"\\u0000\""))
+    let n = len(raw)
+    mut out = []
+    mut i = 0
+    while i < n {
+        let line = raw[i]
+        if line != "" {
+            out = push(out, line)
+        }
+        i = i + 1
+    }
+    return out
+}
+
+func append_unique(base, extra) {
+    mut out = base
+    let n = len(extra)
+    mut i = 0
+    while i < n {
+        if contains_path(out, extra[i]) == false {
+            out = push(out, extra[i])
+        }
+        i = i + 1
+    }
+    return out
+}
+
+func contains_path(arr, p) {
+    let n = len(arr)
+    mut i = 0
+    while i < n {
+        if arr[i] == p {
+            return true
+        }
+        i = i + 1
+    }
+    return false
+}

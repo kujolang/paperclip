@@ -1,0 +1,377 @@
+// src/resolve.kujo
+// Pragmatic, best-effort import resolution.
+//
+// Converts a raw import string + the file it appears in into one of:
+//   { status: "internal", resolved: "<repo path>", raw }
+//   { status: "external", resolved: "",            raw }
+//   { status: "unknown",  resolved: "",            raw }
+//
+// "internal" => resolved to a real file in the working tree (maps to a zone).
+// "external" => a third-party / stdlib package (never a violation in v1).
+// "unknown"  => looked internal (relative or aliased) but did not resolve;
+//               subject to unknown_dependency_policy.
+
+from src.paths import normalize_sep, parent_dir, file_ext
+from src.util import dict_has
+
+// Candidate file extensions tried for extensionless imports.
+func ext_list() {
+    return [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".py", ".rs", ".php", ".go", ".kujo"]
+}
+
+func mk(status, resolved, raw) {
+    return { "status": status, "resolved": resolved, "raw": raw }
+}
+
+// True for JS/TS-style relative paths (`./x`, `../x`).
+func is_rel_slash(raw) {
+    if starts_with(raw, "./") {
+        return true
+    }
+    if starts_with(raw, "../") {
+        return true
+    }
+    return false
+}
+
+// Normalize a path containing `.`/`..` segments into a clean repo path.
+func join_path(dir, rel) {
+    mut combined = rel
+    if dir != "" { combined = dir + "/" + rel }
+    mut normalized = normalize_sep(combined)
+    mut prefix = ""
+    mut rooted = false
+    mut floor = 0
+    let verbatim = starts_with(normalized, "//?/")
+    if verbatim {
+        normalized = substring(normalized, 4, len(normalized))
+        prefix = "//?/"
+        rooted = true
+        floor = 1
+        if starts_with(normalized, "UNC/") {
+            normalized = substring(normalized, 4, len(normalized))
+            prefix = "//?/UNC/"
+            floor = 2
+        }
+    } else if starts_with(normalized, "//") {
+        normalized = substring(normalized, 2, len(normalized))
+        prefix = "//"
+        rooted = true
+        floor = 2
+    } else if len(normalized) >= 3 && substring(normalized, 1, 3) == ":/" {
+        rooted = true
+        floor = 1
+    } else if starts_with(normalized, "/") {
+        prefix = "/"
+        rooted = true
+    }
+    let segs = split(normalized, "/")
+    let n = len(segs)
+    mut stack = []
+    mut i = 0
+    while i < n {
+        let s = segs[i]
+        if s == "" {
+            // skip empty (from leading/duplicate slashes)
+        } else {
+            if s == "." {
+                // skip
+            } else {
+                if s == ".." {
+                    if len(stack) > floor && stack[len(stack) - 1] != ".." {
+                        let popped = pop(stack)
+                        stack = popped[0]
+                    } else if rooted == false {
+                        stack = push(stack, "..")
+                    }
+                } else {
+                    stack = push(stack, s)
+                }
+            }
+        }
+        i = i + 1
+    }
+    mut joined = prefix + join_segs(stack)
+    if rooted && floor == 1 && len(stack) == 1 && ends_with(stack[0], ":") { joined = joined + "/" }
+    // Windows verbatim paths require backslashes, including their namespace
+    // prefix. Do not turn \\?\ into a single rooted slash during normalization.
+    if verbatim { return replace(joined, "/", "\\") }
+    return joined
+}
+
+func join_segs(segs) {
+    let n = len(segs)
+    if n == 0 {
+        return ""
+    }
+    mut out = segs[0]
+    mut i = 1
+    while i < n {
+        out = out + "/" + segs[i]
+        i = i + 1
+    }
+    return out
+}
+
+// Try a base path against known extensions and directory-index files.
+// Returns the resolved repo path, or "" if nothing exists.
+export func try_candidates(raw_base) {
+    return try_candidates_in(raw_base, false)
+}
+
+// A dictionary inventory is authoritative: never consult ambient filesystem
+// state for missing entries. false preserves the ordinary CLI resolver.
+func try_candidates_in(raw_base, inventory) {
+    // Filesystem lookup and zone matching must share the same lexical identity.
+    // Alias and direct imports may contain dot segments, just like relatives.
+    mut base = raw_base
+    if contains(base, "/.") == 1 || starts_with(base, ".") || contains(base, "//") == 1 || contains(base, "\\") == 1 {
+        base = join_path("", base)
+    }
+    if base == "" {
+        return ""
+    }
+    let inventory_mode = type_of(inventory) == "dict"
+    if (inventory_mode && dict_has(inventory, base)) || (inventory_mode == false && file_exists(base)) {
+        if inventory_mode || path_is_dir(base) == false {
+            return base
+        }
+    }
+    let exts = ext_list()
+    let en = len(exts)
+    mut i = 0
+    while i < en {
+        let cand_f = base + exts[i]
+        if (inventory_mode && dict_has(inventory, cand_f)) || (inventory_mode == false && file_exists(cand_f)) {
+            return cand_f
+        }
+        i = i + 1
+    }
+    // directory index: base/index.<ext>, base/mod.rs, base/__init__.py
+    mut j = 0
+    while j < en {
+        let cand_idx = base + "/index" + exts[j]
+        if (inventory_mode && dict_has(inventory, cand_idx)) || (inventory_mode == false && file_exists(cand_idx)) {
+            return cand_idx
+        }
+        j = j + 1
+    }
+    if (inventory_mode && dict_has(inventory, base + "/mod.rs")) || (inventory_mode == false && file_exists(base + "/mod.rs")) {
+        return base + "/mod.rs"
+    }
+    if (inventory_mode && dict_has(inventory, base + "/__init__.py")) || (inventory_mode == false && file_exists(base + "/__init__.py")) {
+        return base + "/__init__.py"
+    }
+    return ""
+}
+
+// Convert a module-ish import string into a slash path (no extension).
+func module_to_path(raw) {
+    mut p = raw
+    if contains(p, "::") == 1 {
+        p = replace(p, "::", "/")
+        if starts_with(p, "crate/") {
+            p = substring(p, 6, len(p))
+        }
+        if starts_with(p, "self/") {
+            p = substring(p, 5, len(p))
+        }
+        if starts_with(p, "super/") {
+            p = substring(p, 6, len(p))
+        }
+        return p
+    }
+    if contains(p, "\\") == 1 {
+        return replace(p, "\\", "/")
+    }
+    if contains(p, "/") == 1 {
+        return p
+    }
+    // dotted Kujo/Python module path
+    return replace(p, ".", "/")
+}
+
+// Apply the first matching alias prefix. Returns "" if no alias applies.
+func apply_alias(raw, aliases) {
+    let names = keys(aliases)
+    let n = len(names)
+    mut best_key = ""
+    mut best_target = ""
+    mut i = 0
+    while i < n {
+        let key = names[i]
+        let target = aliases[key]
+        // Exact alias or alias-prefixed path: "@" or "@/foo".
+        if raw == key {
+            if len(key) > len(best_key) {
+                best_key = key
+                best_target = target
+            }
+        } else {
+            if starts_with(raw, key + "/") {
+                if len(key) > len(best_key) {
+                    best_key = key
+                    best_target = target
+                }
+            }
+        }
+        i = i + 1
+    }
+    if best_key == "" {
+        return ""
+    }
+    if raw == best_key {
+        return best_target
+    }
+    let rest = substring(raw, len(best_key) + 1, len(raw))
+    return best_target + "/" + rest
+}
+
+// Resolve Rust module-relative paths. `self` starts beside the current module,
+// each `super` ascends one module directory, and a bare module name is first
+// tried beside the importing file (the form emitted for `mod child;`).
+func rust_relative_base(raw, current_file) {
+    mut p = replace(raw, "::", "/")
+    mut dir = parent_dir(current_file)
+    if starts_with(p, "self/") {
+        p = substring(p, 5, len(p))
+        return dir + "/" + p
+    }
+    if starts_with(p, "super/") {
+        while starts_with(p, "super/") {
+            dir = parent_dir(dir)
+            p = substring(p, 6, len(p))
+        }
+        return dir + "/" + p
+    }
+    if contains(raw, "::") == 0 {
+        return dir + "/" + raw
+    }
+    return ""
+}
+
+// Python-style relative base: count leading dots; one dot = current dir,
+// each extra dot goes up one level.
+func python_rel_base(raw, current_file) {
+    mut dots = 0
+    loop {
+        let ch = substring(raw, dots, dots + 1)
+        if ch == "." {
+            dots = dots + 1
+        } else {
+            break
+        }
+    }
+    let tail = substring(raw, dots, len(raw))
+    let tail_path = replace(tail, ".", "/")
+    mut dir = parent_dir(current_file)
+    mut up = dots - 1
+    while up > 0 {
+        dir = parent_dir(dir)
+        up = up - 1
+    }
+    if tail_path == "" {
+        return dir
+    }
+    if dir == "" {
+        return tail_path
+    }
+    return dir + "/" + tail_path
+}
+
+// Main entry point.
+export func resolve_import(raw, current_file, source_roots, aliases) {
+    return resolve_import_with_go(raw, current_file, source_roots, aliases, "")
+}
+
+export func resolve_import_with_go(raw, current_file, source_roots, aliases, go_module) {
+    return resolve_import_with_inventory(raw, current_file, source_roots, aliases, go_module, false)
+}
+
+// Snapshot integrations pass a dictionary of available file paths. Existing
+// resolution precedence is unchanged, but lookup never escapes that inventory.
+export func resolve_import_with_inventory(raw, current_file, source_roots, aliases, go_module, inventory) {
+    if type_of(inventory) != "dict" {
+        if type_of(inventory) != type_of(false) || inventory != false { throw("resolution inventory must be a dictionary or false") }
+    }
+    // 1. JS/TS relative.
+    if is_rel_slash(raw) {
+        let base_rel = join_path(parent_dir(current_file), raw)
+        let r_rel = try_candidates_in(base_rel, inventory)
+        if r_rel != "" {
+            return mk("internal", r_rel, raw)
+        }
+        return mk("unknown", "", raw)
+    }
+
+    // 2. Python-style dotted relative (leading dot, no slash).
+    if starts_with(raw, ".") {
+        if contains(raw, "/") == 0 {
+            let base_py = python_rel_base(raw, current_file)
+            let r_py = try_candidates_in(base_py, inventory)
+            if r_py != "" {
+                return mk("internal", r_py, raw)
+            }
+            return mk("unknown", "", raw)
+        }
+    }
+
+    // 3. Rust module-relative imports (`mod child`, `self::`, `super::`).
+    if file_ext(current_file) == ".rs" {
+        let rust_base = rust_relative_base(raw, current_file)
+        if rust_base != "" {
+            let r_rust = try_candidates_in(rust_base, inventory)
+            if r_rust != "" {
+                return mk("internal", r_rust, raw)
+            }
+        }
+    }
+
+    // 4. Go module prefix, e.g. `github.com/acme/app/domain` -> `domain`.
+    if file_ext(current_file) == ".go" && go_module != "" {
+        if starts_with(raw, go_module + "/") {
+            let go_path = substring(raw, len(go_module) + 1, len(raw))
+            let r_go = try_under_roots(go_path, source_roots, inventory)
+            if r_go != "" { return mk("internal", r_go, raw) }
+            return mk("unknown", "", raw)
+        }
+    }
+
+    // 5. Alias prefix.
+    let aliased = apply_alias(raw, aliases)
+    if aliased != "" {
+        let r_alias = try_candidates_in(aliased, inventory)
+        if r_alias != "" {
+            return mk("internal", r_alias, raw)
+        }
+        return mk("unknown", "", raw)
+    }
+
+    // 6. Root-relative / dotted module path.
+    let modpath = module_to_path(raw)
+    let direct = try_candidates_in(modpath, inventory)
+    if direct != "" {
+        return mk("internal", direct, raw)
+    }
+    let under = try_under_roots(modpath, source_roots, inventory)
+    if under != "" {
+        return mk("internal", under, raw)
+    }
+
+    // 7. Anything else is an external package.
+    return mk("external", "", raw)
+}
+
+func try_under_roots(modpath, source_roots, inventory) {
+    let n = len(source_roots)
+    mut i = 0
+    while i < n {
+        let cand = source_roots[i] + "/" + modpath
+        let r = try_candidates_in(cand, inventory)
+        if r != "" {
+            return r
+        }
+        i = i + 1
+    }
+    return ""
+}

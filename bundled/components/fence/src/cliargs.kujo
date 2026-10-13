@@ -1,0 +1,96 @@
+// src/cliargs.kujo
+// Minimal command-line parsing for Fence.
+//
+// Produces { command, positionals[], flags{} }. Flags accept the forms:
+//   --name value     -> flags["name"] = "value"
+//   --name=value     -> flags["name"] = "value"
+//   --flag           -> flags["flag"] = "true"   (when not followed by a value)
+// Known value-flags are passed in so booleans are not greedily consumed.
+
+from src.util import dict_has
+
+func arr_contains_string(items, needle) {
+    mut i = 0
+    while i < len(items) {
+        if items[i] == needle {
+            return true
+        }
+        i = i + 1
+    }
+    return false
+}
+
+func strip_flag_prefix(token) {
+    if starts_with(token, "--") {
+        return substring(token, 2, len(token))
+    }
+    return token
+}
+
+func split_flag_token(token) {
+    let raw = strip_flag_prefix(token)
+    let eq = index_of(raw, "=")
+    if eq >= 0 {
+        return {"name": substring(raw, 0, eq), "value": substring(raw, eq + 1, len(raw)), "has_value": true}
+    }
+    return {"name": raw, "value": "", "has_value": false}
+}
+
+// value_flags: array of flag names that always take a following value.
+export func parse_args(argv, value_flags) {
+    mut flags = {}
+    mut positionals = []
+    mut command = ""
+    mut i = 0
+
+    if len(argv) > 0 {
+        command = argv[0]
+        i = 1
+    }
+
+    while i < len(argv) {
+        let token = argv[i]
+        if starts_with(token, "--") {
+            let split = split_flag_token(token)
+            let name = split["name"]
+            if split["has_value"] == true {
+                flags[name] = split["value"]
+            } else if arr_contains_string(value_flags, name) {
+                if i + 1 < len(argv) {
+                    let next = argv[i + 1]
+                    if starts_with(next, "--") {
+                        flags[name] = ""
+                    } else {
+                        flags[name] = next
+                        i = i + 1
+                    }
+                } else {
+                    flags[name] = ""
+                }
+            } else {
+                flags[name] = "true"
+            }
+        } else {
+            positionals = append(positionals, token)
+        }
+        i = i + 1
+    }
+    return {
+        "command": command,
+        "positionals": positionals,
+        "flags": flags
+    }
+}
+
+// Convenience: flag value or fallback.
+export func flag_or(flags, name, fallback) {
+    if dict_has(flags, name) {
+        return flags[name]
+    }
+    return fallback
+}
+
+// Convenience: is a boolean flag present (any value)?
+export func has_flag(flags, name) {
+    return dict_has(flags, name)
+}

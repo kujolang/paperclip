@@ -1,0 +1,126 @@
+// src/paths.kujo
+// Conservative path-safety helpers for Fence.
+//
+// Textual checks reject absolute paths, `~`, empty paths, and `..` segments.
+// output.kujo uses native directory-handle confined publication.
+
+// Normalize separators to `/` so checks are consistent across platforms.
+// Avoids allocating a new string in the common (POSIX, no-backslash) case.
+export func normalize_sep(p) {
+    if contains(p, "\\") == 1 {
+        return replace(p, "\\", "/")
+    }
+    return p
+}
+
+// True if the path is safe to write to (repo-relative, no escapes).
+export func is_safe_output(path) {
+    if path == "" {
+        return false
+    }
+    let p = normalize_sep(path)
+    // Reject home expansion.
+    if starts_with(p, "~") {
+        return false
+    }
+    // Reject absolute paths (unix `/...` and Windows `C:/...`).
+    if starts_with(p, "/") {
+        return false
+    }
+    if contains(p, ":") == 1 {
+        return false
+    }
+    // Reject any parent-directory traversal.
+    let segs = split(p, "/")
+    let n = len(segs)
+    mut i = 0
+    while i < n {
+        if segs[i] == ".." {
+            return false
+        }
+        if segs[i] == ".git" {
+            return false
+        }
+        i = i + 1
+    }
+    return true
+}
+
+// Validate an output path or throw a descriptive error.
+// Returns the normalized path when safe.
+export func safe_output_path(path) {
+    if is_safe_output(path) {
+        return normalize_sep(path)
+    }
+    throw("unsafe output path: " + path)
+}
+
+// Compute a repo-relative display path. Since Fence runs from the repo root and
+// walks relative paths, files are already repo-relative; this just normalizes.
+export func relative_to_repo(file_path) {
+    let p = normalize_sep(file_path)
+    if starts_with(p, "./") {
+        return substring(p, 2, len(p))
+    }
+    return p
+}
+
+// Return the directory portion of a path (everything before the last `/`).
+export func parent_dir(path) {
+    let p = normalize_sep(path)
+    let idx = last_index_of_slash(p)
+    if idx < 0 {
+        return ""
+    }
+    return substring(p, 0, idx)
+}
+
+// Return the final component of a path.
+export func base_name(path) {
+    let p = normalize_sep(path)
+    let idx = last_index_of_slash(p)
+    if idx < 0 {
+        return p
+    }
+    return substring(p, idx + 1, len(p))
+}
+
+// Character-based search for the last `/` (avoids byte/char mismatch issues by
+// scanning one character at a time).
+export func last_index_of_slash(p) {
+    mut i = 0
+    mut last = -1
+    loop {
+        let ch = substring(p, i, i + 1)
+        if ch == "" {
+            return last
+        }
+        if ch == "/" {
+            last = i
+        }
+        i = i + 1
+    }
+    return last
+}
+
+// Lowercase file extension including the dot, or "" if none.
+export func file_ext(path) {
+    let b = base_name(path)
+    mut i = 0
+    mut dot = -1
+    loop {
+        let ch = substring(b, i, i + 1)
+        if ch == "" {
+            i = -1
+            break
+        }
+        if ch == "." {
+            dot = i
+        }
+        i = i + 1
+    }
+    if dot < 0 {
+        return ""
+    }
+    return to_lower(substring(b, dot, len(b)))
+}

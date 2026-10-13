@@ -12,10 +12,11 @@ import type { ResolvedRuntime } from "../../runtime/types.js";
 const execFileAsync = promisify(execFile);
 export const MAX_SOURCE_BYTES = 65_536;
 const sensitive = /(^|\/)(?:\.env(?:\.|$)|credentials?(?:\.|\/|$)|secrets?(?:\.|\/|$)|id_(?:rsa|ed25519)(?:\.|$))/i;
-export const workspaceTextPathSchema = z.string().min(1).max(1000).refine((value) =>
+export const workspaceRelativePathSchema = z.string().min(1).max(1000).refine((value) =>
   !value.startsWith("/") && !/[\\:\x00-\x1f\x7f]/.test(value)
-  && value.split("/").every((part) => part !== ".." && part !== "." && part !== "") && !sensitive.test(value),
-  "Choose a relative, non-sensitive workspace path");
+  && value.split("/").every((part) => part !== ".." && part !== "." && part !== ""),
+  "Choose a relative workspace path");
+export const workspaceTextPathSchema = workspaceRelativePathSchema.refine((value) => !sensitive.test(value), "Choose a non-sensitive workspace path");
 export const sourcePathSchema = workspaceTextPathSchema.refine((value) => value.endsWith(".kujo"), "Choose a .kujo source path");
 
 export async function discoverSources(cwd: string) {

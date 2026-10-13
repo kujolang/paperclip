@@ -1,0 +1,68 @@
+// Optional offline parser adapters. Adapters are explicit argv arrays keyed by
+// extension and receive the source path as their final argument. They must emit
+// one JSON object: {schema:"fence.parser-adapter/v1", imports:[...] }.
+
+from src.util import dict_has, dict_get
+from src.paths import file_ext
+
+export func adapter_for(file, adapters) {
+    let ext = file_ext(file)
+    if dict_has(adapters, ext) { return adapters[ext] }
+    return []
+}
+
+export func run_adapter(file, argv) {
+    if type_of(argv) != "array" || len(argv) == 0 {
+        return { "ok": false, "imports": [], "error": "invalid parser adapter argv" }
+    }
+    mut command = []
+    let n = len(argv)
+    mut i = 0
+    while i < n {
+        if type_of(argv[i]) != "string" || argv[i] == "" {
+            return { "ok": false, "imports": [], "error": "parser adapter argv must contain non-empty strings" }
+        }
+        command = push(command, argv[i])
+        i = i + 1
+    }
+    command = push(command, file)
+    let result = spawn_process(command, { "timeout_ms": 30000, "max_output_bytes": 4194304 })
+    if result.success == false || result.stdout_truncated {
+        return { "ok": false, "imports": [], "error": "parser adapter failed for " + file }
+    }
+    mut parsed = {}
+    try { parsed = parse_json(trim(result.stdout)) } except e {
+        return { "ok": false, "imports": [], "error": "parser adapter emitted invalid JSON for " + file }
+    }
+    if type_of(parsed) != "dict" || dict_get(parsed, "schema", "") != "fence.parser-adapter/v1" || type_of(dict_get(parsed, "imports", 0)) != "array" {
+        return { "ok": false, "imports": [], "error": "parser adapter contract mismatch for " + file }
+    }
+    let normalized = normalize_adapter_imports(parsed["imports"])
+    if normalized["ok"] == false { return normalized }
+    return { "ok": true, "imports": normalized["imports"], "error": "" }
+}
+
+func normalize_adapter_imports(items) {
+    mut out = []
+    let n = len(items)
+    mut i = 0
+    while i < n {
+        let item = items[i]
+        if type_of(item) != "dict" || type_of(dict_get(item, "path", 0)) != "string" || type_of(dict_get(item, "line", 0)) != "int" || item["line"] < 1 {
+            return { "ok": false, "imports": [], "error": "parser adapter returned an invalid import record" }
+        }
+        if type_of(dict_get(item, "kind", "import")) != "string" || type_of(dict_get(item, "raw", item["path"])) != "string" {
+            return { "ok": false, "imports": [], "error": "parser adapter kind and raw must be strings" }
+        }
+        out = push(out, {
+            "kind": dict_get(item, "kind", "import"),
+            "path": item["path"],
+            "raw": dict_get(item, "raw", item["path"]),
+            "line": item["line"],
+            "confidence": "exact",
+            "detector": "adapter"
+        })
+        i = i + 1
+    }
+    return { "ok": true, "imports": out, "error": "" }
+}

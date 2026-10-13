@@ -1,0 +1,14 @@
+// fence.kujo
+// Entry point for Fence, an architecture boundary enforcement CLI.
+//
+// Run with:
+//   kujo run fence.kujo -- <command> [options]
+//
+// All implementation is in Kujo (`.kujo`) modules under src/. fence.kujo only
+// wires args() into the dispatcher and surfaces the resulting exit code.
+
+from src.cli import cli_dispatch
+
+let argv = args()
+let code = cli_dispatch(argv)
+exit(code)

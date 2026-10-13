@@ -1,0 +1,71 @@
+// src/meta.kujo
+// Version string and help/usage text for Fence.
+
+from src.util import join_strings
+
+// SINGLE SOURCE OF TRUTH for the Fence version. `version_line()`, the JSON
+// report, and the SARIF report all derive from this. Update here only (and
+// CHANGELOG.md) when releasing.
+export func fence_version() {
+    return "1.0.0"
+}
+
+export func version_line() {
+    return "fence " + fence_version()
+}
+
+export func no_config_text() {
+    return "No fence.toml found.\n\nRun:\n  kujo run fence.kujo -- init"
+}
+
+export func help_text() {
+    return join_strings([
+        "Fence - architecture boundary enforcement for Git repositories",
+        "Fence prevents agents and developers from crossing architecture boundaries.",
+        "",
+        "Usage:",
+        "  kujo run fence.kujo -- <command> [options]",
+        "",
+        "Commands:",
+        "  init                 Create a starter fence.toml",
+        "  check                Scan source files and report boundary violations",
+        "  explain <path>       Explain how Fence classifies a file",
+        "  graph                Print the architecture dependency graph",
+        "  baseline create      Record current violations to fence-baseline.json",
+        "  baseline prune       Remove stale fingerprints from the baseline",
+        "  workspace init       Generate zones from local workspace manifests",
+        "  ignores list|check   Audit active, expiring, and expired exceptions",
+        "  validate             Validate fence.toml",
+        "  doctor               Print environment diagnostics",
+        "  help                 Show this help",
+        "",
+        "Options:",
+        "  --version            Print version",
+        "  --help               Show this help",
+        "",
+        "init options:",
+        "  --template <name>    layered (default), cli, web-app, hexagonal, mvc, feature-sliced, monorepo",
+        "  --force              Overwrite an existing fence.toml",
+        "",
+        "check options:",
+        "  --format <fmt>       human (default), json, markdown, sarif",
+        "  --output <path>      Write report to a repo-relative file",
+        "  --fail-on <level>    none, warning, error (overrides config)",
+        "  --changed-only       Only scan files changed vs Git base",
+        "  --base <ref>         Git base ref for --changed-only (default HEAD)",
+        "  --baseline           Suppress violations recorded in fence-baseline.json",
+        "  --cache              Reuse content-digest import extraction cache",
+        "  --quiet              Print only a one-line status to stdout",
+        "  --summary-only       Print only the summary line (no violation list)",
+        "  --no-color           Accepted for CI compatibility (output is already plain)",
+        "",
+        "graph options:",
+        "  --format <fmt>       human (default), json, dot, mermaid",
+        "  --output <path>      Write graph to a repo-relative file",
+        "  --observed           Compare configured and observed edges (human/json)",
+        "",
+        "Exit codes:",
+        "  0 success   1 violations   2 invalid usage/config   3 parse error",
+        "  4 runtime   5 IO failure   6 internal failure"
+    ], "\n") + "\n"
+}

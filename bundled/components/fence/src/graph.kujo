@@ -1,0 +1,177 @@
+// src/graph.kujo
+// Render the architecture dependency graph (allowed direction) in several
+// formats: human, json, dot, mermaid. Edges come from each zone's
+// can_depend_on list.
+
+from src.util import join_strings, arr_has, sort_strings
+
+// Build a list of allowed edges: [ { from, to } ].
+export func build_edges(cfg) {
+    let zones = cfg["zones"]
+    let names = cfg["zone_names"]
+    let n = len(names)
+    mut edges = []
+    mut i = 0
+    while i < n {
+        let name = names[i]
+        let allow = zones[name]["can_depend_on"]
+        let an = len(allow)
+        mut j = 0
+        while j < an {
+            edges = push(edges, { "from": name, "to": allow[j] })
+            j = j + 1
+        }
+        i = i + 1
+    }
+    return edges
+}
+
+// ---- human ----
+export func render_graph_human(cfg) {
+    let zones = cfg["zones"]
+    let names = cfg["zone_names"]
+    let n = len(names)
+    mut o = ""
+    o = o + "Architecture Zones\n"
+    o = o + "==================\n\n"
+    mut i = 0
+    while i < n {
+        let name = names[i]
+        let z = zones[name]
+        o = o + name + "\n"
+        o = o + "  can depend on: " + list_or_none(z["can_depend_on"]) + "\n"
+        o = o + "  cannot depend on: " + list_or_none(z["cannot_depend_on"]) + "\n\n"
+        i = i + 1
+    }
+    return o
+}
+
+func list_or_none(arr) {
+    if len(arr) == 0 {
+        return "(none)"
+    }
+    return join_strings(arr, ", ")
+}
+
+// ---- json ----
+export func render_graph_json(cfg) {
+    let obj = {
+        "zones": cfg["zone_names"],
+        "edges": build_edges(cfg)
+    }
+    return to_json_pretty(obj)
+}
+
+// ---- mermaid ----
+export func render_graph_mermaid(cfg) {
+    let edges = build_edges(cfg)
+    let n = len(edges)
+    mut o = "graph TD\n"
+    mut i = 0
+    while i < n {
+        let e = edges[i]
+        o = o + "  " + e["from"] + " --> " + e["to"] + "\n"
+        i = i + 1
+    }
+    return o
+}
+
+// ---- dot ----
+export func render_graph_dot(cfg) {
+    let edges = build_edges(cfg)
+    let n = len(edges)
+    mut o = "digraph architecture {\n"
+    mut i = 0
+    while i < n {
+        let e = edges[i]
+        o = o + "  " + e["from"] + " -> " + e["to"] + ";\n"
+        i = i + 1
+    }
+    o = o + "}\n"
+    return o
+}
+
+export func render_graph(cfg, format) {
+    if format == "human" {
+        return { "ok": true, "text": render_graph_human(cfg) }
+    }
+    if format == "json" {
+        return { "ok": true, "text": render_graph_json(cfg) }
+    }
+    if format == "mermaid" {
+        return { "ok": true, "text": render_graph_mermaid(cfg) }
+    }
+    if format == "dot" {
+        return { "ok": true, "text": render_graph_dot(cfg) }
+    }
+    return { "ok": false, "text": "unknown format '" + format + "' (use human, json, dot, mermaid)" }
+}
+
+// Compare configured allowed edges with internal dependency edges observed in
+// the current repository scan. Keys use `from|to` internally for stable sort.
+export func render_observed_graph(cfg, observed, format) {
+    let configured = edge_keys(build_edges(cfg))
+    let seen = sort_strings(observed)
+    let comparison = compare_edges(configured, seen)
+    if format == "json" {
+        return { "ok": true, "text": to_json_pretty(comparison) }
+    }
+    if format == "human" {
+        return { "ok": true, "text": observed_human(comparison) }
+    }
+    return { "ok": false, "text": "observed graphs support human or json format" }
+}
+
+func edge_keys(edges) {
+    let n = len(edges)
+    mut out = []
+    mut i = 0
+    while i < n {
+        out = push(out, edges[i]["from"] + "|" + edges[i]["to"])
+        i = i + 1
+    }
+    return sort_strings(out)
+}
+
+func compare_edges(configured, observed) {
+    mut configured_seen = []
+    mut observed_unconfigured = []
+    mut configured_unused = []
+    let on = len(observed)
+    mut i = 0
+    while i < on {
+        if arr_has(configured, observed[i]) {
+            configured_seen = push(configured_seen, observed[i])
+        } else {
+            observed_unconfigured = push(observed_unconfigured, observed[i])
+        }
+        i = i + 1
+    }
+    let cn = len(configured)
+    mut j = 0
+    while j < cn {
+        if arr_has(observed, configured[j]) == false {
+            configured_unused = push(configured_unused, configured[j])
+        }
+        j = j + 1
+    }
+    return {
+        "schema_version": 1,
+        "configured_and_observed": configured_seen,
+        "observed_unconfigured": observed_unconfigured,
+        "configured_unobserved": configured_unused
+    }
+}
+
+func observed_human(comparison) {
+    mut o = "Observed Architecture Edges\n===========================\n\n"
+    o = o + "Configured and observed: " + keys_display(comparison["configured_and_observed"]) + "\n"
+    o = o + "Observed but unconfigured: " + keys_display(comparison["observed_unconfigured"]) + "\n"
+    o = o + "Configured but unobserved: " + keys_display(comparison["configured_unobserved"]) + "\n"
+    return o
+}
+
+func keys_display(items) {
+    if len(items) == 0 { return "(none)" }
+    return replace(join_strings(items, ", "), "|", " -> ")
+}

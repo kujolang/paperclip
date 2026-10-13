@@ -1,0 +1,164 @@
+// src/cmd_explain.kujo
+// Implements `fence explain <path>`.
+//
+// Explains how Fence classifies a single file: its zone, allowed/denied
+// dependencies, and a per-import allowed/denied/unknown breakdown.
+
+from src.config import load_config
+from src.zones import match_zone, match_zones_all
+from src.imports import detect_imports_with_adapters
+from src.resolve import resolve_import_with_go
+from src.decisions import decide_dependency
+from src.validate import validate_config, count_errors
+from src.cliargs import flag_or
+from src.util import join_strings, dict_get, display_fields, display_rows, display_text
+
+export func cmd_explain(parsed) {
+    let positionals = parsed["positionals"]
+    if len(positionals) == 0 {
+        print("Usage: kujo run fence.kujo -- explain <path> [--format json]")
+        return 2
+    }
+    let target = positionals[0]
+
+    let loaded = load_config()
+    if loaded["found"] == false {
+        print("No fence.toml found. Run: kujo run fence.kujo -- init")
+        return 2
+    }
+    if loaded["ok"] == false {
+        print("Config error: " + loaded["error"])
+        return 3
+    }
+    let cfg = loaded["config"]
+    if count_errors(validate_config(cfg)) > 0 { print("Config is invalid. Run validate for details."); return 2 }
+    let format = flag_or(parsed["flags"], "format", "human")
+    if format != "json" && format != "human" { print("Error: explain format must be human or json"); return 2 }
+
+    if file_exists(target) == false {
+        print("File not found: " + target)
+        return 5
+    }
+
+    let detected = detect_imports_with_adapters(target, cfg["parser_adapters"])
+    if detected["ok"] == false { print("Error: " + detected["error"]); return 4 }
+    if cfg["max_imports"] > 0 && len(detected["imports"]) > cfg["max_imports"] { print("Error: resource limit exceeded: max_imports"); return 4 }
+    let analysis = analyze_file(target, cfg, detected["imports"])
+    if format == "json" {
+        print(to_json_pretty(analysis))
+        return 0
+    }
+    print(explain_human(analysis))
+    return 0
+}
+
+// Produce a structured explanation for one file.
+func analyze_file(target, cfg, imps) {
+    let zones = cfg["zones"]
+    let zone_names = cfg["zone_names"]
+    let zone = match_zone(target, zones, zone_names)
+    let all_matches = match_zones_all(target, zones, zone_names)
+
+    mut allowed_deps = []
+    mut denied_deps = []
+    if zone != "unknown" {
+        allowed_deps = zones[zone]["can_depend_on"]
+        denied_deps = zones[zone]["cannot_depend_on"]
+    }
+
+    let import_rows = explain_imports(target, zone, imps, cfg, zones, zone_names)
+
+    return {
+        "file": target,
+        "zone": zone,
+        "matched_zones": all_matches,
+        "in_scope": zone != "unknown",
+        "allowed": allowed_deps,
+        "denied": denied_deps,
+        "imports": import_rows
+    }
+}
+
+func explain_imports(target, zone, imps, cfg, zones, zone_names) {
+    let n = len(imps)
+    mut out = []
+    mut i = 0
+    while i < n {
+        let imp = imps[i]
+        let res = resolve_import_with_go(imp["path"], target, cfg["source_roots"], cfg["aliases"], cfg["go_module"])
+        let row = explain_one(target, zone, imp, res, cfg, zones, zone_names)
+        out = push(out, row)
+        i = i + 1
+    }
+    return out
+}
+
+func explain_one(target, zone, imp, res, cfg, zones, zone_names) {
+    let status = res["status"]
+    mut to_zone = "unknown"
+    if status == "internal" {
+        to_zone = match_zone(res["resolved"], zones, zone_names)
+    }
+
+    let verdict = decide_dependency(target, zone, imp, res, to_zone, cfg)
+    let ignored = verdict["ignore"]
+
+    return {
+        "import": imp["path"],
+        "line": imp["line"],
+        "kind": imp["kind"],
+        "status": status,
+        "resolved": res["resolved"],
+        "to_zone": to_zone,
+        "decision": verdict["decision"],
+        "confidence": dict_get(imp, "confidence", "best_effort"),
+        "ignored": ignored["ignored"],
+        "ignore_reason": ignored["reason"],
+        "ignore_expires": ignored["expires"]
+    }
+}
+
+func explain_human(raw_analysis) {
+    mut a = display_fields(raw_analysis, false)
+    a["imports"] = display_rows(raw_analysis["imports"], false)
+    mut o = ""
+    o = o + "Explain: " + a["file"] + "\n"
+    o = o + "=========" + "\n\n"
+    o = o + "Zone: " + a["zone"] + "\n"
+    if len(a["matched_zones"]) > 1 {
+        o = o + "Note: file matched multiple zones: " + display_text(join_strings(a["matched_zones"], ", "), false) + " (first wins)\n"
+    }
+    o = o + "In scope: " + to_string(a["in_scope"]) + "\n"
+    o = o + "Allowed dependencies: " + list_or_none(a["allowed"]) + "\n"
+    o = o + "Denied dependencies: " + list_or_none(a["denied"]) + "\n\n"
+
+    let imps = a["imports"]
+    let n = len(imps)
+    o = o + "Imports (" + to_string(n) + ")\n"
+    o = o + "-------\n"
+    if n == 0 {
+        o = o + "(none detected)\n"
+        return o
+    }
+    mut i = 0
+    while i < n {
+        let r = imps[i]
+        o = o + "[" + to_upper(r["decision"]) + "] line " + to_string(r["line"]) + ": " + r["import"]
+        if r["resolved"] != "" {
+            o = o + " -> " + r["resolved"] + " (" + r["to_zone"] + ")"
+        } else {
+            o = o + " (" + r["status"] + ")"
+        }
+        if r["ignored"] { o = o + " (ignored: " + r["ignore_reason"] + "; expires " + r["ignore_expires"] + ")" }
+        o = o + "\n"
+        i = i + 1
+    }
+    return o
+}
+
+func list_or_none(arr) {
+    if len(arr) == 0 {
+        return "(none)"
+    }
+    return display_text(join_strings(arr, ", "), false)
+}

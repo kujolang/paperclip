@@ -1,0 +1,105 @@
+// Deterministically generate per-package zones from local workspace manifests.
+
+from src.util import sort_strings, join_strings
+from src.output import write_safe
+
+export func cmd_workspace(parsed) {
+    let positionals = parsed["positionals"]
+    if len(positionals) == 0 || positionals[0] != "init" {
+        print("Usage: kujo run fence.kujo -- workspace init")
+        return 2
+    }
+    let packages = discover("packages")
+    let apps = discover("apps")
+    if len(packages) == 0 && len(apps) == 0 {
+        print("No workspace packages found under apps/ or packages/ with a supported manifest.")
+        return 2
+    }
+    let content = render_workspace(packages, apps)
+    // Generated TOML must be valid before any existing file can be touched.
+    try { parse_toml(content) } except e {
+        print("Error: workspace package names produce conflicting zone names.")
+        return 2
+    }
+    let written = write_safe("fence.toml", content, false)
+    if written["ok"] == false {
+        print("Error: " + written["error"])
+        return 5
+    }
+    print("Created fence.toml with " + to_string(len(packages) + len(apps)) + " manifest-backed workspace zone(s).")
+    return 0
+}
+
+func discover(root) {
+    if path_is_dir(root) == false { return [] }
+    let entries = sort_strings(list_dir(root))
+    let n = len(entries)
+    mut out = []
+    mut i = 0
+    while i < n {
+        let dir = root + "/" + entries[i]
+        if path_is_dir(dir) && has_manifest(dir) {
+            out = push(out, entries[i])
+        }
+        i = i + 1
+    }
+    return out
+}
+
+func has_manifest(dir) {
+    if file_exists(dir + "/package.json") { return true }
+    if file_exists(dir + "/kujo.toml") { return true }
+    if file_exists(dir + "/Cargo.toml") { return true }
+    if file_exists(dir + "/go.mod") { return true }
+    if file_exists(dir + "/composer.json") { return true }
+    if file_exists(dir + "/pyproject.toml") { return true }
+    return false
+}
+
+func zone_name(prefix, name) {
+    return prefix + "_" + replace(replace(name, "-", "_"), ".", "_")
+}
+
+func package_zone_names(packages) {
+    let n = len(packages)
+    mut out = []
+    mut i = 0
+    while i < n {
+        out = push(out, to_json(zone_name("pkg", packages[i])))
+        i = i + 1
+    }
+    return "[" + join_strings(out, ", ") + "]"
+}
+
+func app_zone_names(apps) {
+    let n = len(apps)
+    mut out = []
+    mut i = 0
+    while i < n {
+        out = push(out, to_json(zone_name("app", apps[i])))
+        i = i + 1
+    }
+    return "[" + join_strings(out, ", ") + "]"
+}
+
+func render_workspace(packages, apps) {
+    mut o = "version = 1\nsource_roots = [\"apps\", \"packages\"]\ndefault_severity = \"error\"\nfail_on = \"error\"\nunknown_dependency_policy = \"warn\"\n\n"
+    o = o + "[scan]\ninclude = [\"apps/**/*.ts\", \"apps/**/*.tsx\", \"apps/**/*.js\", \"apps/**/*.py\", \"apps/**/*.go\", \"apps/**/*.rs\", \"apps/**/*.php\", \"apps/**/*.kujo\", \"packages/**/*.ts\", \"packages/**/*.tsx\", \"packages/**/*.js\", \"packages/**/*.py\", \"packages/**/*.go\", \"packages/**/*.rs\", \"packages/**/*.php\", \"packages/**/*.kujo\"]\nexclude = [\"node_modules/**\", \"vendor/**\", \"dist/**\", \"build/**\", \"coverage/**\"]\n\n"
+    let pkg_all = package_zone_names(packages)
+    let app_all = app_zone_names(apps)
+    let pn = len(packages)
+    mut pi = 0
+    while pi < pn {
+        let pz = zone_name("pkg", packages[pi])
+        o = o + "[zones." + to_json(pz) + "]\npaths = [" + to_json("packages/" + packages[pi] + "/**") + "]\ncan_depend_on = " + pkg_all + "\ncannot_depend_on = " + app_all + "\nseverity = \"error\"\n\n"
+        pi = pi + 1
+    }
+    let an = len(apps)
+    mut ai = 0
+    while ai < an {
+        let az = zone_name("app", apps[ai])
+        o = o + "[zones." + to_json(az) + "]\npaths = [" + to_json("apps/" + apps[ai] + "/**") + "]\ncan_depend_on = " + pkg_all + "\ncannot_depend_on = []\nseverity = \"error\"\n\n"
+        ai = ai + 1
+    }
+    return o
+}

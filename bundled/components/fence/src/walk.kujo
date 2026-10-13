@@ -1,0 +1,209 @@
+// src/walk.kujo
+// Recursive-by-iteration file traversal for Fence.
+//
+// An explicit stack avoids recursive traversal and detects directory symlink
+// cycles. Only exclusions that cover a complete subtree prune traversal.
+
+from src.glob import glob_match_any
+from src.util import sort_strings, arr_has
+from src.paths import file_ext, is_safe_output, normalize_sep
+
+// Collect repo-relative file paths under `source_roots` that match an include
+// pattern and no exclude pattern. `.git` is always skipped.
+//
+// Returns a sorted array of paths (deterministic order).
+export func walk(source_roots, include_patterns, exclude_patterns) {
+    return filter_files(collect_files(source_roots, exclude_patterns), include_patterns, exclude_patterns)
+}
+
+// Select from a host-owned inventory without walking or probing the filesystem.
+// Preserve the normal include/exclude matcher and deterministic result order.
+export func select_inventory_files(inventory, source_roots, include_patterns, exclude_patterns) {
+    if type_of(inventory) != "dict" { throw("snapshot inventory must be a dictionary") }
+    mut roots = []
+    mut ri = 0
+    while ri < len(source_roots) {
+        let raw_root = source_roots[ri]
+        if type_of(raw_root) != "string" || is_safe_output(raw_root) == false { throw("snapshot source roots must be relative and cannot traverse parents") }
+        let root_parts = split(normalize_sep(raw_root), "/")
+        mut root = ""
+        mut rpi = 0
+        while rpi < len(root_parts) {
+            if root_parts[rpi] != "" && root_parts[rpi] != "." {
+                if root != "" { root = root + "/" }
+                root = root + root_parts[rpi]
+            }
+            rpi = rpi + 1
+        }
+        if root == "" { root = "." }
+        roots = push(roots, root)
+        ri = ri + 1
+    }
+    let names = keys(inventory)
+    mut candidates = []
+    mut fi = 0
+    while fi < len(names) {
+        let file = names[fi]
+        if is_safe_output(file) == false || normalize_sep(file) != file { throw("snapshot inventory paths must be portable and relative") }
+        let segments = split(file, "/")
+        mut pi = 0
+        while pi < len(segments) {
+            if segments[pi] == "" || segments[pi] == "." { throw("snapshot inventory paths must be normalized") }
+            pi = pi + 1
+        }
+        mut selected = false
+        mut ti = 0
+        while ti < len(roots) {
+            if roots[ti] == "." || starts_with(file, roots[ti] + "/") { selected = true }
+            ti = ti + 1
+        }
+        if selected { candidates = push(candidates, file) }
+        fi = fi + 1
+    }
+    return filter_files(candidates, include_patterns, exclude_patterns)
+}
+
+export func walk_profile(source_roots, include_patterns, exclude_patterns) {
+    let traversal_started = performance_now()
+    let discovered = collect_files(source_roots, exclude_patterns)
+    let traversal_ms = performance_now() - traversal_started
+    let filter_started = performance_now()
+    let files = filter_files(discovered, include_patterns, exclude_patterns)
+    let filter_ms = performance_now() - filter_started
+    return { "files": files, "discovered": len(discovered), "traversal_ms": traversal_ms, "filter_ms": filter_ms }
+}
+
+func collect_files(source_roots, exclude_patterns) {
+    mut found = []
+    mut seen_paths = {}
+    let prunable = subtree_excludes(exclude_patterns)
+
+    // Seed the stack with existing source roots.
+    mut stack = []
+    let rn = len(source_roots)
+    mut ri = 0
+    while ri < rn {
+        let root = source_roots[ri]
+        if path_is_dir(root) {
+            stack = push(stack, { "path": root, "ancestors": [] })
+        }
+        ri = ri + 1
+    }
+
+    // Iterative depth-first walk with ancestor identity tracking.
+    while len(stack) > 0 {
+        let popped = pop(stack)
+        stack = popped[0]
+        let frame = popped[1]
+        let dir = frame["path"]
+        if has_key(seen_paths, dir) == 1 { continue }
+        seen_paths[dir] = true
+        if glob_match_any(prunable, dir) { continue }
+        let canonical = path_absolute(dir)
+        if arr_has(frame["ancestors"], canonical) { throw("source directory symlink cycle: " + dir) }
+        let ancestors = push(frame["ancestors"], canonical)
+
+        // An incomplete traversal must fail rather than report a clean scan.
+        let entries = list_dir(dir)
+        let en = len(entries)
+        mut ei = 0
+        while ei < en {
+            let name = entries[ei]
+            // A literal POSIX backslash is not a directory separator. Fence's
+            // portable glob/path model cannot represent it without ambiguity.
+            if contains(name, "\\") == 1 { throw("unsupported source filename containing backslash: " + to_json(name)) }
+            let full = dir + "/" + name
+            if name == ".git" {
+                // skip
+            } else {
+                if path_is_dir(full) {
+                    stack = push(stack, { "path": full, "ancestors": ancestors })
+                } else if path_is_file(full) {
+                    found = push(found, full)
+                }
+            }
+            ei = ei + 1
+        }
+    }
+
+    return found
+}
+
+// Apply include/exclude filtering to a flat file list.
+func filter_files(files, include_patterns, exclude_patterns) {
+    mut out = []
+    let fast_exts = include_extensions(include_patterns)
+    let n = len(files)
+    mut i = 0
+    while i < n {
+        let f = files[i]
+        mut included = true
+        if len(fast_exts) > 0 {
+            if arr_has(fast_exts, file_ext(f)) == false {
+                included = false
+            }
+        }
+        if included {
+            included = is_included(f, include_patterns)
+        }
+        if included {
+            if glob_match_any(exclude_patterns, f) {
+                // excluded
+            } else {
+                out = push(out, f)
+            }
+        }
+        i = i + 1
+    }
+    return sort_strings(out)
+}
+
+// Return the finite extension set implied by include patterns when every
+// pattern ends in a literal extension. Empty disables the fast path.
+export func include_extensions(patterns) {
+    let n = len(patterns)
+    if n == 0 {
+        return []
+    }
+    mut out = []
+    mut i = 0
+    while i < n {
+        let ext = file_ext(patterns[i])
+        if regex_match(ext, "^\\.[A-Za-z0-9]+$") == false {
+            return []
+        }
+        if arr_has(out, ext) == false {
+            out = push(out, ext)
+        }
+        i = i + 1
+    }
+    return out
+}
+
+// If no include patterns are configured, include everything; otherwise require
+// a match.
+func is_included(f, include_patterns) {
+    if len(include_patterns) == 0 {
+        return true
+    }
+    return glob_match_any(include_patterns, f)
+}
+
+// Keep only literal subtree exclusions, optionally prefixed by **/. General
+// globs still filter files; they must never prune a possibly included child.
+func subtree_excludes(patterns) {
+    mut out = []
+    mut i = 0
+    while i < len(patterns) {
+        let normalized = replace(patterns[i], "\\", "/")
+        if ends_with(normalized, "/**") {
+            mut prefix = substring(normalized, 0, len(normalized) - 3)
+            if starts_with(prefix, "**/") { prefix = substring(prefix, 3, len(prefix)) }
+            if prefix != "" && contains(prefix, "*") == 0 && contains(prefix, "?") == 0 {
+                out = push(out, normalized)
+            }
+        }
+        i = i + 1
+    }
+    return out
+}

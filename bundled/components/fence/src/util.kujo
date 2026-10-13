@@ -1,0 +1,137 @@
+// src/util.kujo
+// Small shared helpers used across Fence modules.
+//
+// These exist because Kujo's builtin predicates are not perfectly uniform
+// (string `contains` returns 1/0 while array `contains` returns a bool, etc.)
+// and because Fence avoids deep call chains by keeping helpers leaf-like.
+
+// Coerce any Kujo "truthy-ish" value (1, 0, true, false) into a real bool.
+export func truthy(v) {
+    if v == true {
+        return true
+    }
+    if v == 1 {
+        return true
+    }
+    return false
+}
+
+// True when array `arr` contains the string `needle`.
+// Uses index scanning so behaviour is identical regardless of builtin quirks.
+export func arr_has(arr, needle) {
+    let n = len(arr)
+    mut i = 0
+    while i < n {
+        if arr[i] == needle {
+            return true
+        }
+        i = i + 1
+    }
+    return false
+}
+
+// True when the dictionary `d` has the given key.
+export func dict_has(d, key) {
+    return truthy(has_key(d, key))
+}
+
+// Return d[key] if present, else fallback.
+export func dict_get(d, key, fallback) {
+    if truthy(has_key(d, key)) {
+        return d[key]
+    }
+    return fallback
+}
+
+// Deterministic ascending string sort. Delegates to the native `sort` builtin
+// (O(n log n)); a stable, correct order is all Fence needs for reproducible
+// reports.
+export func sort_strings(arr) {
+    return sort(arr)
+}
+
+// Join an array of strings with a separator, using single-string accumulation
+// (avoids the push+join allocation pattern that can crash the VM in hot paths).
+export func join_strings(arr, sep) {
+    let n = len(arr)
+    if n == 0 {
+        return ""
+    }
+    mut out = arr[0]
+    mut i = 1
+    while i < n {
+        out = out + sep + arr[i]
+        i = i + 1
+    }
+    return out
+}
+
+// Count occurrences of needle in arr.
+export func count_in(arr, needle) {
+    let n = len(arr)
+    mut c = 0
+    mut i = 0
+    while i < n {
+        if arr[i] == needle {
+            c = c + 1
+        }
+        i = i + 1
+    }
+    return c
+}
+
+// Exact UTF-8 byte count for report/resource budgets.
+export func utf8_byte_length(text) {
+    return len(decode_base64(encode_base64(to_string(text))))
+}
+
+// Escape untrusted text only at presentation boundaries; machine evidence stays
+// byte-for-byte intact. Ordinary text takes the fast path without a char walk.
+export func display_text(value, markdown) {
+    mut text = value
+    if regex_match(text, "[\\x00-\\x1f\\x7f-\\x9f]") {
+        let hex = "0123456789abcdef"
+        mut escaped = ""
+        mut i = 0
+        loop {
+            let ch = substring(text, i, i + 1)
+            if ch == "" { break }
+            if regex_match(ch, "[\\x00-\\x1f\\x7f-\\x9f]") {
+                let bytes = decode_base64(encode_base64(ch))
+                let code = bytes[len(bytes) - 1]
+                let high = floor(code / 16)
+                let low = code % 16
+                escaped = escaped + "\\u00" + substring(hex, high, high + 1) + substring(hex, low, low + 1)
+            } else { escaped = escaped + ch }
+            i = i + 1
+        }
+        text = escaped
+    }
+    if markdown {
+        text = replace(text, "&", "&amp;")
+        let chars = ["<", ">", "`", "*", "_", "[", "]", "|", "\\"]
+        let entities = ["&lt;", "&gt;", "&#96;", "&#42;", "&#95;", "&#91;", "&#93;", "&#124;", "&#92;"]
+        mut j = 0
+        while j < len(chars) { text = replace(text, chars[j], entities[j]); j = j + 1 }
+    }
+    return text
+}
+
+export func display_fields(fields, markdown) {
+    mut out = fields
+    let names = keys(fields)
+    mut i = 0
+    while i < len(names) {
+        let name = names[i]
+        if type_of(fields[name]) == "string" { out[name] = display_text(fields[name], markdown) }
+        i = i + 1
+    }
+    return out
+}
+
+export func display_rows(rows, markdown) {
+    mut out = []
+    mut i = 0
+    while i < len(rows) { out = push(out, display_fields(rows[i], markdown)); i = i + 1 }
+    return out
+}

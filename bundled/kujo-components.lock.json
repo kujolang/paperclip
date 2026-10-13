@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "bundleVersion": "0.3.0",
+  "bundleVersion": "0.4.0",
   "runtime": {
     "minimumVersion": "1.8.1"
   },
@@ -168,6 +168,7 @@
       "repository": "https://github.com/kujolang/spec",
       "gitCommit": "1211f37a09314be7150734bf15a55e9b2ea6504d",
       "version": "1.0.1",
+      "license": "MIT",
       "entrypoint": "src/validate.kujo",
       "files": [
         "LICENSE",
@@ -176,21 +177,113 @@
         "src/common.kujo",
         "schema/spec.schema.json"
       ],
-      "outputContracts": [
-        {
-          "name": "validation",
-          "format": "json",
-          "schema": "schemas/spec-validation.schema.json"
-        }
-      ],
-      "license": "MIT",
       "checksums": {
         "LICENSE": "4b6449939f8dce26dc5fb87756740a5977da9085517af127d9e634e6a6492506",
         "src/validate.kujo": "691be02b5f3ccb90116c5fb4e606a89ef8370e45444ee4b7bb96420e09a13b2d",
         "src/convert.kujo": "22250f617e462589a666b92a3b0cf70d3adbc85fd836cd99dc8e555dca36d023",
         "src/common.kujo": "7ab3676aca8d7dce1c7e8cc4ce871245a7b56b1f4819a68336c7e7a91be83789",
         "schema/spec.schema.json": "a5a2cd84e5101c2bb8cc94ceb1b202e7f3cdc701e5dbbb78ef8764d425f16f10"
-      }
+      },
+      "outputContracts": [
+        {
+          "name": "validation",
+          "format": "json",
+          "schema": "schemas/spec-validation.schema.json"
+        }
+      ]
+    },
+    {
+      "id": "fence",
+      "repository": "https://github.com/kujolang/fence",
+      "gitCommit": "818fad467674efeb6d6b5973211834d3f1a0b1fd",
+      "version": "1.0.0",
+      "license": "MIT",
+      "entrypoint": "fence.kujo",
+      "files": [
+        "LICENSE",
+        "fence.kujo",
+        "src/analyze.kujo",
+        "src/baseline.kujo",
+        "src/cache.kujo",
+        "src/cli.kujo",
+        "src/cliargs.kujo",
+        "src/cmd_baseline.kujo",
+        "src/cmd_check.kujo",
+        "src/cmd_doctor.kujo",
+        "src/cmd_explain.kujo",
+        "src/cmd_graph.kujo",
+        "src/cmd_ignores.kujo",
+        "src/cmd_init.kujo",
+        "src/cmd_validate.kujo",
+        "src/cmd_workspace.kujo",
+        "src/config.kujo",
+        "src/cycles.kujo",
+        "src/decisions.kujo",
+        "src/git.kujo",
+        "src/glob.kujo",
+        "src/graph.kujo",
+        "src/ignores.kujo",
+        "src/imports.kujo",
+        "src/imports_ext.kujo",
+        "src/meta.kujo",
+        "src/output.kujo",
+        "src/parser_adapters.kujo",
+        "src/paths.kujo",
+        "src/reports.kujo",
+        "src/resolve.kujo",
+        "src/rules.kujo",
+        "src/templates.kujo",
+        "src/util.kujo",
+        "src/validate.kujo",
+        "src/walk.kujo",
+        "src/zones.kujo"
+      ],
+      "checksums": {
+        "LICENSE": "4b6449939f8dce26dc5fb87756740a5977da9085517af127d9e634e6a6492506",
+        "fence.kujo": "49dd228dd97493aba0a2be8f58b96778cb7b4b62ccf59d0ddbdaa4fab9dea390",
+        "src/analyze.kujo": "f7125f9378bf3d83f8283a05515245bf046b89b3248be01f780a04d2598a8904",
+        "src/baseline.kujo": "705005eb01777ade9a378601bd2e14a65f2f72e4214de8d23d5f3a03eadb6e75",
+        "src/cache.kujo": "655f021741ecd7f39abcb99f1a00ef28d440ad71d343a996f5a510b42b8d9423",
+        "src/cli.kujo": "8489dd3798c84fa2eb78f7f9f5a2b1e57cf6a7b118f19ebdfa9498c870c8da95",
+        "src/cliargs.kujo": "b4e5c519e52a5247bad2edb159a11d29840fd91dd5accc8f94862a9b2629fad8",
+        "src/cmd_baseline.kujo": "d907a184458f116dee8e66f8ba4e2f39e2e721076a9f5b6c3b0d27e9ca69d469",
+        "src/cmd_check.kujo": "162573b092bcb9de339b98da6ce85c0d47b2de33f9814a7d0bdf438d3e3a88a9",
+        "src/cmd_doctor.kujo": "42ab6b8c8cc497447af34821874d651a09c5defc0eaba14cfa10472770922e32",
+        "src/cmd_explain.kujo": "8341a507e1966e5a18eaa3cef1d2d5033dd71eeac57feadee120e3a2ff9efbad",
+        "src/cmd_graph.kujo": "6d1f05ebd43844b580db6155dfb3819035f587ab086e645855d6efe163627c08",
+        "src/cmd_ignores.kujo": "823ab224a06d4173314b519bf0bfb55fb4b777a83a3c0ac35532706e021c051b",
+        "src/cmd_init.kujo": "a98be7869d1659a08de7a6a138cc65699d5233a3540e7afb5780010bf1b84e63",
+        "src/cmd_validate.kujo": "faf6e36764b20d05bf0dbf5db45d421c2d3ce3601e49e00f8e59480b2919482f",
+        "src/cmd_workspace.kujo": "e80fcb92a7234c6fb90aecd800000e807347786bb91c498f1f6c68ac2659c337",
+        "src/config.kujo": "0e98b49e76bd8b4fb977b129a85d418d8cb87714540b805963faf9d4fb2223dd",
+        "src/cycles.kujo": "5f121d613af8a033ef6da0a9f232e7ce358a03d257a31d09bbe13b603282ee82",
+        "src/decisions.kujo": "d3c77e4fe7e0a0bccdc9d15ccd81ad8a96ebb4fbd2dca95377df9734fb6bffde",
+        "src/git.kujo": "34606995b45a6e269f159154186a8f9d41f60a458e14d247bf4cfc2090f0e770",
+        "src/glob.kujo": "da32edaf4242b7e3b207a9382e15f0411b063b169a3c071e3fbe9cf499722e71",
+        "src/graph.kujo": "ad6220a0bbcb3703c81f7ef09fdbea5b37b4fb34b34bd6cbbcd64169dc01fdf6",
+        "src/ignores.kujo": "d48b5c60a1b134b9bb7b54bf9c4d98f24556a5e800a16668f99b9eb41fdc54f4",
+        "src/imports.kujo": "e58ffe8c199d15d3dfc68a8a2a46c1d6adaed505b00b5a11008e3be0e59166cf",
+        "src/imports_ext.kujo": "03a9c41fe3f5f703d1f67f86f79e3624cf86868da4538d04ff51c59aa6b46e25",
+        "src/meta.kujo": "ba8d0de008fb9f5177d55ce18198c9901144d643e42e36acc515d5429e0bec0b",
+        "src/output.kujo": "cb24fe493cce733a3e5bc8bf28a5b80d4b81537fcf7e926757a7bc200f9259d4",
+        "src/parser_adapters.kujo": "f73f95fb90c9c196f42569840398ed6b5affd955fd751c5e77ca52b42b94266c",
+        "src/paths.kujo": "311c25cf82309e9578b38fa0c2e271580199b36adf85607897845c8ec39401c5",
+        "src/reports.kujo": "6e7334f63636ccb97ba77e3944ee0aa5a9c7d1454145663661a54871900cedd6",
+        "src/resolve.kujo": "ab956b6028b5c75759bbe24c88fa94149445072aabfefc135142f3cab7ffa5d2",
+        "src/rules.kujo": "8d106746e986d20b94803e82bde94ce947a88918ea348d794716a054ebd6053b",
+        "src/templates.kujo": "11b837c7c3822caef5cc7fbf555b5130829c4ffe9d500253c149896795b6b06e",
+        "src/util.kujo": "5eab0d7f4b28399637fb4a783689f12fb783788691721dd15d3f2417d1b64e3e",
+        "src/validate.kujo": "81351cb61e857ea51ff63c311c26770a8ab147cb2b9134607a167091be54a91f",
+        "src/walk.kujo": "0420c62bae3b5c3546f9632cf5603b6a0304c7211bfcea5547bc77b384636a7e",
+        "src/zones.kujo": "fa986316d328acbe174c687347f96b1901015bb069a1b7405bb768fde31a4082"
+      },
+      "outputContracts": [
+        {
+          "name": "analysis",
+          "format": "json",
+          "schema": "schemas/fence-analysis.schema.json"
+        }
+      ]
     }
   ]
 }
