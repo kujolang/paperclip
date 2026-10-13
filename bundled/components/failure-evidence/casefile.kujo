@@ -551,8 +551,17 @@ func resolve_output_dir(repo_root, output_dir) {
 	return outside_check
 }
 
+# Git for Windows ships POSIX utilities; use drive-qualified forward-slash paths
+# for those utilities while preserving literal backslashes in POSIX filenames.
+func utility_path(path_value) {
+	if regex_match(path_value, "^[A-Za-z]:") {
+		return replace(path_value, "\\", "/")
+	}
+	return path_value
+}
+
 func ensure_directory(path_value) {
-	result := safe_spawn(["mkdir", "-p", path_value])
+	result := safe_spawn(["mkdir", "-p", utility_path(path_value)])
 	if !(proc_success(result) && proc_exitcode(result) == 0) {
 		return {"ok": false, "error": "Failed to create directory: " + safe_to_string(proc_stderr(result))}
 	}
@@ -629,8 +638,8 @@ func create_case_dir(repo_root, cfg, case_name, force) {
 	}
 	mk_case := {"ok": true}
 	if !force || !path_exists(case_path) {
-		created := safe_spawn(["mkdir", "-m", "700", case_path])
-		mk_case = {"ok": proc_exitcode(created) == 0, "error": "case directory already exists or cannot be created: " + case_path}
+		created := safe_spawn(["mkdir", "-m", "700", utility_path(case_path)])
+		mk_case = {"ok": proc_exitcode(created) == 0, "error": "case directory already exists or cannot be created: " + case_path + ": " + safe_to_string(proc_stderr(created))}
 	}
 	if !mk_case["ok"] {
 		return mk_case

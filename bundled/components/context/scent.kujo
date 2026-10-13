@@ -2103,6 +2103,24 @@ func print_kv(label, value) {
 
 func print_human_result(result, opts) {
     payload := summary_payload(result)
+    if opts["dry_run"] {
+        selection := []
+        for file in result["selected_files"] {
+            selection = push(selection, {
+                "path": file["path"], "reason": file["reason"],
+                "score": file["score"], "estimated_tokens": file["estimated_tokens"],
+                "truncated": file["truncated"]
+            })
+        }
+        excluded_count := 0
+        for entry in result["manifest"] {
+            if entry["decision"] == "exclude" || entry["decision"] == "truncate" {
+                excluded_count = excluded_count + 1
+            }
+        }
+        payload["excluded_count"] := excluded_count
+        payload["selected_files"] := selection
+    }
 
     if opts["json_stdout"] {
         print(to_json(payload))
@@ -2199,7 +2217,7 @@ test "help and version surface" {
     }
 
     func run_scent(args) {
-        command := shq(kujo_bin) + " run " + shq(scent_script)
+        command := shq(kujo_bin) + " run " + shq(scent_script) + " --"
         i := 0
         while i < len(args) {
             command = command + " " + shq(args[i])

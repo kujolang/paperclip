@@ -25,6 +25,11 @@ const patchbriefHandoff = z.object({
 }).passthrough();
 
 const scentSummary = z.object({
+  selected_files: z.array(z.object({
+    path: z.string(), reason: z.string(), score: z.number(),
+    estimated_tokens: z.number().int().nonnegative(), truncated: z.boolean(),
+  }).strict()).optional(),
+  excluded_count: z.number().int().nonnegative().optional(),
   output_dir: z.string(), estimated_tokens: z.number().nonnegative(), budget: z.number().positive(), included_files: z.number().int().nonnegative(),
 }).passthrough();
 

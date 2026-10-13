@@ -33,3 +33,7 @@ not identify those fixes. No source is fetched at install or runtime.
 This cohort requires Kujo 1.8.1, the bundled and tested runtime. The existing
 Review, Context and Failure Evidence schema version remains 1. New ChangeBucket
 v2 flags are not enabled implicitly.
+
+Context selection uses Scent dry-run JSON metadata. File contents are retrieved
+only through the separate bounded content operation; Scent does not need to
+write private POSIX artifacts for this workflow.
