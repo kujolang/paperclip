@@ -4472,6 +4472,394 @@ export const projections = [
         "source": "kennel"
       }
     ]
+  },
+  {
+    "exportName": "sourceExecutionTool",
+    "id": "kujo.paperclip.source.execute",
+    "feature": "sourceExecution",
+    "canonicalIds": [],
+    "components": [],
+    "tool": {
+      "name": "manage-kujo-execution",
+      "displayName": "Run Approved Kujo Source or Tests",
+      "description": "Inspect or request human approval for a fixed Kujo run, test-run or fixture-test command on a bounded frozen issue-workspace copy; start, inspect or cancel retained executions. Trusted code is not sandboxed. No commands, runtime flags, caller roots or approval IDs are accepted. Requires the assigned current issue run; only a human accepts approval.",
+      "parametersSchema": {
+        "oneOf": [
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "issueId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "operation": {
+                "const": "inspect"
+              },
+              "mode": {
+                "type": "string",
+                "enum": [
+                  "run",
+                  "test",
+                  "fixtures"
+                ]
+              },
+              "path": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 500,
+                "description": "Git-visible .kujo entry file for run/test; omit for tests/ fixture mode."
+              }
+            },
+            "required": [
+              "issueId",
+              "operation",
+              "mode"
+            ]
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "issueId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "operation": {
+                "const": "prepare"
+              },
+              "submissionId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "mode": {
+                "type": "string",
+                "enum": [
+                  "run",
+                  "test",
+                  "fixtures"
+                ]
+              },
+              "path": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 500,
+                "description": "Git-visible .kujo entry file for run/test; omit for tests/ fixture mode."
+              }
+            },
+            "required": [
+              "issueId",
+              "operation",
+              "submissionId",
+              "mode"
+            ]
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "issueId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "operation": {
+                "const": "start"
+              },
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              }
+            },
+            "required": [
+              "issueId",
+              "operation",
+              "id"
+            ]
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "issueId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "operation": {
+                "const": "status"
+              },
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              }
+            },
+            "required": [
+              "issueId",
+              "operation",
+              "id"
+            ]
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "issueId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "operation": {
+                "const": "list"
+              }
+            },
+            "required": [
+              "issueId",
+              "operation"
+            ]
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "issueId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "operation": {
+                "const": "cancel"
+              },
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              }
+            },
+            "required": [
+              "issueId",
+              "operation",
+              "id"
+            ]
+          }
+        ]
+      }
+    },
+    "definition": {
+      "schema": "kujo.ability/v1",
+      "id": "kujo.paperclip.source.execute",
+      "version": "1.0.0",
+      "title": "Run Approved Kujo Source or Tests",
+      "description": "Inspect or request human approval for a fixed Kujo run, test-run or fixture-test command on a bounded frozen issue-workspace copy; start, inspect or cancel retained executions. Trusted code is not sandboxed. No commands, runtime flags, caller roots or approval IDs are accepted. Requires the assigned current issue run; only a human accepts approval.",
+      "input_schema": {
+        "oneOf": [
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "issueId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "operation": {
+                "const": "inspect"
+              },
+              "mode": {
+                "type": "string",
+                "enum": [
+                  "run",
+                  "test",
+                  "fixtures"
+                ]
+              },
+              "path": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 500,
+                "description": "Git-visible .kujo entry file for run/test; omit for tests/ fixture mode."
+              }
+            },
+            "required": [
+              "issueId",
+              "operation",
+              "mode"
+            ]
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "issueId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "operation": {
+                "const": "prepare"
+              },
+              "submissionId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "mode": {
+                "type": "string",
+                "enum": [
+                  "run",
+                  "test",
+                  "fixtures"
+                ]
+              },
+              "path": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 500,
+                "description": "Git-visible .kujo entry file for run/test; omit for tests/ fixture mode."
+              }
+            },
+            "required": [
+              "issueId",
+              "operation",
+              "submissionId",
+              "mode"
+            ]
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "issueId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "operation": {
+                "const": "start"
+              },
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              }
+            },
+            "required": [
+              "issueId",
+              "operation",
+              "id"
+            ]
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "issueId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "operation": {
+                "const": "status"
+              },
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              }
+            },
+            "required": [
+              "issueId",
+              "operation",
+              "id"
+            ]
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "issueId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "operation": {
+                "const": "list"
+              }
+            },
+            "required": [
+              "issueId",
+              "operation"
+            ]
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "issueId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "operation": {
+                "const": "cancel"
+              },
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              }
+            },
+            "required": [
+              "issueId",
+              "operation",
+              "id"
+            ]
+          }
+        ]
+      },
+      "output_schema": {
+        "type": "object",
+        "additionalProperties": true
+      },
+      "effects": [
+        {
+          "kind": "read",
+          "resource": "kujo.paperclip.workspace"
+        },
+        {
+          "kind": "write",
+          "resource": "kujo.paperclip.evidence"
+        },
+        {
+          "kind": "write",
+          "resource": "kujo.host.files"
+        },
+        {
+          "kind": "external",
+          "resource": "kujo.host.execution-and-network"
+        }
+      ],
+      "idempotency": {
+        "mode": "keyed"
+      },
+      "semantics": {
+        "open_world": true,
+        "destructive": true,
+        "executes_code": true
+      }
+    },
+    "profiles": [
+      "installed",
+      "build",
+      "full"
+    ],
+    "definitionDigest": "0b579478b95d5b03e596f5d014854b8149f269d987737321b498be067bc0de39",
+    "canonicalDefinitions": []
   }
 ] as const;
 export const catalogTool = projections[0].tool;
@@ -4491,4 +4879,5 @@ export const concordTool = projections[13].tool;
 export const shipcheckTool = projections[14].tool;
 export const evalTool = projections[15].tool;
 export const packageTool = projections[16].tool;
+export const sourceExecutionTool = projections[17].tool;
 export const projectedTools = projections.map((entry) => entry.tool);

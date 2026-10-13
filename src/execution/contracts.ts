@@ -6,12 +6,12 @@ const digest = z.string().regex(/^[a-f0-9]{64}$/);
 export const executionScopeSchema = z.object({ companyId: identity, issueId: identity }).strict();
 export type ExecutionScope = z.infer<typeof executionScopeSchema>;
 export const executionPlanSchema = z.object({
-  operation: z.literal("eval.run"),
+  operation: z.enum(["eval.run", "source.run", "source.test", "source.fixtures"]),
   // Frozen at preparation. Absent on legacy requests; never backfill from a
   // newer catalog when rendering an old immutable outcome.
   abilityReceipt: z.object({
     serializerVersion: z.literal(1),
-    abilityId: z.literal("kujo.eval.suite.run"),
+    abilityId: z.enum(["kujo.eval.suite.run", "kujo.paperclip.source.execute"]),
     abilityVersion: z.string().regex(/^\d+\.\d+\.\d+$/),
     definitionDigest: digest,
     handlerVersion: z.literal("1.0.0"),
@@ -23,7 +23,7 @@ export const executionPlanSchema = z.object({
   preview: z.string().max(12000).optional(),
   maxStdoutBytes: z.number().int().min(1024).max(500000).optional(),
   maxStderrBytes: z.number().int().min(1024).max(64000).optional(),
-  effects: z.array(z.enum(["read_workspace", "write_reports", "execute_project", "network"])).min(1).max(4),
+  effects: z.array(z.enum(["read_workspace", "write_reports", "write_files", "execute_project", "network"])).min(1).max(4),
   inputDigest: digest,
   workspaceDigest: digest,
   definitionDigest: digest,
