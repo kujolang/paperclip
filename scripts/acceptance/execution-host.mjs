@@ -3,13 +3,14 @@ import assert from "node:assert/strict";
 import { spawn, execFileSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { once } from "node:events";
-import { access, copyFile, mkdir, mkdtemp, open, readdir, realpath, symlink, writeFile } from "node:fs/promises";
+import { access, copyFile, mkdir, mkdtemp, open, readFile, readdir, realpath, symlink, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 import { build } from "esbuild";
+import { buildRuntimeSupervisor } from "../build-runtime-supervisor.mjs";
 
 const production = process.env.KUJO_ACCEPTANCE_PRODUCTION === "1";
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
@@ -130,6 +131,7 @@ try {
     paperclipPlugin: { manifest: "./dist/manifest.js", worker: "./dist/worker.js" } }));
   for (const file of await readdir(join(repo, "migrations"))) if (file.endsWith(".sql")) await copyFile(join(repo, "migrations", file), join(fixture, "migrations", file));
   await build({ entryPoints: { worker: join(repo, production ? "src/worker.ts" : "tests/host/execution-worker.ts"), manifest: join(repo, production ? "src/manifest.ts" : "tests/host/execution-manifest.ts") }, outdir: join(fixture, "dist"), bundle: true, platform: "node", format: "esm", packages: "external" });
+  await buildRuntimeSupervisor(join(fixture, "dist/runtime-supervisor.js"));
   if (production) await symlink(join(repo, "dist/ui"), join(fixture, "dist/ui"), process.platform === "win32" ? "junction" : "dir");
   await json("config.json", { $meta: { version: 1, updatedAt: new Date().toISOString(), source: "doctor" },
     database: { mode: "embedded-postgres", embeddedPostgresDataDir: join(root, "db"), embeddedPostgresPort: dbPort, backup: { enabled: false, dir: join(root, "backups") } },
@@ -252,6 +254,23 @@ try {
   assert.equal((await running).data.state, "cancelled");
   assert.equal((await action("start", { id: slow.id })).data.state, "cancelled");
   checks.push("concurrent worker cancellation stops running native fixture and remains final");
+  const crash = await prepare("crash-supervised", "supervised"); await accept(crash);
+  const crashExecutionStartedAt = Date.now();
+  const crashing = action("start", { id: crash.id }, { status: 502 }); crashing.catch(() => {});
+  const heartbeat = join(root, "workspace/supervisor-heartbeat");
+  await waitUntil(async () => (await readFile(heartbeat, "utf8").catch(() => "")) !== "");
+  const beforeCrash = await readFile(heartbeat, "utf8");
+  await waitUntil(async () => await readFile(heartbeat, "utf8") !== beforeCrash);
+  await action("crash", {});
+  await crashing;
+  await delay(2000);
+  const stoppedHeartbeat = await readFile(heartbeat, "utf8"); await delay(500);
+  assert.equal(await readFile(heartbeat, "utf8"), stoppedHeartbeat);
+  assert.ok(Date.now() - crashExecutionStartedAt < 10_000, "Crash containment must be observed before the native 15-second deadline");
+  await waitUntil(async () => { try { return (await status(crash.id)).state === "uncertain"; } catch { return false; } });
+  assert.equal((await action("start", { id: crash.id })).data.state, "uncertain");
+  assert.equal(await readFile(heartbeat, "utf8"), stoppedHeartbeat);
+  checks.push("abrupt authenticated worker crash stops native heartbeat before its deadline; lost observation remains uncertain and cannot replay");
   const restartPending = await prepare("restart-pending");
   await call("/plugins/kujolang.paperclip/disable", { method: "POST", body: {} });
   await call("/plugins/kujolang.paperclip/enable", { method: "POST", body: {} });
@@ -262,6 +281,8 @@ try {
   await waitUntil(async () => { try { return (await status(restartPending.id)).state === "pending"; } catch { return false; } });
   assert.deepEqual(await status(succeeded.id), succeeded);
   assert.equal((await status(slow.id)).state, "cancelled");
+  assert.equal((await status(crash.id)).state, "uncertain");
+  assert.equal(await readFile(heartbeat, "utf8"), stoppedHeartbeat);
   for (const receipt of nativeReceipts) assert.deepEqual(await status(receipt.id), receipt);
   await accept(restartPending);
   assert.equal((await action("start", { id: restartPending.id })).data.state, "succeeded");
