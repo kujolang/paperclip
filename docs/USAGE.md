@@ -232,3 +232,42 @@ the evaluation. Clearing history suppresses republication of existing terminal
 requests; active requests may still produce new outcomes. See
 [execution history](EXECUTION.md#retained-execution-history) for exact limits and
 agent issue-read authorization.
+
+## Inspect Kujo packages
+
+On a project or issue, **Kujo packages** lists up to 1,000 Git-visible
+`kennel.toml` paths. Choose one and select **Inspect packages**. The agent tool
+`kujolang.paperclip:inspect-kujo-packages` accepts:
+
+```json
+{"path": "kennel.toml"}
+```
+
+Omit `path` for the root manifest. Paperclip resolves the company/project workspace;
+callers cannot supply an absolute workspace or a command. Run views cannot create
+new package inspections. The Language feature must be enabled and the company
+profile must be Installed, Build or Full.
+
+The pinned Kennel validator checks declaration syntax on private manifest copies.
+The canonical lock parser reads only an adjacent Git-visible `kennel.lock`.
+Each input is UTF-8, at most 64 KiB, beneath the workspace, and cannot be a symlink.
+The native interpreter uses isolated imports, a five-second maximum process window,
+and bounded output. Local dependency paths are never resolved or followed; no
+network access, install, update, project module or dependency code is invoked.
+
+Results show package identity/entry, canonical errors and warnings, up to 200
+declared dependencies and 200 lock records, and explicit truncation. A passed
+inspection means those parsed declarations passed these checks; it does not prove
+installed bytes, lock digests, source availability, compatible dependencies or a
+working program. Missing/unreadable locks with dependencies produce warnings;
+malformed, unsupported-version or invalid-shape locks fail inspection. Fields in a
+parsed lock remain unverified claims, including resolved commits and versions.
+
+Selected summaries are redacted and retained as `packages-latest` evidence with
+manifest/lock byte digests, runtime/component/projection provenance and workspace
+freshness. Shared history supports inspection, comparison, export and explicit
+human issue attachment, with 20 records per entity for 30 days across all kinds.
+Source files remain unchanged. Sensitive-pattern redaction is defense in depth,
+not proof that arbitrary declarations contain no secrets. Kennel's bundled
+unreleased declaration API is pinned by commit; the published Kennel version alone
+does not identify those bytes.

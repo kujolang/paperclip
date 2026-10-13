@@ -104,3 +104,20 @@ references carry their digest even after pruning. These are ledger observations;
 legacy outcomes have no canonical receipt. Newly admitted requests freeze Ability
 identity and embed canonical-contract host receipts on terminal outcomes, using
 request-lifecycle timing and explicit uncertain-failure metadata. See [execution history](EXECUTION.md#retained-execution-history).
+
+## Package declaration inspection
+
+Kennel is the eleventh pinned component. The fixed bridge calls canonical
+`validate_manifest_declarations`, `source_ref_from_dependency_declaration` and
+lockfile parsing on bounded private copies. The declaration-only API shares
+Kennel's parser/validation rules while avoiding local path normalization, stat,
+resolution and installation. Existing Kennel installer validation retains its
+filesystem checks. Interpreter execution uses isolated imports and only verified
+component bytes. No project modules are loaded.
+
+The host selects Git-visible manifests and adjacent locks through the shared
+beneath-root reader, records input digests, redacts selected fields, checks
+freshness again and persists `packages-latest` in the immutable scoped store.
+This new kind uses the existing history table; it is not a legacy state migration.
+Lock parsing is explicitly separate from trust, integrity or installed-byte proof.
+See [Usage](USAGE.md#inspect-kujo-packages) for bounds and result semantics.

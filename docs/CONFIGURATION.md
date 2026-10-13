@@ -44,7 +44,7 @@ arbitrary source execution or change the Verification setting.
 
 `features.understand` defaults to `true`; disable it to prevent repository maps through both the panel and agent tool. Doctor distinguishes disabled from blocked Scout readiness.
 
-`features.language` defaults to `true` and controls both source diagnostics and formatting previews, including both agent tools. Previews return source text after defensive redaction; disable this feature when that explicit read workflow is not wanted.
+`features.language` defaults to `true` and controls source diagnostics, formatting previews and offline package inspection, including their three agent tools. Package inspection is available in Installed, Build and Full profiles. Previews return source text after defensive redaction; disable this feature when that explicit read workflow is not wanted.
 
 
 ## Capability profile
