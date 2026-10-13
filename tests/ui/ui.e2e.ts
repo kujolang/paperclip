@@ -536,3 +536,50 @@ test("MCP starter identifies its canonical server and requires explicit client s
   await expect(panel.getByText(/canonical-mcp-commit/)).toBeVisible();
   await expect(panel.getByText("No server registered or started.")).toBeVisible();
 });
+
+test("native run/test requires separate preview, approval request and explicit start", async ({ page }) => {
+  await page.goto("/?surface=task&entity=issue&sourceExecution=1&profile=build");
+  const section = page.getByRole("region", { name: "Approved Kujo run and test", exact: true });
+  await expect(section).toBeVisible();
+  await section.getByLabel("Kujo entry file").fill("main.kujo");
+  await section.getByRole("button", { name: "Preview command", exact: true }).click();
+  await expect(section.getByText("kujo run main.kujo", { exact: true })).toBeVisible();
+  await section.getByRole("button", { name: "Request run/test approval", exact: true }).click();
+  await expect(section.getByText(/Accept the human-only decision card/)).toBeVisible();
+  expect(await page.evaluate(() => window.__KUJO_ACTIONS__?.some(call => call.action === "manage-kujo-execution" && (call.input as { operation: string }).operation === "start"))).toBe(false);
+  await section.getByRole("button", { name: "Start approved command", exact: true }).click();
+  await expect(section.getByLabel("Native Kujo output")).toContainText("native fixture output");
+  await expect(section.getByText(/Exit zero alone/)).toBeVisible();
+  await page.setViewportSize({ width: 390, height: 1200 });
+  await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  await expect(section).toHaveScreenshot("source-execution.png", { animations: "disabled" });
+});
+
+test("fixture-test selection omits caller paths and clears stale previews", async ({ page }) => {
+  await page.goto("/?surface=task&entity=issue&sourceExecution=1");
+  const section = page.getByRole("region", { name: "Approved Kujo run and test", exact: true });
+  await section.getByRole("button", { name: "Preview command", exact: true }).click();
+  await section.getByLabel("Kujo operation").selectOption("fixtures");
+  await expect(section.getByLabel("Kujo entry file")).toHaveCount(0);
+  await expect(section.getByText("Command and approved input coverage", { exact: true })).toHaveCount(0);
+  await section.getByRole("button", { name: "Preview command", exact: true }).click();
+  await expect(section.getByText("kujo test --runtime interpreter", { exact: true })).toBeVisible();
+  const last = await page.evaluate(() => window.__KUJO_ACTIONS__?.findLast(call => call.action === "manage-kujo-execution" && (call.input as { operation: string }).operation === "inspect"));
+  expect(last?.input).toEqual({ operation: "inspect", issueId: "issue-fixture", mode: "fixtures" });
+});
+
+test("source execution is absent by default, on project/run surfaces and other profiles", async ({ page }) => {
+  for (const query of ["entity=issue", "sourceExecution=1&entity=project", "sourceExecution=1&entity=run", "sourceExecution=1&entity=issue&profile=review", "sourceExecution=1&entity=issue&profile=ship"]) {
+    await page.goto(`/?${query}`);
+    await expect(page.getByRole("region", { name: "Approved Kujo run and test", exact: true })).toHaveCount(0);
+  }
+});
+
+test("company navigation drops a late private source execution response", async ({ page }) => {
+  await page.goto("/?surface=task&entity=issue&sourceExecution=1");
+  await page.evaluate(() => { window.__KUJO_DELAY_SOURCE__ = true; });
+  await page.getByRole("button", { name: "Preview command", exact: true }).click();
+  await page.evaluate(() => window.__KUJO_NAVIGATE__?.("different-company"));
+  await page.evaluate(() => window.__KUJO_RESOLVE_SOURCE__?.());
+  await expect(page.getByText("private delayed source result", { exact: true })).toHaveCount(0);
+});

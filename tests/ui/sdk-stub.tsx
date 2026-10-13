@@ -6,6 +6,9 @@ declare global {
   interface Window {
     __KUJO_DELAY_PACKAGES__?: boolean;
     __KUJO_RESOLVE_PACKAGES__?: () => void;
+    __KUJO_DELAY_SOURCE__?: boolean;
+    __KUJO_RESOLVE_SOURCE__?: () => void;
+    __KUJO_SOURCE_REQUESTS__?: Array<Record<string, unknown>>;
     __KUJO_DELAY_EVAL__?: boolean;
     __KUJO_RESOLVE_EVAL__?: () => void;
     __KUJO_EVAL_REQUESTS__?: Array<Record<string, unknown>>;
@@ -59,6 +62,18 @@ export function usePluginAction(action: string) {
     if (action === "inspect-kujo-packages") {
       if (window.__KUJO_DELAY_PACKAGES__) { await new Promise<void>(resolve => { window.__KUJO_RESOLVE_PACKAGES__ = resolve; }); throw new Error("private delayed package result"); }
       return { status: "warnings", reportId: "package-fixture" };
+    }
+    if (action === "manage-kujo-execution") {
+      const params = input as { operation: string; mode?: string; path?: string; id?: string };
+      if (window.__KUJO_DELAY_SOURCE__) { await new Promise<void>(resolve => { window.__KUJO_RESOLVE_SOURCE__ = resolve; }); throw new Error("private delayed source result"); }
+      const requests = window.__KUJO_SOURCE_REQUESTS__ ??= [];
+      if (params.operation === "list") return { requests, history: { pending: false } };
+      if (params.operation === "inspect") return { plan: { summary: "Fixed native command on frozen inputs", preview: params.mode === "fixtures" ? "kujo test --runtime interpreter" : `kujo ${params.mode} ${params.path}` } };
+      if (params.operation === "prepare") { const item = { id: "source_fixture", mode: params.mode, path: params.path ?? "tests/", state: "pending", plan: { preview: "approved source" }, result: null }; requests.push(item); return item; }
+      const item = requests.find(record => record.id === params.id)!;
+      if (params.operation === "start") { item.state = "succeeded"; item.classification = "process-completed"; item.result = { classification: "process-completed", stdout: "native fixture output", stderr: "", exitCode: 0 }; item.history = { notice: "Plan and outcome retained." }; }
+      if (params.operation === "cancel") item.state = "cancelled";
+      return { ...item };
     }
     if (action === "manage-evaluation") {
       const params = input as { operation: string; suite?: string; id?: string };

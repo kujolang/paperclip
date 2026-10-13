@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add separately enabled, human-approved native script, test-file and fixture-test execution on bounded frozen inputs, with issue UI/assigned-agent tool, stale-plan rejection, cancellation, shared company limits and linked portable host receipts. Native exit/output does not imply test counts or full-project success.
+
 - Pin the canonical MCP Windows path-boundary repair so starter file tools work across the supported native platforms.
 
 - Add pinned canonical SQLite API and MCP server starter previews with source provenance, effect/setup guidance, portable demo files and real consumer HTTP/JSON-RPC verification.

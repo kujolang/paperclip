@@ -88,6 +88,22 @@ verify installed bytes, lock digests, source availability or dependency compatib
 Local dependency paths remain declarations and are never followed. Missing,
 unreadable, malformed or unsupported lockfiles are explicit. See [package inspection](docs/USAGE.md#inspect-kujo-packages) for bounds and retained evidence.
 
+## Run or test Kujo
+
+Enable **Human-approved Kujo run/test** in company settings and select Installed,
+Build or Full. On an issue, choose a script, a test file, or the project's fixture
+tests in **Run or test Kujo**. Preview the fixed native command, request approval,
+accept its human-only issue card, then explicitly start it. Changing source or
+settings invalidates the old approval.
+
+Runs use a bounded temporary copy of Git-visible text. Ignored dependencies,
+binary resources and credentials are not supplied; relative output is removed.
+Code remains trusted and can affect host files, processes or the network. Native
+exit/output and linked receipts are retained; exit zero alone does not establish
+that tests ran or the whole project passed. These are one-shot commands capped at
+27 seconds, not persistent API/MCP services or project creation. See
+[run/test modes and limits](docs/EXECUTION.md#native-source-and-tests).
+
 ## Kujo starters
 
 **Start building with Kujo** previews a local script, fixture-provider AI agent, SQLite CRUD API or MCP server
@@ -99,7 +115,7 @@ its pinned Kennel dependencies must be installed before use. The API includes th
 
 ## Evidence history
 
-Terminal Eval requests retain linked request-plan and outcome records here. You
+Terminal Eval and source/test requests retain linked request-plan and outcome records here. You
 can select the related plan, compare outcomes, export both records, or explicitly
 attach them to the issue. Pending history saves can be retried without rerunning
 the suite. New requests include a portable Ability receipt with explicit native
@@ -152,10 +168,11 @@ The plugin ships pinned, checksummed Ability contracts/catalogs and generates it
 
 ## Agent tools
 
-Paperclip agents can call seventeen tools:
+Paperclip agents can call eighteen tools:
 
 | Tool | Use |
 | --- | --- |
+| `kujolang.paperclip:manage-kujo-execution` | Preview, request approval, start, inspect or cancel a fixed native run/test on the assigned issue/current run. Separate opt-in and human approval required. |
 | `kujolang.paperclip:manage-evaluation` | Inspect, prepare, start, read or cancel an approved Eval suite on the assigned issue/current run. Human approval is required before execution. |
 | `kujolang.paperclip:inspect-release-readiness` | Inspect native release metadata signals and coverage; never executes tests or certifies a release. |
 | `kujolang.paperclip:inspect-artifact-drift` | Inspect artifact alignment with native Concord; no project commands, examples or tests run. |
@@ -272,4 +289,4 @@ provenance.
 
 Development status: the [approved execution workflow](docs/EXECUTION.md)
 includes company-scoped host admission, bounded suite previews, durable request limits
-and an opt-in authenticated host acceptance harness. Public Eval controls are available on issues; long-running workflow integrations remain unfinished.
+and an opt-in authenticated host acceptance harness. Public Eval and separately enabled run/test controls are available on issues; long-running workflow integrations remain unfinished.
