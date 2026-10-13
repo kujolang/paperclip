@@ -268,7 +268,8 @@ test("architecture inspection shows incomplete coverage, findings, threshold sem
   await section.getByRole("button", { name: "Inspect architecture" }).click();
   await expect.poll(() => page.evaluate(() => window.__KUJO_ACTIONS__?.at(-1))).toMatchObject({ action: "inspect-architecture", input: { entityType: "issue", entityId: "issue-fixture" } });
   await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
-  await expect(section).toHaveScreenshot("architecture-boundaries.png", { animations: "disabled", maxDiffPixelRatio: 0.02 });
+  // Keep the reviewed Linux and macOS text rasterization baselines separate.
+  await expect(section).toHaveScreenshot(`architecture-boundaries-${process.platform}.png`, { animations: "disabled", maxDiffPixelRatio: 0.02 });
 });
 
 test("architecture admission honors runtime, profiles and read-only run views", async ({ page }) => {
