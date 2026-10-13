@@ -9,7 +9,7 @@ export const EVIDENCE_NAMESPACE = "plugin_kujo_evidence_c15d42de56";
 export const HISTORY_LIMIT = 20;
 export const HISTORY_DAYS = 30;
 export const LEGACY_ARTIFACT_KINDS = ["review-latest", "context-latest", "failure-latest", "understand-latest", "language-latest", "verification-latest", "spec-latest", "fence-latest", "concord-latest", "shipcheck-latest"] as const;
-export const ARTIFACT_KINDS = [...LEGACY_ARTIFACT_KINDS, "packages-latest", "evaluation-plan", "evaluation-result"] as const;
+export const ARTIFACT_KINDS = [...LEGACY_ARTIFACT_KINDS, "packages-latest", "evaluation-plan", "evaluation-result", "source-execution-plan", "source-execution-result"] as const;
 export type ArtifactKind = typeof ARTIFACT_KINDS[number];
 export type ReceiptOptions = { inputs?: unknown; definition?: unknown; parentId?: string; legacy?: boolean; projection?: ProjectionReceipt };
 export const evidenceMetadataSchema = z.object({
@@ -134,7 +134,7 @@ export function compareEvidence(left: Awaited<ReturnType<typeof getEvidence>>, r
     const footprint = payload.footprint as Record<string, unknown> | undefined;
     const intelligence = payload.intelligence as Record<string, unknown> | undefined;
     const contract = payload.contract as Record<string, unknown> | null | undefined;
-    return { executionState: payload.executionState, nativeChecks: ((payload.evaluation as Record<string, unknown> | null)?.result as Record<string, unknown> | undefined)?.checks, classification: payload.classification, sourceKind: payload.sourceKind, claimedChecks: (payload.result as Record<string, unknown> | undefined)?.checks, check: payload.check, lint: payload.lint, status: payload.status, staleAtCreation: payload.stale,
+    return { executionState: payload.executionState, nativeExitCode: (payload.native as Record<string, unknown> | undefined)?.exitCode, nativeChecks: ((payload.evaluation as Record<string, unknown> | null)?.result as Record<string, unknown> | undefined)?.checks, classification: payload.classification, sourceKind: payload.sourceKind, claimedChecks: (payload.result as Record<string, unknown> | undefined)?.checks, check: payload.check, lint: payload.lint, status: payload.status, staleAtCreation: payload.stale,
       declaredDependencies: payload.dependencyCount, lockStatus: (payload.lock as Record<string, unknown> | undefined)?.status,
       lockRecords: (payload.lock as Record<string, unknown> | undefined)?.count, truncated: payload.truncated,
       contractValidation: (payload.validation as Record<string, unknown> | undefined)?.status,

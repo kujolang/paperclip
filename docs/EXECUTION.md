@@ -1,7 +1,7 @@
 # Approved execution foundation
 
-The issue panel and `manage-evaluation` tool expose the bounded canonical Eval
-workflow. Execution defaults off, requires a compatible company profile and an
+The issue panel exposes bounded canonical Eval through `manage-evaluation` and
+native run/test through `manage-kujo-execution`, with separate opt-in settings. Execution defaults off, requires a compatible company profile and an
 explicit human-only issue confirmation. This is synchronous bounded execution,
 not a background queue or a durable long-running workflow runner. The manifest
 requests confirmation create/read permissions only; it cannot accept its own card.
@@ -40,6 +40,64 @@ Status returns the approved plan and native receipt while execution is enabled.
 Public results omit internal owner/claim tokens. Terminal requests also publish linked observed plan/outcome records in Evidence
 history. Newly prepared requests include the canonical-contract Ability receipt
 described below; legacy records keep their original representation. Arbitrary issue selection by an agent does not grant access.
+
+## Native source and tests
+
+Enable `features.sourceExecution` in Installed, Build or Full. This is separate
+from Eval's `features.execution`. The issue panel uses the same preview → request
+human-only approval → explicit start flow and persistent ledger as Eval. The
+`manage-kujo-execution` tool accepts these strict variants:
+
+| Operation | Required fields besides `operation` |
+| --- | --- |
+| `inspect` | `issueId`, `mode`; `path` for run/test |
+| `prepare` | `issueId`, `mode`, `submissionId`; `path` for run/test |
+| `start`, `status`, `cancel` | `issueId`, `id` |
+| `list` | `issueId` |
+
+| Mode | Fixed native command | Input |
+| --- | --- | --- |
+| `run` | `kujo run --interpreter ./file.kujo` | Selected project-relative Git-visible source |
+| `test` | `kujo test-run ./file.kujo` | Selected project-relative Git-visible test file |
+| `fixtures` | `kujo test --runtime interpreter` | Native fixture discovery under `tests/`; omit `path` |
+
+Windows run mode additionally supplies the runtime's Windows-only
+`--kill-children-on-exit` flag. Commands, extra flags, workspace roots, executable
+paths, requester identities and approval IDs cannot be supplied by callers.
+Current host issue assignment/run checks and same-requester mutation restrictions
+apply to agents. Neither UI nor tool can accept its own approval card.
+
+All modes use the bounded frozen Git-visible text copy:1,000 files,64 KiB each,
+16 MiB total. Inspect the preview's admitted files and omissions before approval.
+The full redacted entry source is shown for run/test; fixture mode lists admitted
+test files. A preview above12,000 characters is refused before creating a card.
+The approved digest binds the entire admitted inventory, copied bytes, operation,
+workspace, runtime and effective settings; changing any of them requires approval
+again. Source and Eval records cannot be started through each other's adapter.
+
+Ignored dependencies, binary resources, credentials and external services are
+not supplied or frozen. This is not a complete executable copy of every project.
+Relative output stays in the temporary copy and is removed. Trusted code can
+still read/write/delete host files, start processes and use the network: input
+copying is not a sandbox. Cancellation cannot roll back those effects. These
+commands run once, within27 seconds and500 KB/64 KB stdout/stderr; persistent
+servers, dependency installation and approved project creation remain separate
+work. Source and Eval share the company request/owner and retention limits below.
+
+Native exit status and bounded redacted output are observed. Results are labeled
+`process-completed` or `process-failed`, never inferred test counts or full-project
+passes. In particular, `test-run` can exit zero with no tests. Program output is
+untrusted text; inspect it for actual coverage. Timeout, cancellation, stale input,
+rejection and uncertainty retain their distinct coordinator states.
+
+Terminal source requests publish linked `source-execution-plan` and
+`source-execution-result` records with the same atomic publication, bounded
+recovery, pruning, parent export and clear semantics as Eval. Portable
+`kujo.ability.receipt/v1` receipts identify the host-owned
+`kujo.paperclip.source.execute` adapter; this is not an invented canonical Kujo
+catalog entry or a portable permission grant. Native result `durationMs` measures
+the process; receipt timing measures the request lifecycle including approval
+wait. Legacy Eval receipts and immutable history remain unchanged.
 
 ## Retained execution history
 
@@ -190,8 +248,8 @@ schemas. The opt-in authenticated host qualification below tests the actual work
 host confirmation and PostgreSQL persistence using a disposable board account.
 It does not replace manual UI approval or newcomer usability validation.
 
-Further expansion requires parent-child evidence integration, durable external
-workflow runners and newcomer acceptance. Preserve these invariants when adding
+Further expansion requires broader invocation receipts, durable external
+workflow runners, approved project creation and newcomer acceptance. Preserve these invariants when adding
 those surfaces; bounded Eval is not the full expansion.
 
 ## Reproduce authenticated host qualification

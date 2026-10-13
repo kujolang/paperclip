@@ -154,6 +154,8 @@ try {
     await qualifyProductionEvaluation({ call, companyId, projectId, issueId, userId, root, node, checks, json, stop, start, waitUntil });
     const { qualifyProductionPackages } = await import("./production-packages.mjs");
     await qualifyProductionPackages({ call, companyId, projectId, root, checks, json, stop, start, waitUntil });
+    const { qualifyProductionSource } = await import("./production-source.mjs");
+    await qualifyProductionSource({ call, companyId, projectId, issueId, root, node, checks, json, stop, start, waitUntil });
   } else {
   const bridge = "/plugins/kujolang.paperclip/bridge/action";
   const action = async (key, params, options = {}) => (await call(bridge, { method: "POST", body: { companyId, key: `${key}-fixture`, params: { issueId, ...params } }, ...options })).data;

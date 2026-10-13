@@ -1,3 +1,4 @@
+import { SourceExecutionPanel } from "./source-execution.js";
 import type { StarterPreview } from "../features/starters/preview.js";
 import type { PackageReport } from "../features/packages/inspect.js";
 import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
@@ -30,7 +31,7 @@ import type { ShipcheckReport } from "../features/shipcheck/schema.js";
 import type { ConcordReport } from "../features/concord/schema.js";
 import type { FenceReport } from "../features/fence/schema.js";
 
-type Detail = { starters?: { id: "script" | "agent" | "api" | "mcp"; title: string; description: string; prerequisites: string }[]; packages?: PackageReport | null; packageFiles?: { files: string[]; truncated: boolean }; executionHistory?: { pending: boolean }; executionActive?: boolean; shipcheck?: ShipcheckReport | null; concord?: ConcordReport | null; fence?: FenceReport | null; spec?: SpecReport | null; specs?: { files: string[]; truncated: boolean }; verification?: VerificationReport | null; verificationEnabled?: boolean; catalog?: CapabilityCatalog; history?: EvidenceMetadata[]; language?: LanguageReport | null; sources?: { files: string[]; truncated: boolean }; understanding?: Understanding | null; review: ReviewPack | null; failure: FailureEvidence | null; context: ContextPack | null; readiness?: DoctorReport; workspace?: WorkspaceReadiness; suggestedTask?: string };
+type Detail = { sourceExecutionActive?: boolean; sourceExecutionHistory?: { pending: boolean }; starters?: { id: "script" | "agent" | "api" | "mcp"; title: string; description: string; prerequisites: string }[]; packages?: PackageReport | null; packageFiles?: { files: string[]; truncated: boolean }; executionHistory?: { pending: boolean }; executionActive?: boolean; shipcheck?: ShipcheckReport | null; concord?: ConcordReport | null; fence?: FenceReport | null; spec?: SpecReport | null; specs?: { files: string[]; truncated: boolean }; verification?: VerificationReport | null; verificationEnabled?: boolean; catalog?: CapabilityCatalog; history?: EvidenceMetadata[]; language?: LanguageReport | null; sources?: { files: string[]; truncated: boolean }; understanding?: Understanding | null; review: ReviewPack | null; failure: FailureEvidence | null; context: ContextPack | null; readiness?: DoctorReport; workspace?: WorkspaceReadiness; suggestedTask?: string };
 type PanelProps = PluginDetailTabProps & { compact?: boolean };
 
 const colors = {
@@ -756,6 +757,9 @@ function KujoPanel({ context, compact = false }: PanelProps) {
       </div>}
 
       {context.entityType === "issue" && (data?.executionActive || data?.catalog?.capabilities.some(item => item.tool === "manage-evaluation" && item.enabled)) && <EvaluationPanel refreshEvidence={refresh} key={`eval:${targetKey}`} issueId={context.entityId} enabled={!!data?.catalog?.capabilities.find(item => item.tool === "manage-evaluation")?.enabled} ready={data?.catalog?.capabilities.find(item => item.tool === "manage-evaluation")?.status === "ready"} />}
+
+      {context.entityType === "issue" && (data?.sourceExecutionActive || data?.catalog?.capabilities.some(item => item.tool === "manage-kujo-execution" && item.enabled)) && <SourceExecutionPanel refreshEvidence={refresh} key={`source-exec:${targetKey}`} issueId={context.entityId} enabled={!!data?.catalog?.capabilities.find(item => item.tool === "manage-kujo-execution")?.enabled} ready={data?.catalog?.capabilities.find(item => item.tool === "manage-kujo-execution")?.status === "ready"} />}
+      {data?.sourceExecutionHistory?.pending && <div role="status" style={card}>Some run/test Evidence history is pending. Refresh to retry saving it; commands will not rerun.<button onClick={() => void refresh()}>Refresh run/test evidence</button></div>}
 
       {data?.executionHistory?.pending && <div role="status" style={card}>Execution outcomes are durable, but some Evidence history records are pending. Refresh to retry saving them; evaluations will not rerun.<button onClick={() => void refresh()}>Refresh evidence</button></div>}
 

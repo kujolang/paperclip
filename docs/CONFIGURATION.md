@@ -26,6 +26,16 @@ for every immutable request. Scoped list metadata and cancellation remain
 available when execution is disabled. Execution also clamps stdout/stderr
 to 500 KB/64 KB. See [execution admission and limits](EXECUTION.md).
 
+`features.sourceExecution` defaults to `false` and separately gates native Kujo
+run/test in Installed, Build and Full. Enabling Eval does not enable source
+execution. The issue panel and `manage-kujo-execution` tool require a human-only
+approval for every immutable request and never start automatically. Source and
+Eval share the company limit of20 active requests and two running owners;
+metadata recovery and cancellation remain available after disabling. Output is
+clamped to500 KB stdout/64 KB stderr and runtime to27 seconds. See
+[native source and tests](EXECUTION.md#native-source-and-tests) for frozen-input
+coverage and the absence of sandboxing or persistent services.
+
 ## Process limits
 
 | Setting | Default | Allowed range |
@@ -53,4 +63,4 @@ arbitrary source execution or change the Verification setting.
 
 Catalog and retained-history discovery remain available under every profile; history still respects the effective feature selection. The bundled fixed example remains controlled by `features.examples`. Profile selection is company-scoped, enforced by the worker for both UI actions and agent tools, and is separate from the host's authorization decision.
 
-`features.examples` also controls native script/fixture-agent starter previews. These previews require Installed, Build or Full and never create files in the project workspace.
+`features.examples` also controls native script/fixture-agent and pinned API/MCP starter previews. These previews require Installed, Build or Full and never create files in the project workspace.

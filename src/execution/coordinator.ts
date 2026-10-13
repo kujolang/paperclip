@@ -21,19 +21,20 @@ function approvalPreview(request: ExecutionRequest) {
 
 export function confirmationFor(record: ExecutionRecord) {
   const preview = approvalPreview(record.request);
+  const evaluation = record.request.plan.operation === "eval.run";
   return {
     idempotencyKey: `kujo.execution:${record.id}`,
-    title: "Run Kujo evaluation",
+    title: evaluation ? "Run Kujo evaluation" : "Run Kujo source or tests",
     continuationPolicy: "none" as const,
     resolverPolicy: "human_only" as const,
     payload: {
       version: 1 as const,
-      prompt: "Allow this Kujo evaluation to run once?",
+      prompt: evaluation ? "Allow this Kujo evaluation to run once?" : "Allow this Kujo source/test command to run once?",
       acceptLabel: "Allow this run",
       rejectLabel: "Do not run",
       allowDeclineReason: true,
       supersedeOnUserComment: true,
-      detailsMarkdown: `Review the suite and its effects. Approval applies only to this request and its exact inputs. Kujo execution is not a sandbox.\n\n\`\`\`json\n${preview}\n\`\`\`\n\nApproval expires at ${new Date(record.expiresAt).toISOString()}.`,
+      detailsMarkdown: `${evaluation ? "Review the suite and its effects." : "Review the source/test operation and its effects."} Approval applies only to this request and its exact inputs. Kujo execution is not a sandbox.\n\n\`\`\`json\n${preview}\n\`\`\`\n\nApproval expires at ${new Date(record.expiresAt).toISOString()}.`,
       target: { type: "custom" as const, key: record.id, revisionId: record.requestDigest, label: "Kujo execution request" },
     },
   };
@@ -94,7 +95,7 @@ async function materializeBounded(adapter: ExecutionAdapter, scope: ExecutionSco
 }
 
 /** Internal foundation; no public tools/actions or arbitrary command inputs. */
-export function createExecutionCoordinator(ctx: PluginContext, adapter: ExecutionAdapter) {
+export function createExecutionCoordinator(ctx: PluginContext, adapter: ExecutionAdapter, operations: readonly ExecutionRequest["plan"]["operation"][] = ["eval.run"]) {
   const ledger = executionLedger(ctx);
   const ownerId = randomUUID();
   const active = new Map<string, { controller: AbortController; done: Promise<void> }>();
@@ -113,7 +114,7 @@ export function createExecutionCoordinator(ctx: PluginContext, adapter: Executio
   const current = async (scope: ExecutionScope, id: string) => {
     await ledger.expire(scope, id);
     const record = await ledger.read(scope, id);
-    if (!record) throw new Error("Execution request was not found in this company and issue");
+    if (!record || !operations.includes(record.request.plan.operation)) throw new Error("Execution request was not found for this operation in this company and issue");
     return record;
   };
   const reconcile = async (scope: ExecutionScope, id: string) => {
@@ -142,6 +143,7 @@ export function createExecutionCoordinator(ctx: PluginContext, adapter: Executio
     async prepare(rawScope: ExecutionScope, submissionId: string, rawRequest: ExecutionRequest) {
       if (closing) throw new Error("Execution coordinator is shutting down");
       const request = executionRequestSchema.parse(rawRequest);
+      if (!operations.includes(request.plan.operation)) throw new Error("Execution operation is not supported by this adapter");
       const scope = await requireScope(rawScope, request.plan);
       z.string().min(1).max(200).parse(submissionId);
       if (Buffer.byteLength(canonicalJson(request)) > 60_000) throw new Error("Execution request exceeds its byte limit");
@@ -162,7 +164,7 @@ export function createExecutionCoordinator(ctx: PluginContext, adapter: Executio
       return await reconcile(scope, id);
     },
     async list(rawScope: ExecutionScope) {
-      return await ledger.list(await requireScope(rawScope));
+      return (await ledger.list(await requireScope(rawScope))).filter(record => operations.includes(record.request.plan.operation));
     },
     async status(rawScope: ExecutionScope, id: string) {
       const scope = await requireScope(rawScope);

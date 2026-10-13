@@ -1,10 +1,11 @@
+import { registerSourceExecution } from "./features/source-execution/bridge.js";
 import { previewStarter, requireStarters, starterCatalog, starterInputSchema } from "./features/starters/preview.js";
 import { definePlugin, runWorker, type PluginContext, type ToolRunContext } from "@paperclipai/plugin-sdk";
 import { z } from "zod";
 import { inspectPackages, discoverPackages, packageInputSchema, packageReportSchema } from "./features/packages/inspect.js";
 import { registerEvaluation, requireAgentIssue } from "./features/eval/bridge.js";
 import { parsePluginConfig } from "./config/schema.js";
-import { packageTool, evalTool, shipcheckTool, concordTool, fenceTool, specTool, importVerificationTool, catalogTool, listEvidenceTool, readEvidenceTool, languageTool, formatTool, understandTool, contextContentTool, contextTool, failureTool, reviewTool } from "./manifest.js";
+import { sourceExecutionTool, packageTool, evalTool, shipcheckTool, concordTool, fenceTool, specTool, importVerificationTool, catalogTool, listEvidenceTool, readEvidenceTool, languageTool, formatTool, understandTool, contextContentTool, contextTool, failureTool, reviewTool } from "./manifest.js";
 import { generateReviewPack } from "./features/review/generate.js";
 import { reviewPackSchema, type ReviewPack } from "./features/review/schema.js";
 import { captureFailure } from "./features/failure/capture.js";
@@ -86,7 +87,7 @@ async function configFor(ctx: PluginContext, companyId: string, tool?: { name: s
 const historyTarget = z.object({ entityType: z.enum(["project", "issue", "run"]), entityId: z.string().min(1), evidenceId: z.string().min(1).max(100), otherId: z.string().min(1).max(100).optional() }).strict();
 function evidenceEnabled(config: ReturnType<typeof parsePluginConfig>, kind: ArtifactKind) {
   const tool = { "review-latest": reviewTool, "context-latest": contextTool, "failure-latest": failureTool, "understand-latest": understandTool,
-    "packages-latest": packageTool, "language-latest": languageTool, "verification-latest": importVerificationTool, "spec-latest": specTool, "fence-latest": fenceTool, "concord-latest": concordTool, "shipcheck-latest": shipcheckTool, "evaluation-plan": evalTool, "evaluation-result": evalTool } as const;
+    "packages-latest": packageTool, "language-latest": languageTool, "verification-latest": importVerificationTool, "spec-latest": specTool, "fence-latest": fenceTool, "concord-latest": concordTool, "shipcheck-latest": shipcheckTool, "evaluation-plan": evalTool, "evaluation-result": evalTool, "source-execution-plan": sourceExecutionTool, "source-execution-result": sourceExecutionTool } as const;
   return toolEnabled(config, tool[kind]);
 }
 
@@ -95,7 +96,7 @@ async function exportWithParent(ctx: PluginContext, target: StateTarget, record:
   if (!record.receipt.parentId) return exported;
   const parent = await getEvidence(ctx, target, record.receipt.parentId);
   if (!parent || !evidenceEnabled(config, parent.receipt.kind)) return { ...exported, parent: { status: "unavailable", id: record.receipt.parentId } };
-  if (record.receipt.kind === "evaluation-result") {
+  if (["evaluation-result", "source-execution-result"].includes(record.receipt.kind)) {
     const reference = record.payload.planEvidence as { id?: string; digest?: string } | undefined;
     if (reference?.id !== parent.receipt.id || reference.digest !== parent.receipt.digest) throw new Error("Evaluation parent evidence integrity failed");
   }
@@ -450,7 +451,7 @@ function registerTools(ctx: PluginContext) {
   });
 }
 
-function registerUiBridge(ctx: PluginContext, executions: ReturnType<typeof registerEvaluation>) {
+function registerUiBridge(ctx: PluginContext, executions: ReturnType<typeof registerEvaluation>, sourceExecutions: ReturnType<typeof registerSourceExecution>) {
   ctx.data.register("doctor", async (params) => {
     const companyId = z.string().min(1).optional().parse(params.companyId);
     return await doctor(companyId ? await configFor(ctx, companyId) : undefined);
@@ -514,10 +515,12 @@ function registerUiBridge(ctx: PluginContext, executions: ReturnType<typeof regi
     const specs = toolEnabled(config, specTool) && workspace ? await discoverSpecs(workspace.path).catch(() => ({ files: [], truncated: false })) : { files: [], truncated: false };
     await ensureHistory(ctx, target);
     const executionHistory = target.entityType === "issue" ? await executions.reconcileHistory({ companyId: target.companyId, issueId: target.entityId }) : null;
+    const sourceExecutionHistory = target.entityType === "issue" ? await sourceExecutions.reconcileHistory({ companyId: target.companyId, issueId: target.entityId }) : null;
+    const sourceExecutionActive = target.entityType === "issue" && (await sourceExecutions.recoveryList({ companyId: target.companyId, issueId: target.entityId })).some(record => ["preparing", "pending", "running", "cancel_requested"].includes(record.state));
     const history = (await listEvidence(ctx, target)).filter((record) => evidenceEnabled(config, record.kind));
     const readiness = await doctor(config);
     const executionActive = target.entityType === "issue" && (await executions.recoveryList({ companyId: target.companyId, issueId: target.entityId })).some(record => ["preparing", "pending", "running", "cancel_requested"].includes(record.state));
-    return { starters: config.features.examples && ["installed", "build", "full"].includes(config.capabilityProfile) ? starterCatalog : [], packages: ownedPackages, packageFiles, executionHistory, executionActive, catalog: capabilityCatalog(config, readiness, true), shipcheck: ownedShipcheck, concord: ownedConcord, fence: ownedFence, spec: ownedSpec, specs, verification, verificationEnabled: config.features.verification, history, language: ownedLanguage, sources, understanding: ownedUnderstanding, review: ownedReview, failure: ownedFailure, context: ownedContext, readiness, workspace: inspection?.readiness, suggestedTask };
+    return { sourceExecutionActive, sourceExecutionHistory, starters: config.features.examples && ["installed", "build", "full"].includes(config.capabilityProfile) ? starterCatalog : [], packages: ownedPackages, packageFiles, executionHistory, executionActive, catalog: capabilityCatalog(config, readiness, true), shipcheck: ownedShipcheck, concord: ownedConcord, fence: ownedFence, spec: ownedSpec, specs, verification, verificationEnabled: config.features.verification, history, language: ownedLanguage, sources, understanding: ownedUnderstanding, review: ownedReview, failure: ownedFailure, context: ownedContext, readiness, workspace: inspection?.readiness, suggestedTask };
   });
 
   ctx.actions.register("inspect-release-readiness", async (params, actionCtx) => {
@@ -729,11 +732,13 @@ let health: { status: "ok" | "degraded" | "error"; message: string; details: Rec
 };
 
 let evaluation: ReturnType<typeof registerEvaluation> | undefined;
+let sourceExecutions: ReturnType<typeof registerSourceExecution> | undefined;
 const plugin = definePlugin({
   async setup(ctx) {
     evaluation = registerEvaluation(ctx);
+    sourceExecutions = registerSourceExecution(ctx);
     registerTools(ctx);
-    registerUiBridge(ctx, evaluation);
+    registerUiBridge(ctx, evaluation, sourceExecutions);
     // Startup has no company identity. Company overrides are probed by the
     // scoped Doctor/detail handlers, not borrowed from another tenant.
     const report = await doctor();
@@ -745,7 +750,7 @@ const plugin = definePlugin({
     ctx.logger.info("Kujo plugin initialized", { pluginId: ctx.manifest.id, componentCount: report.components.length, status: report.status });
   },
   async onHealth() { return health; },
-  async onShutdown() { await evaluation?.shutdown(); await terminateActiveKujoProcesses(); },
+  async onShutdown() { await Promise.all([evaluation?.shutdown(), sourceExecutions?.shutdown()]); await terminateActiveKujoProcesses(); },
   async onValidateConfig(value) {
     try {
       const parsed = parsePluginConfig(value);
