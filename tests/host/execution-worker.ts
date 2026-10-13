@@ -11,6 +11,7 @@ import { evidenceDigest } from "../../src/storage/history.js";
 import { resolveWorkspace } from "../../src/paperclip/workspace.js";
 import { resolveKujo } from "../../src/runtime/resolve-kujo.js";
 import { parsePluginConfig } from "../../src/config/schema.js";
+import { createEvalHostService } from "../../src/features/eval/host.js";
 import { prepareNativeEval } from "../../src/features/eval/native.js";
 import type { ResolvedRuntime } from "../../src/runtime/types.js";
 import { removeTree } from "../../src/runtime/files.js";
@@ -51,7 +52,32 @@ const plugin = definePlugin({
         } catch (error) { await removeTree(directory); throw error; }
       },
     });
-    shutdown = () => service.shutdown();
+    const hostService = createEvalHostService(ctx);
+    shutdown = async () => { await Promise.all([service.shutdown(), hostService.shutdown()]); };
+    ctx.actions.register("list-fixture", async (raw, actor) => {
+      if (!actor.companyId) throw new Error("Company required");
+      const { companyId: _companyId, renderEnvironment: _renderEnvironment, ...input } = raw;
+      const value = z.object({ issueId: z.string() }).strict().parse(input);
+      return await service.list({ companyId: actor.companyId, issueId: value.issueId });
+    });
+    for (const operation of ["prepare", "inspect", "start", "status", "list", "cancel"] as const) ctx.actions.register(`${operation}-host-eval-fixture`, async (raw, actor) => {
+      if (!actor.companyId || actor.actor.type !== "user" || !actor.actor.userId || actor.actor.companyId !== actor.companyId) throw new Error("Authenticated board user required for host admission fixture");
+      const { companyId: _companyId, renderEnvironment: _renderEnvironment, ...input } = raw;
+      const base = z.object({ issueId: z.string() }).strict();
+      if (operation === "prepare") {
+        const value = base.extend({ suite: z.string(), submissionId: z.string() }).parse(input);
+        return await hostService.prepare({ companyId: actor.companyId, issueId: value.issueId }, value.suite, value.submissionId, { kind: "human", id: actor.actor.userId });
+      }
+      if (operation === "inspect") {
+        const value = base.extend({ suite: z.string() }).parse(input);
+        return await hostService.inspect({ companyId: actor.companyId, issueId: value.issueId }, value.suite);
+      }
+      if (operation === "list") {
+        const value = base.parse(input); return await hostService.list({ companyId: actor.companyId, issueId: value.issueId });
+      }
+      const value = base.extend({ id: z.string() }).parse(input);
+      return await hostService[operation]({ companyId: actor.companyId, issueId: value.issueId }, value.id);
+    });
     ctx.actions.register("prepare-fixture", async (raw, actor) => {
       if (!actor.companyId || actor.actor.type !== "user" || !actor.actor.userId || actor.actor.companyId !== actor.companyId) throw new Error("Authenticated board user required for acceptance setup");
       const { companyId: _companyId, renderEnvironment: _renderEnvironment, ...input } = raw;

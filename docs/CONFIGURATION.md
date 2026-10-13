@@ -20,6 +20,12 @@ Bundled runtime resolution is the normal choice. Use an override only for contro
 | `features.context` | `true` | Enable Context Pack tools and actions. |
 | `features.verification` | `false` | Enable native Spec/Fence/Concord/ShipCheck inspections and bounded evaluation-result imports. Defaults off. Installed/review/ship/full select these tools; Essentials selects only ShipCheck. Each tool and its retained evidence enforce profile admission independently. Native inspections require a runtime; imports do not. None executes project tests. |
 
+`features.execution` defaults to `false` and gates the internal approved Eval host
+service. Installed, Full and canonical Ship profiles admit it; other profiles
+do not. Public execution tools and controls are still pending, so enabling this
+setting alone does not expose a run action. Execution also clamps stdout/stderr
+to 500 KB/64 KB. See [execution admission and limits](EXECUTION.md).
+
 ## Process limits
 
 | Setting | Default | Allowed range |

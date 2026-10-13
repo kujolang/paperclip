@@ -51,8 +51,10 @@ async function readResult(directory: string) {
  * a private snapshot is reproducible input, not a security sandbox.
  */
 export async function prepareNativeEval(input: {
-  suite: string; files: ReadonlyArray<{ path: string; content: string }>; runtime: ResolvedRuntime;
+  suite: string; files: ReadonlyArray<{ path: string; content: string }>; runtime: ResolvedRuntime; admissionPolicyDigest?: string;
 }) {
+  const admissionPolicyDigest = input.admissionPolicyDigest;
+  if (admissionPolicyDigest !== undefined && !/^[a-f0-9]{64}$/.test(admissionPolicyDigest)) throw new Error("Invalid host admission policy digest");
   const suite = workspaceTextPathSchema.parse(input.suite);
   if (!suite.endsWith(".json")) throw new Error("Choose a JSON Eval suite");
   if (input.files.length > SNAPSHOT_LIMITS.files) throw new Error("Eval snapshot exceeds its file count limit");
@@ -70,14 +72,15 @@ export async function prepareNativeEval(input: {
   }
   const definition = files.find(file => file.path === suite);
   if (!definition) throw new Error("Eval suite is missing from the frozen inputs");
-  const parsed: unknown = JSON.parse(definition.bytes.toString("utf8"));
+  let parsed: unknown;
+  try { parsed = JSON.parse(definition.bytes.toString("utf8")); } catch { throw new Error("Eval suite must contain valid JSON"); }
   if (!validateSuite(parsed)) throw new Error("Eval suite does not match the pinned canonical schema");
   const runtime = { ...input.runtime };
   const component = await resolveComponent("eval");
   const binding = Object.freeze({
     inputDigest: evidenceDigest(files.map(file => ({ path: file.path, sha256: sha(file.bytes) }))),
     definitionDigest: sha(definition.bytes), componentDigest: evidenceDigest({ commit: component.gitCommit, checksums: component.checksums }),
-    runtimeDigest: sha(await readFile(runtime.executable)), policyDigest,
+    runtimeDigest: sha(await readFile(runtime.executable)), policyDigest: admissionPolicyDigest ? evidenceDigest({ native: policyDigest, admission: admissionPolicyDigest }) : policyDigest,
   });
   return {
     binding, suite, effects: [...effects], files: files.length, bytes: totalBytes,
@@ -121,7 +124,7 @@ export async function prepareNativeEval(input: {
             return { schemaVersion: 1, sourceKind: "native", executionObserved: true, scope: "frozen-inputs",
               classification: report.classification, result: report.result, artifactDigest: report.sourceDigest,
               inputDigest: binding.inputDigest, definitionDigest: binding.definitionDigest, componentDigest: binding.componentDigest,
-              runtimeDigest: binding.runtimeDigest, policyDigest, exitCode: process.exitCode,
+              runtimeDigest: binding.runtimeDigest, policyDigest: binding.policyDigest, exitCode: process.exitCode,
               referenceCount: report.referenceCount, referencesResolved: false, redactedCount: report.redactedCount,
               provenance: { component: "eval", version: current.version, commit: current.gitCommit, runtimeVersion: runtime.runtimeVersion },
               notice: "Canonical Eval process observed on frozen inputs. Referenced evidence and project-wide applicability are not inferred. Trusted suite code is not sandboxed." };

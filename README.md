@@ -219,4 +219,5 @@ MIT. Bundled Kujo components keep their canonical MIT licenses and recorded
 provenance.
 
 Development status: the internal [approved execution foundation](docs/EXECUTION.md)
-has an opt-in authenticated host acceptance harness. Eval run tools and long-running workflows are not exposed yet.
+includes company-scoped host admission, bounded suite previews, durable request limits
+and an opt-in authenticated host acceptance harness. Eval run tools and long-running workflows are not exposed yet.
