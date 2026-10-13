@@ -501,3 +501,52 @@ no production job or arbitrary queue tool is registered. Longer Dispatch/Muzzle/
 Workcell adapters still require durable runner storage, canonical lifecycle and
 replay reconciliation, scheduling qualification and their own approved public
 controls. This foundation does not implement a second workflow replay engine.
+
+### Persistent native workflow storage foundation
+
+The internal `openWorkflowStorage` primitive reserves native runner data outside
+both project workspaces and installed packages. It requires an existing absolute,
+operator-owned directory with mode `0700` on Linux or macOS. It creates no default
+location and is not yet connected to production settings, tools or jobs. Dispatch
+itself is not bundled or exposed by this change; existing Windows features remain
+supported, while this POSIX runner primitive explicitly rejects Windows.
+
+Reservations are segregated by installation, company, issue and execution ID.
+An exclusive directory creation admits one owner; a synced `0600` marker binds
+that address to the immutable request digest. Recovery validates private directory
+ownership, rejects symlinks and hardlinked/oversized/changed ownership metadata,
+and detects replacement of an opened root. Identifiers are hashed into paths.
+Callers must derive identities and the storage root from trusted host/operator
+context. These filesystem checks do not grant company authorization or protect
+against another process running as the same OS user.
+
+A duplicate reservation never reinitializes existing files. Missing metadata or
+native data, including a crash during reservation, requires reconciliation;
+recovery does not recreate it. There is deliberately no automatic cleanup or
+replay API. A recovered directory is only storage: the host execution ledger and
+canonical runner must still establish the current boundary, outcome and authority
+before any continuation. Native files remain private and require bounded,
+validated, redacted reads before presentation. Canonical state durability remains
+the runner's responsibility; this primitive syncs only its ownership metadata.
+
+The opt-in qualification below uses a clean canonical Dispatch checkout at the
+commit enforced by the script and an explicitly supplied Kujo binary. It uses
+fixture tools, no live provider credentials, and separate native/controller
+processes. It proves v2 intervention pause, storage recovery, stale-revision
+rejection, one-boundary approval, a second gate remaining paused, and exact
+identical/conflicting decision behavior. It does not qualify a Paperclip host
+adapter, arbitrary customer workflows, long-running cancellation, retention,
+provider authentication or production storage configuration.
+
+```bash
+node scripts/acceptance/dispatch-storage.mjs \
+  --dispatch-root ../dispatch \
+  --kujo /absolute/path/to/kujo \
+  --evidence-root /absolute/path/to/qualification-evidence
+```
+
+The script removes its owned fixture after success and retains it on failure.
+The required canonical pin and final state digest are included in `proof.json`.
+Production integration still needs operator storage configuration, pinned runner
+packaging, scoped host approval and scheduled pickup, lifecycle reconciliation,
+and retention of active/paused/uncertain runs without deleting their state.

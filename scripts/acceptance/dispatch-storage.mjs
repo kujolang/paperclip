@@ -1,0 +1,82 @@
+// Opt-in canonical Dispatch qualification; no live provider credentials or host mutation.
+import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+import { execFileSync, spawnSync } from "node:child_process";
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { build } from "esbuild";
+
+const repo = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
+const flag = name => { const i = process.argv.indexOf(name); assert(i >= 0 && process.argv[i + 1], `Required ${name}`); return resolve(process.argv[i + 1]); };
+const dispatch = flag("--dispatch-root"), binary = flag("--kujo"), evidence = flag("--evidence-root");
+const expected = "ac2609b8ef14cbf8fbec5df5dfc1789fa4fa25b8";
+assert.equal(execFileSync("git", ["-C", dispatch, "rev-parse", "HEAD"], { encoding: "utf8" }).trim(), expected);
+assert.equal(execFileSync("git", ["-C", dispatch, "status", "--porcelain"], { encoding: "utf8" }).trim(), "");
+assert(process.platform === "darwin" || process.platform === "linux", "Dispatch qualification requires POSIX");
+await mkdir(evidence, { recursive: true });
+const root = await mkdtemp(join(tmpdir(), "kujo-dispatch-storage-"));
+await chmod(root, 0o700);
+const storage = join(root, "private"); await mkdir(storage, { mode: 0o700 });
+const binding = { installationId: "isolated-fixture", companyId: "company", issueId: "issue", executionId: "request", requestDigest: "a".repeat(64) };
+const env = Object.fromEntries(["PATH", "HOME", "USER", "LOGNAME", "TMPDIR"].filter(k => process.env[k]).map(k => [k, process.env[k]]));
+Object.assign(env, { DISPATCH_OFFLINE_FIXTURE: "true", DISPATCH_ALLOW_ANY_OUTPUT_ROOT: "true" });
+const proof = { schema: "kujo.paperclip.dispatch-storage-proof/v1", canonicalCommit: expected, platform: process.platform, checks: [], ownedFixtureRemoved: false };
+const run = async (label, executable, args, cwd, success = true) => {
+  const result = spawnSync(executable, args, { cwd, env, encoding: "utf8", timeout: 120_000, maxBuffer: 1_048_576 });
+  await writeFile(join(evidence, `${label}.json`), JSON.stringify({ status: result.status, signal: result.signal, stdout: result.stdout, stderr: result.stderr }, null, 2));
+  assert(!result.error && result.signal === null, `${label} was not observed complete`);
+  if (success) assert.equal(result.status, 0, `${label}: ${result.stderr}`);
+  else assert.notEqual(result.status, 0, `${label} unexpectedly succeeded`);
+  return result.stdout + result.stderr;
+};
+let passed = false;
+try {
+  await build({ entryPoints: [join(repo, "src/execution/workflow-storage.ts")], outfile: join(root, "storage.mjs"), platform: "node", format: "esm", bundle: true });
+  const controller = join(root, "controller.mjs");
+  await writeFile(controller, `import {openWorkflowStorage} from './storage.mjs';\nconst store=await openWorkflowStorage(process.argv[2]); const binding=JSON.parse(process.argv[3]);\nconst result=process.argv[4]==='reserve'?await store.reserve(binding):await store.recover(binding);\nprocess.stdout.write(JSON.stringify(result));\n`);
+  const address = JSON.parse(await run("reserve", process.execPath, [controller, storage, JSON.stringify(binding), "reserve"], root));
+  const nativeRoot = address.nativeRoot;
+  await run("native-pause", binary, ["run", "tests/resume_policy_fixture.kujo", nativeRoot, "v2", "two-gates"], dispatch);
+  const decision = JSON.parse(await readFile(join(nativeRoot, "decision.json"), "utf8"));
+  assert.equal(decision.schema, "kujo.intervention-decision/v2");
+  assert.match(decision.run_id, /^run-[a-zA-Z0-9-]+$/);
+  const statePath = join(nativeRoot, decision.run_id, "state.json");
+  const before = await readFile(statePath, "utf8");
+  assert.equal(JSON.parse(before).status, "paused");
+  proof.checks.push("native v2 pause persisted in reserved storage");
+  assert.deepEqual(JSON.parse(await run("recover", process.execPath, [controller, storage, JSON.stringify(binding), "recover"], root)), address);
+  await run("duplicate-reservation", process.execPath, [controller, storage, JSON.stringify(binding), "reserve"], root, false);
+  proof.checks.push("fresh controller recovery and duplicate reservation rejection");
+  const stalePath = join(nativeRoot, "stale.json");
+  await writeFile(stalePath, JSON.stringify({ ...decision, expected_state_revision: decision.expected_state_revision - 1 }));
+  const stale = await run("stale-decision", binary, ["run", "dispatch.kujo", "resume-decision", stalePath, "--output-root", nativeRoot, "--non-interactive"], dispatch, false);
+  assert.match(stale, /stale_intervention_decision/);
+  assert.equal(await readFile(statePath, "utf8"), before);
+  proof.checks.push("stale revision rejected without changing canonical state");
+  await run("native-resume", binary, ["run", "dispatch.kujo", "resume-decision", join(nativeRoot, "decision.json"), "--output-root", nativeRoot, "--non-interactive"], dispatch);
+  const after = await readFile(statePath, "utf8"), state = JSON.parse(after);
+  assert.equal(state.status, "paused");
+  assert.equal(state.steps[0].attempts, 1);
+  assert.equal(state.steps[1].id, "gate-two"); assert.equal(state.steps[1].status, "paused");
+  assert.equal(state.steps[2].attempts, 0);
+  assert.equal(state.human_decisions[decision.decision_id].status, "applied");
+  proof.checks.push("typed approval preserves producer and pauses at next independent gate");
+  const replay = await run("identical-decision", binary, ["run", "dispatch.kujo", "resume-decision", join(nativeRoot, "decision.json"), "--output-root", nativeRoot, "--non-interactive"], dispatch);
+  assert.equal(JSON.parse(replay).status, "already_applied"); assert.equal(await readFile(statePath, "utf8"), after);
+  const conflicting = join(nativeRoot, "conflicting.json"); await writeFile(conflicting, JSON.stringify({ ...decision, reason: "Changed payload" }));
+  const conflict = await run("conflicting-decision", binary, ["run", "dispatch.kujo", "resume-decision", conflicting, "--output-root", nativeRoot, "--non-interactive"], dispatch, false);
+  assert.match(conflict, /conflicting_intervention_decision/); assert.equal(await readFile(statePath, "utf8"), after);
+  proof.checks.push("identical decision does not replay; conflicting payload rejects");
+  await writeFile(join(evidence, "state-before.json"), before); await writeFile(join(evidence, "state-after.json"), after);
+  proof.runId = decision.run_id; proof.finalStateDigest = createHash("sha256").update(after).digest("hex");
+  proof.runtime = (await run("runtime", binary, ["--version"], dispatch)).trim();
+  assert.equal(execFileSync("git", ["-C", dispatch, "status", "--porcelain"], { encoding: "utf8" }).trim(), "");
+  passed = true;
+} finally {
+  if (passed) { await rm(root, { recursive: true, force: true }); proof.ownedFixtureRemoved = true; }
+  else proof.retainedFixture = root;
+  proof.passed = passed; await writeFile(join(evidence, "proof.json"), JSON.stringify(proof, null, 2));
+}
+console.log(JSON.stringify(proof, null, 2));

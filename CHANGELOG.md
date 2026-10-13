@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Add an internal POSIX native-workflow storage reservation/recovery primitive with immutable tenant/request ownership and no automatic replay, plus canonical Dispatch v2 decision/restart qualification. Production workflow controls and storage configuration remain pending.
+
+
 - Add internal durable start intent with authenticated starter binding, approval rechecks, bounded host-job pickup and restart/no-replay qualification. Public execution controls remain unchanged.
 
 - Retain bounded source-preparation stage/error codes with panel repair guidance; preserve failed-request no-replay behavior and exclude raw exception data.
