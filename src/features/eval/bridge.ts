@@ -4,6 +4,7 @@ import { evalTool } from "../../abilities/generated.js";
 import type { ExecutionRecord, ExecutionRequest, ExecutionScope } from "../../execution/contracts.js";
 import { normalizeError } from "../../runtime/errors.js";
 import { publishEvaluation, reconcileEvaluationHistory, type EvaluationHistory } from "./history.js";
+import { evalAbilityReceipt } from "./receipt.js";
 import { createEvalHostService } from "./host.js";
 
 const identity = z.string().min(1).max(200);
@@ -19,8 +20,8 @@ export function executionSummary(record: ExecutionRecord) {
     interactionId: record.interactionId, createdAt: record.createdAt, expiresAt: record.expiresAt, finishedAt: record.finishedAt,
     diagnostic: record.diagnostic, classification: record.result?.classification ?? null };
 }
-export function executionView(record: ExecutionRecord, history?: EvaluationHistory) {
-  return { ...executionSummary(record), requestDigest: record.requestDigest, plan: record.request.plan, result: record.result, ...(history ? { history } : {}) };
+export function executionView(record: ExecutionRecord, history?: EvaluationHistory, scope?: ExecutionScope) {
+  return { ...executionSummary(record), requestDigest: record.requestDigest, plan: record.request.plan, result: record.result, ...(scope ? { abilityReceipt: evalAbilityReceipt(scope, record) } : {}), ...(history ? { history } : {}) };
 }
 export type EvaluationView = ReturnType<typeof executionView>;
 export type EvaluationSummary = ReturnType<typeof executionSummary>;
@@ -42,7 +43,7 @@ export function registerEvaluation(ctx: PluginContext) {
     if (value.operation === "inspect") return await service.inspect(scope, value.suite);
     if (value.operation === "prepare") {
       const record = await service.prepare(scope, value.suite, value.submissionId, requester);
-      return executionView(record, await publishEvaluation(ctx, scope, record));
+      return executionView(record, await publishEvaluation(ctx, scope, record), scope);
     }
     // Scoped metadata is available after disabling, so people can still find
     // and cancel outstanding requests without reading suite/result contents.
@@ -60,7 +61,7 @@ export function registerEvaluation(ctx: PluginContext) {
       return { ...executionSummary(record), history: await publishEvaluation(ctx, scope, record) };
     }
     const record = await service[value.operation](scope, value.id);
-    return executionView(record, await publishEvaluation(ctx, scope, record));
+    return executionView(record, await publishEvaluation(ctx, scope, record), scope);
   }
   ctx.actions.register("manage-evaluation", async (params, actionCtx) => {
     const actor = actionCtx.actor;

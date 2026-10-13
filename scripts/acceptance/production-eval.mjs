@@ -22,6 +22,11 @@ export async function qualifyProductionEvaluation({ call, companyId, projectId, 
   const receipt = (await action("start", { id: request.id })).data;
   assert.equal(receipt.state, "succeeded"); assert.equal(receipt.result.classification, "passed");
   assert.equal(receipt.history.status, "retained");
+  assert.equal(receipt.abilityReceipt.schema, "kujo.ability.receipt/v1");
+  assert.equal(receipt.abilityReceipt.status, "succeeded");
+  assert.equal(receipt.abilityReceipt.definition_digest, receipt.plan.abilityReceipt.definitionDigest);
+  assert.equal(receipt.abilityReceipt.metadata.timing_basis, "durable-request-lifecycle-including-approval-wait");
+  assert.equal(receipt.abilityReceipt.principal.tenant_id, companyId);
   assert.equal(receipt.ownerId, undefined); assert.equal(receipt.claimId, undefined);
   assert.deepEqual((await action("start", { id: request.id })).data, receipt);
   checks.push("production worker runs approved native Eval and retains immutable public receipt without ownership secrets");
@@ -92,6 +97,8 @@ export async function qualifyProductionEvaluation({ call, companyId, projectId, 
   checks.push("production receipt access rejects a different tenant even for the shared board administrator");
   const evidenceAction = async (key, params = {}, options = {}) => (await call(route, { method: "POST", body: { companyId, key, params: { entityType: "issue", entityId: issueId, ...params } }, ...options })).data;
   const exportedHistory = (await evidenceAction("export-evidence", { evidenceId: receipt.history.outcomeId })).data;
+  assert.deepEqual(exportedHistory.payload.abilityReceipt, receipt.abilityReceipt);
+  assert.equal(exportedHistory.payload.schemaVersion, 2);
   assert.equal(exportedHistory.payload.executionState, "succeeded"); assert.equal(exportedHistory.parent.status, "retained");
   assert.equal(exportedHistory.receipt.parentId, exportedHistory.parent.receipt.id);
   assert.equal(exportedHistory.payload.planEvidence.digest, exportedHistory.parent.receipt.digest);

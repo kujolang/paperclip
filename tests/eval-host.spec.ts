@@ -7,6 +7,8 @@ import { afterEach, describe, expect, it } from "vitest";
 import { createTestHarness } from "./helpers/harness.js";
 import manifest from "../src/manifest.js";
 import { createEvalHostService, evalExecutionEnabled } from "../src/features/eval/host.js";
+import { executionLedger } from "../src/execution/ledger.js";
+import { confirmationFor } from "../src/execution/coordinator.js";
 import { parsePluginConfig } from "../src/config/schema.js";
 import { removeTree } from "../src/runtime/files.js";
 import { safeChildEnv } from "../src/runtime/execute-kujo.js";
@@ -58,6 +60,17 @@ describe("host-owned Eval admission", () => {
     expect(result).toMatchObject({ state: "succeeded", result: { classification: "passed", nativeClassification: "passed", coverage: { copied: 2, complete: true } } });
     expect(await f.service.start(scope, request.id)).toEqual(result);
     await expect(f.service.status({ ...scope, companyId: "other" }, request.id)).rejects.toThrow(/not found/);
+  }, 20_000);
+  it("requires fresh approval for a legacy pending request without a frozen Ability binding", async () => {
+    const f = await fixture(); const preview = await f.service.inspect(scope, "eval.json");
+    delete preview.plan.abilityReceipt;
+    const ledger = executionLedger(f.h.ctx);
+    await ledger.insert(scope, "legacy-pending", { plan: preview.plan, requester: { kind: "human", id: "board" } });
+    const stored = (await ledger.read(scope, "legacy-pending"))!;
+    const card = await f.h.ctx.issues.requestConfirmation(scope.issueId, confirmationFor(stored), scope.companyId);
+    await ledger.bind(scope, stored.id, card.id); f.approve(card.id);
+    expect(await f.service.start(scope, stored.id)).toMatchObject({ state: "stale", diagnostic: "approved_inputs_changed", result: null });
+    expect((await ledger.read(scope, stored.id))!.request.plan).not.toHaveProperty("abilityReceipt");
   }, 20_000);
   it("invalidates approval after source or admitted settings change", async () => {
     const f = await fixture(); const request = await f.prepare(); f.approve(request.interactionId);

@@ -7,6 +7,15 @@ export const executionScopeSchema = z.object({ companyId: identity, issueId: ide
 export type ExecutionScope = z.infer<typeof executionScopeSchema>;
 export const executionPlanSchema = z.object({
   operation: z.literal("eval.run"),
+  // Frozen at preparation. Absent on legacy requests; never backfill from a
+  // newer catalog when rendering an old immutable outcome.
+  abilityReceipt: z.object({
+    serializerVersion: z.literal(1),
+    abilityId: z.literal("kujo.eval.suite.run"),
+    abilityVersion: z.string().regex(/^\d+\.\d+\.\d+$/),
+    definitionDigest: digest,
+    handlerVersion: z.literal("1.0.0"),
+  }).strict().optional(),
   projectId: identity,
   workspaceId: identity,
   suite: z.string().min(1).max(500),

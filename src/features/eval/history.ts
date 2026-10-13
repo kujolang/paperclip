@@ -3,6 +3,8 @@ import type { ExecutionRecord, ExecutionScope } from "../../execution/contracts.
 import { executionLedger } from "../../execution/ledger.js";
 import { canonicalJson, evidenceDigest, EVIDENCE_NAMESPACE, getEvidence, pruneHistory } from "../../storage/history.js";
 
+import { evalAbilityReceipt } from "./receipt.js";
+
 const active = new Set(["preparing", "pending", "running", "cancel_requested"]);
 const terminalSql = "state NOT IN ('preparing', 'pending', 'running', 'cancel_requested')";
 export type EvaluationHistory = { status: "not-terminal" | "retained" | "not-retained" | "pending"; planId?: string; outcomeId?: string; notice: string };
@@ -22,12 +24,14 @@ export function evaluationEvidence(scope: ExecutionScope, record: ExecutionRecor
     notice: "Observed request, not proof of approval or execution. Its outcome is a separate child record." };
   const classification = record.state === "uncertain" ? "uncertain" : ["rejected", "expired", "stale"].includes(record.state) ? "not-run"
     : record.state === "cancelled" ? "cancelled" : typeof record.result?.classification === "string" ? record.result.classification : "execution-error";
-  const outcome = { schemaVersion: 1, id: record.id, phase: "execution-outcome", sourceKind: "observed", classification,
+  const abilityReceipt = evalAbilityReceipt(scope, record);
+  const outcome = { schemaVersion: abilityReceipt ? 2 : 1, id: record.id, phase: "execution-outcome", sourceKind: "observed", classification,
     executionState: record.state, requestDigest: record.requestDigest, planEvidence: { id: planId, digest: evidenceDigest(plan) },
     requestedAt: record.createdAt, finishedAt: record.finishedAt, requester: record.request.requester,
     approval: { interactionId: record.interactionId, approvedBy: record.approvedBy }, diagnostic: record.diagnostic,
     evaluation: record.result,
-    notice: "Observed execution ledger outcome, not imported evidence or a canonical Ability invocation receipt. Uncertainty and external effects are not inferred away. Parent retention is independent; this reference preserves its digest." };
+    ...(abilityReceipt ? { abilityReceipt } : {}),
+    notice: abilityReceipt ? "Observed execution ledger outcome with a canonical-contract Ability receipt. Native classifications and uncertainty remain distinct. Parent retention is independent; this reference preserves its digest." : "Observed execution ledger outcome, not imported evidence or a canonical Ability invocation receipt. Uncertainty and external effects are not inferred away. Parent retention is independent; this reference preserves its digest." };
   return { target, planId, outcomeId, plan, outcome, inputDigest: record.request.plan.inputDigest, definitionDigest: record.request.plan.definitionDigest };
 }
 
