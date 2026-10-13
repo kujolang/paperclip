@@ -55,6 +55,12 @@ window.__KUJO_FIXTURE_DATA__ = {
       parse_errors: [{ file: "src/large.ts", error: "truncated_100000b" }] },
     warnings: ["Scout reports heuristic repository observations, not a security certification or proof that tests passed."],
   } : null,
+  sources: { files: parameters.get("language") ? ["src/main.kujo"] : [], truncated: false },
+  language: parameters.get("language") ? {
+    path: "src/main.kujo", runtimeVersion: "1.8.1", check: "failed", lint: "warnings", stale: false,
+    scope: "Single-file lex/parse/compile and lint; project tests, imports and runtime behavior are not verified.",
+    diagnostics: [{ tool: "check", code: "KUJOPARSE001", severity: "error", message: "Expected closing parenthesis", line: 2, column: 9 }],
+  } : null,
   suggestedTask: parameters.get("issueTask") ? "Investigate the OAuth callback" : "",
   workspace: { state: parameters.get("workspace") ?? "ready", message: parameters.get("workspace") === "missing"
     ? "Connect a local project workspace in Paperclip project settings, then check again."
@@ -64,6 +70,7 @@ window.__KUJO_FIXTURE_DATA__ = {
     status: parameters.get("runtime") === "broken" ? "error" : "ok",
     runtime: { status: parameters.get("runtime") === "broken" ? "error" : "ok", repair: "Repair the configured Kujo binary in plugin settings." },
     capabilities: {
+      language: parameters.get("runtime") === "broken" ? "blocked" : "ready",
       understand: parameters.get("runtime") === "broken" ? "blocked" : "ready",
       examples: parameters.get("runtime") === "broken" ? "blocked" : "ready",
       review: parameters.get("runtime") === "broken" ? "blocked" : "ready",
@@ -84,8 +91,12 @@ const props = {
     entityId: `${entityType}-fixture`,
   },
 };
-createRoot(document.getElementById("root")!).render(
+const fixtureRoot = createRoot(document.getElementById("root")!);
+function renderFixture() { fixtureRoot.render(
   <StrictMode>
     {surface === "task" ? <KujoTaskDetailView {...props} /> : <KujoDetailTab {...props} />}
   </StrictMode>,
 );
+}
+window.__KUJO_NAVIGATE__ = (companyId) => { props.context.companyId = companyId; renderFixture(); };
+renderFixture();

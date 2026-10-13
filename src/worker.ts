@@ -1,7 +1,7 @@
 import { definePlugin, runWorker, type PluginContext, type ToolRunContext } from "@paperclipai/plugin-sdk";
 import { z } from "zod";
 import { parsePluginConfig } from "./config/schema.js";
-import { understandTool, contextContentTool, contextTool, failureTool, reviewTool } from "./manifest.js";
+import { languageTool, formatTool, understandTool, contextContentTool, contextTool, failureTool, reviewTool } from "./manifest.js";
 import { generateReviewPack } from "./features/review/generate.js";
 import { reviewPackSchema, type ReviewPack } from "./features/review/schema.js";
 import { captureFailure } from "./features/failure/capture.js";
@@ -20,6 +20,11 @@ import { runBundledExample } from "./features/onboarding/example.js";
 import { understandRepository } from "./features/understand/generate.js";
 import { understandingSchema } from "./features/understand/schema.js";
 
+import { analyzeSource, previewFormat } from "./features/language/analyze.js";
+import { discoverSources, sourcePathSchema } from "./features/language/source.js";
+import { languageReportSchema } from "./features/language/schema.js";
+
+const languageInput = z.object({ path: sourcePathSchema }).strict();
 const reviewInput = z.object({
   mode: z.enum(["working_tree", "range"]).default("working_tree"),
   base: z.string().max(255).optional(),
@@ -124,6 +129,28 @@ async function reviewForProject(ctx: PluginContext, runCtx: ToolRunContext, para
 }
 
 function registerTools(ctx: PluginContext) {
+  for (const tool of [languageTool, formatTool]) ctx.tools.register(tool.name, tool, async (raw, runCtx) => {
+    try {
+      const params = languageInput.parse(raw);
+      const config = await configFor(ctx, runCtx.companyId);
+      const workspace = await resolveProjectWorkspace(ctx, runCtx.projectId, runCtx.companyId);
+      const input = { ...params, cwd: workspace.path, projectId: workspace.projectId, workspaceId: workspace.id, config };
+      const target = { entityType: "project" as const, entityId: runCtx.projectId, companyId: runCtx.companyId };
+      if (tool.name === languageTool.name) {
+        const report = await analyzeSource(input);
+        await saveArtifact(ctx, target, "language-latest", report);
+        await audit(ctx, { ...target, operation: "language.checked", artifactId: report.id });
+        const { snapshot: _snapshot, ...data } = report;
+        return { content: JSON.stringify(data), data };
+      }
+      const data = await previewFormat(input);
+      await audit(ctx, { ...target, operation: "language.format-preview", artifactId: data.sourceDigest });
+      return { content: JSON.stringify(data), data };
+    } catch (error) {
+      const normalized = normalizeError(error);
+      return { error: normalized.message, data: { code: normalized.code } };
+    }
+  });
   ctx.tools.register(understandTool.name, understandTool, async (raw, runCtx) => {
     try {
       z.object({}).strict().parse(raw);
@@ -254,11 +281,12 @@ function registerUiBridge(ctx: PluginContext) {
     const suggestedTask = issue
       ? `${issue.title}\n\n${issue.description ?? ""}`.trim().slice(0, 10_000)
       : "Understand this repository and identify the best starting points for the next change.";
-    const [review, failure, context, understanding] = await Promise.all([
+    const [review, failure, context, understanding, language] = await Promise.all([
       config.features.review ? loadArtifact(ctx, target, "review-latest", reviewPackSchema) : null,
       config.features.failureEvidence ? loadArtifact(ctx, target, "failure-latest", failureEvidenceSchema) : null,
       config.features.context ? loadArtifact(ctx, target, "context-latest", contextPackSchema) : null,
       config.features.understand ? loadArtifact(ctx, target, "understand-latest", understandingSchema) : null,
+      config.features.language ? loadArtifact(ctx, target, "language-latest", languageReportSchema) : null,
     ]);
     const ownedReview = review && (
       (target.entityType === "project" && review.projectId === target.entityId) ||
@@ -274,7 +302,28 @@ function registerUiBridge(ctx: PluginContext) {
       : null;
     const ownedUnderstanding = understanding && workspace && understanding.projectId === workspace.projectId && understanding.workspaceId === workspace.id
       ? { ...understanding, stale: understanding.stale || !(await isSnapshotCurrent(workspace.path, understanding.snapshot)) } : null;
-    return { understanding: ownedUnderstanding, review: ownedReview, failure: ownedFailure, context: ownedContext, readiness: await doctor(config), workspace: inspection?.readiness, suggestedTask };
+    const ownedLanguage = language && workspace && language.projectId === workspace.projectId && language.workspaceId === workspace.id
+      ? { ...language, stale: language.stale || !(await isSnapshotCurrent(workspace.path, language.snapshot)) } : null;
+    const sources = config.features.language && workspace ? await discoverSources(workspace.path).catch(() => ({ files: [], truncated: false })) : { files: [], truncated: false };
+    return { language: ownedLanguage, sources, understanding: ownedUnderstanding, review: ownedReview, failure: ownedFailure, context: ownedContext, readiness: await doctor(config), workspace: inspection?.readiness, suggestedTask };
+  });
+
+  for (const operation of ["check-kujo-source", "preview-kujo-format"]) ctx.actions.register(operation, async (params, actionCtx) => {
+    if (!actionCtx.companyId) throw new Error("Company context is required");
+    const value = actionTarget.extend({ path: sourcePathSchema }).parse(actionParams(params));
+    const target = { entityType: value.entityType, entityId: value.entityId, companyId: actionCtx.companyId };
+    const config = await configFor(ctx, target.companyId);
+    const workspace = await resolveWorkspace(ctx, target);
+    const input = { cwd: workspace.path, projectId: workspace.projectId, workspaceId: workspace.id, path: value.path, config };
+    if (operation === "check-kujo-source") {
+      const report = await analyzeSource(input);
+      await saveArtifact(ctx, target, "language-latest", report);
+      await audit(ctx, { ...target, operation: "language.checked", artifactId: report.id });
+      return { check: report.check, lint: report.lint, reportId: report.id };
+    }
+    const preview = await previewFormat(input);
+    await audit(ctx, { ...target, operation: "language.format-preview", artifactId: preview.sourceDigest });
+    return preview;
   });
 
   ctx.actions.register("understand-repository", async (params, actionCtx) => {

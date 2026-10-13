@@ -59,6 +59,7 @@ the project repository.
 
 | Workflow | What it does | Kujo component |
 | --- | --- | --- |
+| **Kujo source tools** | Checks and lints a selected source file; previews formatting without applying changes. | Kujo runtime |
 | **Repository understanding** | Maps project structure, languages, dependencies, routes and heuristic observations; shows partial scans explicitly. | Scout |
 | **Context Pack** | Selects a small, task-specific set of files before an agent reads broadly. | Scent |
 | **Review Pack** | Measures change size, explains risk signals, and prepares a review handoff. | ChangeBucket and PatchBrief |
@@ -67,12 +68,18 @@ the project repository.
 The five component snapshots are pinned, checksummed, and shipped with the plugin. The
 plugin does not download component code while installing or running.
 
+## Build with Kujo
+
+Select a Git-visible `.kujo` file in **Build with Kujo**, then choose **Check and lint source** or **Preview formatting**. Diagnostics identify the file and location. Formatting shows the redacted original and proposed output without applying changes. These are single-file source checks; they do not execute project code or establish that imports, project tests, or runtime behavior work. Files are limited to 64 KiB, and each source operation has a bounded runtime window.
+
 ## Agent tools
 
-Paperclip agents can call five tools:
+Paperclip agents can call seven tools:
 
 | Tool | Use |
 | --- | --- |
+| `kujolang.paperclip:check-kujo-source` | Check and lint one eligible project-relative `.kujo` source. |
+| `kujolang.paperclip:preview-kujo-format` | Explicitly read and preview redacted formatting without writing files. |
 | `kujolang.paperclip:understand-repository` | Inspect the host-resolved repository without accepting a caller path or changing project files. |
 | `kujolang.paperclip:get-context` | Select files for a task at minimal, focused, or broad depth. |
 | `kujolang.paperclip:get-context-content` | Read safe content from files already selected by a Context Pack. |

@@ -25,14 +25,16 @@
       "requirement": "Scout/Scent repository understanding, issue-aware defaults, bounded contextual reads",
       "status": "in_progress",
       "evidence": [
-        "Pinned Scout1.1.0 maps structure, languages, dependencies, routes and heuristic observations through company-scoped UI/tool operations. Private bounded reports omit snippets, preserve partial diagnostics, and support empty repositories. Scent metadata-only selection retains separate content reads. Local59 tests/ten browser scenarios pass; native CI and packed-consumer map smoke are pending. Broader task contracts/source navigation and full acceptance remain pending."
+        "Scout repository maps merged in PR41 ataf23bc6;59 tests, ten browser scenarios, five native platforms, SDK matrix and a fresh local npm tarball map smoke passed. Partial/stale observations, private reports and tenant-scoped UI/tool access are implemented. Broader task contracts/source navigation and full acceptance remain pending."
       ]
     },
     {
       "id": "language",
       "requirement": "Check/lint diagnostics, formatting preview, examples, package inspection, script/API/MCP/AI starters and explicit run/test/scaffold",
-      "status": "pending",
-      "evidence": []
+      "status": "in_progress",
+      "evidence": [
+        "Single-file check/lint diagnostics, clickable source locations and explicit redacted formatting previews are implemented with native beneath-root admission, private copies, source digests and no source execution/writes. Local67 tests and12 browser scenarios pass, including cross-company navigation during a pending preview. Native CI and consumer packaging checks are pending. Package inspection, broader examples/starters and approved run/test/scaffold remain pending."
+      ]
     },
     {
       "id": "evidence",

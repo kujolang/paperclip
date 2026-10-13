@@ -19,7 +19,7 @@ export async function loadArtifact<T>(ctx: PluginContext, target: StateTarget, k
 }
 
 export async function clearArtifacts(ctx: PluginContext, target: StateTarget): Promise<void> {
-  await Promise.all(["understand-latest", "review-latest", "failure-latest", "context-latest"].map(
+  await Promise.all(["language-latest", "understand-latest", "review-latest", "failure-latest", "context-latest"].map(
     (kind) => ctx.state.delete(scope(target, "kujo-artifacts", kind)),
   ));
 }
