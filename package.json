@@ -51,7 +51,8 @@
     "abilities:sync": "node scripts/sync-abilities.mjs",
     "abilities:generate": "node scripts/generate-abilities.mjs",
     "abilities:verify": "node scripts/generate-abilities.mjs --check",
-    "verification:verify": "node scripts/verify-verification-contract.mjs"
+    "verification:verify": "node scripts/verify-verification-contract.mjs",
+    "test:host:execution": "node scripts/acceptance/execution-host.mjs"
   },
   "dependencies": {
     "@kujolang/kujo-runtime": "1.8.1",

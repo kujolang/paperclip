@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add an isolated authenticated-host acceptance harness for the internal execution coordinator, covering approval authority, cancellation and persisted restart behavior. No public execution surface is enabled.
+
 - Add an internal human-confirmation and persistent execution coordinator with atomic ownership, cancellation, uncertain-outcome recovery and an additive job ledger migration. No execution tool is enabled yet.
 - Prevent pre-aborted runtime requests from spawning a child process.
 
