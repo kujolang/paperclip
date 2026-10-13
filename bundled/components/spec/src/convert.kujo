@@ -1,0 +1,93 @@
+# Spec Converter — converts between JSON/YAML/TOML using Kujo-native parsers.
+# Usage:
+#   kujo run src/convert.kujo --input file --from json|yaml|toml --to json|yaml|toml
+
+func parse_input(raw_text, input_format) {
+	if input_format == "json" {
+		return parse_json(raw_text)
+	}
+	if input_format == "yaml" {
+		return parse_yaml(raw_text)
+	}
+	if input_format == "toml" {
+		return parse_toml(raw_text)
+	}
+	return {"error": "unsupported input format: " + input_format}
+}
+
+func serialize_output(value, output_format) {
+	if output_format == "json" {
+		return to_json(value)
+	}
+	if output_format == "yaml" {
+		return to_yaml(value)
+	}
+	if output_format == "toml" {
+		return to_toml(value)
+	}
+	return ""
+}
+
+func normalize_format(raw_format) {
+	fmt := to_lower(trim(to_string(raw_format)))
+	if fmt == "yml" {
+		return "yaml"
+	}
+	return fmt
+}
+
+func fail(message) {
+	print("Error: " + message)
+	exit(1)
+}
+
+func main() {
+	parser := arg_parser()
+	parser := parser.add_argument("--input", "type", "string", "default", "", "help", "Input file path")
+	parser := parser.add_argument("--from", "type", "string", "default", "", "help", "Input format")
+	parser := parser.add_argument("--to", "type", "string", "default", "json", "help", "Output format")
+	parsed_args := parser.parse()
+
+	input_file := trim(to_string(parsed_args["input"]))
+	from_format := normalize_format(parsed_args["from"])
+	to_format := normalize_format(parsed_args["to"])
+
+	if input_file == "" {
+		fail("--input required")
+	}
+	if from_format != "json" && from_format != "yaml" && from_format != "toml" {
+		fail("--from must be json|yaml|toml")
+	}
+	if to_format != "json" && to_format != "yaml" && to_format != "toml" {
+		fail("--to must be json|yaml|toml")
+	}
+
+	raw_text := ""
+	try {
+		raw_text = read_file(input_file)
+	} except err {
+		fail("failed to read input file")
+	}
+
+	parsed := {}
+	try {
+		parsed = parse_input(raw_text, from_format)
+	} except err {
+		fail("failed to parse input")
+	}
+
+	if type(parsed) == "dict" && has_key(parsed, "error") {
+		fail(to_string(parsed["error"]))
+	}
+
+	output_text := ""
+	try {
+		output_text = serialize_output(parsed, to_format)
+	} except err {
+		fail("failed to serialize output")
+	}
+
+	print(output_text)
+}
+
+main()

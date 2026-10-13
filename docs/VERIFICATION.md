@@ -1,8 +1,20 @@
-# Verification imports
+# Verification workflows
+
+## Task contracts
+
+With Verification enabled, select a Git-visible `.spec.json`, `.spec.yml`, `.spec.yaml` or `.spec.toml` contract and choose **Review task contract**. The pinned Spec 1.0.1 converter and validator operate on private copies; the source workspace and declared checks are never executed or changed. Strict mode promotes native warnings to a contract validation failure. Parse/type admission failures are identified separately from completed native validation.
+
+The panel shows the goal, scope, acceptance criteria, declared check descriptions/types, non-goals and approval points. All criteria and checks remain **not-run**. A valid contract is not a completed task, a verified check, or an approval grant. The adapter does not infer links between individual criteria and checks. Command parameters, metadata and other unselected fields are not retained. Selected text is redacted, with the source-byte digest and component provenance retained in company/entity-scoped history.
+
+Only the first 1,000 eligible Git-visible paths are listed. Reads use the native beneath-root filesystem boundary, reject sensitive/ignored paths and symlink escapes, and accept at most 64 KiB of UTF-8 text. Converted documents are limited to depth32; processes and output are bounded. No project code, hooks or workspace modules are imported. Results become stale when the observed workspace changes; immutable history preserves the original observation.
+
+Agent input: `inspect-task-contract` with `{ "path": "specs/release.spec.yml", "strict": true }`. The host supplies company/workspace identity. Project and issue actions persist scoped evidence; run surfaces remain read-only.
+
+## Imported evaluation claims
 
 Enable `features.verification` in company settings. The installed/full/review/ship profiles expose **Import evaluation result** and the `import-verification` agent tool. Build and essentials profiles do not. The feature defaults off. Imports work without a local workspace or native Kujo runtime.
 
-Paste `kujo.evaluation-result/v1` JSON into the project or issue panel. Eval 2.0.0 emits this format as `evaluation-result.json`; other producers must supply the same contract. This adapter does not convert legacy tool reports or run Eval, Spec, Fence, Concord or ShipCheck. Those execution integrations remain separate work.
+Paste `kujo.evaluation-result/v1` JSON into the project or issue panel. Eval 2.0.0 emits this format as `evaluation-result.json`; other producers must supply the same contract. The import adapter does not convert legacy tool reports or invoke native tools. Native Spec validation is described above; Eval, Fence, Concord and ShipCheck execution integrations remain separate work.
 
 The plugin validates the exact canonical JSON Schema pinned at Kujo commit `6695bd9beac4787c9d2db768e9f61dfdb26a95a5`, including date formats and evidence-reference shapes. Build checks verify the bundled schema and example bytes against `bundled/verification-sources.lock.json`. Schema validation establishes structure, not authenticity or applicability.
 

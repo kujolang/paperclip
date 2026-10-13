@@ -18,7 +18,7 @@ Bundled runtime resolution is the normal choice. Use an override only for contro
 | `features.review` | `true` | Enable Review Pack tools and actions. |
 | `features.failureEvidence` | `true` | Enable Failure Evidence tools and actions. |
 | `features.context` | `true` | Enable Context Pack tools and actions. |
-| `features.verification` | `false` | Enable bounded imports of canonical evaluation results. Defaults off; available in installed/full/review/ship profiles. Does not run checks. |
+| `features.verification` | `false` | Enable native task-contract validation and bounded imports of canonical evaluation results. Defaults off; available in installed/full/review/ship profiles. Neither operation executes declared checks. Spec requires a working runtime; imports do not. |
 
 ## Process limits
 

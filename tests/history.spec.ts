@@ -1,4 +1,4 @@
-import { beforeAll, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { createTestHarness, testDatabase } from "./helpers/harness.js";
@@ -12,7 +12,6 @@ const target = { companyId: "company", entityType: "project" as const, entityId:
 const pack = (id: string, check: "passed" | "failed" = "passed") => ({ schemaVersion: 1, id, generatedAt: "2026-10-12T00:00:00Z", projectId: "project", workspaceId: "workspace", path: "src/main.kujo", sourceDigest: "a".repeat(64), runtimeVersion: "1.8.1", check, lint: "passed", diagnostics: [], stale: false,
   snapshot: { gitRoot: "/private/project", branch: "main", head: "abc", fingerprint: "abc", dirty: false },
   scope: "Single-file lex/parse/compile and lint; project tests, imports and runtime behavior are not verified." });
-beforeAll(async () => { await testDatabase(); }, 30_000);
 
 describe("durable evidence", () => {
   it("uses the actual host-derived namespace and repeatable migration", async () => {

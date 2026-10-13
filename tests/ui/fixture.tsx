@@ -50,6 +50,15 @@ const detailData = parameters.get("state") === "populated"
 window.__KUJO_FIXTURE_DATA__ = {
   ...detailData,
   verificationEnabled: parameters.get("verification") === "1",
+  specs: { files: parameters.get("spec") ? ["specs/release.spec.yml"] : [], truncated: false },
+  spec: parameters.get("specReport") ? { id: "fixture-spec", path: "specs/release.spec.yml", provenance: { version: "1.0.1" }, stale: false,
+    validation: { status: "warnings", native: true, strict: false, errors: [], warnings: ["Unknown field: owner_hint"] },
+    contract: { name: "Release review", goal: "Verify the release requirements before publishing.", scope: "The package and its installation workflow",
+      criteria: [{ text: "A new user can install the package", status: "not-run" }, { text: "Evidence remains scoped to the company", status: "not-run" }],
+      checks: [{ description: "Validate the packaged artifact", checkType: "file_exists", status: "not-run" }],
+      nonGoals: ["Deploying the release"], approvalPoints: ["Maintainer reviews release evidence"] },
+    scope: "Contract validation only. Acceptance criteria and declared checks have not been executed or proved; approval points are declarations, not granted approvals.",
+  } : null,
   history: parameters.get("history") ? ["before", "after"].map((id, index) => ({ id, kind: "language-latest", artifactId: id, storedAt: `2026-10-12 12:0${index}:00+00`, sourceKind: "observed", result: index ? "failed" : "observed", digest: "a".repeat(64), inputDigest: null, definitionDigest: null, parentId: null, payloadBytes: 500 })) : [],
   understanding: parameters.get("map") ? {
     status: "partial", stale: true, provenance: { componentVersion: "1.1.0" },
@@ -84,12 +93,14 @@ window.__KUJO_FIXTURE_DATA__ = {
     },
   },
 };
-const fixture = window.__KUJO_FIXTURE_DATA__ as { readiness: DoctorReport; catalog?: CapabilityCatalog };
+const fixture = window.__KUJO_FIXTURE_DATA__ as { readiness: DoctorReport; catalog?: CapabilityCatalog; verificationEnabled: boolean };
 fixture.readiness.runtime.platform = "linux";
 fixture.readiness.runtime.arch = "x64";
-fixture.readiness.components = ["scout", "context", "failure-evidence", "changebucket", "patchbrief"].map((id) => ({ id: id as DoctorReport["components"][number]["id"], version: "1.0.0", integrity: "ok" }));
+fixture.readiness.components = ["scout", "context", "failure-evidence", "changebucket", "patchbrief", "spec"].map((id) => ({ id: id as DoctorReport["components"][number]["id"], version: "1.0.0", integrity: "ok" }));
 const fixtureConfig = applyCapabilityProfile(parsePluginConfig({ capabilityProfile: parameters.get("profile") ?? "installed", features: { verification: parameters.get("verification") === "1" } }));
-for (const feature of Object.keys(fixture.readiness.capabilities) as Array<keyof DoctorReport["capabilities"]>) if (!fixtureConfig.features[feature]) fixture.readiness.capabilities[feature] = "disabled";
+for (const feature of Object.keys(fixture.readiness.capabilities) as Array<keyof DoctorReport["capabilities"]>) if (!fixtureConfig.features[feature === "spec" ? "verification" : feature]) fixture.readiness.capabilities[feature] = "disabled";
+fixture.readiness.capabilities.spec = !fixtureConfig.features.verification ? "disabled" : fixture.readiness.runtime.status === "ok" ? "ready" : "blocked";
+fixture.verificationEnabled = fixtureConfig.features.verification;
 fixture.catalog = capabilityCatalog(fixtureConfig, fixture.readiness, true);
 window.__KUJO_ACTIONS__ = [];
 

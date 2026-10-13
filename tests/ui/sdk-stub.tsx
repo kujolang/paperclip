@@ -5,6 +5,8 @@ export type PluginDetailTabProps = {
 declare global {
   interface Window {
     __KUJO_NAVIGATE__?: (companyId: string) => void;
+    __KUJO_DELAY_SPEC__?: boolean;
+    __KUJO_RESOLVE_SPEC__?: () => void;
     __KUJO_DELAY_FORMAT__?: boolean;
     __KUJO_DELAY_IMPORT__?: boolean;
     __KUJO_RESOLVE_IMPORT__?: () => void;
@@ -46,6 +48,10 @@ export function usePluginAction(action: string) {
     if (action === "import-verification") {
       if (window.__KUJO_DELAY_IMPORT__) await new Promise<void>((resolve) => { window.__KUJO_RESOLVE_IMPORT__ = resolve; });
       return { classification: "partial", result: { evaluator: { name: "eval", version: "2.0.0" }, checks: { passed: 3, failed: 0, warned: 0, skipped: 1 }, verdict: "pass", subject: { run_id: "supplied-run" }, finished_at: "2026-10-12T00:00:00Z" }, generatedAt: "2026-10-12T01:00:00Z", referenceCount: 2 };
+    }
+    if (action === "inspect-task-contract") {
+      if (window.__KUJO_DELAY_SPEC__) { await new Promise<void>((resolve) => { window.__KUJO_RESOLVE_SPEC__ = resolve; }); throw new Error("private delayed contract error"); }
+      return { status: "warnings", reportId: "fixture-spec" };
     }
     if (action === "run-example") return { status: "passed", checked: true, runtimeVersion: "1.8.1", source: "print(36)", output: '{"items":2,"language":"Kujo","total":36}' };
   };

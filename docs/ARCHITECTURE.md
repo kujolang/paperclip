@@ -4,7 +4,7 @@
 Paperclip issue/project/run context
   -> @kujolang/paperclip worker (typed validation and workspace resolution)
   -> @kujolang/kujo-runtime (configured, bundled, then optional PATH fallback)
-  -> allowlisted pinned component (ChangeBucket, PatchBrief, CaseFile, Scent)
+  -> allowlisted pinned component (ChangeBucket, PatchBrief, CaseFile, Scent, Scout, Spec)
   -> bounded machine output
   -> normalized schema v1
   -> Paperclip namespaced evidence database and native detail tab
@@ -20,7 +20,7 @@ Artifacts use company/entity-scoped database rows: Review and Context Packs are 
 
 - npm packages and runtime resolver API documented in the Kujo runtime repository
 - Paperclip manifest API version 1 and minimum host version `2026.824.1`
-- eleven namespaced agent tools declared in the manifest and worker
+- twelve namespaced agent tools declared in the manifest and worker
 - component lock schema version 1
 - Review Pack, Failure Evidence, and Context Pack schema version 1
 - additive JSON compatibility within a plugin major version
@@ -50,3 +50,14 @@ Issue documents require the additional `issue.documents.write` capability and a 
 ## Imported verification
 
 The verification adapter validates the pinned Kujo evaluation-result JSON Schema using Ajv 2020 and date-time formats, then selects and redacts a small summary. Input is bounded to 64 KiB and 32 nested levels. Unknown fields, annotation bodies, raw logs and reference URIs are not retained; no references are fetched. The source-byte SHA-256 and schema provenance remain separate from the retained payload receipt. `verification-latest` is always labeled imported, with no observed execution or workspace freshness. Project/issue ownership comes from host-scoped APIs, not imported subject IDs. The adapter requires no native runtime and has its own feature/profile enforcement.
+
+## Native task contracts
+
+Spec is the sixth pinned executable component. The adapter discovers eligible
+Git-visible contract paths, reads through the shared beneath-root text boundary,
+and invokes only pinned converter/validator code against private files. It never
+executes declared checks or imports workspace modules. The report separates input
+admission from native validation and preserves not-run criteria/checks. Only
+selected redacted summaries are retained as observed `spec-latest` records; this
+is observed contract validation, not observed check execution. The existing
+20-record/30-day limit spans all seven artifact kinds.

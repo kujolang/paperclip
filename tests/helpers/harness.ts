@@ -1,4 +1,4 @@
-import { afterAll, afterEach } from "vitest";
+import { afterAll, afterEach, beforeAll } from "vitest";
 import { readFile, writeFile } from "node:fs/promises";
 import { PGlite } from "@electric-sql/pglite";
 import { createTestHarness as createSdkHarness } from "@paperclipai/plugin-sdk/testing";
@@ -15,6 +15,10 @@ export async function testDatabase() {
   })();
   return await database;
 }
+// Initialize PostgreSQL/WASM once per test file before operation assertion deadlines.
+// Cold startup can exceed 30 seconds on a loaded developer host.
+beforeAll(async () => { await testDatabase(); }, 60_000);
+
 export function createTestHarness(options: Parameters<typeof createSdkHarness>[0]) {
   const harness = createSdkHarness(options);
   harness.ctx.db.namespace = EVIDENCE_NAMESPACE;

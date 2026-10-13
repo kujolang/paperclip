@@ -3461,6 +3461,151 @@ export const projections = [
     },
     "definitionDigest": "ecbcf0b7ad700f0ec6aee8fedbcc9750f56142cfcd162c1e5bbf7760012bb82a",
     "canonicalDefinitions": []
+  },
+  {
+    "exportName": "specTool",
+    "id": "kujo.paperclip.spec.inspect",
+    "feature": "verification",
+    "canonicalIds": [
+      "kujo.spec.contract.validate"
+    ],
+    "components": [
+      "spec"
+    ],
+    "profiles": [
+      "installed",
+      "review",
+      "ship",
+      "full"
+    ],
+    "tool": {
+      "name": "inspect-task-contract",
+      "displayName": "Review Task Contract",
+      "description": "Validate one Git-visible Kujo Spec contract with pinned native tools. Inspect acceptance criteria and declared checks without executing them, granting approvals or changing workspace files.",
+      "parametersSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "path"
+        ],
+        "properties": {
+          "path": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1000,
+            "description": "Relative .spec.json, .spec.yml, .spec.yaml or .spec.toml path from the project contract catalog"
+          },
+          "strict": {
+            "type": "boolean",
+            "default": false,
+            "description": "Treat canonical validation warnings as contract validation failure"
+          }
+        }
+      }
+    },
+    "definition": {
+      "schema": "kujo.ability/v1",
+      "id": "kujo.paperclip.spec.inspect",
+      "version": "1.0.0",
+      "title": "Review Task Contract",
+      "description": "Validate one Git-visible Kujo Spec contract with pinned native tools. Inspect acceptance criteria and declared checks without executing them, granting approvals or changing workspace files.",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "path"
+        ],
+        "properties": {
+          "path": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1000,
+            "description": "Relative .spec.json, .spec.yml, .spec.yaml or .spec.toml path from the project contract catalog"
+          },
+          "strict": {
+            "type": "boolean",
+            "default": false,
+            "description": "Treat canonical validation warnings as contract validation failure"
+          }
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "additionalProperties": true
+      },
+      "effects": [
+        {
+          "kind": "read",
+          "resource": "kujo.paperclip.workspace"
+        },
+        {
+          "kind": "write",
+          "resource": "kujo.paperclip.evidence"
+        },
+        {
+          "kind": "write",
+          "resource": "kujo.paperclip.activity"
+        }
+      ],
+      "idempotency": {
+        "mode": "none"
+      },
+      "semantics": {
+        "open_world": false,
+        "destructive": false,
+        "executes_code": false
+      }
+    },
+    "definitionDigest": "18644168b8440b6ef712ed558645df416d123fb82c5e7c10d609407d51a9aab7",
+    "canonicalDefinitions": [
+      {
+        "definition": {
+          "schema": "kujo.ability/v1",
+          "id": "kujo.spec.contract.validate",
+          "version": "1.0.0",
+          "title": "Validate task contract",
+          "description": "Validate a Kujo Spec task contract without changing it.",
+          "input_schema": {
+            "type": "object",
+            "required": [
+              "file"
+            ],
+            "properties": {
+              "path": {
+                "type": "string",
+                "maxLength": 4096,
+                "default": "."
+              },
+              "file": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4096
+              },
+              "strict": {
+                "type": "boolean",
+                "default": false
+              }
+            },
+            "additionalProperties": false
+          },
+          "output_schema": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "effects": [
+            {
+              "kind": "read",
+              "resource": "kujo.spec.contract"
+            }
+          ],
+          "idempotency": {
+            "mode": "intrinsic"
+          }
+        },
+        "definitionDigest": "9ae720f315922c292598b4d231ec130e866f2306e55b349c7ad50e338ee90d02",
+        "source": "spec"
+      }
+    ]
   }
 ] as const;
 export const catalogTool = projections[0].tool;
@@ -3474,4 +3619,5 @@ export const failureTool = projections[7].tool;
 export const contextTool = projections[8].tool;
 export const contextContentTool = projections[9].tool;
 export const importVerificationTool = projections[10].tool;
+export const specTool = projections[11].tool;
 export const projectedTools = projections.map((entry) => entry.tool);

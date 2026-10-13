@@ -1,0 +1,94 @@
+# Spec — shared utilities for all Kujo modules.
+# Import in other modules with: from src.common import dict_get, dict_get_arr
+
+export func dict_get(obj, key, dflt) {
+	hk := has_key(obj, key)
+	if hk == true || hk == 1 { return obj[key] }
+	return dflt
+}
+
+export func dict_get_arr(obj, key) {
+	hk := has_key(obj, key)
+	if hk == true || hk == 1 {
+		arr := obj[key]
+		lc := len(arr)
+		items := []
+		idx := 0
+		while idx < lc { items := push(items, arr[idx]); idx := idx + 1 }
+		return items
+	}
+	return []
+}
+
+export func parse_json_arg(args_list) {
+	return parse_flag_value(args_list, "--json", "")
+}
+
+export func parse_format_arg(args_list) {
+	return parse_flag_value(args_list, "--format", "agent")
+}
+
+export func parse_flag_value(args_list, flag_name, fallback) {
+	fm := fallback
+	idx := 0
+	while idx < len(args_list) {
+		if args_list[idx] == flag_name && idx + 1 < len(args_list) {
+			fm := args_list[idx + 1]
+			idx := idx + 1
+		}
+		idx := idx + 1
+	}
+	return fm
+}
+
+export func has_flag(args_list, flag_name) {
+	idx := 0
+	while idx < len(args_list) {
+		if args_list[idx] == flag_name {
+			return true
+		}
+		idx := idx + 1
+	}
+	return false
+}
+
+export func bullet_lines(items) {
+	out := ""
+	idx := 0
+	while idx < len(items) {
+		out = out + "- " + items[idx] + "\n"
+		idx := idx + 1
+	}
+	return out
+}
+
+export func code_bullet_lines(items) {
+	out := ""
+	idx := 0
+	while idx < len(items) {
+		out = out + "- `" + items[idx] + "`\n"
+		idx := idx + 1
+	}
+	return out
+}
+
+export func numbered_lines(items) {
+	out := ""
+	idx := 0
+	while idx < len(items) {
+		out = out + to_string(idx + 1) + ". " + items[idx] + "\n"
+		idx := idx + 1
+	}
+	return out
+}
+
+export func inline_code_csv(items) {
+	out := ""
+	idx := 0
+	while idx < len(items) {
+		if idx > 0 { out = out + ", " }
+		out = out + "`" + items[idx] + "`"
+		idx := idx + 1
+	}
+	return out
+}

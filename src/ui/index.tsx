@@ -21,8 +21,9 @@ import type { CapabilityCatalog } from "../abilities/catalog.js";
 import type { EvidenceMetadata } from "../storage/history.js";
 
 import type { VerificationReport } from "../features/verification/import.js";
+import type { SpecReport } from "../features/spec/inspect.js";
 
-type Detail = { verification?: VerificationReport | null; verificationEnabled?: boolean; catalog?: CapabilityCatalog; history?: EvidenceMetadata[]; language?: LanguageReport | null; sources?: { files: string[]; truncated: boolean }; understanding?: Understanding | null; review: ReviewPack | null; failure: FailureEvidence | null; context: ContextPack | null; readiness?: DoctorReport; workspace?: WorkspaceReadiness; suggestedTask?: string };
+type Detail = { spec?: SpecReport | null; specs?: { files: string[]; truncated: boolean }; verification?: VerificationReport | null; verificationEnabled?: boolean; catalog?: CapabilityCatalog; history?: EvidenceMetadata[]; language?: LanguageReport | null; sources?: { files: string[]; truncated: boolean }; understanding?: Understanding | null; review: ReviewPack | null; failure: FailureEvidence | null; context: ContextPack | null; readiness?: DoctorReport; workspace?: WorkspaceReadiness; suggestedTask?: string };
 type PanelProps = PluginDetailTabProps & { compact?: boolean };
 
 const colors = {
@@ -411,6 +412,54 @@ function VerificationSection({ context, report, refresh }: { context: PanelProps
   </section>;
 }
 
+function SpecSection({ context, report, files, ready, refresh }: { context: PanelProps["context"]; report: SpecReport | null; files: { files: string[]; truncated: boolean }; ready: boolean; refresh: () => void }) {
+  const inspect = usePluginAction("inspect-task-contract");
+  const [path, setPath] = useState(report?.path ?? "");
+  const [strict, setStrict] = useState(report?.validation.strict ?? false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const active = useRef(true);
+  useEffect(() => { active.current = true; return () => { active.current = false; }; }, []);
+  async function submit() {
+    setBusy(true); setError(null);
+    try {
+      await inspect({ entityType: context.entityType, entityId: context.entityId, path, strict });
+      if (active.current) await refresh();
+    } catch (value) { if (active.current) setError(value instanceof Error ? value.message : String(value)); }
+    finally { if (active.current) setBusy(false); }
+  }
+  return <section style={{ ...card, overflowWrap: "anywhere" }} aria-label="Task contract">
+    <SectionTitle title="Task contract" detail="Review the expected outcome before running checks." badge={<StatusBadge status="pending" label="CHECKS NOT RUN" />} />
+    <div style={muted}>Validate a Git-visible .spec.json, .spec.yml, .spec.yaml or .spec.toml file. Contract validity does not prove acceptance criteria or grant approval.</div>
+    <label>Contract file<select aria-label="Contract file" style={input} value={path} disabled={busy || !files.files.length} onChange={(event) => setPath(event.target.value)}>
+      <option value="">{files.files.length ? "Choose a task contract" : "No Git-visible task contracts found"}</option>
+      {files.files.map((file) => <option key={file} value={file}>{file}</option>)}
+    </select></label>
+    {files.truncated && <div style={muted}>Showing the first 1,000 contract paths.</div>}
+    <label><input type="checkbox" checked={strict} disabled={busy} onChange={(event) => setStrict(event.target.checked)} /> Treat warnings as validation failures</label>
+    <ActionButton disabled={busy || !ready || !path} onClick={() => { void submit(); }}>{busy ? "Reviewing contract…" : "Review task contract"}</ActionButton>
+    {!ready && <div style={muted}>A working Kujo runtime and intact Spec component are required. Check runtime readiness above.</div>}
+    {error && <div role="alert" style={{ color: colors.danger }}>{error}</div>}
+    {report && <div aria-label="Task contract result">
+      <strong>Contract validation: {report.validation.status}{report.stale ? " · STALE — review again" : ""}</strong>
+      <div style={muted}>{report.path} · Spec {report.provenance.version} · {report.validation.native ? "Native validation completed" : "Input rejected before native validation"}</div>
+      {report.validation.errors.map((message, index) => <div key={`error-${index}`} style={{ color: colors.danger }}>Error: {message}</div>)}
+      {report.validation.warnings.map((message, index) => <div key={`warning-${index}`}>Warning: {message}</div>)}
+      {report.contract && <>
+        <h3 style={{ marginBottom: 4 }}>{report.contract.name}</h3><div>{report.contract.goal}</div>
+        {report.contract.scope && <p>Scope: {report.contract.scope}</p>}
+        <h4>Acceptance criteria</h4>
+        {report.contract.criteria.length ? <ul>{report.contract.criteria.map((item, index) => <li key={index}>Not run · {item.text}</li>)}</ul> : <div style={muted}>No acceptance criteria declared.</div>}
+        <h4>Declared checks</h4>
+        {report.contract.checks.length ? <ul>{report.contract.checks.map((item, index) => <li key={index}>Not run · {item.description} · {item.checkType ?? "Check type unspecified"}</li>)}</ul> : <div style={muted}>No checks declared. No checks have been inferred or executed.</div>}
+        {!!report.contract.nonGoals.length && <><h4>Outside scope</h4><ul>{report.contract.nonGoals.map((item, index) => <li key={index}>{item}</li>)}</ul></>}
+        {!!report.contract.approvalPoints.length && <><h4>Declared approval points</h4><ul>{report.contract.approvalPoints.map((item, index) => <li key={index}>{item} · Approval not granted</li>)}</ul></>}
+      </>}
+      <div style={muted}>{report.scope} Use Evidence history to compare or export this record.</div>
+    </div>}
+  </section>;
+}
+
 function KujoPanel({ context, compact = false }: PanelProps) {
   const { data, loading, error, refresh } = usePluginData<Detail>("detail", { entityType: context.entityType, entityId: context.entityId });
   const generateReview = usePluginAction("generate-review");
@@ -467,7 +516,7 @@ function KujoPanel({ context, compact = false }: PanelProps) {
   if (loading) return <Spinner label="Loading Kujo workspace intelligence" />;
   if (error) return <div role="alert" style={{ ...card, color: colors.danger }}>Unable to load Kujo: {error.message}</div>;
 
-  const hasArtifacts = (data?.history?.length ?? 0) > 0 || data?.verification || data?.language || data?.understanding || Boolean(data?.review || data?.failure || data?.context);
+  const hasArtifacts = (data?.history?.length ?? 0) > 0 || data?.verification || data?.spec || data?.language || data?.understanding || Boolean(data?.review || data?.failure || data?.context);
 
   return (
     <div style={{ ...panel, ...(compact ? { marginTop: 12 } : {}) }}>
@@ -571,6 +620,7 @@ function KujoPanel({ context, compact = false }: PanelProps) {
 
       {data?.catalog && <CapabilityExplorer key={`catalog:${targetKey}`} catalog={data.catalog} />}
 
+      {data?.verificationEnabled && canGenerate && <SpecSection key={`spec:${targetKey}:${data.spec?.id ?? "none"}`} context={context} report={data.spec ?? null} files={data.specs ?? { files: [], truncated: false }} ready={data.readiness?.capabilities.spec === "ready"} refresh={refresh} />}
       {data?.verificationEnabled && <VerificationSection key={`verification:${targetKey}:${data.verification?.id ?? "none"}`} context={context} report={data.verification ?? null} refresh={refresh} />}
 
       <EvidenceHistory key={targetKey} context={context} records={data?.history ?? []} />
