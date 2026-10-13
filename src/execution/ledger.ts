@@ -1,9 +1,10 @@
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { canonicalJson, evidenceDigest, EVIDENCE_NAMESPACE } from "../storage/history.js";
-import { executionRecordSchema, type ExecutionRecord, type ExecutionRequest, type ExecutionScope, type ExecutionState } from "./contracts.js";
+import { executionRecordSchema, type ExecutionRecord, type ExecutionRequest, type ExecutionScope, type ExecutionState, type ExecutionStarter, type ExecutionPlan } from "./contracts.js";
 
 const columns = `id, request_digest AS "requestDigest", request, state, interaction_id AS "interactionId", approved_by AS "approvedBy",
   owner_id AS "ownerId", claim_id AS "claimId", created_at::text AS "createdAt", expires_at::text AS "expiresAt",
+  start_requested_at::text AS "startRequestedAt", start_requester AS "startRequester",
   lease_until::text AS "leaseUntil", finished_at::text AS "finishedAt", result, diagnostic`;
 export const EXECUTION_LIMITS = { activeRequests: 20, running: 2, retainedTerminal: 100, retentionDays: 30 } as const;
 const active = "('preparing', 'pending', 'running', 'cancel_requested')";
@@ -76,6 +77,19 @@ export function executionLedger(ctx: PluginContext) {
       // an effect failed or an orphaned process stopped. Never requeue it.
       await ctx.db.execute(`UPDATE ${table(ctx)} SET state = 'uncertain', finished_at = clock_timestamp(), diagnostic = 'owner_lease_expired'
         WHERE ${scoped} AND state IN ('running', 'cancel_requested') AND lease_until <= clock_timestamp()`, params(scope, id));
+    },
+    async enqueue(scope: ExecutionScope, record: ExecutionRecord, starter: ExecutionStarter) {
+      await ctx.db.execute(`UPDATE ${table(ctx)} SET start_requested_at = clock_timestamp(), start_requester = $4::jsonb
+        WHERE ${scoped} AND state = 'pending' AND expires_at > clock_timestamp() AND start_requested_at IS NULL AND request_digest = $5`,
+      [...params(scope, record.id), canonicalJson(starter), record.requestDigest]);
+    },
+    async queued(operations: readonly ExecutionPlan["operation"][]) {
+      if (!operations.length) return [];
+      // The host SQL bridge expands array parameters; bind scalar values.
+      const placeholders = operations.map((_operation, index) => `$${index + 1}`).join(", ");
+      return await ctx.db.query<{ companyId: string; issueId: string; id: string }>(`SELECT company_id AS "companyId", issue_id AS "issueId", id FROM ${table(ctx)}
+        WHERE state = 'pending' AND start_requested_at IS NOT NULL AND request->'plan'->>'operation' IN (${placeholders})
+        ORDER BY start_requested_at, id LIMIT 4`, [...operations]);
     },
     async claim(scope: ExecutionScope, id: string, interactionId: string, approvedBy: string, ownerId: string, claimId: string, approvedAt: string) {
       await maintain(scope.companyId);

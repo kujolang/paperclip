@@ -162,6 +162,102 @@ describe("human-bound persistent execution foundation", () => {
     await expect(access(f.marker)).rejects.toThrow();
   });
 
+  it("requires explicit approved start intent and claims a queued command once across workers", async () => {
+    const f = await fixture(), record = await prepared(f), starter = { kind: "human" as const, id: "board" };
+    await expect(f.service.enqueue(scope, record.id, starter)).rejects.toThrow(/human approval/);
+    f.approve();
+    expect(await f.service.drainQueued()).toEqual({ attempted: 0, errors: 0 });
+    const queued = await f.service.enqueue(scope, record.id, starter);
+    expect(queued).toMatchObject({ state: "pending", startRequester: starter, result: null });
+    expect(queued.startRequestedAt).toBeTruthy();
+    expect(await readFile(f.marker, "utf8").catch(() => null)).toBeNull();
+    expect(await f.service.enqueue(scope, record.id, starter)).toEqual(queued);
+    await expect(f.service.enqueue(scope, record.id, { kind: "human", id: "other" })).rejects.toThrow(/another actor/);
+    await Promise.all([f.service.drainQueued(), f.second().drainQueued()]);
+    expect((await f.service.status(scope, record.id)).state).toBe("succeeded");
+    expect(await readFile(f.marker, "utf8")).toBe("start\n");
+    expect(await f.second().drainQueued()).toEqual({ attempted: 0, errors: 0 });
+    await expect(f.service.startQueued({ ...scope, companyId: "other" }, record.id)).rejects.toThrow();
+  });
+  it("never picks up cancelled, expired or revoked queued approvals", async () => {
+    for (const mode of ["cancel", "expire", "revoke"] as const) {
+      const f = await fixture(), record = await f.service.prepare(scope, mode, request); f.approve();
+      await f.service.enqueue(scope, record.id, { kind: "human", id: "board" });
+      if (mode === "cancel") await f.service.cancel(scope, record.id);
+      if (mode === "expire") await mutate("expires_at = clock_timestamp() - interval '1 second'", record.id);
+      if (mode === "revoke") f.cards[0]!.status = "cancelled";
+      await f.second().drainQueued();
+      expect((await f.service.status(scope, record.id)).state).toBe(mode === "cancel" ? "cancelled" : mode === "expire" ? "expired" : "rejected");
+      expect(await readFile(f.marker, "utf8").catch(() => null)).toBeNull();
+    }
+  });
+  it("revalidates the queued requesting agent run and rejects caller identity changes", async () => {
+    const f = await fixture(), starter = { kind: "agent" as const, id: "requester", runId: "run" };
+    f.h.ctx.issues.get = async (id, companyId) => ({ id, companyId, projectId: "project", assigneeAgentId: "requester", checkoutRunId: "run" } as Awaited<ReturnType<typeof f.h.ctx.issues.get>>);
+    const record = await prepared(f, { ...request, requester: starter }); f.approve();
+    await expect(f.service.enqueue(scope, record.id, { ...starter, runId: "other" })).rejects.toThrow(/current assigned run/);
+    await f.service.enqueue(scope, record.id, starter);
+    f.h.ctx.issues.get = async (id, companyId) => ({ id, companyId, projectId: "project", assigneeAgentId: "requester", checkoutRunId: "different" } as Awaited<ReturnType<typeof f.h.ctx.issues.get>>);
+    await f.second().drainQueued();
+    expect(await f.service.status(scope, record.id)).toMatchObject({ state: "rejected", diagnostic: "queue_starter_unverified" });
+    expect(await readFile(f.marker, "utf8").catch(() => null)).toBeNull();
+  });
+  it("executes a queued command for the still-current requesting agent", async () => {
+    const f = await fixture(), starter = { kind: "agent" as const, id: "requester", runId: "run" };
+    f.h.ctx.issues.get = async (id, companyId) => ({ id, companyId, projectId: "project", assigneeAgentId: starter.id, checkoutRunId: starter.runId } as Awaited<ReturnType<typeof f.h.ctx.issues.get>>);
+    const record = await prepared(f, { ...request, requester: starter }); f.approve();
+    await f.service.enqueue(scope, record.id, starter);
+    expect(await f.second().drainQueued()).toEqual({ attempted: 1, errors: 0 });
+    expect((await f.service.status(scope, record.id)).state).toBe("succeeded");
+    expect(await readFile(f.marker, "utf8")).toBe("start\n");
+  });
+  it("leaves expired pickup windows pending without launching native work", async () => {
+    const f = await fixture(), record = await prepared(f); f.approve();
+    const queued = await f.service.enqueue(scope, record.id, { kind: "human", id: "board" });
+    expect(await f.service.startQueued(scope, record.id, Date.now() - 1)).toEqual(queued);
+    expect(await readFile(f.marker, "utf8").catch(() => null)).toBeNull();
+    expect(await f.service.drainQueued()).toEqual({ attempted: 1, errors: 0 });
+  });
+  it("rechecks the pickup deadline after the final asynchronous spawn admission", async () => {
+    const f = await fixture(), record = await prepared(f); f.approve();
+    await f.service.enqueue(scope, record.id, { kind: "human", id: "board" });
+    const deadline = Date.now() + 5000, query = f.h.ctx.db.query;
+    f.h.ctx.db.query = async <T>(sql: string, values?: unknown[]) => {
+      const rows = await query<T>(sql, values);
+      if (sql.includes("SELECT CASE WHEN state = 'cancel_requested'")) await new Promise(resolve => setTimeout(resolve, Math.max(0, deadline - Date.now() + 25)));
+      return rows;
+    };
+    expect(await f.service.startQueued(scope, record.id, deadline)).toMatchObject({ state: "cancelled", diagnostic: "queue_pickup_window_closed", result: null });
+    expect(await readFile(f.marker, "utf8").catch(() => null)).toBeNull();
+  }, 20000);
+  it("never requeues a command after a lost claim response", async () => {
+    const f = await fixture(), record = await prepared(f); f.approve();
+    await f.service.enqueue(scope, record.id, { kind: "human", id: "board" });
+    const execute = f.h.ctx.db.execute;
+    f.h.ctx.db.execute = async (sql, values) => {
+      const result = await execute(sql, values);
+      if (sql.includes("SET state = 'running'")) throw new Error("lost claim response");
+      return result;
+    };
+    expect(await f.service.drainQueued()).toEqual({ attempted: 1, errors: 1 });
+    f.h.ctx.db.execute = execute;
+    await mutate("lease_until = clock_timestamp() - interval '1 second'", record.id);
+    expect(await f.service.status(scope, record.id)).toMatchObject({ state: "uncertain" });
+    expect(await f.second().drainQueued()).toEqual({ attempted: 0, errors: 0 });
+    expect(await readFile(f.marker, "utf8").catch(() => null)).toBeNull();
+  });
+  it("bounds each queue drain and preserves remaining submissions", async () => {
+    const f = await fixture();
+    for (let i = 0; i < 5; i++) {
+      const record = await f.service.prepare(scope, `batch-${i}`, request);
+      Object.assign(f.cards[i]!, { status: "accepted", result: { version: 1, outcome: "accepted" }, resolvedByUserId: "human", resolvedAt: new Date().toISOString() });
+      await f.service.enqueue(scope, record.id, { kind: "human", id: "board" });
+    }
+    expect(await f.service.drainQueued()).toEqual({ attempted: 4, errors: 0 });
+    expect((await f.service.list(scope)).filter(record => record.state === "pending")).toHaveLength(1);
+    expect(await f.second().drainQueued()).toEqual({ attempted: 1, errors: 0 });
+    expect((await readFile(f.marker, "utf8")).trim().split("\n")).toHaveLength(5);
+  }, 15000);
   it("persists allowlisted preparation errors without private exception data or native replay", async () => {
     const f = await fixture(), record = await prepared(f); f.approve();
     const privateError = Object.assign(new Error("private-token-secret /private/workspace"), { code: "ENOSPC" });
@@ -304,11 +400,11 @@ describe("human-bound persistent execution foundation", () => {
     const bundle = join(f.cwd, "dist/coordinator.mjs");
     await build({ entryPoints: [fileURLToPath(new URL("../src/execution/coordinator.ts", import.meta.url))], outfile: bundle, bundle: true, platform: "node", format: "esm", logLevel: "silent" });
     await writeFile(join(f.cwd, "request.json"), JSON.stringify(request));
-    await writeFile(join(f.cwd, "migration.sql"), (await readFile(new URL("../migrations/002_execution.sql", import.meta.url), "utf8")) + "\n" + (await readFile(new URL("../migrations/003_execution_limits.sql", import.meta.url), "utf8")));
+    await writeFile(join(f.cwd, "migration.sql"), (await readFile(new URL("../migrations/002_execution.sql", import.meta.url), "utf8")) + "\n" + (await readFile(new URL("../migrations/003_execution_limits.sql", import.meta.url), "utf8")) + "\n" + (await readFile(new URL("../migrations/005_execution_queue.sql", import.meta.url), "utf8")));
     const script = fileURLToPath(new URL("./fixtures/execution-restart.mjs", import.meta.url));
-    for (const phase of ["prepare", "execute", "inspect"]) {
+    for (const phase of ["prepare", "enqueue", "execute", "inspect"]) {
       const output = execFileSync(process.execPath, [script, f.cwd, phase, import.meta.resolve("@electric-sql/pglite"), pathToFileURL(bundle).href], { encoding: "utf8", timeout: 60_000 });
-      if (phase === "inspect") expect(output).toContain("passed across three processes");
+      if (phase === "inspect") expect(output).toContain("passed across four processes");
     }
   }, 120_000);
 

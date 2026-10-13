@@ -468,3 +468,36 @@ recovery, tenant isolation and full host/database restart. It uses automated boa
 accounts and fixed fixture suites; it is not manual UI or newcomer usability proof.
 The browser suite separately exercises explicit action sequencing, responsive
 layout and isolation of delayed results after company navigation.
+
+## Durable start submission foundation
+
+Migration005 adds an immutable explicit start intent to the existing execution
+ledger. Accepting a decision card does not create this intent. The internal
+`enqueue` API checks the current human approval and persists the starter identity
+and submission time before returning. A queued request remains `pending`, with
+`startRequestedAt` and `startRequester` distinguishing it from an unsubmitted
+approval. Retries preserve that identity and timestamp; a different starter
+cannot replace them.
+
+A later worker can drain at most four eligible submissions within a three-minute
+pickup window per invocation. The window is rechecked before claim and native
+spawn; it does not extend approval expiry. A host job observation timeout alone
+is not proof that an execution stopped: the execution ledger and independently
+bounded supervisor remain authoritative. Pickup must be awaited by the host job. It
+rechecks company/issue/workspace authority, approval identity and expiry, input
+freshness, cancellation and company run capacity before claiming native work.
+An agent submission must belong to the requesting agent's still-current assigned
+run at both submission and pickup; unverifiable identity rejects it without
+execution. Caller identity must come from authenticated host context, never tool
+arguments. Pending cancellation/expiry remains final. Lost claims and running
+owner loss remain uncertain and are never returned to the queue.
+
+The development-only authenticated fixture registers a manually triggered host
+job to prove pickup after the original action returns and across a full
+host/database restart. It uses a fresh host job context, not an orphaned promise
+with an expired action invocation ID. Existing 27-second public limits and
+company quotas remain unchanged. Production tools still use immediate start;
+no production job or arbitrary queue tool is registered. Longer Dispatch/Muzzle/
+Workcell adapters still require durable runner storage, canonical lifecycle and
+replay reconciliation, scheduling qualification and their own approved public
+controls. This foundation does not implement a second workflow replay engine.

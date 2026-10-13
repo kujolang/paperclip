@@ -52,6 +52,16 @@ const plugin = definePlugin({
         } catch (error) { await removeTree(directory); throw error; }
       },
     });
+    ctx.jobs.register("queued-execution-fixture", async () => {
+      const result = await service.drainQueued();
+      if (result.errors) throw new Error("Queued fixture could not verify every submission");
+    });
+    ctx.actions.register("enqueue-fixture", async (raw, actor) => {
+      if (!actor.companyId || actor.actor.type !== "user" || !actor.actor.userId || actor.actor.companyId !== actor.companyId) throw new Error("Authenticated board user required for queued start");
+      const { companyId: _companyId, renderEnvironment: _renderEnvironment, ...input } = raw;
+      const value = z.object({ issueId: z.string(), id: z.string() }).strict().parse(input);
+      return await service.enqueue({ companyId: actor.companyId, issueId: value.issueId }, value.id, { kind: "human", id: actor.actor.userId });
+    });
     const hostService = createEvalHostService(ctx);
     shutdown = async () => { await Promise.all([service.shutdown(), hostService.shutdown()]); };
     ctx.actions.register("crash-fixture", async (_raw, actor) => {

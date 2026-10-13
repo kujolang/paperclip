@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add internal durable start intent with authenticated starter binding, approval rechecks, bounded host-job pickup and restart/no-replay qualification. Public execution controls remain unchanged.
+
 - Retain bounded source-preparation stage/error codes with panel repair guidance; preserve failed-request no-replay behavior and exclude raw exception data.
 
 - Supervise approved native executions outside the plugin worker so worker crashes and stalled control heartbeats stop ordinary owned process trees. Preserve independent timeout/output caps, uncertain lost outcomes and existing approval limits; verify crash recovery on an isolated authenticated host.

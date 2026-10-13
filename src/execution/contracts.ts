@@ -41,9 +41,15 @@ export const executionRequestSchema = z.object({
 export type ExecutionRequest = z.infer<typeof executionRequestSchema>;
 export const executionStateSchema = z.enum(["preparing", "pending", "running", "cancel_requested", "succeeded", "failed", "cancelled", "expired", "rejected", "stale", "uncertain"]);
 export type ExecutionState = z.infer<typeof executionStateSchema>;
+export const executionStarterSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("human"), id: identity }).strict(),
+  z.object({ kind: z.literal("agent"), id: identity, runId: identity }).strict(),
+]);
+export type ExecutionStarter = z.infer<typeof executionStarterSchema>;
 export const executionRecordSchema = z.object({
   id: identity, requestDigest: digest, request: executionRequestSchema, state: executionStateSchema,
   interactionId: z.string().nullable(), approvedBy: z.string().nullable(), ownerId: z.string().nullable(), claimId: z.string().nullable(),
+  startRequestedAt: z.string().nullable().optional(), startRequester: executionStarterSchema.nullable().optional(),
   createdAt: z.string(), expiresAt: z.string(), leaseUntil: z.string().nullable(), finishedAt: z.string().nullable(),
   result: z.record(z.string(), z.unknown()).nullable(), diagnostic: z.string().nullable(),
 });
