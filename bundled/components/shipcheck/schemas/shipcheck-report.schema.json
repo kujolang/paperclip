@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/kujolang/shipcheck/schemas/shipcheck-report-1.0.json",
+  "title": "ShipCheck JSON report",
+  "type": "object",
+  "required": ["tool", "version", "dir", "project_type", "summary", "checks"],
+  "properties": {
+    "tool": { "const": "shipcheck" },
+    "version": { "type": "string", "pattern": "^1\\.\\d+\\.\\d+$" },
+    "dir": { "type": "string" },
+    "project_type": { "type": "string" },
+    "summary": {
+      "type": "object",
+      "required": ["total_checks", "passed", "failed_errors", "warnings", "gate_passed"],
+      "properties": {
+        "total_checks": { "type": "integer", "minimum": 0 },
+        "passed": { "type": "integer", "minimum": 0 },
+        "failed_errors": { "type": "integer", "minimum": 0 },
+        "warnings": { "type": "integer", "minimum": 0 },
+        "gate_passed": { "enum": [0, 1] }
+      }
+    },
+    "checks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "passed", "severity", "message", "detail"],
+        "properties": {
+          "name": { "type": "string" },
+          "passed": { "enum": [0, 1] },
+          "severity": { "enum": ["error", "warning", "info"] },
+          "message": { "type": "string" },
+          "detail": { "type": "string" }
+        }
+      }
+    }
+  }
+}

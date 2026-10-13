@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "bundleVersion": "0.5.0",
+  "bundleVersion": "0.6.0",
   "runtime": {
     "minimumVersion": "1.8.1"
   },
@@ -329,6 +329,41 @@
           "name": "analysis",
           "format": "json",
           "schema": "schemas/concord-analysis.schema.json"
+        }
+      ]
+    },
+    {
+      "id": "shipcheck",
+      "repository": "https://github.com/kujolang/shipcheck",
+      "gitCommit": "0a9f5795e9498f3698d5da6bb66642544251dd37",
+      "version": "1.0.0",
+      "license": "MIT",
+      "entrypoint": "shipcheck.kujo",
+      "files": [
+        "LICENSE",
+        "shipcheck.kujo",
+        "src/checks.kujo",
+        "src/display.kujo",
+        "src/git.kujo",
+        "src/report.kujo",
+        "src/scan.kujo",
+        "schemas/shipcheck-report.schema.json"
+      ],
+      "checksums": {
+        "LICENSE": "4b6449939f8dce26dc5fb87756740a5977da9085517af127d9e634e6a6492506",
+        "shipcheck.kujo": "ec9d555bc34cc344334f121ecd19da4ec97c1e6fd100348361212429ccf5ae4a",
+        "src/checks.kujo": "481be886c5ed3702b948723e24c111c846bda56613cc14e145bfe7e9db6260a6",
+        "src/display.kujo": "262806602263de7152d651d2e51b8b206b03e27987197f5b4ceaaa794ba2543d",
+        "src/git.kujo": "450fc0457ecdf54e3963940b42f44b1df3cdda254a2fb2fddc6c1268d48616c9",
+        "src/report.kujo": "9a520e11227fa78dda3f2449dd620cc1ee0332951c268a5d0bc9782239981f78",
+        "src/scan.kujo": "1191c99f3cad2b0af35941584441d178873935b777067a142dcf9c138cb55f4b",
+        "schemas/shipcheck-report.schema.json": "96b7e85427dca763310b4d9de0df28d20e8c9d69f6de29ce89a36feeff92be01"
+      },
+      "outputContracts": [
+        {
+          "name": "analysis",
+          "format": "json",
+          "schema": "schemas/shipcheck-report.schema.json"
         }
       ]
     }

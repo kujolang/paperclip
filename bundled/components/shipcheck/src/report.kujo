@@ -1,0 +1,300 @@
+from src.display import display_text
+from src.git import git_output
+
+# src/report.kujo — Report generation for ShipCheck results.
+#
+# Produces Markdown reports, JSON reports, release checklists, and release note drafts.
+# IMPORTANT: Dicts/maps use ["key"] access; structs (like ProcessResult) use .field access.
+
+export func report_markdown(results) {
+	dir := results["dir"]
+	project_type := results["project_type"]
+	checks := results["checks"]
+
+	print_lines([
+		"# ShipCheck Release-Readiness Report",
+		"",
+		"**Directory:** " + display_text(dir),
+		"**Project type:** " + project_type,
+		""
+	])
+
+	passed := count_passed(checks)
+	failed := count_failed(checks, "error")
+	warnings := count_failed(checks, "warning")
+	total := len(checks)
+
+	print_lines([
+		"## Summary",
+		"",
+		"| Metric | Count |",
+		"|--------|-------|",
+		"| Total checks | " + to_string(total) + " |",
+		"| Passed | " + to_string(passed) + " |",
+		"| Failed (errors) | " + to_string(failed) + " |",
+		"| Warnings | " + to_string(warnings) + " |"
+	])
+
+	print_lines([gate_summary_row(failed, warnings), ""])
+
+	print_check_section(checks, "Repository Health", ["git-repo", "readme", "license", "ignore-files"])
+	print_check_section(checks, "Code Quality", ["tests-exist", "lint-command", "format-command", "ci-config"])
+	print_check_section(checks, "Documentation", ["readme-install", "readme-usage", "examples", "docs"])
+	print_check_section(checks, "Release Metadata", ["version-metadata", "changelog", "kennel-manifest", "entry-point"])
+}
+
+export func report_json(results) {
+	checks := results["checks"]
+	passed := count_passed(checks)
+	failed := count_failed(checks, "error")
+	warnings := count_failed(checks, "warning")
+	total := len(checks)
+
+	gate_ok := 1
+	if failed > 0 {
+		gate_ok = 0
+	}
+
+	json_checks := []
+	mut i := 0
+	while i < len(checks) {
+		c := checks[i]
+		entry := {
+			"name": c["name"],
+			"passed": c["passed"],
+			"severity": c["severity"],
+			"message": c["message"],
+			"detail": c["detail"]
+		}
+		json_checks = push(json_checks, entry)
+		i = i + 1
+	}
+
+	output := {
+		"tool": results["tool"],
+		"version": results["version"],
+		"dir": results["dir"],
+		"project_type": results["project_type"],
+		"summary": {
+			"total_checks": total,
+			"passed": passed,
+			"failed_errors": failed,
+			"warnings": warnings,
+			"gate_passed": gate_ok
+		},
+		"checks": json_checks
+	}
+
+	print(to_json_pretty(output))
+}
+
+export func generate_checklist(results) {
+	checks := results["checks"]
+	dir := results["dir"]
+
+	print_lines([
+		"# Release Checklist",
+		"",
+		"**Repository:** " + display_text(dir),
+		""
+	])
+
+	print_checklist_section("Pre-Release Checks", [
+		"All tests pass",
+		"Linting passes",
+		"Formatting is consistent",
+		"CI is green on main branch"
+	])
+	print_checklist_section("Documentation", [
+		"README is up to date with install instructions",
+		"README has usage examples",
+		"Examples directory has current examples",
+		"API docs are regenerated (if applicable)",
+		"CHANGELOG.md is updated with this version's changes"
+	])
+	print_checklist_section("Version & Metadata", [
+		"Version bumped in kennel.toml (or equivalent)",
+		"Version tag created: `git tag v<VERSION>`",
+		"Package manifest fields are correct (name, description, license)",
+		"Entry point is correct and tested"
+	])
+	print_checklist_section("Release Artifacts", [
+		"Build succeeds from clean checkout",
+		"Release artifacts generated (binary, archive, etc.)",
+		"Release notes drafted",
+		"Release published (GitHub Release, registry, etc.)"
+	])
+	print_checklist_section("Post-Release", [
+		"Release tagged and pushed: `git push --tags`",
+		"Announcement posted (if applicable)",
+		"Downstream dependencies tested"
+	])
+
+	print_lines(["## Current State (from ShipCheck scan)", ""])
+	mut i := 0
+	while i < len(checks) {
+		c := checks[i]
+		print(status_icon(c) + " " + display_text(c["message"]))
+		i = i + 1
+	}
+}
+
+export func generate_release_note(results, version) {
+	dir := results["dir"]
+
+	print_lines([
+		"# Release Notes — v" + display_text(version),
+		"",
+		"**Repository:** " + display_text(dir),
+		""
+	])
+
+	output := git_output(dir, ["log", "--no-color", "--oneline", "-20"])
+	if output != "" {
+		print_lines(["## Recent Commits", "", "```"])
+		commit_lines := split(trim(output), "\n")
+		mut i := 0
+		while i < len(commit_lines) {
+			print(display_text(commit_lines[i]))
+			i = i + 1
+		}
+		print_lines(["```", ""])
+	}
+
+	print_lines([
+		"## Changes",
+		"",
+		"<!-- Describe the key changes in this release -->",
+		""
+	])
+	print_release_note_sections(["Added", "Changed", "Fixed", "Deprecated", "Removed", "Security"])
+	print_lines([
+		"## Installation",
+		"",
+		"```bash",
+		"# Add installation instructions here",
+		"```"
+	])
+}
+
+export func gate_passed(results) {
+	checks := results["checks"]
+	mut i := 0
+	while i < len(checks) {
+		c := checks[i]
+		if c["passed"] == 0 && c["severity"] == "error" {
+			return false
+		}
+		i = i + 1
+	}
+	return true
+}
+
+func count_passed(checks) {
+	mut count := 0
+	mut i := 0
+	while i < len(checks) {
+		if checks[i]["passed"] == 1 {
+			count = count + 1
+		}
+		i = i + 1
+	}
+	return count
+}
+
+func count_failed(checks, severity) {
+	mut count := 0
+	mut i := 0
+	while i < len(checks) {
+		c := checks[i]
+		if c["passed"] == 0 && c["severity"] == severity {
+			count = count + 1
+		}
+		i = i + 1
+	}
+	return count
+}
+
+func print_lines(lines) {
+	mut i := 0
+	while i < len(lines) {
+		print(lines[i])
+		i = i + 1
+	}
+}
+
+
+func print_check_section(checks, title, names) {
+	print_heading(title)
+	print_checks(checks, names)
+	print("")
+}
+
+func print_checklist_section(title, items) {
+	print_heading(title)
+	mut i := 0
+	while i < len(items) {
+		print("- [ ] " + items[i])
+		i = i + 1
+	}
+	print("")
+}
+
+func print_release_note_sections(names) {
+	mut i := 0
+	while i < len(names) {
+		print_lines(["### " + names[i], "- ", ""])
+		i = i + 1
+	}
+}
+
+func print_heading(title) {
+	print_lines(["## " + title, ""])
+}
+
+func gate_summary_row(failed, warnings) {
+	if failed > 0 {
+		return "| **Gate** | **FAILED** |"
+	}
+	if warnings > 0 {
+		return "| **Gate** | **PASSED (warnings)** |"
+	}
+	return "| **Gate** | **PASSED** |"
+}
+
+func status_icon(check) {
+	if check["passed"] == 1 {
+		return "[PASS]"
+	}
+	if check["severity"] == "error" {
+		return "[FAIL]"
+	}
+	return "[WARN]"
+}
+
+func print_checks(all_checks, names) {
+	mut i := 0
+	while i < len(names) {
+		name := names[i]
+		c := find_check(all_checks, name)
+		print("- " + status_icon(c) + " " + display_text(c["message"]))
+		i = i + 1
+	}
+}
+
+func find_check(all_checks, name) {
+	mut i := 0
+	while i < len(all_checks) {
+		if all_checks[i]["name"] == name {
+			return all_checks[i]
+		}
+		i = i + 1
+	}
+	return {
+		"name": name,
+		"passed": 0,
+		"severity": "error",
+		"message": "Check not found: " + name,
+		"detail": ""
+	}
+}
