@@ -2451,5 +2451,519 @@
       "build",
       "full"
     ]
+  },
+  {
+    "exportName": "workflowTool",
+    "id": "kujo.paperclip.workflow.manage",
+    "feature": "workflows",
+    "canonicalIds": [],
+    "components": [
+      "dispatch"
+    ],
+    "profiles": [
+      "installed",
+      "build",
+      "full"
+    ],
+    "tool": {
+      "name": "manage-kujo-workflow",
+      "displayName": "Run Approved Kujo Workflows",
+      "description": "Preview shipped offline Dispatch examples, request human confirmation, explicitly queue approved operations, inspect retained state, and cancel owned work. Human checkpoint decisions require a human action and a fresh confirmation. No agent paths, live providers, arbitrary programs or automatic replay.",
+      "parametersSchema": {
+        "oneOf": [
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "issueId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "operation": {
+                "const": "inspect"
+              },
+              "template": {
+                "type": "string",
+                "enum": [
+                  "research-report",
+                  "crud-reliability",
+                  "approval-handoff"
+                ]
+              },
+              "topic": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 500
+              }
+            },
+            "required": [
+              "issueId",
+              "operation",
+              "template",
+              "topic"
+            ]
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "issueId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "operation": {
+                "const": "prepare"
+              },
+              "template": {
+                "type": "string",
+                "enum": [
+                  "research-report",
+                  "crud-reliability",
+                  "approval-handoff"
+                ]
+              },
+              "topic": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 500
+              },
+              "submissionId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              }
+            },
+            "required": [
+              "issueId",
+              "operation",
+              "template",
+              "topic",
+              "submissionId"
+            ]
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "issueId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "operation": {
+                "const": "start"
+              },
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              }
+            },
+            "required": [
+              "issueId",
+              "operation",
+              "id"
+            ]
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "issueId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "operation": {
+                "const": "status"
+              },
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              }
+            },
+            "required": [
+              "issueId",
+              "operation",
+              "id"
+            ]
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "issueId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "operation": {
+                "const": "cancel"
+              },
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              }
+            },
+            "required": [
+              "issueId",
+              "operation",
+              "id"
+            ]
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "issueId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "operation": {
+                "const": "observe"
+              },
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              }
+            },
+            "required": [
+              "issueId",
+              "operation",
+              "id"
+            ]
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "issueId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "operation": {
+                "const": "list"
+              }
+            },
+            "required": [
+              "issueId",
+              "operation"
+            ]
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "issueId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "operation": {
+                "const": "decide"
+              },
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "decision": {
+                "enum": [
+                  "approve",
+                  "reject"
+                ]
+              },
+              "response": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 2000
+              },
+              "submissionId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              }
+            },
+            "required": [
+              "issueId",
+              "operation",
+              "id",
+              "decision",
+              "response",
+              "submissionId"
+            ]
+          }
+        ]
+      }
+    },
+    "definition": {
+      "schema": "kujo.ability/v1",
+      "id": "kujo.paperclip.workflow.manage",
+      "version": "1.0.0",
+      "title": "Run Approved Kujo Workflows",
+      "description": "Preview shipped offline Dispatch examples, request human confirmation, explicitly queue approved operations, inspect retained state, and cancel owned work. Human checkpoint decisions require a human action and a fresh confirmation. No agent paths, live providers, arbitrary programs or automatic replay.",
+      "input_schema": {
+        "oneOf": [
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "issueId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "operation": {
+                "const": "inspect"
+              },
+              "template": {
+                "type": "string",
+                "enum": [
+                  "research-report",
+                  "crud-reliability",
+                  "approval-handoff"
+                ]
+              },
+              "topic": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 500
+              }
+            },
+            "required": [
+              "issueId",
+              "operation",
+              "template",
+              "topic"
+            ]
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "issueId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "operation": {
+                "const": "prepare"
+              },
+              "template": {
+                "type": "string",
+                "enum": [
+                  "research-report",
+                  "crud-reliability",
+                  "approval-handoff"
+                ]
+              },
+              "topic": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 500
+              },
+              "submissionId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              }
+            },
+            "required": [
+              "issueId",
+              "operation",
+              "template",
+              "topic",
+              "submissionId"
+            ]
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "issueId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "operation": {
+                "const": "start"
+              },
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              }
+            },
+            "required": [
+              "issueId",
+              "operation",
+              "id"
+            ]
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "issueId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "operation": {
+                "const": "status"
+              },
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              }
+            },
+            "required": [
+              "issueId",
+              "operation",
+              "id"
+            ]
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "issueId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "operation": {
+                "const": "cancel"
+              },
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              }
+            },
+            "required": [
+              "issueId",
+              "operation",
+              "id"
+            ]
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "issueId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "operation": {
+                "const": "observe"
+              },
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              }
+            },
+            "required": [
+              "issueId",
+              "operation",
+              "id"
+            ]
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "issueId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "operation": {
+                "const": "list"
+              }
+            },
+            "required": [
+              "issueId",
+              "operation"
+            ]
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "issueId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "operation": {
+                "const": "decide"
+              },
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "decision": {
+                "enum": [
+                  "approve",
+                  "reject"
+                ]
+              },
+              "response": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 2000
+              },
+              "submissionId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              }
+            },
+            "required": [
+              "issueId",
+              "operation",
+              "id",
+              "decision",
+              "response",
+              "submissionId"
+            ]
+          }
+        ]
+      },
+      "output_schema": {
+        "type": "object",
+        "additionalProperties": true
+      },
+      "effects": [
+        {
+          "kind": "write",
+          "resource": "kujo.paperclip.workflow-state"
+        },
+        {
+          "kind": "write",
+          "resource": "kujo.paperclip.evidence"
+        }
+      ],
+      "idempotency": {
+        "mode": "keyed"
+      },
+      "semantics": {
+        "open_world": false,
+        "destructive": false,
+        "executes_code": true
+      }
+    }
   }
 ]

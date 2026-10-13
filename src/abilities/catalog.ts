@@ -12,7 +12,7 @@ type Projection = {
 const entries: readonly Projection[] = projections;
 export function projectionSelected(projection: Projection, profile: PluginConfig["capabilityProfile"]): boolean {
   if (projection.alwaysAvailable || profile === "installed" || profile === "full") return true;
-  if (profile === "build") return ["language", "context", "understand", "sourceExecution", "projectCreation"].includes(projection.feature ?? "");
+  if (profile === "build") return ["language", "context", "understand", "sourceExecution", "projectCreation", "workflows"].includes(projection.feature ?? "");
   if (projection.profiles) return projection.profiles.includes(profile);
   const selected = canonicalProfiles.find((item) => item.id === `kujo.profile.${profile}`);
   const ids: readonly string[] = selected?.resolvedAbilityIds ?? [];
@@ -37,23 +37,24 @@ export function projectionReceipt(tool: { name: string }) {
     notice: "Paperclip projection metadata, not a canonical Ability execution receipt or permission grant." };
 }
 export type ProjectionReceipt = ReturnType<typeof projectionReceipt>;
-export function capabilityCatalog(config: PluginConfig, report: DoctorReport, includeUnavailable = false) {
+export function capabilityCatalog(config: PluginConfig, report: DoctorReport, includeUnavailable = false, workflowStorageReady = false) {
   const supportedRuntime = ["darwin:arm64", "darwin:x64", "linux:arm64", "linux:x64", "win32:x64"].includes(`${report.runtime.platform}:${report.runtime.arch}`);
   const capabilities = entries.map((entry) => {
     const selectedByProfile = projectionSelected(entry, config.capabilityProfile);
     const enabled = selectedByProfile && (!entry.feature || config.features[entry.feature]);
     const requiresRuntime = entry.requiresRuntime ?? entry.feature !== null;
-    const supported = !requiresRuntime || supportedRuntime;
+    const supported = (!requiresRuntime || supportedRuntime) && (entry.feature !== "workflows" || report.runtime.platform === "darwin" || report.runtime.platform === "linux");
     const componentsReady = entry.components.every((id) => report.components.some((component) => component.id === id && component.integrity === "ok"));
-    const ready = supported && enabled && componentsReady && (!requiresRuntime || report.runtime.status === "ok");
+    const prerequisitesReady = entry.feature !== "workflows" || workflowStorageReady;
+    const ready = supported && enabled && prerequisitesReady && componentsReady && (!requiresRuntime || report.runtime.status === "ok");
     const status = !supported ? "unsupported" : !enabled ? "disabled" : !ready ? "blocked" : "ready";
     return { id: entry.id, title: entry.tool.displayName, description: entry.tool.description, tool: entry.tool.name,
       installed: true, enabled, selectedByProfile, supported, status,
       authorization: "checked-on-call" as const,
       authorizationNotice: "The host must authorize the company, tool or action at invocation. Catalog readiness is not permission.",
       canonicalIds: entry.canonicalIds, definitionDigest: entry.definitionDigest, effects: entry.definition.effects,
-      reason: !supported ? "The bundled runtime does not support this platform." : !selectedByProfile ? "Not selected by the company's capability profile."
-        : !enabled ? "Disabled in company feature settings." : !componentsReady ? "Repair the bundled component installation."
+      reason: !supported ? entry.feature === "workflows" ? "Dispatch workflows require macOS or Linux." : "The bundled runtime does not support this platform." : !selectedByProfile ? "Not selected by the company's capability profile."
+        : !enabled ? "Disabled in company feature settings." : !prerequisitesReady ? "Configure an existing private workflow-state folder owned by the Paperclip OS user in company plugin settings." : !componentsReady ? "Repair the bundled component installation."
         : requiresRuntime && report.runtime.status !== "ok" ? "Repair the Kujo runtime in plugin settings." : "Available through the scoped Paperclip adapter." };
   });
   const ecosystem = includeUnavailable ? canonicalDefinitions.map((item) => {

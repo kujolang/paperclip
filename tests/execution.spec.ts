@@ -400,7 +400,7 @@ describe("human-bound persistent execution foundation", () => {
     const bundle = join(f.cwd, "dist/coordinator.mjs");
     await build({ entryPoints: [fileURLToPath(new URL("../src/execution/coordinator.ts", import.meta.url))], outfile: bundle, bundle: true, platform: "node", format: "esm", logLevel: "silent" });
     await writeFile(join(f.cwd, "request.json"), JSON.stringify(request));
-    await writeFile(join(f.cwd, "migration.sql"), (await readFile(new URL("../migrations/002_execution.sql", import.meta.url), "utf8")) + "\n" + (await readFile(new URL("../migrations/003_execution_limits.sql", import.meta.url), "utf8")) + "\n" + (await readFile(new URL("../migrations/005_execution_queue.sql", import.meta.url), "utf8")));
+    await writeFile(join(f.cwd, "migration.sql"), (await readFile(new URL("../migrations/002_execution.sql", import.meta.url), "utf8")) + "\n" + (await readFile(new URL("../migrations/003_execution_limits.sql", import.meta.url), "utf8")) + "\n" + (await readFile(new URL("../migrations/005_execution_queue.sql", import.meta.url), "utf8")) + "\n" + (await readFile(new URL("../migrations/006_workflow_ownership.sql", import.meta.url), "utf8")));
     const script = fileURLToPath(new URL("./fixtures/execution-restart.mjs", import.meta.url));
     for (const phase of ["prepare", "enqueue", "execute", "inspect"]) {
       const output = execFileSync(process.execPath, [script, f.cwd, phase, import.meta.resolve("@electric-sql/pglite"), pathToFileURL(bundle).href], { encoding: "utf8", timeout: 60_000 });

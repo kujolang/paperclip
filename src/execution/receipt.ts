@@ -9,6 +9,7 @@ const active = new Set(["preparing", "pending", "running", "cancel_requested"]);
 export function executionAbilityReceipt(scope: ExecutionScope, record: ExecutionRecord) {
   const evaluation = record.request.plan.operation === "eval.run";
   const creation = record.request.plan.operation === "starter.create";
+  const workflow = record.request.plan.operation.startsWith("dispatch.");
   const binding = record.request.plan.abilityReceipt;
   if (!binding || active.has(record.state)) return null;
   const started = Date.parse(record.createdAt), completed = Date.parse(record.finishedAt ?? "");
@@ -19,17 +20,17 @@ export function executionAbilityReceipt(scope: ExecutionScope, record: Execution
   const receipt = {
     schema: "kujo.ability.receipt/v1", receipt_id: `ability_receipt_${key}`, invocation_id: record.id,
     ability_id: binding.abilityId, ability_version: binding.abilityVersion, definition_digest: binding.definitionDigest,
-    handler_id: evaluation ? "kujo.paperclip.eval.host" : creation ? "kujo.paperclip.starter.host" : "kujo.paperclip.source.host", handler_version: binding.handlerVersion, status,
+    handler_id: workflow ? "kujo.paperclip.workflow.host" : evaluation ? "kujo.paperclip.eval.host" : creation ? "kujo.paperclip.starter.host" : "kujo.paperclip.source.host", handler_version: binding.handlerVersion, status,
     result: record.result,
     error: status === "succeeded" ? null : {
-      code: record.state === "uncertain" ? "execution_outcome_uncertain" : `${evaluation ? "evaluation" : creation ? "starter" : "source"}_${record.state}`,
-      message: record.state === "uncertain" ? "Outcome is uncertain; reconcile effects before requesting another run." : evaluation ? "Evaluation request did not complete successfully; inspect its execution state and native result." : creation ? "Starter creation did not complete; inspect retained files before any new request." : "Source/test request did not complete successfully; inspect the execution state and native output.",
+      code: record.state === "uncertain" ? "execution_outcome_uncertain" : `${workflow ? "workflow" : evaluation ? "evaluation" : creation ? "starter" : "source"}_${record.state}`,
+      message: record.state === "uncertain" ? "Outcome is uncertain; reconcile effects before requesting another run." : workflow ? "Workflow control operation did not complete successfully; inspect native state without replaying effects." : evaluation ? "Evaluation request did not complete successfully; inspect its execution state and native result." : creation ? "Starter creation did not complete; inspect retained files before any new request." : "Source/test request did not complete successfully; inspect the execution state and native output.",
       details: { execution_state: record.state, diagnostic: record.diagnostic },
     },
     policy_decision: {
       schema: "kujo.ability.policy-decision/v1", decision_id: `policy_${record.requestDigest}`, outcome: "approval_required",
       reason: "Host company/profile admission requires a matching human-only confirmation before execution.",
-      requirements: ["paperclip.human-only-confirmation"], policy_id: evaluation ? "kujo.paperclip.eval.admission" : creation ? "kujo.paperclip.starter.admission" : "kujo.paperclip.source.admission", policy_version: "1.0.0",
+      requirements: ["paperclip.human-only-confirmation"], policy_id: workflow ? "kujo.paperclip.workflow.admission" : evaluation ? "kujo.paperclip.eval.admission" : creation ? "kujo.paperclip.starter.admission" : "kujo.paperclip.source.admission", policy_version: "1.0.0",
     },
     approval_id: record.approvedBy ? record.interactionId ?? "" : "",
     idempotency: { mode: "keyed", state: record.state === "uncertain" ? "reconciliation_required" : "completed",

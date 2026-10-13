@@ -40,6 +40,17 @@ export type DispatchCommand = z.infer<typeof dispatchCommandSchema>;
 const sha = (value: Buffer) => createHash("sha256").update(value).digest("hex");
 const basePolicy = { adapter: "dispatch-offline-native/v2", timeoutMs: 27000, stdoutBytes: 500000, stderrBytes: 64000, mode: "offline-fixture" };
 
+/** Describe the exact native policy without reserving storage or starting work. */
+export async function describeDispatchInvocation(commandInput: DispatchCommand, runtime: ResolvedRuntime, budget: "short" | "workflow-job" = "short") {
+  const command = dispatchCommandSchema.parse(commandInput);
+  const executionBudget = z.enum(["short", "workflow-job"]).parse(budget);
+  const workflowEffect = ["start-fixture", "decide", "decide-approval"].includes(command.operation);
+  const policy = { ...basePolicy, executionBudget, timeoutMs: executionBudget === "workflow-job" && workflowEffect ? 120000 : 27000 };
+  const component = await resolveComponent("dispatch");
+  const binding = Object.freeze({ commandDigest: evidenceDigest(command), componentDigest: evidenceDigest({ id: component.id, version: component.version, entrypoint: component.entrypoint, commit: component.gitCommit, files: component.files, checksums: component.checksums }), runtimeDigest: sha(await readFile(runtime.executable)), policyDigest: evidenceDigest(policy) });
+  return { command, policy, component, binding };
+}
+
 /** Internal command materializer, not an approval authority or public tool.
  * The host must bind command/component/runtime/policy digests to approval and
  * persistent ownership before invoking. A workflow-job budget requires durable
@@ -56,15 +67,11 @@ export async function prepareDispatchInvocation(input: {
   if (process.platform !== "darwin" && process.platform !== "linux") throw new Error("Dispatch requires a supported POSIX platform");
   // Snapshot caller data before asynchronous work; no mutable decision aliases.
   const command = dispatchCommandSchema.parse(input.command);
-  const executionBudget = z.enum(["short", "workflow-job"]).default("short").parse(input.executionBudget);
-  const workflowEffect = ["start-fixture", "decide", "decide-approval"].includes(command.operation);
-  const policy = { ...basePolicy, executionBudget, timeoutMs: executionBudget === "workflow-job" && workflowEffect ? 120000 : 27000 };
   const runtime = { ...input.runtime };
   const storageBinding = { ...input.storageBinding };
   const store = await openWorkflowStorage(input.storageRoot);
   const { nativeRoot } = await store.recover(storageBinding);
-  const component = await resolveComponent("dispatch");
-  const binding = Object.freeze({ commandDigest: evidenceDigest(command), componentDigest: evidenceDigest({ id: component.id, version: component.version, entrypoint: component.entrypoint, commit: component.gitCommit, files: component.files, checksums: component.checksums }), runtimeDigest: sha(await readFile(runtime.executable)), policyDigest: evidenceDigest(policy) });
+  const { component, binding, policy } = await describeDispatchInvocation(command, runtime, input.executionBudget);
   const directory = await realpath(await mkdtemp(join(tmpdir(), "kujo-dispatch-code-")));
   try {
     for (const path of component.files) {
