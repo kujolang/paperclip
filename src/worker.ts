@@ -1,3 +1,6 @@
+import { workflowStorageReady } from "./features/dispatch/storage.js";
+import { workflowTool } from "./abilities/generated.js";
+import { registerWorkflows } from "./features/dispatch/bridge.js";
 import { registerStarterCreation } from "./features/starters/bridge.js";
 import { registerSourceExecution } from "./features/source-execution/bridge.js";
 import { previewStarter, requireStarters, starterCatalog, starterInputSchema } from "./features/starters/preview.js";
@@ -88,7 +91,7 @@ async function configFor(ctx: PluginContext, companyId: string, tool?: { name: s
 const historyTarget = z.object({ entityType: z.enum(["project", "issue", "run"]), entityId: z.string().min(1), evidenceId: z.string().min(1).max(100), otherId: z.string().min(1).max(100).optional() }).strict();
 function evidenceEnabled(config: ReturnType<typeof parsePluginConfig>, kind: ArtifactKind) {
   const tool = { "review-latest": reviewTool, "context-latest": contextTool, "failure-latest": failureTool, "understand-latest": understandTool,
-    "packages-latest": packageTool, "language-latest": languageTool, "verification-latest": importVerificationTool, "spec-latest": specTool, "fence-latest": fenceTool, "concord-latest": concordTool, "shipcheck-latest": shipcheckTool, "evaluation-plan": evalTool, "evaluation-result": evalTool, "source-execution-plan": sourceExecutionTool, "source-execution-result": sourceExecutionTool, "starter-creation-plan": starterCreationTool, "starter-creation-result": starterCreationTool } as const;
+    "packages-latest": packageTool, "language-latest": languageTool, "verification-latest": importVerificationTool, "spec-latest": specTool, "fence-latest": fenceTool, "concord-latest": concordTool, "shipcheck-latest": shipcheckTool, "evaluation-plan": evalTool, "evaluation-result": evalTool, "source-execution-plan": sourceExecutionTool, "source-execution-result": sourceExecutionTool, "starter-creation-plan": starterCreationTool, "starter-creation-result": starterCreationTool, "workflow-plan": workflowTool, "workflow-result": workflowTool } as const;
   return toolEnabled(config, tool[kind]);
 }
 
@@ -97,7 +100,7 @@ async function exportWithParent(ctx: PluginContext, target: StateTarget, record:
   if (!record.receipt.parentId) return exported;
   const parent = await getEvidence(ctx, target, record.receipt.parentId);
   if (!parent || !evidenceEnabled(config, parent.receipt.kind)) return { ...exported, parent: { status: "unavailable", id: record.receipt.parentId } };
-  if (["evaluation-result", "source-execution-result", "starter-creation-result"].includes(record.receipt.kind)) {
+  if (["evaluation-result", "source-execution-result", "starter-creation-result", "workflow-result"].includes(record.receipt.kind)) {
     const reference = record.payload.planEvidence as { id?: string; digest?: string } | undefined;
     if (reference?.id !== parent.receipt.id || reference.digest !== parent.receipt.digest) throw new Error("Evaluation parent evidence integrity failed");
   }
@@ -295,7 +298,7 @@ function registerTools(ctx: PluginContext) {
       const params = z.object({ includeUnavailable: z.boolean().default(false) }).strict().parse(raw);
       if (!runCtx.companyId) throw new Error("Company context is required");
       const config = await configFor(ctx, runCtx.companyId);
-      const data = capabilityCatalog(config, await doctor(config), params.includeUnavailable);
+      const data = capabilityCatalog(config, await doctor(config), params.includeUnavailable, config.features.workflows && await workflowStorageReady(ctx, runCtx.companyId));
       return { content: JSON.stringify(data), data };
     } catch (error) { return { error: normalizeError(error).message }; }
   });
@@ -452,7 +455,7 @@ function registerTools(ctx: PluginContext) {
   });
 }
 
-function registerUiBridge(ctx: PluginContext, executions: ReturnType<typeof registerEvaluation>, sourceExecutions: ReturnType<typeof registerSourceExecution>, starterCreations: ReturnType<typeof registerStarterCreation>) {
+function registerUiBridge(ctx: PluginContext, executions: ReturnType<typeof registerEvaluation>, sourceExecutions: ReturnType<typeof registerSourceExecution>, starterCreations: ReturnType<typeof registerStarterCreation>, workflows: ReturnType<typeof registerWorkflows>) {
   ctx.data.register("doctor", async (params) => {
     const companyId = z.string().min(1).optional().parse(params.companyId);
     return await doctor(companyId ? await configFor(ctx, companyId) : undefined);
@@ -523,7 +526,9 @@ function registerUiBridge(ctx: PluginContext, executions: ReturnType<typeof regi
     const history = (await listEvidence(ctx, target)).filter((record) => evidenceEnabled(config, record.kind));
     const readiness = await doctor(config);
     const executionActive = target.entityType === "issue" && (await executions.recoveryList({ companyId: target.companyId, issueId: target.entityId })).some(record => ["preparing", "pending", "running", "cancel_requested"].includes(record.state));
-    return { starterCreationActive, starterCreationHistory, sourceExecutionActive, sourceExecutionHistory, starters: config.features.examples && ["installed", "build", "full"].includes(config.capabilityProfile) ? starterCatalog : [], packages: ownedPackages, packageFiles, executionHistory, executionActive, catalog: capabilityCatalog(config, readiness, true), shipcheck: ownedShipcheck, concord: ownedConcord, fence: ownedFence, spec: ownedSpec, specs, verification, verificationEnabled: config.features.verification, history, language: ownedLanguage, sources, understanding: ownedUnderstanding, review: ownedReview, failure: ownedFailure, context: ownedContext, readiness, workspace: inspection?.readiness, suggestedTask };
+    const workflowHistory = target.entityType === "issue" ? await workflows.reconcileHistory({ companyId: target.companyId, issueId: target.entityId }) : null;
+    const workflowActive = target.entityType === "issue" && (await workflows.list({ companyId: target.companyId, issueId: target.entityId })).length > 0;
+    return { workflowHistory, workflowActive, starterCreationActive, starterCreationHistory, sourceExecutionActive, sourceExecutionHistory, starters: config.features.examples && ["installed", "build", "full"].includes(config.capabilityProfile) ? starterCatalog : [], packages: ownedPackages, packageFiles, executionHistory, executionActive, catalog: capabilityCatalog(config, readiness, true, config.features.workflows && await workflowStorageReady(ctx, target.companyId)), shipcheck: ownedShipcheck, concord: ownedConcord, fence: ownedFence, spec: ownedSpec, specs, verification, verificationEnabled: config.features.verification, history, language: ownedLanguage, sources, understanding: ownedUnderstanding, review: ownedReview, failure: ownedFailure, context: ownedContext, readiness, workspace: inspection?.readiness, suggestedTask };
   });
 
   ctx.actions.register("inspect-release-readiness", async (params, actionCtx) => {
@@ -734,16 +739,18 @@ let health: { status: "ok" | "degraded" | "error"; message: string; details: Rec
   details: {},
 };
 
+let workflows: ReturnType<typeof registerWorkflows> | undefined;
 let evaluation: ReturnType<typeof registerEvaluation> | undefined;
 let starterCreations: ReturnType<typeof registerStarterCreation> | undefined;
 let sourceExecutions: ReturnType<typeof registerSourceExecution> | undefined;
 const plugin = definePlugin({
   async setup(ctx) {
+    workflows = registerWorkflows(ctx);
     evaluation = registerEvaluation(ctx);
     sourceExecutions = registerSourceExecution(ctx);
     starterCreations = registerStarterCreation(ctx);
     registerTools(ctx);
-    registerUiBridge(ctx, evaluation, sourceExecutions, starterCreations);
+    registerUiBridge(ctx, evaluation, sourceExecutions, starterCreations, workflows);
     // Startup has no company identity. Company overrides are probed by the
     // scoped Doctor/detail handlers, not borrowed from another tenant.
     const report = await doctor();
@@ -755,7 +762,7 @@ const plugin = definePlugin({
     ctx.logger.info("Kujo plugin initialized", { pluginId: ctx.manifest.id, componentCount: report.components.length, status: report.status });
   },
   async onHealth() { return health; },
-  async onShutdown() { await Promise.all([evaluation?.shutdown(), sourceExecutions?.shutdown(), starterCreations?.shutdown()]); await terminateActiveKujoProcesses(); },
+  async onShutdown() { await Promise.all([workflows?.shutdown(), evaluation?.shutdown(), sourceExecutions?.shutdown(), starterCreations?.shutdown()]); await terminateActiveKujoProcesses(); },
   async onValidateConfig(value) {
     try {
       const parsed = parsePluginConfig(value);

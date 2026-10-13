@@ -75,11 +75,10 @@ Kujo retains up to 20 results per company/entity for 30 days in its Paperclip da
 
 The fourteen component snapshots are pinned, checksummed, and shipped with the plugin. The
 plugin does not download component code while installing or running. The Eval snapshot
-provides human-approved execution on issue workspaces. The Dispatch snapshot is
-reserved for the ongoing workflow integration; packaging it does not expose a
-Dispatch tool or grant workflow execution. Its internal integration binds legacy
-approval decisions to authoritative inspection revisions; host workflow controls
-remain under development.
+provides human-approved execution on issue workspaces. The separately enabled
+Dispatch workflow panel runs shipped offline examples through durable host jobs,
+with exact human checkpoint decisions and retained state. See
+[Run a Kujo workflow](docs/USAGE.md#run-a-kujo-workflow) for operator setup and limits.
 
 ## Build with Kujo
 
@@ -188,10 +187,11 @@ The plugin ships pinned, checksummed Ability contracts/catalogs and generates it
 
 ## Agent tools
 
-Paperclip agents can call nineteen tools:
+Paperclip agents can call twenty tools:
 
 | Tool | Use |
 | --- | --- |
+| `kujolang.paperclip:manage-kujo-workflow` | Preview and queue approved offline Dispatch examples, inspect retained state, and cancel owned operations. Human checkpoint decisions use the issue panel. macOS/Linux and operator storage required. |
 | `kujolang.paperclip:manage-kujo-starter` | Preview and create approved canonical starter files in a new issue-workspace directory. No overwrite, dependency installation or generated-program execution. |
 | `kujolang.paperclip:manage-kujo-execution` | Preview, request approval, start, inspect or cancel a fixed native run/test on the assigned issue/current run. Separate opt-in and human approval required. |
 | `kujolang.paperclip:manage-evaluation` | Inspect, prepare, start, read or cancel an approved Eval suite on the assigned issue/current run. Human approval is required before execution. |
@@ -316,4 +316,4 @@ provenance.
 
 Development status: the [approved execution workflow](docs/EXECUTION.md)
 includes company-scoped host admission, bounded suite previews, durable request limits
-and an opt-in authenticated host acceptance harness. Public Eval and separately enabled run/test controls are available on issues; long-running workflow integrations remain unfinished.
+and an opt-in authenticated host acceptance harness. Public Eval and separately enabled run/test controls are available on issues; offline Dispatch examples have separate durable job controls; live-provider workflows, Muzzle/Workcell and broader lifecycle acceptance remain unfinished.

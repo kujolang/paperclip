@@ -29,7 +29,7 @@ let child;
 let log;
 let stopping;
 let cookie = "";
-const evidence = { schemaVersion: 1, fixture: production ? "production Eval workflow" : "isolated authenticated execution and host admission", startedAt: new Date().toISOString(),
+const evidence = { schemaVersion: 1, fixture: production ? "production Kujo workflows" : "isolated authenticated execution and host admission", startedAt: new Date().toISOString(),
   hostCommit: execFileSync("git", ["-C", host, "rev-parse", "HEAD"], { encoding: "utf8" }).trim(),
   pluginCommit: execFileSync("git", ["-C", repo, "rev-parse", "HEAD"], { encoding: "utf8" }).trim(), checks };
 async function port() {
@@ -152,6 +152,7 @@ try {
   assert.equal(installed.status, "ready");
   checks.push("fresh authenticated instance and local worker installation");
   if (production) {
+    if (process.env.KUJO_ACCEPTANCE_PACK !== "workflows") {
     const { qualifyProductionEvaluation } = await import("./production-eval.mjs");
     await qualifyProductionEvaluation({ call, companyId, projectId, issueId, userId, root, node, checks, json, stop, start, waitUntil });
     const { qualifyProductionPackages } = await import("./production-packages.mjs");
@@ -160,6 +161,9 @@ try {
     await qualifyProductionSource({ call, companyId, projectId, issueId, root, node, checks, json, stop, start, waitUntil });
     const { qualifyProductionStarters } = await import("./production-starters.mjs");
     await qualifyProductionStarters({ call, companyId, projectId, issueId, root, node, checks, json, stop, start, waitUntil });
+    }
+    const { qualifyProductionWorkflows } = await import("./production-workflows.mjs");
+    await qualifyProductionWorkflows({ call, companyId, root, checks, json, stop, start, waitUntil });
   } else {
   const bridge = "/plugins/kujolang.paperclip/bridge/action";
   const action = async (key, params, options = {}) => (await call(bridge, { method: "POST", body: { companyId, key: `${key}-fixture`, params: { issueId, ...params } }, ...options })).data;

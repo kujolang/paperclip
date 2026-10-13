@@ -52,6 +52,7 @@ const detailData = parameters.get("state") === "populated"
   : { review: null, failure: null, context: null };
 window.__KUJO_FIXTURE_DATA__ = {
   ...detailData,
+  workflowActive: parameters.get("workflowRetained") === "1",
   starters: parameters.get("starters") && ["installed", "build", "full"].includes(parameters.get("profile") ?? "installed") ? [{ id: "script", title: "Local script", description: "Canonical Kujo project", prerequisites: "No credentials required." }, { id: "agent", title: "AI agent project", description: "Repository-owned agent", prerequisites: "Install pinned Kennel dependencies before running." }, { id: "mcp", title: "MCP server", description: "Canonical MCP framework", prerequisites: "Review demo roots and auth before connecting clients." }, { id: "api", title: "SQLite API", description: "Canonical CRUD backend", prerequisites: "Local loopback server; running creates a database and opens a port." }] : [],
   packageFiles: parameters.get("packages") ? { files: parameters.get("packages") === "empty" ? [] : ["kennel.toml"], truncated: false } : undefined,
   packages: parameters.get("packages") === "report" ? { id: "package-fixture", path: "kennel.toml", status: "warnings", stale: true, manifest: { name: "demo", version: "0.1.0", entry: "main.kujo" }, validation: { errors: [], warnings: ["Dependency does not pin a ref/tag/version/commit."] }, dependencies: [{ name: "local", kind: "path", source: "file:../local", requested: "", valid: true, diagnostic: "" }], dependencyCount: 1, lock: { status: "missing", entries: [], count: 0, version: "" }, lockAdmission: "not-git-visible", truncated: false, provenance: { version: "1.1.1" }, scope: "Dependencies, installed bytes, digests and source availability are not verified." } : null,
@@ -131,8 +132,8 @@ window.__KUJO_FIXTURE_DATA__ = {
 const fixture = window.__KUJO_FIXTURE_DATA__ as { readiness: DoctorReport; catalog?: CapabilityCatalog; verificationEnabled: boolean };
 fixture.readiness.runtime.platform = "linux";
 fixture.readiness.runtime.arch = "x64";
-fixture.readiness.components = ["scout", "context", "failure-evidence", "changebucket", "patchbrief", "spec", "fence", "concord", "shipcheck", "eval", "kennel", "crud-api", "mcp"].map((id) => ({ id: id as DoctorReport["components"][number]["id"], version: "1.0.0", integrity: "ok" }));
-const fixtureConfig = applyCapabilityProfile(parsePluginConfig({ capabilityProfile: parameters.get("profile") ?? "installed", features: { verification: parameters.get("verification") === "1", execution: parameters.get("execution") === "1", sourceExecution: parameters.get("sourceExecution") === "1", projectCreation: parameters.get("projectCreation") === "1" } }));
+fixture.readiness.components = ["scout", "context", "failure-evidence", "changebucket", "patchbrief", "spec", "fence", "concord", "shipcheck", "eval", "kennel", "crud-api", "mcp", "dispatch"].map((id) => ({ id: id as DoctorReport["components"][number]["id"], version: "1.0.0", integrity: "ok" }));
+const fixtureConfig = applyCapabilityProfile(parsePluginConfig({ capabilityProfile: parameters.get("profile") ?? "installed", features: { workflows: parameters.get("workflows") === "1", verification: parameters.get("verification") === "1", execution: parameters.get("execution") === "1", sourceExecution: parameters.get("sourceExecution") === "1", projectCreation: parameters.get("projectCreation") === "1" } }));
 for (const feature of Object.keys(fixture.readiness.capabilities) as Array<keyof DoctorReport["capabilities"]>) if (!fixtureConfig.features[feature === "packages" ? "language" : (feature === "spec" || feature === "fence" || feature === "concord" || feature === "shipcheck") ? "verification" : feature]) fixture.readiness.capabilities[feature] = "disabled";
 fixture.readiness.capabilities.packages = !fixtureConfig.features.language ? "disabled" : fixture.readiness.runtime.status === "ok" ? "ready" : "blocked";
 fixture.readiness.capabilities.spec = !fixtureConfig.features.verification ? "disabled" : fixture.readiness.runtime.status === "ok" ? "ready" : "blocked";
@@ -140,7 +141,7 @@ fixture.readiness.capabilities.fence = fixture.readiness.capabilities.spec;
 fixture.readiness.capabilities.concord = fixture.readiness.capabilities.spec;
 fixture.readiness.capabilities.shipcheck = fixture.readiness.capabilities.spec;
 fixture.verificationEnabled = fixtureConfig.features.verification;
-fixture.catalog = capabilityCatalog(fixtureConfig, fixture.readiness, true);
+fixture.catalog = capabilityCatalog(fixtureConfig, fixture.readiness, true, parameters.get("workflowStorage") !== "missing");
 window.__KUJO_ACTIONS__ = [];
 
 const props = {

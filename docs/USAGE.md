@@ -343,3 +343,50 @@ The full upstream guide is retained as `UPSTREAM_README.md`; optional Ability,
 Watchdog, deployment and repo-generation components it describes are not included.
 The starter guide states that scope. Repository-specific `mcp make` integration
 requires its own source/workspace admission and is not invoked by this preview.
+
+
+## Run a Kujo workflow
+
+This development feature is not yet in the published npm package. It requires a
+Paperclip host with company local folders and scheduled plugin jobs, on macOS or
+Linux. Existing Windows features remain available.
+
+1. In company plugin settings, enable **Human-approved Dispatch workflows** and
+   choose Installed, Build or Full. Configure **Kujo workflow state** to an existing
+   private directory owned by the Paperclip OS user (permissions `0700`). Use a
+   dedicated folder, not a project workspace. An unhealthy or non-private folder
+   blocks readiness and preparation; the plugin does not repair permissions or
+   adopt missing state automatically.
+2. Open an issue and **Run a Kujo workflow**. Choose Approval handoff, Research
+   report or CRUD reliability, enter a topic, then **Preview workflow**. These are
+   shipped offline fixtures: no API key, live research, provider call or project
+   code execution is implied. An issue does not need a project workspace.
+3. Request approval. Accept the matching human-only decision card in the issue,
+   then **Queue approved operation**. Approval alone never starts work. The host
+   checks its queue about once a minute, and each effect has a two-minute limit.
+4. Refresh the operation status. **Succeeded** describes that command; use
+   **Inspect native workflow** to see whether the workflow paused or completed.
+   At a supported paused checkpoint, a human can request approval or rejection.
+   Accept the new exact-checkpoint confirmation and explicitly queue that decision.
+5. Requests and native state survive panel reload and host restart. Cancel an
+   outstanding operation from the panel. Cancellation stops the owned command;
+   it does not erase the workflow or establish that prior effects were rolled back.
+
+Agents use `kujolang.paperclip:manage-kujo-workflow` with the current assigned
+issue/run. Operations are `inspect`, `prepare`, `start`, `status`, `list`, `observe`
+and `cancel`; agents cannot supply paths, actor identity or executable arguments.
+Checkpoint `decide` requests are human-only. `start` submits durable intent and
+returns immediately; it does not wait for native completion.
+
+Terminal control requests have portable host receipts and linked plan/outcome
+Evidence records. An uncertain command stays uncertain even when later native
+inspection is available. No effect is automatically retried to discover its outcome.
+Unsupported native checkpoints, changed revisions and changed storage bindings
+must be resolved before a new approved operation.
+
+There are twenty retained started workflows per company, separate from the
+ordinary active-request limit. Parents are not pruned with thirty-day command
+receipts because they own native state. Never-started cancellation/expiry releases
+its reservation allowance. Automated archive/retirement, live providers, Muzzle,
+Workcell and definitive lost-decision reconciliation are still expansion work;
+do not treat this slice as the complete durable workflow pack.
