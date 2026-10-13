@@ -239,7 +239,7 @@ test("verification imports show external claims and remain available without a r
   await expect(section.getByText("Imported · partial")).toBeVisible();
   await expect(section.getByText("Claimed checks: 3 passed · 0 failed · 0 warned · 1 skipped")).toBeVisible();
   await expect(section.getByLabel("Evaluation result JSON")).toHaveValue("");
-  await expect(section).toHaveScreenshot("verification-import.png", { animations: "disabled", maxDiffPixelRatio: 0.02 });
+  await expect(section).toHaveScreenshot(`verification-import-${process.platform}.png`, { animations: "disabled", maxDiffPixelRatio: 0.02 });
 });
 
 test("verification import state cannot follow a pending request across company navigation", async ({ page }) => {
