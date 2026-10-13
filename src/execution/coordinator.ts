@@ -7,7 +7,7 @@ import { executeSupervisedKujo } from "../runtime/supervised-kujo.js";
 import { KujoPluginError } from "../runtime/errors.js";
 import { redactText } from "../features/failure/redact.js";
 import { executionLedger } from "./ledger.js";
-import { executionRequestSchema, executionScopeSchema, type ExecutionAdapter, type ExecutionRecord, type ExecutionRequest, type ExecutionScope } from "./contracts.js";
+import { executionRequestSchema, executionScopeSchema, executionStarterSchema, type ExecutionStarter, type ExecutionAdapter, type ExecutionRecord, type ExecutionRequest, type ExecutionScope } from "./contracts.js";
 
 const activeStates = new Set(["preparing", "pending", "running", "cancel_requested"]);
 type RequestConfirmationInteraction = Awaited<ReturnType<PluginContext["issues"]["requestConfirmation"]>>;
@@ -141,6 +141,107 @@ export function createExecutionCoordinator(ctx: PluginContext, adapter: Executio
     return record;
   };
 
+  const authorize = async (rawScope: ExecutionScope, id: string) => {
+    if (closing) throw new Error("Execution coordinator is shutting down");
+    const scope = await requireScope(rawScope);
+    const record = await reconcile(scope, id);
+    if (record.state !== "pending") return { scope, record, approval: null };
+    await requireScope(scope, record.request.plan);
+    const cards = await ctx.issues.listInteractions(scope.issueId, scope.companyId);
+    const matching = cards.filter((card) => card.id === record.interactionId);
+    const card = matching[0];
+    if (matching.length !== 1 || !card || card.kind !== "request_confirmation" || !matches(record, scope, card)) throw new Error("Confirmation is unavailable or changed");
+    if (card.status !== "accepted" || card.result?.outcome !== "accepted" || !card.resolvedByUserId || card.resolvedByAgentId || card.resolvedByRunId || card.acceptanceBlocker) throw new Error("A current human approval is required");
+    const resolvedAt = new Date(card.resolvedAt ?? "").getTime();
+    if (!Number.isFinite(resolvedAt) || resolvedAt < new Date(record.createdAt).getTime() || resolvedAt >= new Date(record.expiresAt).getTime()) throw new Error("Approval time is outside the request lifetime");
+    return { scope, record, approval: { id: card.id, approvedBy: card.resolvedByUserId, approvedAt: new Date(resolvedAt).toISOString() } };
+  };
+  const checkStarter = async (scope: ExecutionScope, record: ExecutionRecord, starter: ExecutionStarter) => {
+    if (starter.kind === "human") return;
+    const requester = record.request.requester;
+    const issue = await ctx.issues.get(scope.issueId, scope.companyId);
+    if (requester.kind !== "agent" || requester.id !== starter.id || requester.runId !== starter.runId
+      || !issue || issue.id !== scope.issueId || issue.companyId !== scope.companyId || issue.assigneeAgentId !== starter.id || issue.checkoutRunId !== starter.runId) {
+      throw new Error("Queued execution requires the requesting agent's current assigned run");
+    }
+  };
+  const start = async (rawScope: ExecutionScope, id: string, pickupDeadline = Infinity) => {
+    const { scope, record, approval } = await authorize(rawScope, id);
+    if (!approval || Date.now() >= pickupDeadline) return record;
+    const claimId = randomUUID();
+    if (!await ledger.claim(scope, id, approval.id, approval.approvedBy, ownerId, claimId, approval.approvedAt)) return await current(scope, id);
+    if (closing) {
+      await ledger.finish(scope, id, ownerId, claimId, "cancelled", null, "worker_shutting_down");
+      return await current(scope, id);
+    }
+    // Only the one successful SQL claim may create an owned process. A lost
+    // claim response cannot start a process and is never blindly retried.
+    const controller = new AbortController();
+    let materialized: Awaited<ReturnType<ExecutionAdapter["materialize"]>> = null;
+    let enteredProcess = false;
+    let lostObservation = false;
+    let monitoring: Promise<void> | undefined;
+    const monitor = () => {
+      monitoring ??= (async () => {
+        try {
+          if (!await ledger.heartbeat(scope, id, ownerId, claimId)) controller.abort();
+        } catch { lostObservation = true; controller.abort(); }
+      })().finally(() => { monitoring = undefined; });
+      return monitoring;
+    };
+    const timer = setInterval(() => { void monitor(); }, 250);
+    timer.unref();
+    let release!: () => void;
+    const done = new Promise<void>((resolve) => { release = resolve; });
+    active.set(key(scope, id), { controller, done });
+    try {
+      materialized = await materializeBounded(adapter, scope, record.request.plan, controller);
+      if (!materialized) {
+        await ledger.finish(scope, id, ownerId, claimId, "stale", null, "approved_inputs_changed");
+      } else {
+        // Recheck persistent cancellation and owner lease immediately before
+        // spawn; aborting before spawn must never launch a child.
+        await monitor();
+        if (controller.signal.aborted) throw new KujoPluginError("KUJO_EXEC_CANCELLED", "Execution cancelled before process start");
+        const admission = await ledger.spawnAdmission(scope, id, ownerId, claimId);
+        if (admission !== "ready") {
+          const state = admission === "expired" ? "expired" : admission === "cancelled" ? "cancelled" : "uncertain";
+          await ledger.finish(scope, id, ownerId, claimId, state, null, "admission_lost_before_process_start");
+          return await current(scope, id);
+        }
+        if (Date.now() >= pickupDeadline) {
+          await ledger.finish(scope, id, ownerId, claimId, "cancelled", null, "queue_pickup_window_closed");
+          return await current(scope, id);
+        }
+        enteredProcess = true;
+        const output = await executeSupervisedKujo({ ...materialized.invocation, signal: controller.signal, timeoutMs: record.request.plan.timeoutMs, maxStdoutBytes: record.request.plan.maxStdoutBytes ?? 500_000, maxStderrBytes: record.request.plan.maxStderrBytes ?? 64_000 });
+        const result = redactedResult(await materialized.collect(output));
+        await ledger.finish(scope, id, ownerId, claimId, output.exitCode === 0 ? "succeeded" : "failed", result, null);
+      }
+    } catch (error) {
+      const cancelled = error instanceof KujoPluginError && error.code === "KUJO_EXEC_CANCELLED";
+      const uncertain = lostObservation || (enteredProcess && !(error instanceof KujoPluginError));
+      await ledger.finish(scope, id, ownerId, claimId, uncertain ? "uncertain" : cancelled ? "cancelled" : "failed", null,
+        uncertain ? "execution_outcome_unconfirmed" : error instanceof KujoPluginError ? error.code : error instanceof SourcePreparationError ? error.diagnostic : "materialization_failed");
+    } finally {
+      clearInterval(timer);
+      // Disposal cannot erase an already committed execution outcome.
+      try { await materialized?.dispose(); } finally { active.delete(key(scope, id)); release(); }
+    }
+    return await current(scope, id);
+  };
+  const startQueued = async (rawScope: ExecutionScope, id: string, pickupDeadline = Infinity) => {
+    const scope = await requireScope(rawScope);
+    const record = await current(scope, id);
+    if (record.state !== "pending") return record;
+    if (!record.startRequestedAt || !record.startRequester) throw new Error("Execution has no explicit queued start");
+    try { await checkStarter(scope, record, record.startRequester); }
+    catch {
+      await ledger.finishPending(scope, id, "rejected", "queue_starter_unverified");
+      return await current(scope, id);
+    }
+    return await start(scope, id, pickupDeadline);
+  };
   return {
     async prepare(rawScope: ExecutionScope, submissionId: string, rawRequest: ExecutionRequest) {
       if (closing) throw new Error("Execution coordinator is shutting down");
@@ -172,77 +273,36 @@ export function createExecutionCoordinator(ctx: PluginContext, adapter: Executio
       const scope = await requireScope(rawScope);
       return await reconcile(scope, id);
     },
-    async start(rawScope: ExecutionScope, id: string) {
-      if (closing) throw new Error("Execution coordinator is shutting down");
-      const scope = await requireScope(rawScope);
-      const record = await reconcile(scope, id);
-      if (record.state !== "pending") return record;
-      await requireScope(scope, record.request.plan);
-      const cards = await ctx.issues.listInteractions(scope.issueId, scope.companyId);
-      const matching = cards.filter((card) => card.id === record.interactionId);
-      const card = matching[0];
-      if (matching.length !== 1 || !card || card.kind !== "request_confirmation" || !matches(record, scope, card)) throw new Error("Confirmation is unavailable or changed");
-      if (card.status !== "accepted" || card.result?.outcome !== "accepted" || !card.resolvedByUserId || card.resolvedByAgentId || card.resolvedByRunId || card.acceptanceBlocker) throw new Error("A current human approval is required");
-      const resolvedAt = new Date(card.resolvedAt ?? "").getTime();
-      if (!Number.isFinite(resolvedAt) || resolvedAt < new Date(record.createdAt).getTime() || resolvedAt >= new Date(record.expiresAt).getTime()) throw new Error("Approval time is outside the request lifetime");
-      const claimId = randomUUID();
-      if (!await ledger.claim(scope, id, card.id, card.resolvedByUserId, ownerId, claimId, new Date(resolvedAt).toISOString())) return await current(scope, id);
-      if (closing) {
-        await ledger.finish(scope, id, ownerId, claimId, "cancelled", null, "worker_shutting_down");
-        return await current(scope, id);
-      }
-      // Only the one successful SQL claim may create an owned process. A lost
-      // claim response cannot start a process and is never blindly retried.
-      const controller = new AbortController();
-      let materialized: Awaited<ReturnType<ExecutionAdapter["materialize"]>> = null;
-      let enteredProcess = false;
-      let lostObservation = false;
-      let monitoring: Promise<void> | undefined;
-      const monitor = () => {
-        monitoring ??= (async () => {
-          try {
-            if (!await ledger.heartbeat(scope, id, ownerId, claimId)) controller.abort();
-          } catch { lostObservation = true; controller.abort(); }
-        })().finally(() => { monitoring = undefined; });
-        return monitoring;
-      };
-      const timer = setInterval(() => { void monitor(); }, 250);
-      timer.unref();
-      let release!: () => void;
-      const done = new Promise<void>((resolve) => { release = resolve; });
-      active.set(key(scope, id), { controller, done });
-      try {
-        materialized = await materializeBounded(adapter, scope, record.request.plan, controller);
-        if (!materialized) {
-          await ledger.finish(scope, id, ownerId, claimId, "stale", null, "approved_inputs_changed");
-        } else {
-          // Recheck persistent cancellation and owner lease immediately before
-          // spawn; aborting before spawn must never launch a child.
-          await monitor();
-          if (controller.signal.aborted) throw new KujoPluginError("KUJO_EXEC_CANCELLED", "Execution cancelled before process start");
-          const admission = await ledger.spawnAdmission(scope, id, ownerId, claimId);
-          if (admission !== "ready") {
-            const state = admission === "expired" ? "expired" : admission === "cancelled" ? "cancelled" : "uncertain";
-            await ledger.finish(scope, id, ownerId, claimId, state, null, "admission_lost_before_process_start");
-            return await current(scope, id);
-          }
-          enteredProcess = true;
-          const output = await executeSupervisedKujo({ ...materialized.invocation, signal: controller.signal, timeoutMs: record.request.plan.timeoutMs, maxStdoutBytes: record.request.plan.maxStdoutBytes ?? 500_000, maxStderrBytes: record.request.plan.maxStderrBytes ?? 64_000 });
-          const result = redactedResult(await materialized.collect(output));
-          await ledger.finish(scope, id, ownerId, claimId, output.exitCode === 0 ? "succeeded" : "failed", result, null);
-        }
-      } catch (error) {
-        const cancelled = error instanceof KujoPluginError && error.code === "KUJO_EXEC_CANCELLED";
-        const uncertain = lostObservation || (enteredProcess && !(error instanceof KujoPluginError));
-        await ledger.finish(scope, id, ownerId, claimId, uncertain ? "uncertain" : cancelled ? "cancelled" : "failed", null,
-          uncertain ? "execution_outcome_unconfirmed" : error instanceof KujoPluginError ? error.code : error instanceof SourcePreparationError ? error.diagnostic : "materialization_failed");
-      } finally {
-        clearInterval(timer);
-        // Disposal cannot erase an already committed execution outcome.
-        try { await materialized?.dispose(); } finally { active.delete(key(scope, id)); release(); }
-      }
-      return await current(scope, id);
+    // Callers must derive starter identity from authenticated host context.
+    async enqueue(rawScope: ExecutionScope, id: string, rawStarter: ExecutionStarter) {
+      const starter = executionStarterSchema.parse(rawStarter);
+      const { scope, record, approval } = await authorize(rawScope, id);
+      if (!approval) return record;
+      await checkStarter(scope, record, starter);
+      await ledger.enqueue(scope, record, starter);
+      const queued = await current(scope, id);
+      if (queued.startRequester && canonicalJson(queued.startRequester) !== canonicalJson(starter)) throw new Error("Execution start is already submitted by another actor");
+      return queued;
     },
+    startQueued,
+    async drainQueued() {
+      if (closing) return { attempted: 0, errors: 0 };
+      let attempted = 0, errors = 0;
+      const pickupDeadline = Date.now() + 180_000;
+      // Four sequential existing bounded operations fit within the host job's
+      // five-minute observation budget. No detached promises inherit RPC scope.
+      for (const row of await ledger.queued(operations)) {
+        if (closing || Date.now() >= pickupDeadline) break;
+        attempted++;
+        try {
+          const scope = executionScopeSchema.parse({ companyId: row.companyId, issueId: row.issueId });
+          await ledger.maintain(scope.companyId);
+          await startQueued(scope, row.id, pickupDeadline);
+        } catch { errors++; } // Keep raw host exceptions out of job receipts.
+      }
+      return { attempted, errors };
+    },
+    start,
     async cancel(rawScope: ExecutionScope, id: string) {
       const scope = await requireScope(rawScope);
       const record = await current(scope, id);

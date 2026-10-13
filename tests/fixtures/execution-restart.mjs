@@ -44,18 +44,24 @@ try {
     assert.equal(result.state, 'pending'); await writeFile(join(root, 'id'), result.id);
   } else {
     const id = await readFile(join(root, 'id'), 'utf8');
-    if (phase === 'execute') {
+    if (phase === 'enqueue') {
       await assert.rejects(service.start(scope, id), /human approval/);
       cards[0] = { ...cards[0], status: 'accepted', resolvedByUserId: 'human', resolvedAt: new Date().toISOString(), result: { version: 1, outcome: 'accepted' } };
       await writeFile(cardsFile, JSON.stringify(cards));
-      assert.equal((await service.start(scope, id)).state, 'succeeded');
+      const queued = await service.enqueue(scope, id, { kind: 'human', id: 'human' });
+      assert.equal(queued.state, 'pending'); assert.ok(queued.startRequestedAt);
+      assert.equal(await readFile(marker, 'utf8').catch(() => null), null);
+    } else if (phase === 'execute') {
+      assert.ok((await service.status(scope, id)).startRequestedAt);
+      assert.deepEqual(await service.drainQueued(), { attempted: 1, errors: 0 });
+      assert.equal((await service.status(scope, id)).state, 'succeeded');
     } else {
       const record = await service.status(scope, id);
       assert.equal(record.state, 'succeeded'); assert.equal(record.approvedBy, 'human');
       assert.deepEqual(await service.start(scope, id), record);
       assert.equal(await readFile(marker, 'utf8'), 'once\n');
       await assert.rejects(service.status({ ...scope, companyId: 'other' }, id), /not found/);
-      console.log('persistent approval, terminal receipt, no replay and tenant isolation passed across three processes');
+      console.log('persistent approval, terminal receipt, no replay and tenant isolation passed across four processes');
     }
   }
 } finally { await service.shutdown(); await db.close(); }
