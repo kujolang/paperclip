@@ -10,6 +10,10 @@ Kujo helps Paperclip agents choose useful context, review changes, and save clea
 failure evidence. It runs locally inside Paperclip and works in the current task view.
 You do not need the Classic Task Interface.
 
+> Development documentation: the workflows below include the unpublished expansion
+> on `main`. Public npm `0.1.9` provides Context Packs, Review Packs and Failure
+> Evidence; it does not yet include the new Eval controls or broader adapters.
+
 ## Install in 30 seconds
 
 You need Paperclip `2026.824.1` or later and Node.js `24.11.0` or later.
