@@ -1,3 +1,4 @@
+import { sourcePreparationFailure } from "../src/execution/preparation-error.js";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { build } from "esbuild";
@@ -161,6 +162,17 @@ describe("human-bound persistent execution foundation", () => {
     await expect(access(f.marker)).rejects.toThrow();
   });
 
+  it("persists allowlisted preparation errors without private exception data or native replay", async () => {
+    const f = await fixture(), record = await prepared(f); f.approve();
+    const privateError = Object.assign(new Error("private-token-secret /private/workspace"), { code: "ENOSPC" });
+    vi.mocked(f.adapter.materialize).mockRejectedValueOnce(sourcePreparationFailure("temporary_directory", privateError));
+    const result = await f.service.start(scope, record.id);
+    expect(result).toMatchObject({ state: "failed", result: null, diagnostic: "source_preparation:temporary_directory:ENOSPC" });
+    expect(JSON.stringify(result)).not.toMatch(/private-token-secret|private\/workspace/);
+    expect(await readFile(f.marker, "utf8").catch(() => null)).toBeNull();
+    expect(await f.second().start(scope, record.id)).toEqual(result);
+    expect(f.adapter.materialize).toHaveBeenCalledTimes(1);
+  });
   it("detects changed approved inputs during materialization", async () => {
     const f = await fixture(); const record = await prepared(f); f.approve();
     vi.mocked(f.adapter.materialize).mockResolvedValue(null);

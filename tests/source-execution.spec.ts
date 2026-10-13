@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdtemp, mkdir, readFile, writeFile, stat } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, writeFile, stat, unlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
@@ -65,6 +65,18 @@ describe("approved Kujo run/test", () => {
     const exported = await f.h.executeTool("get-evidence", { scope: "issue", issueId: "issue", evidenceId: result.history.outcomeId }, run);
     expect(exported.data).toMatchObject({ receipt: { kind: "source-execution-result" }, parent: { status: "retained" }, payload: { native: { exitCode: 0 } } });
     expect(await f.action({ operation: "start", id: prepared.id })).toEqual(result);
+  }, 20000);
+  it("retains safe preparation diagnostics and never replays missing-source failures", async () => {
+    const f = await fixture(), prepared = await f.prepare(); f.approve(prepared.interactionId!);
+    await unlink(join(f.cwd, "main.kujo"));
+    const result = await f.action({ operation: "start", id: prepared.id });
+    expect(result).toMatchObject({ state: "failed", diagnostic: "source_preparation:select_source:source_missing", result: null, history: { status: "retained" } });
+    expect(result.abilityReceipt).toMatchObject({ result: null, error: { details: { diagnostic: result.diagnostic } } });
+    const exported = await f.h.executeTool("get-evidence", { scope: "issue", issueId: "issue", evidenceId: result.history.outcomeId }, run);
+    expect(exported.data).toMatchObject({ payload: { diagnostic: result.diagnostic, native: null, classification: "not-run" } });
+    await writeFile(join(f.cwd, "main.kujo"), 'print("restored source")\n');
+    expect(await f.action({ operation: "start", id: prepared.id })).toEqual(result);
+    expect(await stat(join(f.cwd, "created.txt")).catch(() => null)).toBeNull();
   }, 20000);
   it("runs native test-file and fixture commands with actual success/failure output", async () => {
     const f = await fixture();
