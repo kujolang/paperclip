@@ -2,6 +2,17 @@ import type { PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
 import { instanceConfigJsonSchema } from "./config/schema.js";
 import { MINIMUM_HOST_VERSION, PLUGIN_VERSION } from "./config/defaults.js";
 
+export const languageTool = {
+  name: "check-kujo-source", displayName: "Check Kujo Source",
+  description: "Check and lint one Git-visible .kujo file in the current project. Does not execute source or modify files; results do not verify imports, project tests or runtime behavior.",
+  parametersSchema: { type: "object", additionalProperties: false, required: ["path"], properties: { path: { type: "string", minLength: 1, maxLength: 1000, description: "Relative .kujo path from this project's source catalog" } } },
+} as const;
+export const formatTool = {
+  name: "preview-kujo-format", displayName: "Preview Kujo Formatting",
+  description: "Explicitly read one Git-visible .kujo source file and return a bounded, redacted original/formatted preview. Does not write files or apply fixes.",
+  parametersSchema: languageTool.parametersSchema,
+} as const;
+
 export const understandTool = {
   name: "understand-repository",
   displayName: "Understand Repository",
@@ -97,7 +108,7 @@ const manifest: PaperclipPluginManifestV1 = {
   ],
   entrypoints: { worker: "./dist/worker.js", ui: "./dist/ui" },
   instanceConfigSchema: instanceConfigJsonSchema,
-  tools: [understandTool, reviewTool, failureTool, contextTool, contextContentTool],
+  tools: [languageTool, formatTool, understandTool, reviewTool, failureTool, contextTool, contextContentTool],
   skills: [{
     skillKey: "scoped-repository-context",
     displayName: "Scoped Repository Context",
