@@ -1,12 +1,44 @@
 # Approved execution foundation
 
-The execution coordinator is an internal integration prototype. There is no
-public run tool, execution button or background queue yet. A native Eval
-execution primitive and host admission service are integrated internally; public
-controls remain unfinished. The
-manifest does not request confirmation permissions until a reviewed adapter
-needs them. The additive `002_execution.sql` migration reserves durable request
-storage without changing existing evidence records.
+The issue panel and `manage-evaluation` tool expose the bounded canonical Eval
+workflow. Execution defaults off, requires a compatible company profile and an
+explicit human-only issue confirmation. This is synchronous bounded execution,
+not a background queue or a durable long-running workflow runner. The manifest
+requests confirmation create/read permissions only; it cannot accept its own card.
+Migrations002/003 store immutable requests and enforce company admission limits.
+
+## Public workflow
+
+On an issue, preview a Git-visible JSON suite, request approval, accept the native
+Paperclip confirmation in the issue thread, then explicitly start the request.
+The panel never starts automatically on acceptance. Refresh requests after a
+reload or ambiguous response; inspect the existing receipt before creating a new
+request. Pending means not started, not necessarily approved. Uncertain outcomes
+may have produced effects and must not be blindly retried. Cancellation does not
+undo writes or external effects.
+
+`manage-evaluation` accepts these strict operation variants:
+
+| Operation | Required fields besides `operation` |
+| --- | --- |
+| `inspect` | `issueId`, `suite` |
+| `prepare` | `issueId`, `suite`, `submissionId` |
+| `start`, `status`, `cancel` | `issueId`, `id` |
+| `list` | `issueId` |
+
+Keep the same submission ID when retrying an ambiguous preparation; changing its
+inputs is rejected. No workspace path, command, executable, requester or approval
+ID is accepted. Agent requests require the actual host issue assignment, project,
+company and current checkout/execution run. Starts/cancels also require the same
+requesting agent and run; a human can manage requests on the authorized issue.
+UI actions require immutable authenticated human context from the host.
+
+List returns at most100 summaries without suite previews or result contents; it
+remains available after disabling execution so outstanding work can be cancelled.
+Status returns the approved plan and native receipt while execution is enabled.
+Public results omit internal owner/claim tokens. Receipts currently live in the
+execution ledger; parent-child links and unification with Evidence history remain
+unfinished. Arbitrary issue selection by an agent does not grant access.
 
 ## Authority and approval
 
@@ -15,8 +47,8 @@ workspace identities, visible effects, time limit, and exact input, workspace,
 definition, component, runtime and policy digests. The caller supplies host-owned
 company/issue/requester context; none of these are agent-chosen command or path
 parameters. The coordinator checks the issue and its current host workspace.
-Production handlers must additionally enforce their capability profile and
-feature settings before preparing or reading requests.
+The host service enforces capability profile and feature settings before
+preparation, inspection, start and detailed receipt reads.
 
 A submission ID identifies one immutable request within a company and issue.
 The database insert happens before the host confirmation request. Reusing an ID
@@ -30,7 +62,7 @@ policy and card identity must match. Starting requires an accepted result with a
 human resolver, no agent/run resolver, no workspace blocker and a resolution time
 within the request lifetime. Additional effect-bearing payloads are rejected.
 The plugin never responds to its own card. Only create/read interaction
-capabilities will be needed; a generic approval ID is not accepted as authority.
+capabilities are requested; a generic approval ID is not accepted as authority.
 
 Approval expires after 15 minutes according to database time. Before spawning,
 the coordinator checks expiration, persistent cancellation and owner lease again.
@@ -91,10 +123,9 @@ schemas. The opt-in authenticated host qualification below tests the actual work
 host confirmation and PostgreSQL persistence using a disposable board account.
 It does not replace manual UI approval or newcomer usability validation.
 
-Before exposing Eval: add durable failure/parent-child receipts, UI and agent
-start/status/inspect/cancel flows, and qualify those production handlers against
-the actual host. Preserve this foundation's tests
-when integrating those surfaces; do not present the prototype as a shipped workflow.
+Further expansion requires parent-child evidence integration, durable external
+workflow runners and newcomer acceptance. Preserve these invariants when adding
+those surfaces; bounded Eval is not the full expansion.
 
 ## Reproduce authenticated host qualification
 
@@ -155,8 +186,7 @@ network access for every suite. Commands, HTTP checks and snapshot updates are
 not silently omitted or reimplemented. A suite can access resources outside its
 input copy, so this is trusted execution, not a sandbox or proof of a complete
 project snapshot. Public admission must show the actual suite effects and frozen
-input coverage before users can approve it. No public run handler calls this
-primitive yet.
+input coverage before users can approve it. The public handler reaches this primitive only through the approved host service.
 
 The native CLI receives an isolated component import root, controlled output
 directory and generated subject identity. Collection reads only the fixed
@@ -173,19 +203,17 @@ them and there is no filesystem quota or hostile-code containment promise.
 The authenticated-host fixture also runs fixed passing and failing canonical
 Eval suites after board-account acceptance, retains their native receipts and
 checks that those receipts survive full host/database restart. This extends the
-fixed-program acceptance above without exposing execution in the production
-worker. The fixture also qualifies the host admission service and database limits below.
-Production UI/agent workflows and manual user acceptance remain required.
+fixed-program acceptance above through a development fixture. Production mode below separately qualifies the
+actual worker; manual user acceptance remains required.
 
 
 ## Host admission and review
 
-The internal host service resolves the issue, company, project and canonical
+The host service resolves the issue, company, project and canonical
 workspace through Paperclip. Execution defaults off. Enabling
 `features.execution` requires the installed/full profile or a canonical profile
 containing `kujo.eval.suite.run` (currently Ship). No profile grants approval.
-Production handlers must still derive requester identity from authenticated host
-context; no caller workspace, executable, file bytes or approval ID is accepted.
+Public handlers derive requester identity from authenticated host context; no caller workspace, executable, file bytes or approval ID is accepted.
 
 The service captures Git-visible text files into a private input copy, bounded to
 1,000 files, 64 KiB per file and 16 MiB total. The review contains the redacted
@@ -224,5 +252,16 @@ processes after a crash; the recovery limits above still apply.
 
 The authenticated fixture checks actual company settings, host workspace capture,
 full review, native receipts, stale-input rejection, cancellation after disabling,
-20-request capacity and two-owner admission using real PostgreSQL. It remains an
-internal fixture, not qualification of a public production execution surface.
+20-request capacity and two-owner admission using real PostgreSQL. The default fixture mode is distinct from production qualification below.
+
+
+## Production worker qualification
+
+Build the plugin, then set `KUJO_ACCEPTANCE_PRODUCTION=1` alongside the host/node
+variables above. This mode installs the actual source worker and manifest into a
+fresh disposable authenticated host. It exercises the public action/tool routes,
+settings and identity checks, approval, native pass/fail, stale inputs, disabled
+recovery, tenant isolation and full host/database restart. It uses automated board
+accounts and fixed fixture suites; it is not manual UI or newcomer usability proof.
+The browser suite separately exercises explicit action sequencing, responsive
+layout and isolation of delayed results after company navigation.

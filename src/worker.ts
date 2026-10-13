@@ -1,5 +1,6 @@
 import { definePlugin, runWorker, type PluginContext, type ToolRunContext } from "@paperclipai/plugin-sdk";
 import { z } from "zod";
+import { registerEvaluation } from "./features/eval/bridge.js";
 import { parsePluginConfig } from "./config/schema.js";
 import { shipcheckTool, concordTool, fenceTool, specTool, importVerificationTool, catalogTool, listEvidenceTool, readEvidenceTool, languageTool, formatTool, understandTool, contextContentTool, contextTool, failureTool, reviewTool } from "./manifest.js";
 import { generateReviewPack } from "./features/review/generate.js";
@@ -414,7 +415,7 @@ function registerTools(ctx: PluginContext) {
   });
 }
 
-function registerUiBridge(ctx: PluginContext) {
+function registerUiBridge(ctx: PluginContext, executions: ReturnType<typeof registerEvaluation>) {
   ctx.data.register("doctor", async (params) => {
     const companyId = z.string().min(1).optional().parse(params.companyId);
     return await doctor(companyId ? await configFor(ctx, companyId) : undefined);
@@ -475,7 +476,8 @@ function registerUiBridge(ctx: PluginContext) {
     await ensureHistory(ctx, target);
     const history = (await listEvidence(ctx, target)).filter((record) => evidenceEnabled(config, record.kind));
     const readiness = await doctor(config);
-    return { catalog: capabilityCatalog(config, readiness, true), shipcheck: ownedShipcheck, concord: ownedConcord, fence: ownedFence, spec: ownedSpec, specs, verification, verificationEnabled: config.features.verification, history, language: ownedLanguage, sources, understanding: ownedUnderstanding, review: ownedReview, failure: ownedFailure, context: ownedContext, readiness, workspace: inspection?.readiness, suggestedTask };
+    const executionActive = target.entityType === "issue" && (await executions.recoveryList({ companyId: target.companyId, issueId: target.entityId })).some(record => ["preparing", "pending", "running", "cancel_requested"].includes(record.state));
+    return { executionActive, catalog: capabilityCatalog(config, readiness, true), shipcheck: ownedShipcheck, concord: ownedConcord, fence: ownedFence, spec: ownedSpec, specs, verification, verificationEnabled: config.features.verification, history, language: ownedLanguage, sources, understanding: ownedUnderstanding, review: ownedReview, failure: ownedFailure, context: ownedContext, readiness, workspace: inspection?.readiness, suggestedTask };
   });
 
   ctx.actions.register("inspect-release-readiness", async (params, actionCtx) => {
@@ -672,10 +674,12 @@ let health: { status: "ok" | "degraded" | "error"; message: string; details: Rec
   details: {},
 };
 
+let evaluation: ReturnType<typeof registerEvaluation> | undefined;
 const plugin = definePlugin({
   async setup(ctx) {
+    evaluation = registerEvaluation(ctx);
     registerTools(ctx);
-    registerUiBridge(ctx);
+    registerUiBridge(ctx, evaluation);
     // Startup has no company identity. Company overrides are probed by the
     // scoped Doctor/detail handlers, not borrowed from another tenant.
     const report = await doctor();
@@ -687,7 +691,7 @@ const plugin = definePlugin({
     ctx.logger.info("Kujo plugin initialized", { pluginId: ctx.manifest.id, componentCount: report.components.length, status: report.status });
   },
   async onHealth() { return health; },
-  async onShutdown() { await terminateActiveKujoProcesses(); },
+  async onShutdown() { await evaluation?.shutdown(); await terminateActiveKujoProcesses(); },
   async onValidateConfig(value) {
     try {
       const parsed = parsePluginConfig(value);

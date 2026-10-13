@@ -47,7 +47,7 @@ describe("first use", () => {
 
   it("takes a bounded task default from the company-scoped issue", async () => {
     const harness = createTestHarness({ manifest });
-    const issueRead = vi.spyOn(harness.ctx.issues, "get").mockResolvedValue({ title: "Fix OAuth", description: "x".repeat(20_000) } as never);
+    const issueRead = vi.spyOn(harness.ctx.issues, "get").mockResolvedValue({ id: "issue", companyId: "company", title: "Fix OAuth", description: "x".repeat(20_000) } as never);
     await plugin.definition.setup(harness.ctx);
     const detail = await harness.getData<{ suggestedTask: string }>("detail", { ...target, entityType: "issue", entityId: "issue" });
     expect(issueRead).toHaveBeenCalledWith("issue", "company");

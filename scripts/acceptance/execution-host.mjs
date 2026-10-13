@@ -11,6 +11,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 import { build } from "esbuild";
 
+const production = process.env.KUJO_ACCEPTANCE_PRODUCTION === "1";
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const hostArg = process.env.KUJO_ACCEPTANCE_HOST;
 if (!hostArg) throw new Error("Set KUJO_ACCEPTANCE_HOST to a prepared Paperclip source checkout; no existing server URL is accepted.");
@@ -27,7 +28,7 @@ let child;
 let log;
 let stopping;
 let cookie = "";
-const evidence = { schemaVersion: 1, fixture: "isolated authenticated execution and host admission", startedAt: new Date().toISOString(),
+const evidence = { schemaVersion: 1, fixture: production ? "production Eval workflow" : "isolated authenticated execution and host admission", startedAt: new Date().toISOString(),
   hostCommit: execFileSync("git", ["-C", host, "rev-parse", "HEAD"], { encoding: "utf8" }).trim(),
   pluginCommit: execFileSync("git", ["-C", repo, "rev-parse", "HEAD"], { encoding: "utf8" }).trim(), checks };
 async function port() {
@@ -128,7 +129,8 @@ try {
   await writeFile(join(fixture, "package.json"), JSON.stringify({ name: "@kujolang/approval-acceptance-fixture", version: "0.0.0", private: true, type: "module",
     paperclipPlugin: { manifest: "./dist/manifest.js", worker: "./dist/worker.js" } }));
   for (const file of await readdir(join(repo, "migrations"))) if (file.endsWith(".sql")) await copyFile(join(repo, "migrations", file), join(fixture, "migrations", file));
-  await build({ entryPoints: { worker: join(repo, "tests/host/execution-worker.ts"), manifest: join(repo, "tests/host/execution-manifest.ts") }, outdir: join(fixture, "dist"), bundle: true, platform: "node", format: "esm", packages: "external" });
+  await build({ entryPoints: { worker: join(repo, production ? "src/worker.ts" : "tests/host/execution-worker.ts"), manifest: join(repo, production ? "src/manifest.ts" : "tests/host/execution-manifest.ts") }, outdir: join(fixture, "dist"), bundle: true, platform: "node", format: "esm", packages: "external" });
+  if (production) await symlink(join(repo, "dist/ui"), join(fixture, "dist/ui"), process.platform === "win32" ? "junction" : "dir");
   await json("config.json", { $meta: { version: 1, updatedAt: new Date().toISOString(), source: "doctor" },
     database: { mode: "embedded-postgres", embeddedPostgresDataDir: join(root, "db"), embeddedPostgresPort: dbPort, backup: { enabled: false, dir: join(root, "backups") } },
     logging: { mode: "file", logDir: join(root, "logs") }, server: { deploymentMode: "authenticated", exposure: "private", bind: "loopback", host: "127.0.0.1", port: httpPort, serveUi: false },
@@ -147,6 +149,10 @@ try {
   const installed = (await call("/plugins/install", { method: "POST", body: { packageName: fixture, isLocalPath: true } })).data;
   assert.equal(installed.status, "ready");
   checks.push("fresh authenticated instance and local worker installation");
+  if (production) {
+    const { qualifyProductionEvaluation } = await import("./production-eval.mjs");
+    await qualifyProductionEvaluation({ call, companyId, projectId, issueId, userId, root, node, checks, json, stop, start, waitUntil });
+  } else {
   const bridge = "/plugins/kujolang.paperclip/bridge/action";
   const action = async (key, params, options = {}) => (await call(bridge, { method: "POST", body: { companyId, key: `${key}-fixture`, params: { issueId, ...params } }, ...options })).data;
   const prepare = async (submissionId, mode = "complete") => (await action("prepare", { submissionId, mode })).data;
@@ -275,6 +281,7 @@ try {
   await Promise.all(runningCapacity);
   checks.push("real PostgreSQL admits two running owners and keeps a third approved request pending");
   await json("receipts.json", { hostReceipt, succeeded, nativeReceipts, cancelled: await status(slow.id), afterRestart: await status(restartPending.id) });
+  }
   evidence.status = "passed";
 } catch (error) {
   evidence.status = "failed";

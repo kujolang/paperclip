@@ -127,8 +127,8 @@ window.__KUJO_FIXTURE_DATA__ = {
 const fixture = window.__KUJO_FIXTURE_DATA__ as { readiness: DoctorReport; catalog?: CapabilityCatalog; verificationEnabled: boolean };
 fixture.readiness.runtime.platform = "linux";
 fixture.readiness.runtime.arch = "x64";
-fixture.readiness.components = ["scout", "context", "failure-evidence", "changebucket", "patchbrief", "spec", "fence", "concord", "shipcheck"].map((id) => ({ id: id as DoctorReport["components"][number]["id"], version: "1.0.0", integrity: "ok" }));
-const fixtureConfig = applyCapabilityProfile(parsePluginConfig({ capabilityProfile: parameters.get("profile") ?? "installed", features: { verification: parameters.get("verification") === "1" } }));
+fixture.readiness.components = ["scout", "context", "failure-evidence", "changebucket", "patchbrief", "spec", "fence", "concord", "shipcheck", "eval"].map((id) => ({ id: id as DoctorReport["components"][number]["id"], version: "1.0.0", integrity: "ok" }));
+const fixtureConfig = applyCapabilityProfile(parsePluginConfig({ capabilityProfile: parameters.get("profile") ?? "installed", features: { verification: parameters.get("verification") === "1", execution: parameters.get("execution") === "1" } }));
 for (const feature of Object.keys(fixture.readiness.capabilities) as Array<keyof DoctorReport["capabilities"]>) if (!fixtureConfig.features[(feature === "spec" || feature === "fence" || feature === "concord" || feature === "shipcheck") ? "verification" : feature]) fixture.readiness.capabilities[feature] = "disabled";
 fixture.readiness.capabilities.spec = !fixtureConfig.features.verification ? "disabled" : fixture.readiness.runtime.status === "ok" ? "ready" : "blocked";
 fixture.readiness.capabilities.fence = fixture.readiness.capabilities.spec;

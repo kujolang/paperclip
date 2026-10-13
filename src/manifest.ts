@@ -3,7 +3,7 @@ import { instanceConfigJsonSchema } from "./config/schema.js";
 import { MINIMUM_HOST_VERSION, PLUGIN_VERSION } from "./config/defaults.js";
 
 import { projectedTools } from "./abilities/generated.js";
-export { shipcheckTool, concordTool, fenceTool, specTool, importVerificationTool, catalogTool, languageTool, formatTool, understandTool, reviewTool, failureTool, contextTool, contextContentTool, listEvidenceTool, readEvidenceTool } from "./abilities/generated.js";
+export { evalTool, shipcheckTool, concordTool, fenceTool, specTool, importVerificationTool, catalogTool, languageTool, formatTool, understandTool, reviewTool, failureTool, contextTool, contextContentTool, listEvidenceTool, readEvidenceTool } from "./abilities/generated.js";
 
 const manifest: PaperclipPluginManifestV1 = {
   id: "kujolang.paperclip",
@@ -16,6 +16,8 @@ const manifest: PaperclipPluginManifestV1 = {
   minimumHostVersion: MINIMUM_HOST_VERSION,
   capabilities: [
     "issue.documents.write",
+    "issue.interactions.create",
+    "issue.interactions.read",
     "agent.tools.register",
     "projects.read",
     "issues.read",

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Expose human-approved Eval on issues through a review/prepare/start/inspect/cancel panel and a strict agent tool bound to the assigned host issue/run. Preserve disabled cancellation, scoped metadata recovery, native receipts and cross-company navigation isolation.
+
 - Add internal host-owned Eval input admission, company/profile gating, full bounded review previews and stale-plan rejection. Add company-wide request/owner slots and opportunistic terminal retention; qualify these paths against an isolated authenticated host. Public execution controls remain pending.
 
 - Pin canonical Eval and add an internal frozen-input native execution primitive with effect/digest bindings and bounded canonical receipts. Qualify native pass/fail outcomes through the authenticated-host fixture; public Eval controls remain pending.

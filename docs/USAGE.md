@@ -208,3 +208,17 @@ metadata signals, warnings and omitted inputs; expand passing signals for detail
 Essentials can use this tool while other verification projections remain excluded.
 ShipCheck detects test/lint/CI declarations but never executes them or certifies a
 release. See [Verification](VERIFICATION.md#native-release-readiness).
+
+
+## Approved Eval on issues
+
+With execution enabled and Installed/Ship/Full selected, use **Run an evaluation**
+on an issue. Preview `eval.json`, request approval, accept its native issue card,
+then start explicitly. Refresh retained requests to inspect receipts or cancel.
+
+Agents call `kujolang.paperclip:manage-evaluation` with `operation` and `issueId`.
+`inspect` takes `suite`; `prepare` additionally takes a stable `submissionId`.
+`start`, `status` and `cancel` take the returned request `id`; `list` takes no other
+fields. The issue must belong to the current assigned host run. Preparation never
+executes checks, and agents cannot approve their own requests. See
+[Execution](EXECUTION.md) for coverage, retention and uncertainty limits.

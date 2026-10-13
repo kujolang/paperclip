@@ -26,7 +26,7 @@ export const executionPlanSchema = z.object({
 export type ExecutionPlan = z.infer<typeof executionPlanSchema>;
 export const executionRequestSchema = z.object({
   plan: executionPlanSchema,
-  requester: z.object({ kind: z.enum(["human", "agent"]), id: identity }).strict(),
+  requester: z.object({ kind: z.enum(["human", "agent"]), id: identity, runId: identity.optional() }).strict(),
 }).strict();
 export type ExecutionRequest = z.infer<typeof executionRequestSchema>;
 export const executionStateSchema = z.enum(["preparing", "pending", "running", "cancel_requested", "succeeded", "failed", "cancelled", "expired", "rejected", "stale", "uncertain"]);

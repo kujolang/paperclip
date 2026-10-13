@@ -122,6 +122,7 @@ export function createEvalHostService(ctx: PluginContext) {
     async status(scope: ExecutionScope, id: string) { await admission(scope); return await coordinator.status(scope, id); },
     async list(scope: ExecutionScope) { await admission(scope); return await coordinator.list(scope); },
     // Disabling execution must not prevent stopping a previously approved run.
+    recoveryList: coordinator.list,
     cancel: coordinator.cancel,
     shutdown: coordinator.shutdown,
   };

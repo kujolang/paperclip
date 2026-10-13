@@ -379,3 +379,40 @@ test("pending readiness errors cannot cross company navigation", async ({ page }
   await expect(page.getByText("private delayed readiness error")).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Inspect release readiness", exact: true })).toBeEnabled();
 });
+
+
+test("Eval requires explicit preview, approval request and start, with retained receipts", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 1200 });
+  await page.goto("/?surface=task&entity=issue&execution=1");
+  const section = page.getByRole("region", { name: "Approved evaluation", exact: true });
+  await section.getByRole("button", { name: "Preview suite", exact: true }).click();
+  await expect(section.getByText("Suite and input coverage", { exact: true })).toBeVisible();
+  await expect(section.getByText("json_value_equals", { exact: true })).toBeVisible();
+  await section.getByRole("button", { name: "Request approval", exact: true }).click();
+  await expect(section.getByText(/Accept the human-only confirmation/)).toBeVisible();
+  expect(await page.evaluate(() => window.__KUJO_ACTIONS__?.filter(item => (item.input as { operation?: string }).operation === "start"))).toHaveLength(0);
+  await section.getByRole("button", { name: "Start approved evaluation", exact: true }).click();
+  await expect(section.getByText("Evaluation: partial (native checks: passed)", { exact: true })).toBeVisible();
+  await section.getByText("Execution receipt and approved inputs", { exact: true }).click();
+  await expect(section.getByText(/"classification": "partial"/)).toBeVisible();
+  await section.screenshot({ path: test.info().outputPath("approved-evaluation.png") });
+  await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+});
+
+test("Eval is unavailable in project/run views and excluded profiles", async ({ page }) => {
+  for (const query of ["entity=project", "entity=run", "entity=issue&profile=review"]) {
+    await page.goto(`/?execution=1&${query}`);
+    await expect(page.getByRole("region", { name: "Approved evaluation", exact: true })).toHaveCount(0);
+  }
+});
+
+test("Eval ignores delayed results after company navigation", async ({ page }) => {
+  await page.goto("/?surface=task&entity=issue&execution=1");
+  await page.evaluate(() => { window.__KUJO_DELAY_EVAL__ = true; });
+  await page.getByRole("button", { name: "Preview suite", exact: true }).click();
+  await expect.poll(() => page.evaluate(() => Boolean(window.__KUJO_RESOLVE_EVAL__))).toBe(true);
+  await page.evaluate(() => window.__KUJO_NAVIGATE__?.("other-company"));
+  await page.evaluate(() => window.__KUJO_RESOLVE_EVAL__?.());
+  await expect(page.getByText("private delayed Eval result")).toHaveCount(0);
+  await expect(page.getByLabel("Eval suite file")).toHaveValue("eval.json");
+});
