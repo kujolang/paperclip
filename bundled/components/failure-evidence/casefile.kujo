@@ -554,8 +554,12 @@ func resolve_output_dir(repo_root, output_dir) {
 # Git for Windows ships POSIX utilities; use drive-qualified forward-slash paths
 # for those utilities while preserving literal backslashes in POSIX filenames.
 func utility_path(path_value) {
-	if regex_match(path_value, "^[A-Za-z]:") {
-		return replace(path_value, "\\", "/")
+	candidate := replace(path_value, "\\", "/")
+	if starts_with(candidate, "//?/") {
+		candidate = substring(candidate, 4, len(candidate))
+	}
+	if regex_match(candidate, "^[A-Za-z]:") {
+		return candidate
 	}
 	return path_value
 }
@@ -1279,7 +1283,7 @@ func capture_from_log(case_path, log_path, redact_enabled, patterns, max_log_byt
 		if limit == 0 {
 			limit = 1
 		}
-		read_result := safe_spawn_with_options(["head", "-c", to_string(max_log_bytes), path_absolute(log_path)], {"max_output_bytes": limit})
+		read_result := safe_spawn_with_options(["head", "-c", to_string(max_log_bytes), utility_path(path_absolute(log_path))], {"max_output_bytes": limit})
 		if proc_exitcode(read_result) != 0 {
 			return {"ok": false, "error": "failed to read log file: " + proc_stderr(read_result)}
 		}
@@ -1724,7 +1728,7 @@ func capture_command_handler(subargs) {
 	case_id := case_result["case_id"]
 	case_path := case_result["case_path"]
 	if options["force"] {
-		invalidated := safe_spawn(["rm", "-f", path_join(case_path, "case.json")])
+		invalidated := safe_spawn(["rm", "-f", utility_path(path_join(case_path, "case.json"))])
 		if proc_exitcode(invalidated) != 0 {
 			print_capture_error("cannot invalidate existing case manifest")
 			exit(4)
@@ -2224,7 +2228,7 @@ func clean_command_handler(subargs) {
 		if options["dry_run"] {
 			print("[dry-run] would delete " + target)
 		} else {
-			rm := safe_spawn(["rm", "-rf", target])
+			rm := safe_spawn(["rm", "-rf", utility_path(target)])
 			if proc_success(rm) && proc_exitcode(rm) == 0 {
 				print("Deleted " + target)
 			} else {
