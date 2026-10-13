@@ -1,6 +1,6 @@
 # Kujo for Paperclip
 
-[![Version](https://img.shields.io/badge/version-0.1.8-black)](https://github.com/kujolang/paperclip/releases/tag/v0.1.8)
+[![Version](https://img.shields.io/badge/version-0.1.9-black)](https://github.com/kujolang/paperclip/releases/tag/v0.1.9)
 [![npm](https://img.shields.io/npm/v/%40kujolang%2Fpaperclip?label=npm&color=black)](https://www.npmjs.com/package/@kujolang/paperclip)
 [![CI](https://img.shields.io/github/actions/workflow/status/kujolang/paperclip/ci.yml?branch=main&label=CI&color=black)](https://github.com/kujolang/paperclip/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-MIT-lightgrey)](LICENSE)
@@ -24,8 +24,8 @@ and run pages.
 
 The npm package includes the right Kujo runtime for macOS arm64/x64, Linux arm64/x64,
 and Windows x64. You do not need a separate Kujo install or Kujo API key. Installation
-does not run `preinstall`, `install`, or `postinstall` scripts. The upcoming component
-cohort requires Kujo 1.8.1 or newer when overriding the included runtime.
+does not run `preinstall`, `install`, or `postinstall` scripts. Configured runtime
+overrides require Kujo 1.8.1 or newer.
 
 Use the package name exactly as shown for now. Current Paperclip releases mishandle a
 scoped package with an exact version suffix. The upstream fix is open in
