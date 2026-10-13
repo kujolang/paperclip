@@ -48,6 +48,8 @@ describe("approved Kujo run/test", () => {
     for (const capabilityProfile of ["installed", "build", "full"] as const) expect(sourceExecutionEnabled(parsePluginConfig({ capabilityProfile, features: { sourceExecution: true } }))).toBe(true);
     for (const capabilityProfile of ["review", "ship", "essentials"] as const) expect(sourceExecutionEnabled(parsePluginConfig({ capabilityProfile, features: { sourceExecution: true } }))).toBe(false);
   });
+  // Multiple native preparations, approval checks and retained-history reads
+  // need a whole-test budget beyond 5s on Intel CI; process limits stay unchanged.
   it("runs reviewed bytes only after human approval and retains a parent-linked portable host receipt", async () => {
     const f = await fixture(), prepared = await f.prepare();
     expect(prepared).toMatchObject({ state: "pending", plan: { operation: "source.run", effects: ["read_workspace", "write_files", "execute_project", "network"] } });
@@ -63,7 +65,7 @@ describe("approved Kujo run/test", () => {
     const exported = await f.h.executeTool("get-evidence", { scope: "issue", issueId: "issue", evidenceId: result.history.outcomeId }, run);
     expect(exported.data).toMatchObject({ receipt: { kind: "source-execution-result" }, parent: { status: "retained" }, payload: { native: { exitCode: 0 } } });
     expect(await f.action({ operation: "start", id: prepared.id })).toEqual(result);
-  });
+  }, 20000);
   it("runs native test-file and fixture commands with actual success/failure output", async () => {
     const f = await fixture();
     for (const [mode, path] of [["test", "checks.kujo"], ["fixtures", undefined]] as const) {
@@ -109,7 +111,7 @@ describe("approved Kujo run/test", () => {
     const policy = await f.prepare("policy"); f.approve(policy.interactionId!);
     f.h.ctx.config.get = async () => ({ features: { sourceExecution: true }, limits: { maxStdoutBytes: 1024 } });
     expect(await f.action({ operation: "start", id: policy.id })).toMatchObject({ state: "stale" });
-  });
+  }, 20000);
   it("keeps omitted inputs explicit and never executes during inspection", async () => {
     const f = await fixture();
     await writeFile(join(f.cwd, ".env"), "FIXTURE_TOKEN=not-a-real-credential\n");
