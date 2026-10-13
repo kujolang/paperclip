@@ -416,3 +416,24 @@ test("Eval ignores delayed results after company navigation", async ({ page }) =
   await expect(page.getByText("private delayed Eval result")).toHaveCount(0);
   await expect(page.getByLabel("Eval suite file")).toHaveValue("eval.json");
 });
+
+
+test("Eval outcome links to its retained request and explains a pruned parent", async ({ page }) => {
+  await page.goto("/?surface=task&entity=issue&execution=1&evalHistory=linked");
+  await page.getByLabel("Evidence record").selectOption("outcome");
+  await page.getByRole("button", { name: "Select request plan", exact: true }).click();
+  await expect(page.getByLabel("Evidence record")).toHaveValue("plan");
+  await page.goto("/?surface=task&entity=issue&execution=1&evalHistory=orphan");
+  await page.getByLabel("Evidence record").selectOption("outcome");
+  await expect(page.getByText(/The request plan is no longer retained here; its reference remains in the outcome/)).toBeVisible();
+  await expect(page.getByRole("button", { name: "Select request plan", exact: true })).toHaveCount(0);
+});
+
+test("Pending publication offers refresh without starting an evaluation", async ({ page }) => {
+  await page.goto("/?surface=task&entity=issue&execution=1&historyPending=1");
+  await page.getByRole("button", { name: "Refresh requests", exact: true }).click();
+  await expect(page.getByText(/Some execution evidence is waiting to be saved/)).toBeVisible();
+  await page.getByRole("button", { name: "Refresh evidence", exact: true }).click();
+  await page.getByRole("button", { name: "Refresh requests", exact: true }).click();
+  expect(await page.evaluate(() => window.__KUJO_ACTIONS__?.filter(item => (item.input as { operation?: string }).operation === "start"))).toHaveLength(0);
+});

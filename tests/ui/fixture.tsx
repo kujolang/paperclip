@@ -90,7 +90,8 @@ window.__KUJO_FIXTURE_DATA__ = {
       violations: [{ severity: "error", file: "src/ui/view.ts", line: 1, message: "UI must not depend on core", from_zone: "ui", to_zone: "core", from_owner: "frontend", to_owner: "platform", suggestion: "Depend on the public API." }] },
     scope: FENCE_SCOPE,
   } : null,
-  history: parameters.get("history") ? ["before", "after"].map((id, index) => ({ id, kind: "language-latest", artifactId: id, storedAt: `2026-10-12 12:0${index}:00+00`, sourceKind: "observed", result: index ? "failed" : "observed", digest: "a".repeat(64), inputDigest: null, definitionDigest: null, parentId: null, payloadBytes: 500 })) : [],
+  executionHistory: { pending: parameters.get("historyPending") === "1" },
+  history: parameters.get("evalHistory") ? ["outcome", ...(parameters.get("evalHistory") === "orphan" ? [] : ["plan"])].map(id => ({ id, kind: id === "plan" ? "evaluation-plan" : "evaluation-result", artifactId: "execution_fixture", storedAt: "2026-10-13 12:00:00+00", sourceKind: "observed", result: id === "plan" ? "requested evaluation; not run" : "evaluation partial · execution succeeded", digest: "a".repeat(64), inputDigest: "b".repeat(64), definitionDigest: "c".repeat(64), parentId: id === "outcome" ? "plan" : null, payloadBytes: 500 })) : parameters.get("history") ? ["before", "after"].map((id, index) => ({ id, kind: "language-latest", artifactId: id, storedAt: `2026-10-12 12:0${index}:00+00`, sourceKind: "observed", result: index ? "failed" : "observed", digest: "a".repeat(64), inputDigest: null, definitionDigest: null, parentId: null, payloadBytes: 500 })) : [],
   understanding: parameters.get("map") ? {
     status: "partial", stale: true, provenance: { componentVersion: "1.1.0" },
     fileTree: "# Project File Tree\n- [D] [workspace]\n  - [D] src\n    - [F] api.ts (TypeScript)",

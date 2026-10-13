@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Retain terminal Eval requests as linked observed plan/outcome evidence, with bounded publication recovery, clear/prune protection, parent-aware exports and assigned-issue agent reads.
+
 - Expose human-approved Eval on issues through a review/prepare/start/inspect/cancel panel and a strict agent tool bound to the assigned host issue/run. Preserve disabled cancellation, scoped metadata recovery, native receipts and cross-company navigation isolation.
 
 - Add internal host-owned Eval input admission, company/profile gating, full bounded review previews and stale-plan rejection. Add company-wide request/owner slots and opportunistic terminal retention; qualify these paths against an isolated authenticated host. Public execution controls remain pending.

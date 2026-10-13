@@ -6,6 +6,7 @@ explicit human-only issue confirmation. This is synchronous bounded execution,
 not a background queue or a durable long-running workflow runner. The manifest
 requests confirmation create/read permissions only; it cannot accept its own card.
 Migrations002/003 store immutable requests and enforce company admission limits.
+Migration004 adds a durable history-publication acknowledgment.
 
 ## Public workflow
 
@@ -36,9 +37,36 @@ UI actions require immutable authenticated human context from the host.
 List returns at most100 summaries without suite previews or result contents; it
 remains available after disabling execution so outstanding work can be cancelled.
 Status returns the approved plan and native receipt while execution is enabled.
-Public results omit internal owner/claim tokens. Receipts currently live in the
-execution ledger; parent-child links and unification with Evidence history remain
-unfinished. Arbitrary issue selection by an agent does not grant access.
+Public results omit internal owner/claim tokens. Terminal requests also publish linked observed plan/outcome records in Evidence
+history. These are execution-ledger records, not canonical Ability invocation receipts. Arbitrary issue selection by an agent does not grant access.
+
+## Retained execution history
+
+Each terminal request publishes two immutable records atomically: the requested
+plan (explicitly not-run) and its child outcome. Outcomes preserve the execution
+state, canonical Eval result, original input/definition digests and parent digest.
+Rejected, expired, stale, cancelled, failed and uncertain outcomes stay distinct.
+A requested plan alone is not proof of approval or execution.
+
+Publication failure does not change the durable outcome or repeat execution.
+Status/start/cancel and list/detail recovery retry publication. Each list/detail
+refresh reconciles at most four pending terminal requests; the panel explains
+when more evidence needs saving. History retains 20 records per issue for30 days,
+shared with other evidence. These pairs use terminal completion time, so delayed
+publication does not renew their retention. The independent execution ledger
+retains up to100 terminal requests per company for30 days.
+
+Clear Kujo data acknowledges existing terminal requests before removing their
+history; retries cannot recreate cleared or already acknowledged/pruned records.
+Active requests can still publish new outcomes when they finish. Parent records
+can be pruned independently; the child retains its parent ID/digest and the UI
+explains missing parents. Inspection, redacted export and explicit human issue
+attachment include the parent when available. Comparisons include execution state
+and native check counts. Attached issue documents are not removed by history clear.
+
+Agents can list/read issue evidence with `scope: "issue"` and `issueId` only for
+their assigned issue and current host run. Project/run scopes reject `issueId`.
+Feature/profile gates and existing read-size limits still apply.
 
 ## Authority and approval
 

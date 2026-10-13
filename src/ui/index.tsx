@@ -28,7 +28,7 @@ import type { ShipcheckReport } from "../features/shipcheck/schema.js";
 import type { ConcordReport } from "../features/concord/schema.js";
 import type { FenceReport } from "../features/fence/schema.js";
 
-type Detail = { executionActive?: boolean; shipcheck?: ShipcheckReport | null; concord?: ConcordReport | null; fence?: FenceReport | null; spec?: SpecReport | null; specs?: { files: string[]; truncated: boolean }; verification?: VerificationReport | null; verificationEnabled?: boolean; catalog?: CapabilityCatalog; history?: EvidenceMetadata[]; language?: LanguageReport | null; sources?: { files: string[]; truncated: boolean }; understanding?: Understanding | null; review: ReviewPack | null; failure: FailureEvidence | null; context: ContextPack | null; readiness?: DoctorReport; workspace?: WorkspaceReadiness; suggestedTask?: string };
+type Detail = { executionHistory?: { pending: boolean }; executionActive?: boolean; shipcheck?: ShipcheckReport | null; concord?: ConcordReport | null; fence?: FenceReport | null; spec?: SpecReport | null; specs?: { files: string[]; truncated: boolean }; verification?: VerificationReport | null; verificationEnabled?: boolean; catalog?: CapabilityCatalog; history?: EvidenceMetadata[]; language?: LanguageReport | null; sources?: { files: string[]; truncated: boolean }; understanding?: Understanding | null; review: ReviewPack | null; failure: FailureEvidence | null; context: ContextPack | null; readiness?: DoctorReport; workspace?: WorkspaceReadiness; suggestedTask?: string };
 type PanelProps = PluginDetailTabProps & { compact?: boolean };
 
 const colors = {
@@ -362,6 +362,7 @@ function EvidenceHistory({ context, records }: { context: PanelProps["context"];
         <option value="">Choose a record</option>{records.map((item) => <option key={item.id} value={item.id}>{item.kind.replace("-latest", "")} · {item.result} · {item.sourceKind} · {item.storedAt}</option>)}
       </select></label>
       {record && <div style={muted}>SHA-256: <code>{record.digest}</code><br />{record.sourceKind === "legacy" ? "Migrated legacy record; original input and definition receipts are unavailable." : "Digest identifies the retained payload. Exports have a separate digest after redaction."}</div>}
+      {record?.parentId && <div style={muted}>Related request: {records.some(item => item.id === record.parentId) ? <ActionButton tone="secondary" disabled={busy} onClick={() => { setSelected(record.parentId!); setOther(""); setResult(null); }}>Select request plan</ActionButton> : "The request plan is no longer retained here; its reference remains in the outcome."}</div>}
       <label>Compare with<select aria-label="Compare with" style={input} disabled={busy || !record} value={other} onChange={(event) => setOther(event.target.value)}>
         <option value="">Choose another record of the same kind</option>{records.filter((item) => item.id !== selected && item.kind === record?.kind).map((item) => <option key={item.id} value={item.id}>{item.result} · {item.storedAt}</option>)}
       </select></label>
@@ -666,7 +667,9 @@ function KujoPanel({ context, compact = false }: PanelProps) {
         <ActionButton tone="secondary" onClick={() => { void refresh(); }}>Check again</ActionButton>
       </div>}
 
-      {context.entityType === "issue" && (data?.executionActive || data?.catalog?.capabilities.some(item => item.tool === "manage-evaluation" && item.enabled)) && <EvaluationPanel key={`eval:${targetKey}`} issueId={context.entityId} enabled={!!data?.catalog?.capabilities.find(item => item.tool === "manage-evaluation")?.enabled} ready={data?.catalog?.capabilities.find(item => item.tool === "manage-evaluation")?.status === "ready"} />}
+      {context.entityType === "issue" && (data?.executionActive || data?.catalog?.capabilities.some(item => item.tool === "manage-evaluation" && item.enabled)) && <EvaluationPanel refreshEvidence={refresh} key={`eval:${targetKey}`} issueId={context.entityId} enabled={!!data?.catalog?.capabilities.find(item => item.tool === "manage-evaluation")?.enabled} ready={data?.catalog?.capabilities.find(item => item.tool === "manage-evaluation")?.status === "ready"} />}
+
+      {data?.executionHistory?.pending && <div role="status" style={card}>Execution outcomes are durable, but some Evidence history records are pending. Refresh to retry saving them; evaluations will not rerun.<button onClick={() => void refresh()}>Refresh evidence</button></div>}
 
       {actionError && <div role="alert" style={{ ...card, borderColor: colors.danger, color: colors.danger }}>{actionError}</div>}
 
