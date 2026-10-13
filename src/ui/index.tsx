@@ -1,3 +1,4 @@
+import type { StarterPreview } from "../features/starters/preview.js";
 import type { PackageReport } from "../features/packages/inspect.js";
 import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import {
@@ -29,7 +30,7 @@ import type { ShipcheckReport } from "../features/shipcheck/schema.js";
 import type { ConcordReport } from "../features/concord/schema.js";
 import type { FenceReport } from "../features/fence/schema.js";
 
-type Detail = { packages?: PackageReport | null; packageFiles?: { files: string[]; truncated: boolean }; executionHistory?: { pending: boolean }; executionActive?: boolean; shipcheck?: ShipcheckReport | null; concord?: ConcordReport | null; fence?: FenceReport | null; spec?: SpecReport | null; specs?: { files: string[]; truncated: boolean }; verification?: VerificationReport | null; verificationEnabled?: boolean; catalog?: CapabilityCatalog; history?: EvidenceMetadata[]; language?: LanguageReport | null; sources?: { files: string[]; truncated: boolean }; understanding?: Understanding | null; review: ReviewPack | null; failure: FailureEvidence | null; context: ContextPack | null; readiness?: DoctorReport; workspace?: WorkspaceReadiness; suggestedTask?: string };
+type Detail = { starters?: { id: "script" | "agent"; title: string; description: string; prerequisites: string }[]; packages?: PackageReport | null; packageFiles?: { files: string[]; truncated: boolean }; executionHistory?: { pending: boolean }; executionActive?: boolean; shipcheck?: ShipcheckReport | null; concord?: ConcordReport | null; fence?: FenceReport | null; spec?: SpecReport | null; specs?: { files: string[]; truncated: boolean }; verification?: VerificationReport | null; verificationEnabled?: boolean; catalog?: CapabilityCatalog; history?: EvidenceMetadata[]; language?: LanguageReport | null; sources?: { files: string[]; truncated: boolean }; understanding?: Understanding | null; review: ReviewPack | null; failure: FailureEvidence | null; context: ContextPack | null; readiness?: DoctorReport; workspace?: WorkspaceReadiness; suggestedTask?: string };
 type PanelProps = PluginDetailTabProps & { compact?: boolean };
 
 const colors = {
@@ -545,6 +546,49 @@ function FenceSection({ context, report, ready, refresh }: { context: PanelProps
   </section>;
 }
 
+function StarterSection({ catalog, ready }: { catalog: NonNullable<Detail["starters"]>; ready: boolean }) {
+  const generate = usePluginAction("preview-starter");
+  const [kind, setKind] = useState<"script" | "agent">("script");
+  const [name, setName] = useState("my-kujo-project");
+  const [preview, setPreview] = useState<StarterPreview | null>(null);
+  const [file, setFile] = useState("src/main.kujo");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const active = useRef(true);
+  useEffect(() => { active.current = true; return () => { active.current = false; }; }, []);
+  async function submit() {
+    setBusy(true); setPreview(null); setError(null);
+    try { const result = await generate({ kind, name }) as StarterPreview; if (active.current) setPreview(result); }
+    catch (value) { if (active.current) setError(value instanceof Error ? value.message : String(value)); }
+    finally { if (active.current) setBusy(false); }
+  }
+  function download() {
+    if (!preview) return;
+    const url = URL.createObjectURL(new Blob([JSON.stringify(preview, null, 2)], { type: "application/json" }));
+    const link = document.createElement("a"); link.href = url; link.download = `${preview.name}-starter.json`; link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+  const selected = catalog.find(item => item.id === kind);
+  return <section aria-label="Kujo starters" style={{ ...card, overflowWrap: "anywhere" }}>
+    <SectionTitle title="Start building with Kujo" detail="Preview files from Kujo's own project generators." />
+    <label>Starter<select aria-label="Starter" style={input} value={kind} disabled={busy} onChange={event => { setKind(event.target.value as "script" | "agent"); setPreview(null); }}>{catalog.map(item => <option key={item.id} value={item.id}>{item.title}</option>)}</select></label>
+    <p>{selected?.description}</p><p style={muted}>{selected?.prerequisites}</p>
+    <label>Project name<input aria-label="Starter project name" style={input} value={name} maxLength={64} disabled={busy} onChange={event => { setName(event.target.value); setPreview(null); }} /></label>
+    <p style={muted}>Use lowercase letters, numbers, hyphens or underscores; start with a letter.</p>
+    <ActionButton disabled={busy || !ready || !/^[a-z][a-z0-9_-]{0,63}$/.test(name)} onClick={() => void submit()}>{busy ? "Generating preview…" : "Preview starter files"}</ActionButton>
+    {!ready && <p style={muted}>Repair the Kujo runtime above to generate a preview.</p>}
+    <p style={muted}>Preview only: no project files are created, dependencies installed or generated programs run.</p>
+    {error && <div role="alert" style={{ color: colors.danger }}>{error}</div>}
+    {preview && <div>
+      <strong>{preview.files.length} proposed files · Kujo {preview.runtimeVersion}</strong>
+      <p style={muted}>{preview.notice}</p>
+      <label>Proposed file<select aria-label="Proposed file" style={input} value={file} onChange={event => setFile(event.target.value)}>{preview.files.map(item => <option key={item.path}>{item.path}</option>)}</select></label>
+      <pre aria-label="Starter source" style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere", maxHeight: 360, overflow: "auto" }}>{preview.files.find(item => item.path === file)?.content}</pre>
+      <ActionButton onClick={download}>Download starter review JSON</ActionButton>
+    </div>}
+  </section>;
+}
+
 function PackageSection({ context, report, files, ready, refresh }: { context: PanelProps["context"]; report: PackageReport | null; files: { files: string[]; truncated: boolean }; ready: boolean; refresh: () => void }) {
   const inspect = usePluginAction("inspect-kujo-packages");
   const [path, setPath] = useState(report?.path ?? files.files[0] ?? "");
@@ -799,6 +843,7 @@ function KujoPanel({ context, compact = false }: PanelProps) {
 
       {data?.catalog && <CapabilityExplorer key={`catalog:${targetKey}`} catalog={data.catalog} />}
 
+      {!!data?.starters?.length && canGenerate && <StarterSection key={`starters:${targetKey}`} catalog={data.starters} ready={data.readiness?.capabilities.examples === "ready"} />}
       {data?.packageFiles && data.catalog?.capabilities.some(entry => entry.tool === "inspect-kujo-packages" && entry.enabled) && canGenerate && <PackageSection key={`packages:${targetKey}:${data.packages?.id ?? "none"}`} context={context} report={data.packages ?? null} files={data.packageFiles} ready={data.readiness?.capabilities.packages === "ready"} refresh={refresh} />}
       {data?.verificationEnabled && data.catalog?.capabilities.some((entry) => entry.tool === "inspect-release-readiness" && entry.selectedByProfile) && canGenerate && <ShipcheckSection key={`shipcheck:${targetKey}:${data.shipcheck?.id ?? "none"}`} context={context} report={data.shipcheck ?? null} ready={data.readiness?.capabilities.shipcheck === "ready"} refresh={refresh} />}
       {data?.verificationEnabled && data.catalog?.capabilities.some((entry) => entry.tool === "inspect-artifact-drift" && entry.selectedByProfile) && canGenerate && <ConcordSection key={`concord:${targetKey}:${data.concord?.id ?? "none"}`} context={context} report={data.concord ?? null} ready={data.readiness?.capabilities.concord === "ready"} refresh={refresh} />}

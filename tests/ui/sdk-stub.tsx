@@ -50,6 +50,10 @@ export function usePluginAction(action: string) {
   return async (input: unknown) => {
     window.__KUJO_ACTIONS__ ??= [];
     window.__KUJO_ACTIONS__.push({ action, input });
+    if (action === "preview-starter") {
+      if (window.__KUJO_DELAY_PACKAGES__) { await new Promise<void>(resolve => { window.__KUJO_RESOLVE_PACKAGES__ = resolve; }); throw new Error("private delayed starter result"); }
+      return { ...(input as object), status: "preview", runtimeVersion: "1.8.1", files: [{ path: "src/main.kujo", content: 'print("Hello from Kujo")', sha256: "fixture" }], notice: "Generated programs have not run." };
+    }
     if (action === "inspect-kujo-packages") {
       if (window.__KUJO_DELAY_PACKAGES__) { await new Promise<void>(resolve => { window.__KUJO_RESOLVE_PACKAGES__ = resolve; }); throw new Error("private delayed package result"); }
       return { status: "warnings", reportId: "package-fixture" };

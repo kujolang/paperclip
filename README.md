@@ -88,6 +88,15 @@ verify installed bytes, lock digests, source availability or dependency compatib
 Local dependency paths remain declarations and are never followed. Missing,
 unreadable, malformed or unsupported lockfiles are explicit. See [package inspection](docs/USAGE.md#inspect-kujo-packages) for bounds and retained evidence.
 
+## Kujo starters
+
+**Start building with Kujo** previews a local script or fixture-provider AI agent
+using the selected runtime's canonical generators. Review every proposed file and
+download the review JSON, even without a configured workspace. Previews do not
+create project files, install dependencies or execute the generated program.
+The agent starter includes instructions, schemas, capability policy and evaluation;
+its pinned Kennel dependencies must be installed before use. See [starter previews](docs/USAGE.md#preview-kujo-starters).
+
 ## Evidence history
 
 Terminal Eval requests retain linked request-plan and outcome records here. You
