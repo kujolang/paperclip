@@ -1,0 +1,60 @@
+import assert from "node:assert/strict";
+import { chmod, mkdir, readdir } from "node:fs/promises";
+import { join } from "node:path";
+export async function qualifyProductionWorkflows({ call, companyId, root, checks, json, stop, start, waitUntil }) {
+  const route = "/plugins/kujolang.paperclip/bridge/action";
+  const issueId = (await call(`/companies/${companyId}/issues`, { method: "POST", status: 201, body: { title: "Projectless Dispatch workflow", status: "backlog" } })).data.id;
+  const action = async (operation, params = {}, options = {}) => (await call(route, { method: "POST", body: { companyId, key: "manage-kujo-workflow", params: { issueId, operation, ...params } }, ...options })).data;
+  await call("/plugins/kujolang.paperclip/config", { method: "POST", body: { companyId, configJson: { capabilityProfile: "build", features: { workflows: true } } } });
+  const folder = join(root, "workflow-state"); await mkdir(folder, { mode: 0o700 }); await chmod(folder, 0o700);
+  await call(`/plugins/kujolang.paperclip/companies/${companyId}/local-folders/workflow-state`, { method: "PUT", body: { path: folder, access: "readWrite" } });
+  const prepare = async submissionId => (await action("prepare", { template: "approval-handoff", topic: "Authenticated host workflow", submissionId })).data;
+  const accept = record => call(`/issues/${issueId}/interactions/${record.interactionId}/accept`, { method: "POST", body: {} });
+  await waitUntil(async () => { try { return !!(await action("inspect", { template: "approval-handoff", topic: "Review" })).data.plan; } catch { return false; } });
+  const pending = await prepare("initial"); assert.equal(pending.state, "pending"); assert.equal((await prepare("initial")).id, pending.id);
+  assert.equal(pending.plan.projectId, null); assert.equal(pending.plan.workspaceId, null); assert.equal(pending.plan.timeoutMs, 120000);
+  assert.deepEqual(await readdir(folder), []);
+  await action("start", { id: pending.id }, { status: 502 });
+  await accept(pending);
+  assert.equal((await action("start", { id: pending.id })).data.state, "pending");
+  // Submitted intent, not an in-memory callback, must survive a full restart.
+  await stop(); await start();
+  let job;
+  await waitUntil(async () => { try { job = (await call("/plugins/kujolang.paperclip/jobs")).data.find(item => item.jobKey === "dispatch-workflows"); return !!job; } catch { return false; } });
+  // Exercise the production schedule itself, including post-restart registration.
+  let result;
+  await waitUntil(async () => { try { result = (await action("status", { id: pending.id })).data; return !["preparing", "pending", "running", "cancel_requested"].includes(result.state); } catch { return false; } }, 210000);
+  assert.equal(result.state, "succeeded", JSON.stringify(result));
+  const paused = (await action("observe", { id: pending.id })).data; assert.equal(paused.control.run_status, "paused");
+  const decision = (await action("decide", { id: pending.id, decision: "approve", response: "Reviewed native checkpoint", submissionId: "decision" })).data;
+  const reviewedDecision = JSON.parse(decision.plan.preview).command.decision;
+  assert.equal(reviewedDecision.actor.type, "human"); assert.equal(reviewedDecision.expected_state_revision, paused.control.state_revision);
+  assert.equal(decision.plan.workflow.command, undefined);
+  await accept(decision); await action("start", { id: decision.id });
+  // Exercise the production schedule itself, including post-restart registration.
+  await waitUntil(async () => { result = (await action("status", { id: decision.id })).data; return !["preparing", "pending", "running", "cancel_requested"].includes(result.state); }, 210000);
+  assert.equal(result.state, "succeeded", JSON.stringify(result));
+  assert.equal(result.abilityReceipt.handler_id, "kujo.paperclip.workflow.host");
+  assert.equal(result.history.status, "retained");
+  const exported = (await call(route, { method: "POST", body: { companyId, key: "export-evidence", params: { entityType: "issue", entityId: issueId, evidenceId: result.history.outcomeId } } })).data.data;
+  assert.equal(exported.parent.status, "retained");
+  assert.equal(exported.payload.planEvidence.digest, exported.parent.receipt.digest);
+  assert.deepEqual(exported.payload.abilityReceipt, result.abilityReceipt);
+  assert.equal(exported.parent.payload.plan.workflow.command, undefined);
+  const completed = (await action("observe", { id: pending.id })).data; assert.equal(completed.control.run_status, "completed");
+  await stop(); await start();
+  await waitUntil(async () => { try { return (await action("status", { id: decision.id })).data.state === "succeeded"; } catch { return false; } });
+  assert.equal((await action("observe", { id: pending.id })).data.control.run_status, "completed");
+  const cancelled = await prepare("cancelled"); await action("cancel", { id: cancelled.id }); assert.equal((await action("status", { id: cancelled.id })).data.state, "cancelled");
+  const disabledPending = await prepare("disabled");
+  await call("/plugins/kujolang.paperclip/config", { method: "POST", body: { companyId, configJson: { capabilityProfile: "build", features: { workflows: false } } } });
+  await waitUntil(async () => { try { return !(await action("status", { id: decision.id })).data.plan; } catch { return false; } });
+  await action("inspect", { template: "approval-handoff", topic: "Disabled" }, { status: 502 });
+  assert.equal((await action("cancel", { id: disabledPending.id })).data.state, "cancelled");
+  const other = (await call("/companies", { method: "POST", status: 201, body: { name: "Unrelated workflow tenant" } })).data.id;
+  await action("status", {}, { status: 502, body: { companyId: other, key: "manage-kujo-workflow", params: { operation: "status", issueId, id: decision.id } } });
+  checks.push("workflow linked history exports preserve canonical receipts without raw commands; disabled recovery and cancellation remain available and foreign tenant reads fail");
+  checks.push("production workflow job executes a projectless human-approved start after full host/database restart; native checkpoint requires a separate exact-revision human confirmation and explicit queued decision");
+  checks.push("completed workflow and canonical host receipt survive another restart; cancelled pending start does not execute");
+  await json("workflow-journey-proof.json", { companyId, issueId, initial: pending.id, decision: decision.id, paused, completed, receipt: result.abilityReceipt });
+}

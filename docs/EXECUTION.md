@@ -3,8 +3,9 @@
 The issue panel exposes bounded canonical Eval through `manage-evaluation` and
 native run/test through `manage-kujo-execution`, with separate opt-in settings. Execution defaults off, requires a compatible company profile and an
 explicit human-only issue confirmation. This is synchronous bounded execution,
-not a background queue or a durable long-running workflow runner. The manifest
-requests confirmation create/read permissions only; it cannot accept its own card.
+not a durable long-running runner for arbitrary programs. Separately enabled
+Dispatch examples use the typed durable-job path described below. The manifest
+requests confirmation create/read permissions; it cannot accept its own card.
 Migrations002/003 store immutable requests and enforce company admission limits.
 Migration004 adds a durable history-publication acknowledgment.
 
@@ -496,19 +497,19 @@ The development-only authenticated fixture registers a manually triggered host
 job to prove pickup after the original action returns and across a full
 host/database restart. It uses a fresh host job context, not an orphaned promise
 with an expired action invocation ID. Existing 27-second public limits and
-company quotas remain unchanged. Production tools still use immediate start;
-no production job or arbitrary queue tool is registered. Longer Dispatch/Muzzle/
-Workcell adapters still require durable runner storage, canonical lifecycle and
-replay reconciliation, scheduling qualification and their own approved public
-controls. This foundation does not implement a second workflow replay engine.
+company quotas remain unchanged for existing immediate-start tools. The offline
+Dispatch controls described below use a declared production job with a separate
+120-second budget. Broader Dispatch/Muzzle/Workcell adapters still require canonical
+lifecycle and replay reconciliation and their own qualified public controls. This
+foundation does not implement a second workflow replay engine.
 
 ### Persistent native workflow storage foundation
 
 The internal `openWorkflowStorage` primitive reserves native runner data outside
 both project workspaces and installed packages. It requires an existing absolute,
 operator-owned directory with mode `0700` on Linux or macOS. It creates no default
-location and is not yet connected to production settings, tools or jobs. The pinned Dispatch command foundation is described below; no production workflow
-tool is exposed yet. Existing Windows features remain supported, while this
+location. The Dispatch workflow service resolves company operator configuration
+through the host localFolders API and uses this primitive. Existing Windows features remain supported, while this
 POSIX runner primitive explicitly rejects Windows.
 
 Reservations are segregated by installation, company, issue and execution ID.
@@ -579,8 +580,9 @@ process ceiling. An internal caller may explicitly select `workflow-job` for a
 fixed 120-second start/decision budget; read-only commands remain at 27 seconds.
 The selection and deadline are bound into the policy digest. This requires a
 durable job controller and human approval for that exact budget before production
-use; it must not run as a synchronous public RPC. Current public execution-plan
-contracts remain capped at 27 seconds. Timeout or lost observation does not
+use; it must not run as a synchronous public RPC. The typed Dispatch plans now
+provide that durable path. Existing workspace execution plans remain capped at
+27 seconds. Timeout or lost observation does not
 authorize another start.
 Disposing the private code snapshot leaves native run state intact.
 
@@ -605,3 +607,45 @@ canonical source pin; neither the canonical checkout nor live credentials are
 needed for those tests. This is still an internal foundation: production host
 storage readiness, approved start/resume/cancel controls, schedules, lifetime
 reconciliation, retention and live-provider admission remain unfinished.
+
+
+### Public offline Dispatch journey
+
+`features.workflows` is separately disabled by default and selected by the
+Installed/Build/Full profiles. The generated `manage-kujo-workflow` projection and
+issue panel resolve the host-owned company folder `workflow-state`; no tool accepts
+a filesystem root. Capability readiness also checks configured private storage.
+The installation UUID comes from the host worker environment. Root device/inode,
+canonical path, installation and company are hashed into the approved plan.
+
+A `dispatch.start` or `dispatch.decide` plan has null project/workspace identities,
+a typed fixed command, immutable parent execution ID, source/runtime/policy/input
+bindings and an explicit120000ms budget. It cannot enter the synchronous start
+method. Public start authenticates and persists the starter; the manifest-declared
+`dispatch-workflows` job rechecks the approval, assigned agent run and company
+policy. Pickup reserves45seconds beyond the native budget within its180-second
+window. Workflow preparation is capped at15seconds; existing preparation remains5.
+
+Migration006 reserves twenty retained workflow-parent slots per company and gives
+one native parent at most one running owner across competing decisions. Workflow
+parents survive ordinary command pruning. Never-started cancellation, rejection
+and expiry release their slot. Begun workflows retain ownership even after an
+uncertain response; automated retirement remains unimplemented, so the twenty-run
+allowance is deliberately not recycled by deleting metadata or adopting another
+root. Ordinary two-owner/twenty-active-request limits still apply.
+
+A start exclusively reserves storage after the SQL claim. Decisions recover that
+same initial request binding. Native status discovers at most one run directory
+inside the reservation, then delegates authoritative state loading to Dispatch
+inspect. The directory name is discovery only, not state authority. No raw
+state.json reader is introduced. Public inspection uses a22-second supervised
+read; canonical size bounds and control identity validation still apply.
+
+Human checkpoint preparation binds the exact observed revision/event/step/decision
+and the authenticated human requester; agents cannot invent the actor. A fresh
+human-only host confirmation and explicit queued start are required. Native Dispatch
+still owns lock/replay validation. Command success, native workflow completion and
+unconfirmed effects remain separate in UI, portable receipts and atomic linked
+history. Missing or ambiguous native state never authorizes replay. General v2
+controls, live providers, archive/retirement and definitive lost-response receipt
+reconciliation are not exposed by this first public slice.

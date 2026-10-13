@@ -4,6 +4,9 @@ export type PluginDetailTabProps = {
 
 declare global {
   interface Window {
+    __KUJO_WORKFLOW_REQUESTS__?: Array<Record<string, unknown>>;
+    __KUJO_DELAY_WORKFLOW__?: boolean;
+    __KUJO_RESOLVE_WORKFLOW__?: () => void;
     __KUJO_DELAY_PACKAGES__?: boolean;
     __KUJO_RESOLVE_PACKAGES__?: () => void;
     __KUJO_DELAY_CREATION__?: boolean;
@@ -65,6 +68,23 @@ export function usePluginAction(action: string) {
     if (action === "inspect-kujo-packages") {
       if (window.__KUJO_DELAY_PACKAGES__) { await new Promise<void>(resolve => { window.__KUJO_RESOLVE_PACKAGES__ = resolve; }); throw new Error("private delayed package result"); }
       return { status: "warnings", reportId: "package-fixture" };
+    }
+    if (action === "manage-kujo-workflow") {
+      const params = input as { operation: string; id?: string; template?: string; decision?: string };
+      if (window.__KUJO_DELAY_WORKFLOW__) { await new Promise<void>(resolve => { window.__KUJO_RESOLVE_WORKFLOW__ = resolve; }); throw new Error("private delayed workflow result"); }
+      const requests = window.__KUJO_WORKFLOW_REQUESTS__ ??= [];
+      if (params.operation === "list") return { requests };
+      if (params.operation === "inspect") return { plan: { summary: "Offline workflow with human checkpoints.", preview: "Canonical Dispatch offline approval-handoff", timeoutMs: 120000 } };
+      if (params.operation === "prepare" || params.operation === "decide") {
+        const item = { id: `workflow_${requests.length}`, parentId: params.operation === "prepare" ? `workflow_${requests.length}` : params.id, name: params.template ?? params.decision,
+          state: "pending", queuedAt: null, plan: { summary: "Reviewed workflow" }, result: null };
+        requests.push(item); return item;
+      }
+      if (params.operation === "observe") return { status: "observed", control: { schema: "kujo.control-view/v1", available: true, run_id: "run-fixture", state_revision: 3, run_status: "paused", human_intervention: { prompt: "Review fixture checkpoint" }, current_control_boundary: null } };
+      const item = requests.find(record => record.id === params.id)!;
+      if (params.operation === "start") item.queuedAt = "2026-10-13T20:00:00Z";
+      if (params.operation === "cancel") item.state = "cancelled";
+      return { ...item };
     }
     if (action === "manage-kujo-starter") {
       const params = input as { operation: string; kind?: string; name?: string; id?: string };

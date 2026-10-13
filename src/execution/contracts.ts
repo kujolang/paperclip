@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { dispatchCommandSchema } from "../features/dispatch/native.js";
 import type { ExecuteKujoInput, ExecuteKujoResult } from "../runtime/types.js";
 
 const identity = z.string().min(1).max(200);
@@ -6,19 +7,20 @@ const digest = z.string().regex(/^[a-f0-9]{64}$/);
 export const executionScopeSchema = z.object({ companyId: identity, issueId: identity }).strict();
 export type ExecutionScope = z.infer<typeof executionScopeSchema>;
 export const executionPlanSchema = z.object({
-  operation: z.enum(["eval.run", "source.run", "source.test", "source.fixtures", "starter.create"]),
+  operation: z.enum(["eval.run", "source.run", "source.test", "source.fixtures", "starter.create", "dispatch.start", "dispatch.decide"]),
   // Frozen at preparation. Absent on legacy requests; never backfill from a
   // newer catalog when rendering an old immutable outcome.
   abilityReceipt: z.object({
     serializerVersion: z.literal(1),
-    abilityId: z.enum(["kujo.eval.suite.run", "kujo.paperclip.source.execute", "kujo.paperclip.starter.create"]),
+    abilityId: z.enum(["kujo.eval.suite.run", "kujo.paperclip.source.execute", "kujo.paperclip.starter.create", "kujo.paperclip.workflow.manage"]),
     abilityVersion: z.string().regex(/^\d+\.\d+\.\d+$/),
     definitionDigest: digest,
     handlerVersion: z.literal("1.0.0"),
   }).strict().optional(),
   starter: z.object({ kind: z.enum(["script", "agent", "api", "mcp"]), name: z.string().regex(/^[a-z][a-z0-9_-]{0,63}$/), digest }).strict().optional(),
-  projectId: identity,
-  workspaceId: identity,
+  projectId: identity.nullable(),
+  workspaceId: identity.nullable(),
+  workflow: z.object({ parentId: identity, storageDigest: digest, command: dispatchCommandSchema }).strict().optional(),
   suite: z.string().min(1).max(500),
   summary: z.string().min(1).max(4000),
   preview: z.string().max(12000).optional(),
@@ -31,8 +33,17 @@ export const executionPlanSchema = z.object({
   componentDigest: digest,
   runtimeDigest: digest,
   policyDigest: digest,
-  timeoutMs: z.number().int().min(100).max(27000),
-}).strict();
+  timeoutMs: z.number().int().min(100).max(120000),
+}).strict().superRefine((plan, context) => {
+  if (plan.operation === "dispatch.start" || plan.operation === "dispatch.decide") {
+    if (!plan.workflow || plan.projectId !== null || plan.workspaceId !== null || plan.timeoutMs !== 120000
+      || plan.workflow.command.operation !== (plan.operation === "dispatch.start" ? "start-fixture" : "decide-approval")) {
+      context.addIssue({ code: "custom", message: "Invalid durable Dispatch plan" });
+    }
+  } else if (plan.workflow || !plan.projectId || !plan.workspaceId || plan.timeoutMs > 27000) {
+    context.addIssue({ code: "custom", message: "Invalid workspace execution plan" });
+  }
+});
 export type ExecutionPlan = z.infer<typeof executionPlanSchema>;
 export const executionRequestSchema = z.object({
   plan: executionPlanSchema,

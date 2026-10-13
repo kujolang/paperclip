@@ -640,3 +640,54 @@ test("source preparation failure shows repair guidance and no retry control", as
   await expect(section.getByRole("button", { name: "Start approved command", exact: true })).toHaveCount(0);
   await expect(section.getByLabel("Native Kujo output")).toHaveCount(0);
 });
+
+test("workflow panel separates approval, queued execution and native checkpoints", async ({ page }, testInfo) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/?entity=issue&workflows=1");
+  const section = page.getByRole("region", { name: "Kujo workflows" });
+  await expect(section).toBeVisible();
+  await section.getByRole("button", { name: "Preview workflow", exact: true }).click();
+  await expect(section.getByText("Canonical Dispatch offline approval-handoff")).toBeVisible();
+  await section.getByRole("button", { name: "Request workflow approval", exact: true }).click();
+  await expect(section.getByText(/Approval alone does not start work/)).toBeVisible();
+  await section.getByRole("button", { name: "Queue approved operation", exact: true }).click();
+  await expect(section.getByText(/submitted start survives reload/)).toBeVisible();
+  await expect(section.getByRole("button", { name: "Queue approved operation", exact: true })).toHaveCount(0);
+  await page.evaluate(() => { window.__KUJO_WORKFLOW_REQUESTS__![0]!.state = "succeeded"; });
+  await expect(section.getByText("Control operation: succeeded", { exact: true })).toBeVisible({ timeout: 10000 });
+  await section.getByRole("button", { name: "Inspect native workflow", exact: true }).click();
+  await expect(section.getByText("Workflow: paused", { exact: true })).toBeVisible();
+  await section.getByRole("button", { name: "Request checkpoint approval", exact: true }).click();
+  await expect(section.getByRole("button", { name: "Queue approved operation", exact: true })).toBeVisible();
+  await expect(section.getByText("Workflow: paused", { exact: true })).toHaveCount(0);
+  await section.screenshot({ path: testInfo.outputPath("workflow-journey.png") });
+  expect(await section.evaluate(element => element.scrollWidth <= element.clientWidth + 1)).toBe(true);
+});
+
+test("workflow recovery remains visible while disabled and other surfaces stay read-only", async ({ page }) => {
+  await page.goto("/?entity=issue&workflowRetained=1");
+  const section = page.getByRole("region", { name: "Kujo workflows" });
+  await expect(section.getByText(/Retained request status and cancellation remain available/)).toBeVisible();
+  await expect(section.getByRole("button", { name: "Preview workflow", exact: true })).toHaveCount(0);
+  await page.goto("/?entity=run&workflows=1");
+  await expect(page.getByRole("region", { name: "Kujo workflows" })).toHaveCount(0);
+});
+
+test("workflow navigation discards delayed private results", async ({ page }) => {
+  await page.goto("/?entity=issue&workflows=1");
+  await page.evaluate(() => { window.__KUJO_DELAY_WORKFLOW__ = true; });
+  await page.getByRole("button", { name: "Preview workflow", exact: true }).click();
+  await page.waitForFunction(() => !!window.__KUJO_RESOLVE_WORKFLOW__);
+  await page.evaluate(() => { window.__KUJO_NAVIGATE__?.("other-company"); window.__KUJO_DELAY_WORKFLOW__ = false; window.__KUJO_RESOLVE_WORKFLOW__?.(); });
+  await expect(page.getByText("private delayed workflow result", { exact: true })).toHaveCount(0);
+});
+
+
+test("workflow admission explains missing operator storage before requesting approval", async ({ page }) => {
+  await page.goto("/?entity=issue&workflows=1&workflowStorage=missing");
+  const section = page.getByRole("region", { name: "Kujo workflows" });
+  await expect(section.getByRole("button", { name: "Preview workflow", exact: true })).toBeDisabled();
+  await expect(section.getByRole("button", { name: "Request workflow approval", exact: true })).toBeDisabled();
+  await expect(section.getByText(/operator must configure/)).toBeVisible();
+  await expect(section.getByRole("button", { name: "Refresh workflow requests", exact: true })).toBeEnabled();
+});

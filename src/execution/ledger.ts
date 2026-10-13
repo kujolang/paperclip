@@ -25,11 +25,11 @@ export function executionLedger(ctx: PluginContext) {
     return record;
   };
   const maintain = async (companyId: string) => {
-    await ctx.db.execute(`UPDATE ${table(ctx)} SET state = 'expired', finished_at = clock_timestamp(), diagnostic = 'approval_expired'
+    await ctx.db.execute(`UPDATE ${table(ctx)} SET state = 'expired', finished_at = clock_timestamp(), diagnostic = 'approval_expired', workflow_slot = NULL
       WHERE company_id = $1 AND state IN ('preparing', 'pending') AND expires_at <= clock_timestamp()`, [companyId]);
     await ctx.db.execute(`UPDATE ${table(ctx)} SET state = 'uncertain', finished_at = clock_timestamp(), diagnostic = 'owner_lease_expired'
       WHERE company_id = $1 AND state IN ${running} AND lease_until <= clock_timestamp()`, [companyId]);
-    await ctx.db.execute(`DELETE FROM ${table(ctx)} WHERE company_id = $1 AND state NOT IN ${active}
+    await ctx.db.execute(`DELETE FROM ${table(ctx)} WHERE company_id = $1 AND state NOT IN ${active} AND workflow_slot IS NULL
       AND (finished_at < clock_timestamp() - interval '30 days' OR id IN
         (SELECT id FROM ${table(ctx)} WHERE company_id = $1 AND state NOT IN ${active}
           ORDER BY created_at DESC, id DESC OFFSET 100))`, [companyId]);
@@ -39,7 +39,7 @@ export function executionLedger(ctx: PluginContext) {
     async list(scope: ExecutionScope) {
       await maintain(scope.companyId);
       const rows = await ctx.db.query(`SELECT ${columns} FROM ${table(ctx)} WHERE company_id = $1 AND issue_id = $2
-        ORDER BY CASE WHEN state IN ${active} THEN 0 ELSE 1 END, created_at DESC, id DESC LIMIT 100`, [scope.companyId, scope.issueId]);
+        ORDER BY CASE WHEN state IN ${active} THEN 0 WHEN workflow_slot IS NOT NULL THEN 1 ELSE 2 END, created_at DESC, id DESC LIMIT 100`, [scope.companyId, scope.issueId]);
       return rows.map(row => {
         const record = executionRecordSchema.parse(row);
         if (evidenceDigest(record.request) !== record.requestDigest) throw new Error("Execution request integrity failed");
@@ -52,10 +52,12 @@ export function executionLedger(ctx: PluginContext) {
       // Legacy active rows without slots block new admission until they finish
       // or expire; migration never silently evicts an outstanding approval.
       for (let attempt = 0; attempt < EXECUTION_LIMITS.activeRequests; attempt++) {
-        const inserted = (await ctx.db.execute(`INSERT INTO ${table(ctx)} (id, company_id, issue_id, request_digest, request, state, request_slot)
-          SELECT $3, $1, $2, $4, $5::jsonb, 'preparing', slots.slot FROM generate_series(1, 20) AS slots(slot)
+        const inserted = (await ctx.db.execute(`INSERT INTO ${table(ctx)} (id, company_id, issue_id, request_digest, request, state, request_slot, workflow_slot)
+          SELECT $3, $1, $2, $4, $5::jsonb, 'preparing', slots.slot, CASE WHEN $5::jsonb->'plan'->>'operation' = 'dispatch.start' THEN slots.slot ELSE NULL END FROM generate_series(1, 20) AS slots(slot)
           WHERE NOT EXISTS (SELECT 1 FROM ${table(ctx)} existing WHERE existing.company_id = $1 AND existing.state IN ${active}
             AND (existing.request_slot = slots.slot OR existing.request_slot IS NULL))
+          AND ($5::jsonb->'plan'->>'operation' <> 'dispatch.start' OR NOT EXISTS
+            (SELECT 1 FROM ${table(ctx)} retained WHERE retained.company_id = $1 AND retained.workflow_slot = slots.slot))
           ORDER BY slots.slot LIMIT 1 ON CONFLICT DO NOTHING`,
         [...params(scope, id), evidenceDigest(request), canonicalJson(request)])).rowCount === 1;
         if (inserted) return true;
@@ -64,6 +66,10 @@ export function executionLedger(ctx: PluginContext) {
           WHERE company_id = $1 AND state IN ${active}`, [scope.companyId]);
         if (Number(capacity[0]?.count ?? 0) >= EXECUTION_LIMITS.activeRequests) break;
       }
+      if (request.plan.operation === "dispatch.start") {
+        const retained = await ctx.db.query<{ count: string }>(`SELECT count(*)::text AS count FROM ${table(ctx)} WHERE company_id = $1 AND workflow_slot IS NOT NULL`, [scope.companyId]);
+        if (Number(retained[0]?.count ?? 0) >= 20) throw new Error("Twenty workflow reservations are retained in this company; archive/retirement is not yet available in this development build");
+      }
       throw new Error("Company execution request capacity is unavailable; finish, cancel or expire outstanding requests before retrying");
     },
     async bind(scope: ExecutionScope, id: string, interactionId: string) {
@@ -71,7 +77,7 @@ export function executionLedger(ctx: PluginContext) {
         WHERE ${scoped} AND state = 'preparing' AND interaction_id IS NULL`, [...params(scope, id), interactionId]);
     },
     async expire(scope: ExecutionScope, id: string) {
-      await ctx.db.execute(`UPDATE ${table(ctx)} SET state = 'expired', finished_at = clock_timestamp(), diagnostic = 'approval_expired'
+      await ctx.db.execute(`UPDATE ${table(ctx)} SET state = 'expired', finished_at = clock_timestamp(), diagnostic = 'approval_expired', workflow_slot = NULL
         WHERE ${scoped} AND state IN ('preparing', 'pending') AND expires_at <= clock_timestamp()`, params(scope, id));
       // An expired owner lease proves only that observation was lost, not that
       // an effect failed or an orphaned process stopped. Never requeue it.
@@ -115,13 +121,13 @@ export function executionLedger(ctx: PluginContext) {
       return rows[0]?.admission ?? "uncertain";
     },
     async cancel(scope: ExecutionScope, id: string) {
-      await ctx.db.execute(`UPDATE ${table(ctx)} SET state = 'cancelled', finished_at = clock_timestamp(), diagnostic = 'cancelled_before_execution'
+      await ctx.db.execute(`UPDATE ${table(ctx)} SET state = 'cancelled', finished_at = clock_timestamp(), diagnostic = 'cancelled_before_execution', workflow_slot = NULL
         WHERE ${scoped} AND state IN ('preparing', 'pending')`, params(scope, id));
       await ctx.db.execute(`UPDATE ${table(ctx)} SET state = 'cancel_requested', diagnostic = 'cancellation_requested'
         WHERE ${scoped} AND state = 'running'`, params(scope, id));
     },
     async finishPending(scope: ExecutionScope, id: string, state: "rejected" | "uncertain", diagnostic: string) {
-      await ctx.db.execute(`UPDATE ${table(ctx)} SET state = $4, finished_at = clock_timestamp(), diagnostic = $5
+      await ctx.db.execute(`UPDATE ${table(ctx)} SET state = $4, finished_at = clock_timestamp(), diagnostic = $5, workflow_slot = NULL
         WHERE ${scoped} AND state IN ('preparing', 'pending')`, [...params(scope, id), state, diagnostic]);
     },
     async finish(scope: ExecutionScope, id: string, ownerId: string, claimId: string, state: ExecutionState, result: Record<string, unknown> | null, diagnostic: string | null) {
