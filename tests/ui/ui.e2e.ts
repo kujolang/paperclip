@@ -510,3 +510,29 @@ test("starter controls enforce runtime/profile/run restrictions and discard late
   await page.evaluate(() => window.__KUJO_RESOLVE_PACKAGES__?.());
   await expect(page.getByText("private delayed starter result")).toHaveCount(0);
 });
+
+test("API starter exposes canonical entrypoint and prerequisites without starting a server", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 1000 });
+  await page.goto("/?starters=1");
+  const panel = page.getByRole("region", { name: "Kujo starters", exact: true });
+  await panel.getByLabel("Starter", { exact: true }).selectOption("api");
+  await expect(panel.getByText(/running creates a database and opens a port/)).toBeVisible();
+  await panel.getByRole("button", { name: "Preview starter files", exact: true }).click();
+  await expect(panel.getByLabel("Starter source")).toContainText("from src.server.runtime");
+  await expect(panel.getByLabel("Proposed file", { exact: true })).toHaveValue("main.kujo");
+  await expect(panel.getByText(/canonical-api-commit/)).toBeVisible();
+  await expect(panel.getByText("No server started or database created.")).toBeVisible();
+  await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  await panel.screenshot({ path: test.info().outputPath("api-starter.png") });
+});
+
+test("MCP starter identifies its canonical server and requires explicit client setup", async ({ page }) => {
+  await page.goto("/?starters=1");
+  const panel = page.getByRole("region", { name: "Kujo starters", exact: true });
+  await panel.getByLabel("Starter", { exact: true }).selectOption("mcp");
+  await expect(panel.getByText(/Review demo roots and auth/)).toBeVisible();
+  await panel.getByRole("button", { name: "Preview starter files", exact: true }).click();
+  await expect(panel.getByLabel("Proposed file", { exact: true })).toHaveValue("server.kujo");
+  await expect(panel.getByText(/canonical-mcp-commit/)).toBeVisible();
+  await expect(panel.getByText("No server registered or started.")).toBeVisible();
+});

@@ -30,7 +30,7 @@ import type { ShipcheckReport } from "../features/shipcheck/schema.js";
 import type { ConcordReport } from "../features/concord/schema.js";
 import type { FenceReport } from "../features/fence/schema.js";
 
-type Detail = { starters?: { id: "script" | "agent"; title: string; description: string; prerequisites: string }[]; packages?: PackageReport | null; packageFiles?: { files: string[]; truncated: boolean }; executionHistory?: { pending: boolean }; executionActive?: boolean; shipcheck?: ShipcheckReport | null; concord?: ConcordReport | null; fence?: FenceReport | null; spec?: SpecReport | null; specs?: { files: string[]; truncated: boolean }; verification?: VerificationReport | null; verificationEnabled?: boolean; catalog?: CapabilityCatalog; history?: EvidenceMetadata[]; language?: LanguageReport | null; sources?: { files: string[]; truncated: boolean }; understanding?: Understanding | null; review: ReviewPack | null; failure: FailureEvidence | null; context: ContextPack | null; readiness?: DoctorReport; workspace?: WorkspaceReadiness; suggestedTask?: string };
+type Detail = { starters?: { id: "script" | "agent" | "api" | "mcp"; title: string; description: string; prerequisites: string }[]; packages?: PackageReport | null; packageFiles?: { files: string[]; truncated: boolean }; executionHistory?: { pending: boolean }; executionActive?: boolean; shipcheck?: ShipcheckReport | null; concord?: ConcordReport | null; fence?: FenceReport | null; spec?: SpecReport | null; specs?: { files: string[]; truncated: boolean }; verification?: VerificationReport | null; verificationEnabled?: boolean; catalog?: CapabilityCatalog; history?: EvidenceMetadata[]; language?: LanguageReport | null; sources?: { files: string[]; truncated: boolean }; understanding?: Understanding | null; review: ReviewPack | null; failure: FailureEvidence | null; context: ContextPack | null; readiness?: DoctorReport; workspace?: WorkspaceReadiness; suggestedTask?: string };
 type PanelProps = PluginDetailTabProps & { compact?: boolean };
 
 const colors = {
@@ -548,7 +548,7 @@ function FenceSection({ context, report, ready, refresh }: { context: PanelProps
 
 function StarterSection({ catalog, ready }: { catalog: NonNullable<Detail["starters"]>; ready: boolean }) {
   const generate = usePluginAction("preview-starter");
-  const [kind, setKind] = useState<"script" | "agent">("script");
+  const [kind, setKind] = useState<"script" | "agent" | "api" | "mcp">("script");
   const [name, setName] = useState("my-kujo-project");
   const [preview, setPreview] = useState<StarterPreview | null>(null);
   const [file, setFile] = useState("src/main.kujo");
@@ -558,7 +558,7 @@ function StarterSection({ catalog, ready }: { catalog: NonNullable<Detail["start
   useEffect(() => { active.current = true; return () => { active.current = false; }; }, []);
   async function submit() {
     setBusy(true); setPreview(null); setError(null);
-    try { const result = await generate({ kind, name }) as StarterPreview; if (active.current) setPreview(result); }
+    try { const result = await generate({ kind, name }) as StarterPreview; if (active.current) { setPreview(result); setFile(result.entrypoint ?? "src/main.kujo"); } }
     catch (value) { if (active.current) setError(value instanceof Error ? value.message : String(value)); }
     finally { if (active.current) setBusy(false); }
   }
@@ -570,8 +570,8 @@ function StarterSection({ catalog, ready }: { catalog: NonNullable<Detail["start
   }
   const selected = catalog.find(item => item.id === kind);
   return <section aria-label="Kujo starters" style={{ ...card, overflowWrap: "anywhere" }}>
-    <SectionTitle title="Start building with Kujo" detail="Preview files from Kujo's own project generators." />
-    <label>Starter<select aria-label="Starter" style={input} value={kind} disabled={busy} onChange={event => { setKind(event.target.value as "script" | "agent"); setPreview(null); }}>{catalog.map(item => <option key={item.id} value={item.id}>{item.title}</option>)}</select></label>
+    <SectionTitle title="Start building with Kujo" detail="Preview canonical Kujo generators and application source." />
+    <label>Starter<select aria-label="Starter" style={input} value={kind} disabled={busy} onChange={event => { setKind(event.target.value as "script" | "agent" | "api" | "mcp"); setPreview(null); }}>{catalog.map(item => <option key={item.id} value={item.id}>{item.title}</option>)}</select></label>
     <p>{selected?.description}</p><p style={muted}>{selected?.prerequisites}</p>
     <label>Project name<input aria-label="Starter project name" style={input} value={name} maxLength={64} disabled={busy} onChange={event => { setName(event.target.value); setPreview(null); }} /></label>
     <p style={muted}>Use lowercase letters, numbers, hyphens or underscores; start with a letter.</p>
@@ -582,6 +582,7 @@ function StarterSection({ catalog, ready }: { catalog: NonNullable<Detail["start
     {preview && <div>
       <strong>{preview.files.length} proposed files · Kujo {preview.runtimeVersion}</strong>
       <p style={muted}>{preview.notice}</p>
+      {preview.provenance && <p style={muted}>{preview.provenance.component} {preview.provenance.version} · Source commit {preview.provenance.commit}</p>}
       <label>Proposed file<select aria-label="Proposed file" style={input} value={file} onChange={event => setFile(event.target.value)}>{preview.files.map(item => <option key={item.path}>{item.path}</option>)}</select></label>
       <pre aria-label="Starter source" style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere", maxHeight: 360, overflow: "auto" }}>{preview.files.find(item => item.path === file)?.content}</pre>
       <ActionButton onClick={download}>Download starter review JSON</ActionButton>

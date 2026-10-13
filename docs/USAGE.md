@@ -274,7 +274,7 @@ does not identify those bytes.
 
 ## Preview Kujo starters
 
-In a project or issue, select **Local script** or **AI agent project** under
+In a project or issue, select **Local script**, **AI agent project**, **SQLite API** or **MCP server** under
 **Start building with Kujo**, enter a project name, and choose **Preview starter
 files**. Names are 1–64 lowercase ASCII letters, digits, hyphens or underscores,
 starting with a letter. Native reserved-name rules also apply. Inspect the
@@ -288,8 +288,7 @@ It includes pinned dependency declarations, instructions, schemas, capability
 policy and an evaluation. The generated README explains subsequent use; those
 commands have not run. Fixture generation needs no credentials, but running the
 agent requires its Kennel dependencies. Live providers require separate explicit
-configuration. Source/generator behavior is identified by the reported runtime
-version, rather than presented as a fixed template maintained by Paperclip.
+configuration. Generator behavior is identified by the reported runtime version. API and MCP previews identify their exact canonical component versions and commits.
 
 The Examples switch and Installed/Build/Full profiles govern this UI action.
 No workspace is needed; run views remain read-only. Generation is capped at five
@@ -300,6 +299,47 @@ the requesting company view and are not stored in Evidence history or written
 into the user's workspace. They are proposed source files, not verification
 receipts. The JSON download is a review document, not an automatic installer.
 
-API and MCP starters, approval-bound project creation, and explicit project
-run/test remain separate unfinished expansion requirements. The preview does not
+Approval-bound project creation, explicit project run/test, and repo-specific MCP
+generation remain separate unfinished expansion requirements. The preview does not
 replace those workflows.
+
+### SQLite API starter
+
+The API preview copies checksummed CRUD API backend files without executing them.
+The proposed root `main.kujo` delegates to the canonical server implementation;
+`data/.gitkeep` preserves the empty database directory in the file inventory.
+The starter's README explains local startup and effect/auth prerequisites.
+`UPSTREAM_README.md` preserves the full canonical guide; its frontend, scripts and
+tests are not included. API examples and the OpenAPI contract are included.
+
+After reviewing and materializing the files, a user can run
+`kujo run main.kujo --interpreter` from the project root. That separate command
+opens the loopback port (4100 by default), creates the SQLite database and seeds
+demo data. The default demo permits unauthenticated writes unless configured;
+review authentication, CORS and production settings before changing exposure.
+No Node.js/frontend build or provider credentials are needed for the backend.
+The plugin preview does not run that command, certify deployment readiness or
+claim project tests passed. A pinned source snapshot is distinct from the
+selected runtime version, and both are recorded in the review JSON.
+
+### MCP server starter
+
+The MCP preview includes the canonical local framework, JSON configuration, tool
+and resource registries, a contained demo workspace, license, reference and
+security guide. Its entrypoint is `server.kujo`; after reviewing/materializing
+files, the separate command `kujo run server.kujo --interpreter` opens loopback
+port 8931. Health is at `/mcp/v1/health`, and JSON-RPC uses POST `/mcp/v1`.
+
+The default demo roots are relative (`./demo`), making these files portable.
+Authentication is disabled for local demonstration; tools may write permitted
+files within the configured roots, while read-only patterns restrict selected
+file types. Review `mcp-server.json` and the bundled security guide before
+connecting a client or changing exposure. No credentials or dependency install
+are needed to run the local demo. Preview never starts/registers a server,
+connects a client or invokes a generated tool. This is the canonical framework
+starter, not a claim of certification for every external MCP client.
+
+The full upstream guide is retained as `UPSTREAM_README.md`; optional Ability,
+Watchdog, deployment and repo-generation components it describes are not included.
+The starter guide states that scope. Repository-specific `mcp make` integration
+requires its own source/workspace admission and is not invoked by this preview.

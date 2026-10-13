@@ -35,7 +35,8 @@
       "evidence": [
         "Source checks, lint, location links and redacted format previews merged in PR42 at2ac3932.67 tests,12 browser scenarios, all five native platforms, SDK matrix, security and a fresh local tarball consumer smoke passed. Package inspection, broader examples/starters and approved run/test/scaffold remain pending.",
         "Package inspection adds the eleventh pinned canonical component and seventeenth scoped tool. Kennel declaration-only validation and lock parsing operate on bounded private copies without local dependency traversal, network, install or project execution. UI, profile gates, immutable evidence and explicit unverified/truncated/stale states are implemented. Exact native, browser, hosted and real-host verification is recorded on the implementation PR. Broader starters, approved run/test/scaffold and public/newcomer acceptance remain pending.",
-        "Native script and basic fixture-agent starter previews now expose reviewable generated source and digest-bearing JSON download without workspace writes, dependency installation, credentials or generated-program execution. Scope/config/runtime and navigation guards are verified on the implementation PR. API/MCP starters and approved create/run/test remain unfinished."
+        "Native script and basic fixture-agent starter previews now expose reviewable generated source and digest-bearing JSON download without workspace writes, dependency installation, credentials or generated-program execution. Scope/config/runtime and navigation guards are verified on the implementation PR. API/MCP starters and approved create/run/test remain unfinished.",
+        "SQLite API and MCP starter previews package two pinned canonical application snapshots (thirteen total components), source provenance, portable file inventories and explicit setup/effect prerequisites. Materialized consumers verify API health/authenticated CRUD/concurrency/restart and MCP authenticated JSON-RPC discovery/read/path/write guards. Preview runs neither server. Exact platform/host/browser proof is recorded on the implementation PR. Approved creation/run/test and repo-specific MCP generation remain pending."
       ]
     },
     {
@@ -82,8 +83,10 @@
     {
       "id": "knowledge-ai",
       "requirement": "RAG query/ingest, AI/Agents SDK workflows, Watchdog correlation, Kennel lifecycle, MCP validation/scaffolds",
-      "status": "pending",
-      "evidence": []
+      "status": "in_progress",
+      "evidence": [
+        "Local canonical MCP framework starter preview is available without workspace access, client registration or server execution. Its materialized consumer is tested for authenticated JSON-RPC and file boundaries. Repository-specific MCP generation/validation, approval-backed scaffolding and remaining knowledge/AI/operator workflows are still pending."
+      ]
     },
     {
       "id": "webops",

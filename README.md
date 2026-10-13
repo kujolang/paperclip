@@ -73,7 +73,7 @@ Kujo retains up to 20 results per company/entity for 30 days in its Paperclip da
 | **Review Pack** | Measures change size, explains risk signals, and prepares a review handoff. | ChangeBucket and PatchBrief |
 | **Failure Evidence** | Turns supplied command details and logs into a bounded, redacted record. | CaseFile |
 
-The eleven component snapshots are pinned, checksummed, and shipped with the plugin. The
+The thirteen component snapshots are pinned, checksummed, and shipped with the plugin. The
 plugin does not download component code while installing or running. The Eval snapshot
 provides human-approved execution on issue workspaces.
 
@@ -90,12 +90,12 @@ unreadable, malformed or unsupported lockfiles are explicit. See [package inspec
 
 ## Kujo starters
 
-**Start building with Kujo** previews a local script or fixture-provider AI agent
-using the selected runtime's canonical generators. Review every proposed file and
+**Start building with Kujo** previews a local script, fixture-provider AI agent, SQLite CRUD API or MCP server
+using the selected runtime's canonical generators or pinned application source. Review every proposed file and
 download the review JSON, even without a configured workspace. Previews do not
 create project files, install dependencies or execute the generated program.
 The agent starter includes instructions, schemas, capability policy and evaluation;
-its pinned Kennel dependencies must be installed before use. See [starter previews](docs/USAGE.md#preview-kujo-starters).
+its pinned Kennel dependencies must be installed before use. The API includes the canonical backend, loopback defaults, SQLite persistence, API contracts and setup guidance; previewing it never opens a port or creates a database. The MCP starter includes a local framework and contained demo files, with explicit root/auth settings and client setup. See [starter previews](docs/USAGE.md#preview-kujo-starters).
 
 ## Evidence history
 
