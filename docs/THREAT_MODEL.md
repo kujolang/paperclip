@@ -11,6 +11,7 @@ The protected assets are project source, credentials, Paperclip tenant identity,
 | Malicious filenames, refs, or tool parameters | Zod validation, bounded lengths, strict git-ref grammar, no shell interpolation |
 | Workspace traversal or symlink escape | Host workspace lookup, `realpath`, containment checks, selected-path allowlist |
 | Arbitrary Kujo scripts | Compile-time component ID union and locked registry; no user path parameter |
+| Workspace modules shadowing canonical component imports | `--isolated-imports` in both VM and interpreter modes; ambient `KUJO_MODULE_PATH` is not inherited |
 | Huge files, diffs, logs, or process output | Component budgets, file/byte limits, stdout/stderr caps, timeouts, bounded UI rows |
 | Secrets in logs/files | Safe environment allowlist, CaseFile/Scent redaction, second defensive redaction, sensitive-path denylist |
 | Package/component substitution | exact dependency versions, platform package selection, lock commit/version/license/SHA-256, runtime integrity verification |

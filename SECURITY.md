@@ -22,7 +22,7 @@ The plugin does not provide a sandbox. Only install it in a trusted Paperclip ho
 - Workspace scans reject individual files over 25 MB and repositories with more than 100,000 Git-visible files before a component starts.
 - Child processes use fixed entrypoints, argument arrays, `shell: false`, a small environment, timeouts, output limits, and whole-process-tree termination.
 - Git runs without system or global configuration, hooks, external diff drivers, credential prompts, or file-system monitors.
-- Component checksums are verified before execution.
+- Component checksums are verified before execution. Native component runs use `--isolated-imports`, keeping module resolution out of the analyzed project in both VM and interpreter modes.
 - Context content is opt-in, restricted to selected files, bounded, and checked against traversal and symlink escape.
 - Stored artifacts are isolated by company, validated on read, checked against their entity and workspace, and cleared on request.
 - Disabled features cannot be invoked through tools, UI actions, or stored-artifact reads.

@@ -52,7 +52,7 @@ is missing, incompatible, or not Kujo. Correct the configuration, then select
 5. Generate a **Review Pack** to inspect scope, risk, and suggested checks.
 6. If a command fails, save its bounded output as **Failure Evidence**.
 
-Kujo retains up to 20 results per company/entity for 30 days in its Paperclip database namespace. Inspect, compare, or download redacted records in **Evidence history**. On an issue, an authenticated human can explicitly attach a record as an issue document. Kujo does not write reports into the project repository.
+Kujo retains up to 20 results per company/entity for 30 days in its Paperclip database namespace. Inspect, compare, or download redacted records in **Evidence history**. On an issue, an authenticated human can explicitly attach a record as an issue document. Kujo does not write reports into the project repository. Bundled component imports are isolated from project modules.
 
 ## What Kujo adds
 
