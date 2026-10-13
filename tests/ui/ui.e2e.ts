@@ -691,3 +691,17 @@ test("workflow admission explains missing operator storage before requesting app
   await expect(section.getByText(/operator must configure/)).toBeVisible();
   await expect(section.getByRole("button", { name: "Refresh workflow requests", exact: true })).toBeEnabled();
 });
+
+
+test("native checkpoint receipt observation preserves an uncertain host outcome", async ({ page }) => {
+  await page.goto("/?entity=issue&workflows=1");
+  await page.evaluate(() => { window.__KUJO_WORKFLOW_REQUESTS__ = [{ id: "decision-one", parentId: "parent-one", operation: "dispatch.decide", name: "approve", state: "uncertain", queuedAt: null }]; });
+  const section = page.getByRole("region", { name: "Kujo workflows" });
+  await section.getByRole("button", { name: "Refresh workflow requests", exact: true }).click();
+  await section.getByRole("button", { name: /Inspect workflow operation/ }).click();
+  await section.getByRole("button", { name: "Inspect checkpoint receipt", exact: true }).click();
+  await expect(section.getByText("Exact checkpoint decision: applied", { exact: true })).toBeVisible();
+  await expect(section.getByText("Control operation: uncertain", { exact: true })).toBeVisible();
+  await expect(section.getByRole("button", { name: "Queue approved operation", exact: true })).toHaveCount(0);
+  await expect(section.getByText(/original host command receipt is unchanged/)).toBeVisible();
+});

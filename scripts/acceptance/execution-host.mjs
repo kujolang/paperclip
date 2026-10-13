@@ -1,9 +1,9 @@
 /** Opt-in live host qualification. Never connects to an existing Paperclip instance. */
 import assert from "node:assert/strict";
 import { spawn, execFileSync } from "node:child_process";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { once } from "node:events";
-import { access, copyFile, mkdir, mkdtemp, open, readFile, readdir, realpath, symlink, writeFile } from "node:fs/promises";
+import { access, cp, copyFile, mkdir, mkdtemp, open, readFile, readdir, realpath, symlink, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -14,6 +14,8 @@ import { buildRuntimeSupervisor } from "../build-runtime-supervisor.mjs";
 
 const production = process.env.KUJO_ACCEPTANCE_PRODUCTION === "1";
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
+const packageDirectory = process.env.KUJO_ACCEPTANCE_PACKAGE_DIRECTORY ? await realpath(process.env.KUJO_ACCEPTANCE_PACKAGE_DIRECTORY) : null;
+if (packageDirectory && !production) throw new Error("Packaged acceptance requires production mode");
 const hostArg = process.env.KUJO_ACCEPTANCE_HOST;
 if (!hostArg) throw new Error("Set KUJO_ACCEPTANCE_HOST to a prepared Paperclip source checkout; no existing server URL is accepted.");
 const host = await realpath(hostArg);
@@ -125,6 +127,14 @@ try {
   await writeFile(join(root, "workspace", "eval.json"), JSON.stringify({ name: "Host-owned Eval admission", tests: [
     { name: "answer", check: "json_value_equals", params: { path: "answer.json", json_path: "answer", expected: 42 } },
   ] }));
+  if (packageDirectory) {
+    assert.equal(JSON.parse(await readFile(join(packageDirectory, "package.json"), "utf8")).name, "@kujolang/paperclip");
+    await cp(packageDirectory, fixture, { recursive: true });
+    await symlink(join(repo, "node_modules"), join(fixture, "node_modules"), process.platform === "win32" ? "junction" : "dir");
+    evidence.package = { mode: "extracted npm archive with existing pinned runtime dependencies", version: JSON.parse(await readFile(join(fixture, "package.json"), "utf8")).version,
+      workerSha256: createHash("sha256").update(await readFile(join(fixture, "dist/worker.js"))).digest("hex"),
+      manifestSha256: createHash("sha256").update(await readFile(join(fixture, "dist/manifest.js"))).digest("hex") };
+  } else {
   await symlink(join(repo, "bundled"), join(fixture, "bundled"), process.platform === "win32" ? "junction" : "dir");
   await symlink(join(repo, "node_modules"), join(fixture, "node_modules"), process.platform === "win32" ? "junction" : "dir");
   await writeFile(join(fixture, "package.json"), JSON.stringify({ name: "@kujolang/approval-acceptance-fixture", version: "0.0.0", private: true, type: "module",
@@ -133,6 +143,7 @@ try {
   await build({ entryPoints: { worker: join(repo, production ? "src/worker.ts" : "tests/host/execution-worker.ts"), manifest: join(repo, production ? "src/manifest.ts" : "tests/host/execution-manifest.ts") }, outdir: join(fixture, "dist"), bundle: true, platform: "node", format: "esm", packages: "external" });
   await buildRuntimeSupervisor(join(fixture, "dist/runtime-supervisor.js"));
   if (production) await symlink(join(repo, "dist/ui"), join(fixture, "dist/ui"), process.platform === "win32" ? "junction" : "dir");
+  }
   await json("config.json", { $meta: { version: 1, updatedAt: new Date().toISOString(), source: "doctor" },
     database: { mode: "embedded-postgres", embeddedPostgresDataDir: join(root, "db"), embeddedPostgresPort: dbPort, backup: { enabled: false, dir: join(root, "backups") } },
     logging: { mode: "file", logDir: join(root, "logs") }, server: { deploymentMode: "authenticated", exposure: "private", bind: "loopback", host: "127.0.0.1", port: httpPort, serveUi: false },

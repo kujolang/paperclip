@@ -76,10 +76,11 @@ export function usePluginAction(action: string) {
       if (params.operation === "list") return { requests };
       if (params.operation === "inspect") return { plan: { summary: "Offline workflow with human checkpoints.", preview: "Canonical Dispatch offline approval-handoff", timeoutMs: 120000 } };
       if (params.operation === "prepare" || params.operation === "decide") {
-        const item = { id: `workflow_${requests.length}`, parentId: params.operation === "prepare" ? `workflow_${requests.length}` : params.id, name: params.template ?? params.decision,
+        const item = { id: `workflow_${requests.length}`, parentId: params.operation === "prepare" ? `workflow_${requests.length}` : params.id, name: params.template ?? params.decision, operation: params.operation === "prepare" ? "dispatch.start" : "dispatch.decide",
           state: "pending", queuedAt: null, plan: { summary: "Reviewed workflow" }, result: null };
         requests.push(item); return item;
       }
+      if (params.operation === "observe" && requests.find(record => record.id === params.id)?.operation === "dispatch.decide") return { status: "decision-observed", control: null, decisionReceipt: { schema: "kujo.paperclip.dispatch-decision-observation/v1", run_id: "run-fixture", decision_id: "decision", expected_state_revision: 3, observed_state_revision: 8, run_status: "completed", match: "exact", decision_status: "applied" } };
       if (params.operation === "observe") return { status: "observed", control: { schema: "kujo.control-view/v1", available: true, run_id: "run-fixture", state_revision: 3, run_status: "paused", human_intervention: { prompt: "Review fixture checkpoint" }, current_control_boundary: null } };
       const item = requests.find(record => record.id === params.id)!;
       if (params.operation === "start") item.queuedAt = "2026-10-13T20:00:00Z";

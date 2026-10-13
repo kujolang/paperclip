@@ -41,6 +41,11 @@ export async function qualifyProductionWorkflows({ call, companyId, root, checks
   assert.equal(exported.payload.planEvidence.digest, exported.parent.receipt.digest);
   assert.deepEqual(exported.payload.abilityReceipt, result.abilityReceipt);
   assert.equal(exported.parent.payload.plan.workflow.command, undefined);
+  const decisionObserved = (await action("observe", { id: decision.id })).data;
+  assert.equal(decisionObserved.status, "decision-observed");
+  assert.equal(decisionObserved.decisionReceipt.match, "exact");
+  assert.equal(decisionObserved.decisionReceipt.decision_status, "applied");
+  assert.equal((await action("status", { id: decision.id })).data.state, "succeeded");
   const completed = (await action("observe", { id: pending.id })).data; assert.equal(completed.control.run_status, "completed");
   await stop(); await start();
   await waitUntil(async () => { try { return (await action("status", { id: decision.id })).data.state === "succeeded"; } catch { return false; } });
@@ -56,5 +61,5 @@ export async function qualifyProductionWorkflows({ call, companyId, root, checks
   checks.push("workflow linked history exports preserve canonical receipts without raw commands; disabled recovery and cancellation remain available and foreign tenant reads fail");
   checks.push("production workflow job executes a projectless human-approved start after full host/database restart; native checkpoint requires a separate exact-revision human confirmation and explicit queued decision");
   checks.push("completed workflow and canonical host receipt survive another restart; cancelled pending start does not execute");
-  await json("workflow-journey-proof.json", { companyId, issueId, initial: pending.id, decision: decision.id, paused, completed, receipt: result.abilityReceipt });
+  await json("workflow-journey-proof.json", { companyId, issueId, initial: pending.id, decision: decision.id, paused, completed, decisionObserved, receipt: result.abilityReceipt });
 }

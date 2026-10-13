@@ -390,3 +390,25 @@ receipts because they own native state. Never-started cancellation/expiry releas
 its reservation allowance. Automated archive/retirement, live providers, Muzzle,
 Workcell and definitive lost-decision reconciliation are still expansion work;
 do not treat this slice as the complete durable workflow pack.
+
+
+### Inspect a checkpoint after a lost response
+
+Select the checkpoint operation and choose **Inspect checkpoint receipt**. Kujo
+loads the retained run through Dispatch's authoritative state loader and compares
+the entire private approved payload using Dispatch's own decision digest. The
+public result contains identities, revisions and status, without the raw review
+response or storage path.
+
+- **Exact / applied** means Dispatch recorded that exact decision as applied. It
+  does not establish that every workflow step passed or that the host received
+  the original command response.
+- **Exact / failed** or **exact / claimed** means the native receipt does not prove
+  successful application.
+- **Conflict**, **not-observed** or **unverifiable** cannot establish the approved
+  decision's successful application. Missing evidence is not permission to retry.
+
+The original host command receipt remains unchanged, including an **uncertain**
+outcome. Inspection does not resume the workflow, repair state, rewrite history,
+or authorize replay. Both company settings and the original storage identity must
+still match. Agent inspection requires the currently assigned issue and run.
