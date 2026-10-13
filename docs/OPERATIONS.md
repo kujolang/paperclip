@@ -6,7 +6,7 @@ Paperclip reports worker health and component integrity in the plugin status vie
 
 Successful generation, Context content reads, and data clearing write company-scoped Paperclip activity events. Events contain the operation, entity, and artifact ID. They do not contain source, logs, commands, or file contents. Paperclip owns activity-log retention and export.
 
-The plugin stores only the latest artifact of each type for an entity. State namespaces include the company ID. Use **Clear Kujo data** on a project or issue to remove its Review, Failure, and Context artifacts. Paperclip owns backup retention and deletion for run-scoped state.
+The upcoming release retains at most 20 records per company/entity for 30 days in its database namespace. Latest cards derive from that history. Expired records are inaccessible and pruned on the next read/write; no background sweep is claimed. Use **Clear Kujo data** on a project or issue to remove retained artifacts and legacy state. Attached issue documents have separate host retention. Paperclip owns backups and database namespace purge.
 
 ## Upgrade
 

@@ -33,14 +33,16 @@
       "requirement": "Check/lint diagnostics, formatting preview, examples, package inspection, script/API/MCP/AI starters and explicit run/test/scaffold",
       "status": "in_progress",
       "evidence": [
-        "Single-file check/lint diagnostics, clickable source locations and explicit redacted formatting previews are implemented with native beneath-root admission, private copies, source digests and no source execution/writes. Local67 tests and12 browser scenarios pass, including cross-company navigation during a pending preview. Native CI and consumer packaging checks are pending. Package inspection, broader examples/starters and approved run/test/scaffold remain pending."
+        "Source checks, lint, location links and redacted format previews merged in PR42 at2ac3932.67 tests,12 browser scenarios, all five native platforms, SDK matrix, security and a fresh local tarball consumer smoke passed. Package inspection, broader examples/starters and approved run/test/scaffold remain pending."
       ]
     },
     {
       "id": "evidence",
       "requirement": "Immutable history, receipts, comparisons, stale-state, retention/export and explicit host attachment",
-      "status": "pending",
-      "evidence": []
+      "status": "in_progress",
+      "evidence": [
+        "Company/entity-scoped PostgreSQL history, immutable payload/input/definition receipts, legacy migration,20-record/30-day retention, comparisons, freshness inspection, redacted exports, explicit human-only issue documents and bounded agent list/read tools are implemented. Local77 tests and14 browser scenarios pass. A fresh local tarball consumer passed migration, separate-process database restart, redaction and tenant isolation; actual host validators accepted129 runtime statements. Five native platforms and SDK minimum/latest passed at4ad56b7; final CI is pending after screenshot text-rendering tolerance and freshness refinements. Real-host minimum/latest install acceptance, invocation failure receipts, automatic parent/child integration and imported verification evidence remain pending."
+      ]
     },
     {
       "id": "abilities",

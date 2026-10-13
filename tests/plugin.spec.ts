@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createTestHarness } from "@paperclipai/plugin-sdk/testing";
+import { createTestHarness } from "./helpers/harness.js";
 import { pluginManifestV1Schema } from "@paperclipai/shared";
 import manifest from "../src/manifest.js";
 import plugin from "../src/worker.js";

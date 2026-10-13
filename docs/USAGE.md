@@ -92,7 +92,7 @@ Each path must belong to the referenced Context Pack and remain inside the works
 
 ## Stored artifacts
 
-The plugin stores the latest normalized artifact in Paperclip plugin state for its project, issue, or run scope. It does not write reports into the project workspace.
+The plugin retains normalized artifacts in a company/entity-scoped database history (up to 20 records for 30 days), and derives the latest cards from that history. It does not write reports into the project workspace.
 
 Schemas are published in `schemas/`. Consumers should ignore unknown fields added by compatible future releases.
 
@@ -127,3 +127,16 @@ On an issue or project, select an eligible `.kujo` source in **Build with Kujo**
 **Preview formatting** explicitly reads that source and shows a redacted original and formatted proposal. It does not save a formatted file, apply lint fixes, or persist source bodies in plugin state. Redacted previews are unsuitable for automatic replacement. The agent tools accept only `{ "path": "src/main.kujo" }`: `kujolang.paperclip:check-kujo-source` and `kujolang.paperclip:preview-kujo-format`.
 
 The source catalog lists at most 1,000 Git-visible `.kujo` paths and excludes sensitive filename patterns. Ignored/unlisted files, absolute/traversal paths, outside symlinks, binary text and files over 64 KiB are rejected. The native beneath-root reader admits a bounded file snapshot; check/lint/format run against a private copy. A digest re-read detects source changes during processing. The plugin never executes the user's source in these operations. Diagnostics have single-file lex/parse/compile scope: imports, tests and runtime behavior remain unverified. In Kujo 1.8.1, check success is JSON while failure diagnostics are text; the adapter validates the observed formats and fails closed on unknown output.
+
+
+## Evidence history (upcoming release)
+
+Choose a retained record to inspect its receipt and redacted payload, compare it with another record of the same kind, or download JSON. Inspection also reports current workspace freshness separately from the immutable payload; unavailable workspace state is unknown. The browser preview is bounded to 20,000 characters; downloads include the full redacted export.
+
+Each receipt records source kind (observed, supplied, or migrated legacy), a result classification, payload digest and size, and input/operation-definition digests when available. The definition digest identifies the adapter's operation descriptor and provenance, not a cryptographic attestation of every executing instruction. Legacy receipts do not invent unavailable provenance. Original payload and export digests may differ because exports remove known workspace roots and defensively redact common secrets. Review exports before sharing; redaction cannot guarantee the absence of sensitive data.
+
+**Attach to this issue** explicitly creates an issue document and requires a host-authenticated human in the same company. Agent calls cannot authorize attachment by passing actor or company fields. Only records retained against that exact issue can be attached. Documents above 400 KB are rejected; use the download instead. Attached documents are separate Paperclip records and remain governed by the host's retention policy.
+
+Retention uses database insertion time: at most 20 records across all five artifact kinds per company/entity, with records older than 30 days inaccessible and removed on the next history read or append. There is no background expiry sweep. Each payload is limited to 5 MB. **Clear Kujo data** removes retained history and legacy latest keys for the selected project/issue; it does not remove documents already attached to issues. No generic SQL or arbitrary file access is exposed.
+
+Agents can use `kujolang.paperclip:list-evidence` with `{ "scope": "project" }` (default) or `{ "scope": "run" }`, then `kujolang.paperclip:get-evidence` with the same scope and an `evidenceId`. IDs for the project/run/company come from the authenticated host context. Reads above 64 KiB are rejected with a panel-download hint; the tools never attach documents.

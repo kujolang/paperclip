@@ -17,7 +17,9 @@ import type { Understanding } from "../features/understand/schema.js";
 
 import type { LanguageReport, FormatPreview } from "../features/language/schema.js";
 
-type Detail = { language?: LanguageReport | null; sources?: { files: string[]; truncated: boolean }; understanding?: Understanding | null; review: ReviewPack | null; failure: FailureEvidence | null; context: ContextPack | null; readiness?: DoctorReport; workspace?: WorkspaceReadiness; suggestedTask?: string };
+import type { EvidenceMetadata } from "../storage/history.js";
+
+type Detail = { history?: EvidenceMetadata[]; language?: LanguageReport | null; sources?: { files: string[]; truncated: boolean }; understanding?: Understanding | null; review: ReviewPack | null; failure: FailureEvidence | null; context: ContextPack | null; readiness?: DoctorReport; workspace?: WorkspaceReadiness; suggestedTask?: string };
 type PanelProps = PluginDetailTabProps & { compact?: boolean };
 
 const colors = {
@@ -283,6 +285,57 @@ function ContextSection({ context }: { context: ContextPack | null }) {
   );
 }
 
+function EvidenceHistory({ context, records }: { context: PanelProps["context"]; records: EvidenceMetadata[] }) {
+  const inspect = usePluginAction("inspect-evidence");
+  const exportRecord = usePluginAction("export-evidence");
+  const compare = usePluginAction("compare-evidence");
+  const attach = usePluginAction("attach-evidence");
+  const [selected, setSelected] = useState("");
+  const [other, setOther] = useState("");
+  const [result, setResult] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const active = useRef(true);
+  useEffect(() => { active.current = true; return () => { active.current = false; }; }, []);
+  const record = records.find((item) => item.id === selected);
+  async function perform(operation: "inspect" | "export" | "compare" | "attach") {
+    setBusy(true); setError(null); setResult(null);
+    try {
+      const params = { entityType: context.entityType, entityId: context.entityId, evidenceId: selected, ...(operation === "compare" ? { otherId: other } : {}) };
+      const value = await ({ inspect, export: exportRecord, compare, attach }[operation])(params);
+      if (!active.current) return;
+      const json = JSON.stringify(value, null, 2);
+      if (operation === "export") {
+        const url = URL.createObjectURL(new Blob([json], { type: "application/json" }));
+        const link = document.createElement("a"); link.href = url; link.download = `${selected}.json`; link.click();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+        setResult("Redacted evidence export downloaded.");
+      } else setResult(operation === "attach" ? "Evidence attached to this issue as a document." : json.slice(0, 20_000) + (json.length > 20_000 ? "\nPreview truncated; download the full export." : ""));
+    } catch (value) { if (active.current) setError(value instanceof Error ? value.message : String(value)); }
+    finally { if (active.current) setBusy(false); }
+  }
+  return <section style={{ ...card, overflowWrap: "anywhere" }} aria-label="Evidence history">
+    <SectionTitle title="Evidence history" detail="Up to 20 records per project, issue, or run, retained for 30 days. Observations are not proof that project tests passed." />
+    {!records.length ? <div style={muted}>Create a Kujo work record to start your history.</div> : <>
+      <label>Evidence record<select aria-label="Evidence record" style={input} disabled={busy} value={selected} onChange={(event) => { setSelected(event.target.value); setOther(""); setResult(null); }}>
+        <option value="">Choose a record</option>{records.map((item) => <option key={item.id} value={item.id}>{item.kind.replace("-latest", "")} · {item.result} · {item.sourceKind} · {item.storedAt}</option>)}
+      </select></label>
+      {record && <div style={muted}>SHA-256: <code>{record.digest}</code><br />{record.sourceKind === "legacy" ? "Migrated legacy record; original input and definition receipts are unavailable." : "Digest identifies the retained payload. Exports have a separate digest after redaction."}</div>}
+      <label>Compare with<select aria-label="Compare with" style={input} disabled={busy || !record} value={other} onChange={(event) => setOther(event.target.value)}>
+        <option value="">Choose another record of the same kind</option>{records.filter((item) => item.id !== selected && item.kind === record?.kind).map((item) => <option key={item.id} value={item.id}>{item.result} · {item.storedAt}</option>)}
+      </select></label>
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+        <ActionButton disabled={busy || !record} onClick={() => perform("inspect")}>Inspect evidence</ActionButton>
+        <ActionButton tone="secondary" disabled={busy || !record || !other} onClick={() => perform("compare")}>Compare evidence</ActionButton>
+        <ActionButton tone="secondary" disabled={busy || !record} onClick={() => perform("export")}>Download redacted export</ActionButton>
+        {context.entityType === "issue" && <ActionButton tone="secondary" disabled={busy || !record} onClick={() => perform("attach")}>Attach to this issue</ActionButton>}
+      </div>
+    </>}
+    {error && <div role="alert" style={{ color: colors.danger }}>{error}</div>}
+    {result && <pre aria-label="Evidence result" style={{ whiteSpace: "pre-wrap", overflow: "auto", maxHeight: 400, fontSize: 12 }}>{result}</pre>}
+  </section>;
+}
+
 function KujoPanel({ context, compact = false }: PanelProps) {
   const { data, loading, error, refresh } = usePluginData<Detail>("detail", { entityType: context.entityType, entityId: context.entityId });
   const generateReview = usePluginAction("generate-review");
@@ -440,6 +493,8 @@ function KujoPanel({ context, compact = false }: PanelProps) {
         {data.understanding.warnings.map((warning, index) => <div key={index} style={muted}>{warning}</div>)}
         <div style={muted}>Next: use the task below to select relevant Context Pack files, then review their content before planning changes.</div>
       </section>}
+
+      <EvidenceHistory key={targetKey} context={context} records={data?.history ?? []} />
 
       {canGenerate && (
         <section style={card}>

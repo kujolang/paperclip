@@ -8,6 +8,8 @@
 
 ## Unreleased
 
+- Retain company/entity-scoped evidence history with integrity receipts, bounded retention, legacy migration, comparisons, redacted exports, current freshness inspection and explicit human-only issue-document attachment. Package the host database migration and test it with PostgreSQL.
+
 - Add single-file Kujo source checking, lint diagnostics and explicit formatting previews through project/issue panels and two agent tools, with native bounded file admission and no project writes.
 
 - Add pinned Scout 1.1.0 repository understanding to project/issue panels and an agent tool, with private bounded reports, tenant-scoped storage, partial diagnostics and a company feature switch.

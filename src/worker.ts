@@ -1,7 +1,7 @@
 import { definePlugin, runWorker, type PluginContext, type ToolRunContext } from "@paperclipai/plugin-sdk";
 import { z } from "zod";
 import { parsePluginConfig } from "./config/schema.js";
-import { languageTool, formatTool, understandTool, contextContentTool, contextTool, failureTool, reviewTool } from "./manifest.js";
+import { listEvidenceTool, readEvidenceTool, languageTool, formatTool, understandTool, contextContentTool, contextTool, failureTool, reviewTool } from "./manifest.js";
 import { generateReviewPack } from "./features/review/generate.js";
 import { reviewPackSchema, type ReviewPack } from "./features/review/schema.js";
 import { captureFailure } from "./features/failure/capture.js";
@@ -10,7 +10,8 @@ import { generateContextPack } from "./features/context/generate.js";
 import { contextPackSchema, type ContextPack } from "./features/context/schema.js";
 import { getContextContent } from "./features/context/content.js";
 import { inspectWorkspace, resolveProjectWorkspace, resolveWorkspace } from "./paperclip/workspace.js";
-import { clearArtifacts, loadArtifact, saveArtifact, type StateTarget } from "./storage/state.js";
+import { clearArtifacts, ensureHistory, loadArtifact, saveArtifact, type StateTarget } from "./storage/state.js";
+import { listEvidence, getEvidence, exportEvidence, compareEvidence, type ArtifactKind } from "./storage/history.js";
 import { doctor } from "./health/doctor.js";
 import { normalizeError } from "./runtime/errors.js";
 import { terminateActiveKujoProcesses } from "./runtime/execute-kujo.js";
@@ -64,6 +65,12 @@ function actionParams(params: Record<string, unknown>): Record<string, unknown> 
 
 async function configFor(ctx: PluginContext, companyId: string) {
   return parsePluginConfig(await ctx.config.get(companyId));
+}
+
+const historyTarget = z.object({ entityType: z.enum(["project", "issue", "run"]), entityId: z.string().min(1), evidenceId: z.string().min(1).max(100), otherId: z.string().min(1).max(100).optional() }).strict();
+function evidenceEnabled(config: ReturnType<typeof parsePluginConfig>, kind: ArtifactKind) {
+  const feature = { "review-latest": "review", "context-latest": "context", "failure-latest": "failureEvidence", "understand-latest": "understand", "language-latest": "language" } as const;
+  return config.features[feature[kind]];
 }
 
 async function audit(ctx: PluginContext, entry: {
@@ -123,12 +130,31 @@ async function reviewForProject(ctx: PluginContext, runCtx: ToolRunContext, para
     ...(params.head ? { head: params.head } : {}),
     config,
   });
-  await saveArtifact(ctx, { entityType: "project", entityId: runCtx.projectId, companyId: runCtx.companyId }, "review-latest", pack);
+  await saveArtifact(ctx, { entityType: "project", entityId: runCtx.projectId, companyId: runCtx.companyId }, "review-latest", pack, { inputs: { params, config, snapshot: pack.source }, definition: reviewTool });
   await audit(ctx, { companyId: runCtx.companyId, operation: "review.generated", entityType: "project", entityId: runCtx.projectId, artifactId: pack.id });
   return pack;
 }
 
 function registerTools(ctx: PluginContext) {
+  for (const tool of [listEvidenceTool, readEvidenceTool]) ctx.tools.register(tool.name, tool, async (params, runCtx) => {
+    try {
+      const input = z.object({ scope: z.enum(["project", "run"]).default("project"), ...(tool.name === "get-evidence" ? { evidenceId: z.string().min(1).max(100) } : {}) }).strict().parse(params);
+      const entityId = input.scope === "run" ? runCtx.runId : runCtx.projectId;
+      if (!entityId || !runCtx.companyId) throw new Error("Host project/run and company context are required");
+      const target: StateTarget = { companyId: runCtx.companyId, entityType: input.scope, entityId };
+      const config = await configFor(ctx, target.companyId);
+      await ensureHistory(ctx, target);
+      if (tool.name === "list-evidence") {
+        const data = { records: (await listEvidence(ctx, target)).filter((record) => evidenceEnabled(config, record.kind)) };
+        return { content: JSON.stringify(data), data };
+      }
+      const record = await getEvidence(ctx, target, z.string().parse(input.evidenceId));
+      if (!record || !evidenceEnabled(config, record.receipt.kind)) throw new Error("Evidence is unavailable or its feature is disabled");
+      const data = exportEvidence(record), content = JSON.stringify(data);
+      if (Buffer.byteLength(content) > 65_536) throw new Error("Evidence exceeds the 64 KiB agent read limit; inspect or download it in the Kujo panel");
+      return { content, data };
+    } catch (error) { return { error: normalizeError(error).message }; }
+  });
   for (const tool of [languageTool, formatTool]) ctx.tools.register(tool.name, tool, async (raw, runCtx) => {
     try {
       const params = languageInput.parse(raw);
@@ -138,7 +164,7 @@ function registerTools(ctx: PluginContext) {
       const target = { entityType: "project" as const, entityId: runCtx.projectId, companyId: runCtx.companyId };
       if (tool.name === languageTool.name) {
         const report = await analyzeSource(input);
-        await saveArtifact(ctx, target, "language-latest", report);
+        await saveArtifact(ctx, target, "language-latest", report, { inputs: { params, config, sourceDigest: report.sourceDigest }, definition: languageTool });
         await audit(ctx, { ...target, operation: "language.checked", artifactId: report.id });
         const { snapshot: _snapshot, ...data } = report;
         return { content: JSON.stringify(data), data };
@@ -157,7 +183,7 @@ function registerTools(ctx: PluginContext) {
       const config = await configFor(ctx, runCtx.companyId);
       const workspace = await resolveProjectWorkspace(ctx, runCtx.projectId, runCtx.companyId);
       const pack = await understandRepository({ cwd: workspace.path, projectId: workspace.projectId, workspaceId: workspace.id, config });
-      await saveArtifact(ctx, { entityType: "project", entityId: runCtx.projectId, companyId: runCtx.companyId }, "understand-latest", pack);
+      await saveArtifact(ctx, { entityType: "project", entityId: runCtx.projectId, companyId: runCtx.companyId }, "understand-latest", pack, { inputs: { config, workspaceId: workspace.id, snapshot: pack.snapshot }, definition: understandTool });
       await audit(ctx, { companyId: runCtx.companyId, operation: "repository.understood", entityType: "project", entityId: runCtx.projectId, artifactId: pack.id });
       // The snapshot is private host evidence; do not expose its absolute Git root.
       const { snapshot: _snapshot, ...data } = pack;
@@ -197,7 +223,7 @@ function registerTools(ctx: PluginContext) {
         ...(params.notes === undefined ? {} : { notes: params.notes }),
         config,
       });
-      await saveArtifact(ctx, { entityType: "run", entityId: runCtx.runId, companyId: runCtx.companyId }, "failure-latest", evidence);
+      await saveArtifact(ctx, { entityType: "run", entityId: runCtx.runId, companyId: runCtx.companyId }, "failure-latest", evidence, { inputs: { params, config }, definition: failureTool });
       await audit(ctx, { companyId: runCtx.companyId, operation: "failure.generated", entityType: "run", entityId: runCtx.runId, artifactId: evidence.id });
       const data = { status: "ok", failureEvidenceId: evidence.id, redactedCount: evidence.redaction.redactedCount };
       return { content: JSON.stringify(data), data };
@@ -221,7 +247,7 @@ function registerTools(ctx: PluginContext) {
         depth: params.depth,
         config,
       });
-      await saveArtifact(ctx, { entityType: "project", entityId: runCtx.projectId, companyId: runCtx.companyId }, "context-latest", pack);
+      await saveArtifact(ctx, { entityType: "project", entityId: runCtx.projectId, companyId: runCtx.companyId }, "context-latest", pack, { inputs: { task: params.task, depth: params.depth, config, snapshot: pack.snapshot }, definition: contextTool });
       await audit(ctx, { companyId: runCtx.companyId, operation: "context.generated", entityType: "project", entityId: runCtx.projectId, artifactId: pack.id });
       const data = compactContext(pack);
       if (params.includeContent) {
@@ -305,7 +331,9 @@ function registerUiBridge(ctx: PluginContext) {
     const ownedLanguage = language && workspace && language.projectId === workspace.projectId && language.workspaceId === workspace.id
       ? { ...language, stale: language.stale || !(await isSnapshotCurrent(workspace.path, language.snapshot)) } : null;
     const sources = config.features.language && workspace ? await discoverSources(workspace.path).catch(() => ({ files: [], truncated: false })) : { files: [], truncated: false };
-    return { language: ownedLanguage, sources, understanding: ownedUnderstanding, review: ownedReview, failure: ownedFailure, context: ownedContext, readiness: await doctor(config), workspace: inspection?.readiness, suggestedTask };
+    await ensureHistory(ctx, target);
+    const history = (await listEvidence(ctx, target)).filter((record) => evidenceEnabled(config, record.kind));
+    return { history, language: ownedLanguage, sources, understanding: ownedUnderstanding, review: ownedReview, failure: ownedFailure, context: ownedContext, readiness: await doctor(config), workspace: inspection?.readiness, suggestedTask };
   });
 
   for (const operation of ["check-kujo-source", "preview-kujo-format"]) ctx.actions.register(operation, async (params, actionCtx) => {
@@ -317,7 +345,7 @@ function registerUiBridge(ctx: PluginContext) {
     const input = { cwd: workspace.path, projectId: workspace.projectId, workspaceId: workspace.id, path: value.path, config };
     if (operation === "check-kujo-source") {
       const report = await analyzeSource(input);
-      await saveArtifact(ctx, target, "language-latest", report);
+      await saveArtifact(ctx, target, "language-latest", report, { inputs: { params: value, config, sourceDigest: report.sourceDigest }, definition: languageTool });
       await audit(ctx, { ...target, operation: "language.checked", artifactId: report.id });
       return { check: report.check, lint: report.lint, reportId: report.id };
     }
@@ -333,7 +361,7 @@ function registerUiBridge(ctx: PluginContext) {
     const workspace = await resolveWorkspace(ctx, { ...target, companyId: actionCtx.companyId });
     const pack = await understandRepository({ cwd: workspace.path, projectId: workspace.projectId, workspaceId: workspace.id,
       ...(target.entityType === "issue" ? { issueId: target.entityId } : {}), config });
-    await saveArtifact(ctx, { ...target, companyId: actionCtx.companyId }, "understand-latest", pack);
+    await saveArtifact(ctx, { ...target, companyId: actionCtx.companyId }, "understand-latest", pack, { inputs: { config, workspaceId: workspace.id, snapshot: pack.snapshot }, definition: understandTool });
     await audit(ctx, { companyId: actionCtx.companyId, operation: "repository.understood", ...target, artifactId: pack.id });
     return { status: pack.status, understandingId: pack.id };
   });
@@ -359,7 +387,7 @@ function registerUiBridge(ctx: PluginContext) {
       ...(target.entityType === "issue" ? { issueId: target.entityId } : {}),
       config,
     });
-    await saveArtifact(ctx, { ...target, companyId: actionCtx.companyId }, "review-latest", pack);
+    await saveArtifact(ctx, { ...target, companyId: actionCtx.companyId }, "review-latest", pack, { inputs: { params: target, config, snapshot: pack.source }, definition: reviewTool });
     await audit(ctx, { companyId: actionCtx.companyId, operation: "review.generated", entityType: target.entityType, entityId: target.entityId, artifactId: pack.id });
     return compactReview(pack);
   });
@@ -371,7 +399,7 @@ function registerUiBridge(ctx: PluginContext) {
     if (!config.features.context) throw new Error("Context Pack is disabled by configuration");
     const workspace = await resolveWorkspace(ctx, { entityType: value.entityType, entityId: value.entityId, companyId: actionCtx.companyId });
     const pack = await generateContextPack({ cwd: workspace.path, workspaceId: workspace.id, projectId: workspace.projectId, task: value.task, depth: value.depth, config });
-    await saveArtifact(ctx, { ...value, companyId: actionCtx.companyId }, "context-latest", pack);
+    await saveArtifact(ctx, { ...value, companyId: actionCtx.companyId }, "context-latest", pack, { inputs: { task: value.task, depth: value.depth, config, snapshot: pack.snapshot }, definition: contextTool });
     await audit(ctx, { companyId: actionCtx.companyId, operation: "context.generated", entityType: value.entityType, entityId: value.entityId, artifactId: pack.id });
     return compactContext(pack);
   });
@@ -400,9 +428,49 @@ function registerUiBridge(ctx: PluginContext) {
       ...(value.notes === undefined ? {} : { notes: value.notes }),
       config,
     });
-    await saveArtifact(ctx, { ...value, companyId: actionCtx.companyId }, "failure-latest", evidence);
+    await saveArtifact(ctx, { ...value, companyId: actionCtx.companyId }, "failure-latest", evidence, { inputs: { params: value, config }, definition: failureTool });
     await audit(ctx, { companyId: actionCtx.companyId, operation: "failure.generated", entityType: value.entityType, entityId: value.entityId, artifactId: evidence.id });
     return { status: "ok", failureEvidenceId: evidence.id, redactedCount: evidence.redaction.redactedCount };
+  });
+
+  for (const operation of ["inspect-evidence", "export-evidence", "compare-evidence", "attach-evidence"]) ctx.actions.register(operation, async (params, actionCtx) => {
+    if (!actionCtx.companyId) throw new Error("Company context is required");
+    const value = historyTarget.parse(actionParams(params));
+    const target = { entityType: value.entityType, entityId: value.entityId, companyId: actionCtx.companyId };
+    if (operation === "attach-evidence" && (target.entityType !== "issue" || actionCtx.actor.type !== "user" || !actionCtx.actor.userId || actionCtx.actor.companyId !== target.companyId)) {
+      throw new Error("Issue attachment requires an authenticated human in this company");
+    }
+    const config = await configFor(ctx, target.companyId);
+    await ensureHistory(ctx, target);
+    const record = await getEvidence(ctx, target, value.evidenceId);
+    if (!record || !evidenceEnabled(config, record.receipt.kind)) throw new Error("Evidence is unavailable or its feature is disabled");
+    if (operation === "compare-evidence") {
+      const other = value.otherId ? await getEvidence(ctx, target, value.otherId) : null;
+      if (!other || !evidenceEnabled(config, other.receipt.kind)) throw new Error("Comparison evidence is unavailable or its feature is disabled");
+      return compareEvidence(record, other);
+    }
+    const exported = exportEvidence(record);
+    if (operation === "attach-evidence") {
+      if (!await ctx.issues.get(target.entityId, target.companyId)) throw new Error("Issue was not found in this company");
+      const body = `# Kujo evidence\n\n${exported.notice}\n\n\`\`\`json\n${JSON.stringify(exported, null, 2)}\n\`\`\``;
+      if (Buffer.byteLength(body) > 400_000) throw new Error("Evidence is too large for an issue document; download the export instead");
+      const document = await ctx.issues.documents.upsert({ companyId: target.companyId, issueId: target.entityId, key: `kujo-${record.receipt.id.slice(-56)}`, title: `Kujo ${record.receipt.kind.replace("-latest", "")} evidence`, format: "markdown", body, changeSummary: "Explicit human attachment of retained Kujo evidence" });
+      await audit(ctx, { ...target, operation: "evidence.attached", artifactId: record.receipt.id });
+      return { status: "attached", documentId: document.id };
+    }
+    if (operation === "inspect-evidence") {
+      let freshness: "current" | "stale" | "unknown" = "unknown";
+      const snapshot = languageReportSchema.shape.snapshot.safeParse(record.payload.snapshot ?? record.payload.source);
+      if (target.entityType !== "run" && snapshot.success) {
+        const inspection = await inspectWorkspace(ctx, { ...target, entityType: target.entityType }).catch(() => null);
+        if (inspection?.workspace) {
+          const current = await isSnapshotCurrent(inspection.workspace.path, snapshot.data).catch(() => null);
+          freshness = record.payload.stale === true || current === false ? "stale" : current === true ? "current" : "unknown";
+        }
+      }
+      return { ...exported, currentWorkspace: { freshness, checkedAt: new Date().toISOString(), notice: "Current observation; not part of the immutable receipt. Unknown means freshness could not be established." } };
+    }
+    return exported;
   });
 
   ctx.actions.register("clear-artifacts", async (params, actionCtx) => {

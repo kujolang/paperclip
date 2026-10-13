@@ -46,6 +46,7 @@ const detailData = parameters.get("state") === "populated"
   : { review: null, failure: null, context: null };
 window.__KUJO_FIXTURE_DATA__ = {
   ...detailData,
+  history: parameters.get("history") ? ["before", "after"].map((id, index) => ({ id, kind: "language-latest", artifactId: id, storedAt: `2026-10-12 12:0${index}:00+00`, sourceKind: "observed", result: index ? "failed" : "observed", digest: "a".repeat(64), inputDigest: null, definitionDigest: null, parentId: null, payloadBytes: 500 })) : [],
   understanding: parameters.get("map") ? {
     status: "partial", stale: true, provenance: { componentVersion: "1.1.0" },
     fileTree: "# Project File Tree\n- [D] [workspace]\n  - [D] src\n    - [F] api.ts (TypeScript)",

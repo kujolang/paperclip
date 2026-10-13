@@ -57,3 +57,7 @@ npm pack @kujolang/paperclip --dry-run
 ```
 
 Install it in a clean Paperclip host, confirm the Kujo status panel, and exercise one Review, Failure Evidence, and Context Pack before promoting the release.
+
+## Upcoming evidence-history upgrade
+
+The next release adds a plugin database namespace and `migrations/001_evidence.sql`, plus explicit issue-document writes. Paperclip must support database namespace migrations and authenticated action actors. Reapprove the new capabilities in the host if prompted. A missing or mismatched database namespace fails with repair guidance; do not manually substitute another schema. The documented historical host floor has not yet been revalidated for this expansion; minimum/latest real-host acceptance is a release gate. Database backup and explicit uninstall/purge behavior follow the host, independently of previously attached issue documents.

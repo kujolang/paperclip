@@ -3,7 +3,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
-import { createTestHarness } from "@paperclipai/plugin-sdk/testing";
+import { createTestHarness } from "./helpers/harness.js";
 import type { PluginWorkspace } from "@paperclipai/plugin-sdk";
 import manifest from "../src/manifest.js";
 import plugin from "../src/worker.js";

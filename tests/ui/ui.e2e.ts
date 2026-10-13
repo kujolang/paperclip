@@ -140,3 +140,32 @@ test("late source previews cannot populate a different company panel", async ({ 
   await expect(page.getByText("Formatting changes available")).toHaveCount(0);
   await expect(page.getByLabel("Kujo source", { exact: true })).toHaveValue("");
 });
+
+
+test("history inspection, comparison, download and explicit issue attachment", async ({ page }) => {
+  await page.goto("/?surface=task&entity=issue&history=1");
+  await page.getByLabel("Evidence record").selectOption("before");
+  await page.getByRole("button", { name: "Inspect evidence" }).click();
+  await expect(page.getByLabel("Evidence result")).toContainText("Source checks only");
+  await page.getByLabel("Compare with").selectOption("after");
+  await page.getByRole("button", { name: "Compare evidence" }).click();
+  await expect(page.getByLabel("Evidence result")).toContainText('"sameInputs": null');
+  const download = page.waitForEvent("download");
+  await page.getByRole("button", { name: "Download redacted export" }).click();
+  expect((await download).suggestedFilename()).toBe("before.json");
+  await page.getByRole("button", { name: "Attach to this issue" }).click();
+  await expect(page.getByLabel("Evidence result")).toContainText("attached to this issue");
+  await expect(page.getByRole("region", { name: "Evidence history" })).toHaveScreenshot("evidence-history.png", { animations: "disabled", maxDiffPixelRatio: 0.02 });
+});
+
+test("a pending history read cannot appear after company navigation", async ({ page }) => {
+  await page.goto("/?surface=detail&entity=project&history=1");
+  await page.evaluate(() => { window.__KUJO_DELAY_HISTORY__ = true; });
+  await page.getByLabel("Evidence record").selectOption("before");
+  await page.getByRole("button", { name: "Inspect evidence" }).click();
+  await expect.poll(() => page.evaluate(() => Boolean(window.__KUJO_RESOLVE_HISTORY__))).toBe(true);
+  await page.evaluate(() => { window.__KUJO_NAVIGATE__?.("company-other"); });
+  await expect(page.getByLabel("Evidence record")).toHaveValue("");
+  await page.evaluate(() => { window.__KUJO_RESOLVE_HISTORY__?.(); });
+  await expect(page.getByLabel("Evidence result")).toHaveCount(0);
+});
