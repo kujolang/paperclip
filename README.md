@@ -77,7 +77,9 @@ The fourteen component snapshots are pinned, checksummed, and shipped with the p
 plugin does not download component code while installing or running. The Eval snapshot
 provides human-approved execution on issue workspaces. The separately enabled
 Dispatch workflow panel runs shipped offline examples through durable host jobs,
-with exact human checkpoint decisions and retained state. See
+with exact human checkpoint decisions and retained state. A read-only checkpoint
+receipt inspection can establish whether Dispatch recorded the exact approved
+decision after a lost response, without rerunning it. See
 [Run a Kujo workflow](docs/USAGE.md#run-a-kujo-workflow) for operator setup and limits.
 
 ## Build with Kujo

@@ -1,3 +1,4 @@
+import { readDecisionObservation } from "./decision-observation.js";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { z } from "zod";
 import type { ExecutionPlan, ExecutionRequest, ExecutionScope, ExecutionStarter } from "../../execution/contracts.js";
@@ -41,7 +42,21 @@ export function createWorkflowService(ctx: PluginContext) {
     return { record, binding };
   }
   async function observe(scope: ExecutionScope, id: string) {
-    const admitted = await admission(scope), { record, binding } = await retained(scope, id, admitted);
+    const admitted = await admission(scope);
+    const selected = await coordinator.status(scope, id);
+    if (selected.request.plan.operation === "dispatch.decide") {
+      if (active.has(selected.state)) return { status: "operation-active" as const, control: null };
+      const command = selected.request.plan.workflow!.command;
+      if (command.operation !== "decide-approval") throw new Error("Unsupported checkpoint observation");
+      const { binding } = await retained(scope, selected.request.plan.workflow!.parentId, admitted);
+      const prepared = await prepareDispatchInvocation({ command: { operation: "inspect-approval", decision: command.decision }, runtime: admitted.runtime, storageRoot: admitted.storage.root, storageBinding: binding });
+      try {
+        const output = await executeSupervisedKujo({ ...prepared.invocation, timeoutMs: 22000 });
+        return { status: "decision-observed" as const, control: null, decisionReceipt: readDecisionObservation(output, command.decision) };
+      } catch { throw new Error("Native checkpoint receipt is unavailable; retain the original operation outcome and do not replay"); }
+      finally { await prepared.dispose(); }
+    }
+    const { record, binding } = await retained(scope, id, admitted);
     if (active.has(record.state)) return { status: "operation-active" as const, control: null };
     if (!record.ownerId) return { status: "not-started" as const, control: null };
     let prepared;

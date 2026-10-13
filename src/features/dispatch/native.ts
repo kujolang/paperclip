@@ -1,3 +1,4 @@
+import { DECISION_OBSERVER } from "./decision-observation.js";
 import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, readFile, realpath, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -33,6 +34,7 @@ export const dispatchCommandSchema = z.discriminatedUnion("operation", [
   z.object({ operation: z.literal("start-fixture"), template: z.enum(["research-report", "crud-reliability", "approval-handoff"]), topic: z.string().trim().min(1).max(500).refine(value => !value.startsWith("--") && !value.includes("\0"), "Topic must be text, not a CLI option") }).strict(),
   z.object({ operation: z.literal("runs") }).strict(),
   z.object({ operation: z.literal("inspect"), runId: dispatchRunIdSchema }).strict(),
+  z.object({ operation: z.literal("inspect-approval"), decision: dispatchLegacyDecisionSchema }).strict(),
   z.object({ operation: z.literal("decide-approval"), decision: dispatchLegacyDecisionSchema }).strict(),
   z.object({ operation: z.literal("decide"), decision: dispatchDecisionSchema }).strict(),
 ]);
@@ -45,7 +47,7 @@ export async function describeDispatchInvocation(commandInput: DispatchCommand, 
   const command = dispatchCommandSchema.parse(commandInput);
   const executionBudget = z.enum(["short", "workflow-job"]).parse(budget);
   const workflowEffect = ["start-fixture", "decide", "decide-approval"].includes(command.operation);
-  const policy = { ...basePolicy, executionBudget, timeoutMs: executionBudget === "workflow-job" && workflowEffect ? 120000 : 27000 };
+  const policy = { ...basePolicy, ...(command.operation === "inspect-approval" ? { observerDigest: sha(Buffer.from(DECISION_OBSERVER)) } : {}), executionBudget, timeoutMs: executionBudget === "workflow-job" && workflowEffect ? 120000 : 27000 };
   const component = await resolveComponent("dispatch");
   const binding = Object.freeze({ commandDigest: evidenceDigest(command), componentDigest: evidenceDigest({ id: component.id, version: component.version, entrypoint: component.entrypoint, commit: component.gitCommit, files: component.files, checksums: component.checksums }), runtimeDigest: sha(await readFile(runtime.executable)), policyDigest: evidenceDigest(policy) });
   return { command, policy, component, binding };
@@ -81,6 +83,7 @@ export async function prepareDispatchInvocation(input: {
       await writeFile(join(directory, path), bytes, { mode: 0o600, flag: "wx" });
     }
     let args: string[];
+    let entrypoint = join(directory, component.entrypoint);
     if (command.operation === "templates") args = ["templates", "--json"];
     else if (command.operation === "start-fixture") args = ["demo", command.topic, "--workflow", command.template, "--non-interactive", "--policy-profile", "production", "--output-root", "runs"];
     else if (command.operation === "runs") args = ["runs", "--output-root", "runs", "--json"];
@@ -88,14 +91,18 @@ export async function prepareDispatchInvocation(input: {
     else {
       const decision = join(directory, "paperclip-decision.json");
       await writeFile(decision, JSON.stringify(command.decision), { mode: 0o600, flag: "wx" });
-      args = ["resume-decision", decision, "--output-root", "runs", "--non-interactive", "--policy-profile", "production"];
+      if (command.operation === "inspect-approval") {
+        entrypoint = join(directory, "paperclip-observe-decision.kujo");
+        await writeFile(entrypoint, DECISION_OBSERVER, { mode: 0o600, flag: "wx" });
+        args = [decision];
+      } else args = ["resume-decision", decision, "--output-root", "runs", "--non-interactive", "--policy-profile", "production"];
     }
     // Both the caller's reservation and executable must still match at return.
     await store.recover(storageBinding);
     if (sha(await readFile(runtime.executable)) !== binding.runtimeDigest) throw new Error("Dispatch runtime changed while preparing");
     const invocation: ExecuteKujoInput = {
       executable: runtime.executable, cwd: nativeRoot,
-      args: ["run", "--isolated-imports", join(directory, component.entrypoint), "--", ...args],
+      args: ["run", "--isolated-imports", entrypoint, "--", ...args],
       env: { DISPATCH_ROOT: directory, DISPATCH_OFFLINE_FIXTURE: "true", KUJO_BIN: runtime.executable },
       timeoutMs: policy.timeoutMs, maxStdoutBytes: policy.stdoutBytes, maxStderrBytes: policy.stderrBytes,
     };

@@ -649,3 +649,33 @@ unconfirmed effects remain separate in UI, portable receipts and atomic linked
 history. Missing or ambiguous native state never authorizes replay. General v2
 controls, live providers, archive/retirement and definitive lost-response receipt
 reconciliation are not exposed by this first public slice.
+
+
+### Exact checkpoint receipt observation
+
+The existing workflow `observe` action accepts a retained decision-operation ID
+as well as a parent ID. A decision ID selects a bounded read-only Kujo projection
+over the pinned Dispatch `load_run_state` API; it never reads `state.json` as an
+independent authority. The observer compares `sha256(to_json(decision))` using the
+same runtime serialization as Dispatch's decision admission. Its source digest
+is bound into the read invocation policy without changing existing effect-plan
+bindings. Invocation uses isolated pinned imports and the short process budget.
+
+Only selected receipt metadata is returned, with an 8KiB output contract and
+exact run/decision/expected-revision validation. `applied`, `failed` and `claimed`
+are native receipt facts; a missing, conflicting, legacy or unsupported receipt
+cannot prove successful application. Observation does not rewrite a terminal command outcome or published host
+evidence; ordinary status recovery can still expire a pending request or mark
+a lost running owner uncertain. There is no automatic retry or
+promotion of an uncertain command receipt to success. This covers the shipped
+legacy approval/rejection path, not generic v2 recovery or external effects.
+
+
+The isolated production host harness also accepts
+`KUJO_ACCEPTANCE_PACKAGE_DIRECTORY=/absolute/path/to/extracted/package`. In that
+mode it copies the complete npm archive contents into the disposable installation
+and uses their manifest, worker, supervisor, migrations and bundled sources
+without rebuilding them. It records worker/manifest hashes. Runtime dependencies
+are the repository's existing pinned installation; this is packaged-host evidence,
+not a fresh public-registry dependency installation or an old-host compatibility
+claim. Use only an extracted archive produced and verified for the target commit.

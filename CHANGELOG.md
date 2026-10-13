@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Inspect exact native checkpoint receipts after lost responses without replaying decisions or rewriting uncertain host outcomes.
+
 - Add the opt-in Dispatch issue journey: preview shipped offline examples, request human confirmation, explicitly queue jobs, inspect retained native state, and submit exact revision-bound human checkpoint decisions. Company-configured private storage, bounded ownership, cancellation, canonical receipts and linked history are included; live providers and automated uncertain-effect reconciliation remain unsupported.
 
 - Add internal authoritative Dispatch control observations and revision-bound legacy approval commands, with full offline template lifecycle tests and an explicit internal job-budget binding.

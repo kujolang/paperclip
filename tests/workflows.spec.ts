@@ -61,6 +61,10 @@ describe.skipIf(!posix)("public durable Dispatch journey", () => {
     expect(await recovered.drainQueued()).toEqual({ attempted: 1, errors: 0 });
     const decision = await recovered.status(scope, request.id);
     expect(decision.state, JSON.stringify(decision)).toBe("succeeded");
+    await (await testDatabase()).query(`UPDATE ${EVIDENCE_NAMESPACE}.executions SET state='uncertain', diagnostic='fixture_lost_response' WHERE id=$1`, [request.id]);
+    const checkpoint = await recovered.observe(scope, request.id);
+    expect(checkpoint).toMatchObject({ status: "decision-observed", decisionReceipt: { match: "exact", decision_status: "applied" } });
+    expect((await recovered.status(scope, request.id)).state).toBe("uncertain");
     expect((await recovered.observe(scope, prepared.id)).control).toMatchObject({ run_status: "completed" });
     expect(await recovered.drainQueued()).toEqual({ attempted: 0, errors: 0 });
     const view = await f.action({ operation: "status", id: request.id }) as View & { history: { status: string; outcomeId: string; planId: string } };
