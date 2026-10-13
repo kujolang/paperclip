@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "bundleVersion": "0.10.0",
+  "bundleVersion": "0.10.1",
   "runtime": {
     "minimumVersion": "1.8.1"
   },
@@ -534,14 +534,13 @@
     {
       "id": "dispatch",
       "repository": "https://github.com/kujolang/dispatch",
-      "gitCommit": "ac2609b8ef14cbf8fbec5df5dfc1789fa4fa25b8",
+      "gitCommit": "4c4d34b2979f6754a97a48d1da62e28fda14315d",
       "version": "1.3.0",
       "license": "MIT",
       "entrypoint": "dispatch.kujo",
       "files": [
         "LICENSE",
         "README.md",
-        "kennel.toml",
         "dispatch.kujo",
         "examples/research-report/sources/source-1.md",
         "examples/research-report/sources/source-2.md",
@@ -551,6 +550,7 @@
         "examples/workflows/plugin-echo.json",
         "examples/workflows/routed-review.catalog.json",
         "examples/workflows/routed-review.json",
+        "kennel.toml",
         "schemas/assurance-capabilities-v1alpha1.schema.json",
         "schemas/assurance-configuration-v1alpha1.schema.json",
         "schemas/assurance-configuration-v1beta1.schema.json",
@@ -592,6 +592,7 @@
         "src/core/checkpoint.kujo",
         "src/core/control.kujo",
         "src/core/control_journal.kujo",
+        "src/core/control_view.kujo",
         "src/core/decision.kujo",
         "src/core/effect_assurance.kujo",
         "src/core/effect_assurance_beta.kujo",
@@ -649,8 +650,7 @@
       "checksums": {
         "LICENSE": "4b6449939f8dce26dc5fb87756740a5977da9085517af127d9e634e6a6492506",
         "README.md": "263f8adfc85fcdcdc1a473729a3f327307c21e8616bc7e7fd62ca03ae4b02fc1",
-        "kennel.toml": "7b77454bec4108f585e8294be211a3a39db1356fe0fefd37fb64e6f2ab438385",
-        "dispatch.kujo": "f134d5a12226dc5720287d5f310169c9d377c4c1ea29a9f01217a99c222f2d9b",
+        "dispatch.kujo": "51d21dadc3203e6671f2e46c862f73cfab99c514a05cdf988e194278d256f690",
         "examples/research-report/sources/source-1.md": "7c0b66b1ded6dde3401b36e92c70898fe7af703400a596503942d697209f6522",
         "examples/research-report/sources/source-2.md": "009cad14c95e1b8c77ec3a342d6ab83b9e2cc0a78348737e61931c7db773e8f5",
         "examples/research-report/sources/source-3.md": "b9a7875407c0558cdae47460c7357afe25f9f3ebf97812c98d29fa402451e9b7",
@@ -659,6 +659,7 @@
         "examples/workflows/plugin-echo.json": "5609b8a6d65976fcbfef0a415589f9e0129116ac637b9cff897c224d7270dfa0",
         "examples/workflows/routed-review.catalog.json": "98d3cdddab2a2e0ec444f0d6962f8aea89be1f3898ef7623633b24a998749284",
         "examples/workflows/routed-review.json": "9eb465063752dc61ec355f2e7c91781a314a3d0c3ed09572b86f99f5bb5e42ca",
+        "kennel.toml": "7b77454bec4108f585e8294be211a3a39db1356fe0fefd37fb64e6f2ab438385",
         "schemas/assurance-capabilities-v1alpha1.schema.json": "79249a2a1359f062b414274162ff694002286b6e70b866cef124f8db9bcda53b",
         "schemas/assurance-configuration-v1alpha1.schema.json": "229d3e1e74ded19f3b2fe087b8ef4989aef34d13dbd83bd581c852d3246128c7",
         "schemas/assurance-configuration-v1beta1.schema.json": "3cd2936fec460f29fd7f9ec3a6eb97059160851f354227fb3c3e02d6073cb5a9",
@@ -700,6 +701,7 @@
         "src/core/checkpoint.kujo": "8a89ddf73513f3c784e78f28443c937e1037bfad95a78e79e3d4e0d7e459f647",
         "src/core/control.kujo": "b379d237ee9a5552df8b28194c0ee7ee56fa7d54be615957dfb9acd8c074fa4e",
         "src/core/control_journal.kujo": "af936161ef737d134b00c58cdba83fd1b4da834126880c3e9fc638b051ac04dc",
+        "src/core/control_view.kujo": "4b8e79274f2e6944f85cf3716463a7839a33dfc312e940ba87c1bed372b7fb57",
         "src/core/decision.kujo": "f07210160514a34b8b8922e81f9e5419effbaed5d42b9f2930e344406be41df0",
         "src/core/effect_assurance.kujo": "f9a4f4795d7e5bbbfdd8568ba37a57e245c7cb1ee906132de0617ab804cc7b58",
         "src/core/effect_assurance_beta.kujo": "29d82d31cb03bd75cb42e72955d263e79aa28f0c06e910e6f079294bbdc01802",

@@ -77,7 +77,9 @@ The fourteen component snapshots are pinned, checksummed, and shipped with the p
 plugin does not download component code while installing or running. The Eval snapshot
 provides human-approved execution on issue workspaces. The Dispatch snapshot is
 reserved for the ongoing workflow integration; packaging it does not expose a
-Dispatch tool or grant workflow execution.
+Dispatch tool or grant workflow execution. Its internal integration binds legacy
+approval decisions to authoritative inspection revisions; host workflow controls
+remain under development.
 
 ## Build with Kujo
 

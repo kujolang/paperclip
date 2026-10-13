@@ -1,0 +1,22 @@
+from src.core.utils import dict_get_or
+
+# An observation of the authoritative loaded revision, never a resume grant.
+# Preserve complete control objects or refuse the projection; truncating IDs or
+# evidence would create a misleading basis for a controller's review.
+func build_control_view(run_state) {
+    view := {
+        "schema": "kujo.control-view/v1",
+        "available": true,
+        "run_id": dict_get_or(run_state, "run_id", ""),
+        "state_revision": dict_get_or(run_state, "revision", 0),
+        "run_status": dict_get_or(run_state, "status", ""),
+        "human_intervention": dict_get_or(run_state, "human_intervention", null),
+        "current_control_boundary": dict_get_or(run_state, "current_control_boundary", null)
+    }
+    if byte_length(to_json(view)) > 65536 {
+        return {"schema": "kujo.control-view/v1", "available": false, "reason": "control_view_limit"}
+    }
+    return view
+}
+
+export build_control_view := build_control_view
