@@ -12,10 +12,15 @@ const activeStates = new Set(["preparing", "pending", "running", "cancel_request
 type RequestConfirmationInteraction = Awaited<ReturnType<PluginContext["issues"]["requestConfirmation"]>>;
 const key = (scope: ExecutionScope, id: string) => canonicalJson({ ...scope, id });
 
+function approvalPreview(request: ExecutionRequest) {
+  const plan = request.plan;
+  return JSON.stringify({ operation: plan.operation, suite: plan.suite, project: plan.projectId, workspace: plan.workspaceId,
+    requester: request.requester, effects: plan.effects, timeoutMs: plan.timeoutMs, summary: plan.summary,
+    preview: plan.preview, maxStdoutBytes: plan.maxStdoutBytes, maxStderrBytes: plan.maxStderrBytes }, null, 2).replaceAll("`", "\\u0060");
+}
+
 export function confirmationFor(record: ExecutionRecord) {
-  const plan = record.request.plan;
-  const preview = JSON.stringify({ operation: plan.operation, suite: plan.suite, project: plan.projectId, workspace: plan.workspaceId,
-    requester: record.request.requester, effects: plan.effects, timeoutMs: plan.timeoutMs, summary: plan.summary }, null, 2).replaceAll("`", "\\u0060");
+  const preview = approvalPreview(record.request);
   return {
     idempotencyKey: `kujo.execution:${record.id}`,
     title: "Run Kujo evaluation",
@@ -140,6 +145,7 @@ export function createExecutionCoordinator(ctx: PluginContext, adapter: Executio
       const scope = await requireScope(rawScope, request.plan);
       z.string().min(1).max(200).parse(submissionId);
       if (Buffer.byteLength(canonicalJson(request)) > 60_000) throw new Error("Execution request exceeds its byte limit");
+      if (approvalPreview(request).length > 18000) throw new Error("Suite review exceeds the host confirmation limit; split the suite or shorten its annotations");
       const id = `execution_${evidenceDigest({ ...scope, submissionId })}`;
       const inserted = await ledger.insert(scope, id, request);
       const record = await current(scope, id);
@@ -154,6 +160,9 @@ export function createExecutionCoordinator(ctx: PluginContext, adapter: Executio
         // status/start can reconcile it without resubmitting the side effect.
       }
       return await reconcile(scope, id);
+    },
+    async list(rawScope: ExecutionScope) {
+      return await ledger.list(await requireScope(rawScope));
     },
     async status(rawScope: ExecutionScope, id: string) {
       const scope = await requireScope(rawScope);
@@ -214,7 +223,7 @@ export function createExecutionCoordinator(ctx: PluginContext, adapter: Executio
             return await current(scope, id);
           }
           enteredProcess = true;
-          const output = await executeKujo({ ...materialized.invocation, signal: controller.signal, timeoutMs: record.request.plan.timeoutMs, maxStdoutBytes: 500_000, maxStderrBytes: 64_000 });
+          const output = await executeKujo({ ...materialized.invocation, signal: controller.signal, timeoutMs: record.request.plan.timeoutMs, maxStdoutBytes: record.request.plan.maxStdoutBytes ?? 500_000, maxStderrBytes: record.request.plan.maxStderrBytes ?? 64_000 });
           const result = redactedResult(await materialized.collect(output));
           await ledger.finish(scope, id, ownerId, claimId, output.exitCode === 0 ? "succeeded" : "failed", result, null);
         }

@@ -8,7 +8,7 @@ const output = execFileSync(npm.executable, [...npm.prefix, "pack", "--dry-run",
 const report = JSON.parse(output)[0];
 const files = new Set(report.files.map((file) => file.path));
 const allowedRoots = ["dist/", "bundled/", "docs/", "examples/", "schemas/", "skills/"];
-const allowedFiles = new Set(["CHANGELOG.md", "LICENSE", "README.md", "SECURITY.md", "VERSION", "package.json", "migrations/001_evidence.sql", "migrations/002_execution.sql"]);
+const allowedFiles = new Set(["CHANGELOG.md", "LICENSE", "README.md", "SECURITY.md", "VERSION", "package.json", "migrations/001_evidence.sql", "migrations/002_execution.sql", "migrations/003_execution_limits.sql"]);
 for (const required of [
   "dist/manifest.js",
   "bundled/ability-sources.lock.json",
@@ -21,6 +21,7 @@ for (const required of [
   "dist/ui/index.js",
   "migrations/001_evidence.sql",
   "migrations/002_execution.sql",
+  "migrations/003_execution_limits.sql",
   "bundled/kujo-components.lock.json",
   "bundled/components/changebucket/changebucket.kujo",
   "bundled/components/patchbrief/patchbrief.kujo",

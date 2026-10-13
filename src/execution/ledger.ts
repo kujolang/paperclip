@@ -5,6 +5,9 @@ import { executionRecordSchema, type ExecutionRecord, type ExecutionRequest, typ
 const columns = `id, request_digest AS "requestDigest", request, state, interaction_id AS "interactionId", approved_by AS "approvedBy",
   owner_id AS "ownerId", claim_id AS "claimId", created_at::text AS "createdAt", expires_at::text AS "expiresAt",
   lease_until::text AS "leaseUntil", finished_at::text AS "finishedAt", result, diagnostic`;
+export const EXECUTION_LIMITS = { activeRequests: 20, running: 2, retainedTerminal: 100, retentionDays: 30 } as const;
+const active = "('preparing', 'pending', 'running', 'cancel_requested')";
+const running = "('running', 'cancel_requested')";
 const scoped = "company_id = $1 AND issue_id = $2 AND id = $3";
 function table(ctx: PluginContext) {
   if (ctx.db.namespace !== EVIDENCE_NAMESPACE) throw new Error("Execution database unavailable; reapply plugin migrations");
@@ -20,12 +23,47 @@ export function executionLedger(ctx: PluginContext) {
     if (evidenceDigest(record.request) !== record.requestDigest) throw new Error("Execution request integrity failed");
     return record;
   };
+  const maintain = async (companyId: string) => {
+    await ctx.db.execute(`UPDATE ${table(ctx)} SET state = 'expired', finished_at = clock_timestamp(), diagnostic = 'approval_expired'
+      WHERE company_id = $1 AND state IN ('preparing', 'pending') AND expires_at <= clock_timestamp()`, [companyId]);
+    await ctx.db.execute(`UPDATE ${table(ctx)} SET state = 'uncertain', finished_at = clock_timestamp(), diagnostic = 'owner_lease_expired'
+      WHERE company_id = $1 AND state IN ${running} AND lease_until <= clock_timestamp()`, [companyId]);
+    await ctx.db.execute(`DELETE FROM ${table(ctx)} WHERE company_id = $1 AND state NOT IN ${active}
+      AND (finished_at < clock_timestamp() - interval '30 days' OR id IN
+        (SELECT id FROM ${table(ctx)} WHERE company_id = $1 AND state NOT IN ${active}
+          ORDER BY created_at DESC, id DESC OFFSET 100))`, [companyId]);
+  };
   return {
-    read,
+    read, maintain,
+    async list(scope: ExecutionScope) {
+      await maintain(scope.companyId);
+      const rows = await ctx.db.query(`SELECT ${columns} FROM ${table(ctx)} WHERE company_id = $1 AND issue_id = $2
+        ORDER BY CASE WHEN state IN ${active} THEN 0 ELSE 1 END, created_at DESC, id DESC LIMIT 100`, [scope.companyId, scope.issueId]);
+      return rows.map(row => {
+        const record = executionRecordSchema.parse(row);
+        if (evidenceDigest(record.request) !== record.requestDigest) throw new Error("Execution request integrity failed");
+        return record;
+      });
+    },
     async insert(scope: ExecutionScope, id: string, request: ExecutionRequest) {
-      return (await ctx.db.execute(`INSERT INTO ${table(ctx)} (id, company_id, issue_id, request_digest, request, state)
-        VALUES ($3, $1, $2, $4, $5::jsonb, 'preparing') ON CONFLICT DO NOTHING`,
-      [...params(scope, id), evidenceDigest(request), canonicalJson(request)])).rowCount === 1;
+      await maintain(scope.companyId);
+      // Slot uniqueness, not a racy COUNT, enforces admission across workers.
+      // Legacy active rows without slots block new admission until they finish
+      // or expire; migration never silently evicts an outstanding approval.
+      for (let attempt = 0; attempt < EXECUTION_LIMITS.activeRequests; attempt++) {
+        const inserted = (await ctx.db.execute(`INSERT INTO ${table(ctx)} (id, company_id, issue_id, request_digest, request, state, request_slot)
+          SELECT $3, $1, $2, $4, $5::jsonb, 'preparing', slots.slot FROM generate_series(1, 20) AS slots(slot)
+          WHERE NOT EXISTS (SELECT 1 FROM ${table(ctx)} existing WHERE existing.company_id = $1 AND existing.state IN ${active}
+            AND (existing.request_slot = slots.slot OR existing.request_slot IS NULL))
+          ORDER BY slots.slot LIMIT 1 ON CONFLICT DO NOTHING`,
+        [...params(scope, id), evidenceDigest(request), canonicalJson(request)])).rowCount === 1;
+        if (inserted) return true;
+        if (await read(scope, id)) return false;
+        const capacity = await ctx.db.query<{ count: string }>(`SELECT count(*)::text AS count FROM ${table(ctx)}
+          WHERE company_id = $1 AND state IN ${active}`, [scope.companyId]);
+        if (Number(capacity[0]?.count ?? 0) >= EXECUTION_LIMITS.activeRequests) break;
+      }
+      throw new Error("Company execution request capacity is unavailable; finish, cancel or expire outstanding requests before retrying");
     },
     async bind(scope: ExecutionScope, id: string, interactionId: string) {
       await ctx.db.execute(`UPDATE ${table(ctx)} SET interaction_id = $4, state = 'pending', diagnostic = NULL
@@ -40,8 +78,12 @@ export function executionLedger(ctx: PluginContext) {
         WHERE ${scoped} AND state IN ('running', 'cancel_requested') AND lease_until <= clock_timestamp()`, params(scope, id));
     },
     async claim(scope: ExecutionScope, id: string, interactionId: string, approvedBy: string, ownerId: string, claimId: string, approvedAt: string) {
+      await maintain(scope.companyId);
       return (await ctx.db.execute(`UPDATE ${table(ctx)} SET state = 'running', approved_by = $5, owner_id = $6, claim_id = $7,
-        lease_until = clock_timestamp() + interval '10 seconds'
+        lease_until = clock_timestamp() + interval '10 seconds', run_slot = available.slot
+        FROM (SELECT slots.slot FROM generate_series(1, 2) AS slots(slot)
+          WHERE NOT EXISTS (SELECT 1 FROM ${table(ctx)} existing WHERE existing.company_id = $1 AND existing.state IN ${running}
+            AND (existing.run_slot = slots.slot OR existing.run_slot IS NULL)) ORDER BY slots.slot LIMIT 1) AS available
         WHERE ${scoped} AND state = 'pending' AND interaction_id = $4 AND expires_at > clock_timestamp()
         AND $8::timestamptz >= date_trunc('milliseconds', created_at) AND $8::timestamptz < expires_at AND $8::timestamptz <= clock_timestamp()`,
       [...params(scope, id), interactionId, approvedBy, ownerId, claimId, approvedAt])).rowCount === 1;
