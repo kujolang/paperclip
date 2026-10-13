@@ -38,7 +38,8 @@ List returns at most100 summaries without suite previews or result contents; it
 remains available after disabling execution so outstanding work can be cancelled.
 Status returns the approved plan and native receipt while execution is enabled.
 Public results omit internal owner/claim tokens. Terminal requests also publish linked observed plan/outcome records in Evidence
-history. These are execution-ledger records, not canonical Ability invocation receipts. Arbitrary issue selection by an agent does not grant access.
+history. Newly prepared requests include the canonical-contract Ability receipt
+described below; legacy records keep their original representation. Arbitrary issue selection by an agent does not grant access.
 
 ## Retained execution history
 
@@ -67,6 +68,44 @@ and native check counts. Attached issue documents are not removed by history cle
 Agents can list/read issue evidence with `scope: "issue"` and `issueId` only for
 their assigned issue and current host run. Project/run scopes reject `issueId`.
 Feature/profile gates and existing read-size limits still apply.
+
+## Portable Ability receipt
+
+New requests freeze the canonical `kujo.eval.suite.run` ID, version, definition
+digest and host handler version in the immutable approval-bound plan. Terminal
+responses and v2 Evidence history outcomes embed `kujo.ability.receipt/v1`,
+validated by the pinned canonical TypeScript SDK. This is a Paperclip host-adapter
+receipt; it does not claim that the canonical runtime's approval or audit stores
+were used. Host assignment, confirmation and execution-ledger rules remain the
+authority. Invalid input or unauthorized calls rejected before a durable request
+remain transport errors, not invented authorized invocations.
+
+`started_at_ms` means durable request creation, and `completed_at_ms` means terminal
+settlement. Duration includes preparation, approval and queue wait; it is not a
+process-runtime measurement. Receipt identity, definition, timing and payload
+come only from the stored request/outcome, so replay after an upgrade does not
+substitute newer catalog metadata. Receipt IDs are company/issue scoped; host
+principal and trace identities are retained without internal claim/owner tokens.
+
+| Execution outcome | Receipt status | Preserved detail |
+| --- | --- | --- |
+| succeeded | succeeded | Native check classification and coverage, including partial/skipped |
+| failed | failed | Native failures or execution diagnostic |
+| failed with observed timeout | timed_out | `KUJO_EXEC_TIMEOUT` diagnostic |
+| cancelled | cancelled | Cancellation does not undo effects |
+| rejected, expired, stale | rejected | Original execution state; no implied execution |
+| uncertain | failed | `execution_outcome_uncertain`, original state and reconciliation-required idempotency |
+
+The v1 canonical receipt contract has no uncertain status. Its failed status does
+not assert that effects failed: the explicit uncertainty error and metadata must
+be inspected before another request. A native pass with partial coverage remains
+partial even if the receipt status is succeeded. No automatic retry is introduced.
+
+Legacy requests without frozen receipt bindings remain v1 observed history and
+return no canonical receipt. Existing history is never rewritten. Pending legacy
+requests become stale at materialization because the admitted plan changed; review
+and approve a new request. General invocation receipts for the other adapters
+remain separate expansion work.
 
 ## Authority and approval
 

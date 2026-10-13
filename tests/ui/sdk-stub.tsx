@@ -56,7 +56,7 @@ export function usePluginAction(action: string) {
       if (params.operation === "inspect") return { plan: { preview: "json_value_equals", effects: ["execute_project", "network"] }, coverage: { complete: false, notice: "Dependencies are not frozen" } };
       if (params.operation === "prepare") { const item = { id: "execution_fixture", suite: params.suite, state: "pending", plan: { preview: "json_value_equals" }, result: null }; requests.push(item); return item; }
       const item = requests.find(record => record.id === params.id)!;
-      if (params.operation === "start") { item.state = "succeeded"; item.classification = "partial"; item.result = { classification: "partial", nativeClassification: "passed" }; }
+      if (params.operation === "start") { item.state = "succeeded"; item.classification = "partial"; item.result = { classification: "partial", nativeClassification: "passed" }; item.abilityReceipt = { status: "succeeded" }; }
       if (params.operation === "cancel") item.state = "cancelled";
       return { ...item };
     }
