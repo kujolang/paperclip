@@ -98,14 +98,19 @@ describe("Kujo language operations", () => {
     await expect(harness.performAction("check-kujo-source", { ...target, path: input.path })).rejects.toThrow("Company context");
     const tool = await harness.executeTool("check-kujo-source", { path: input.path }, { companyId: "company", projectId: "project" });
     expect(tool.error).toBeUndefined(); expect(tool.data).not.toHaveProperty("snapshot");
-    const own = await harness.getData<{ language: LanguageReport }>("detail", { ...target, companyId: "company" });
+    const own = await harness.getData<{ language: LanguageReport; history: Array<{ id: string }> }>("detail", { ...target, companyId: "company" });
     expect(own.language.check).toBe("passed");
+    const evidenceParams = { ...target, evidenceId: own.history[0]!.id };
+    expect(await harness.performAction("inspect-evidence", evidenceParams, { companyId: "company" })).toMatchObject({ currentWorkspace: { freshness: "current" } });
     expect((await harness.getData<{ language: null }>("detail", { ...target, companyId: "other" })).language).toBeNull();
     const preview = await harness.performAction("preview-kujo-format", { ...target, path: input.path }, { companyId: "company" });
     expect(preview).toMatchObject({ changed: true });
     const after = await harness.getData<{ language: LanguageReport }>("detail", { ...target, companyId: "company" });
     expect(after.language.id).toBe(own.language.id);
     expect(after.language).not.toHaveProperty("source");
+    await writeFile(join(input.cwd, input.path), "print(43)\n");
+    expect(await harness.performAction("inspect-evidence", evidenceParams, { companyId: "company" })).toMatchObject({ currentWorkspace: { freshness: "stale" } });
+    expect((await harness.performAction("export-evidence", evidenceParams, { companyId: "company" }) as { payload: LanguageReport }).payload.stale).toBe(false);
     await expect(analyzeSource({ ...input, config: parsePluginConfig({ features: { language: false } }) })).rejects.toThrow("disabled");
   }, 60_000);
 

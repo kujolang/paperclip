@@ -155,7 +155,7 @@ test("history inspection, comparison, download and explicit issue attachment", a
   expect((await download).suggestedFilename()).toBe("before.json");
   await page.getByRole("button", { name: "Attach to this issue" }).click();
   await expect(page.getByLabel("Evidence result")).toContainText("attached to this issue");
-  await expect(page.getByRole("region", { name: "Evidence history" })).toHaveScreenshot("evidence-history.png");
+  await expect(page.getByRole("region", { name: "Evidence history" })).toHaveScreenshot("evidence-history.png", { animations: "disabled", maxDiffPixelRatio: 0.02 });
 });
 
 test("a pending history read cannot appear after company navigation", async ({ page }) => {

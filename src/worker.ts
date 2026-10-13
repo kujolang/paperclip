@@ -460,7 +460,7 @@ function registerUiBridge(ctx: PluginContext) {
     }
     if (operation === "inspect-evidence") {
       let freshness: "current" | "stale" | "unknown" = "unknown";
-      const snapshot = languageReportSchema.shape.snapshot.safeParse(record.payload.snapshot);
+      const snapshot = languageReportSchema.shape.snapshot.safeParse(record.payload.snapshot ?? record.payload.source);
       if (target.entityType !== "run" && snapshot.success) {
         const inspection = await inspectWorkspace(ctx, { ...target, entityType: target.entityType }).catch(() => null);
         if (inspection?.workspace) {

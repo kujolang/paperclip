@@ -96,6 +96,7 @@ describe("evidence host bridge", () => {
     const params = { entityType: target.entityType, entityId: target.entityId, evidenceId: record!.id, companyId: "company" };
     await expect(harness.performAction("inspect-evidence", params, { companyId: "other" })).rejects.toThrow("unavailable");
     const exported = await harness.performAction("inspect-evidence", params, { companyId: "company" });
+    expect(exported).toMatchObject({ currentWorkspace: { freshness: "unknown" } });
     expect(JSON.stringify(exported)).not.toContain("/private/project");
     const disabled = createTestHarness({ manifest, config: { features: { language: false } } });
     await plugin.definition.setup(disabled.ctx);
