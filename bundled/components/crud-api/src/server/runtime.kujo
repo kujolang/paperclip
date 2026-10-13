@@ -1,0 +1,238 @@
+from src.config import API_HOST, API_PORT, DB_PATH, CORS_ALLOW_ORIGIN, AUTH_TOKEN, AUTH_STRATEGY, AUTH_HEADER_VALUE, MAX_BODY_BYTES, MIN_AUTH_SECRET_LENGTH, TRUST_PROXY_HEADERS, SECURITY_PROFILE, SECURITY_PROFILE_IS_PRODUCTION
+from src.db import db_query_safe
+from src.handlers import list_items, create_item, get_one_item, update_item, delete_item, list_projects, get_one_project, create_project, list_project_items
+from src.logging import log_request_start, log_security_event
+from src.rate_limit import check_write_rate_limit
+from src.request_context import begin_request
+from src.response import api_json, api_text
+from src.validation import require_write_auth
+
+func is_write_auth_enabled() {
+	if AUTH_STRATEGY == "header_value" {
+		return len(trim(AUTH_HEADER_VALUE)) > 0
+	}
+
+	return len(trim(AUTH_TOKEN)) > 0
+}
+
+func print_lines(lines) {
+	for line in lines {
+		print(line)
+	}
+}
+
+func fail_startup(message) {
+	print(message)
+	exit(1)
+}
+
+func require_write_access(req) {
+	rate_limit_result := check_write_rate_limit(req)
+	if !rate_limit_result["ok"] {
+		log_security_event("security.rate_limit_denied", "Too many write requests")
+		limited_response := api_json(429, {
+			"error": rate_limit_result["error"],
+			"retry_after_seconds": rate_limit_result["retry_after"]
+		})
+		return {"ok": false, "response": set_header(limited_response, "Retry-After", to_string(rate_limit_result["retry_after"]))}
+	}
+
+	auth_result := require_write_auth(req)
+	if !auth_result["ok"] {
+		log_security_event("security.auth_denied", auth_result["error"])
+		return {"ok": false, "response": api_json(401, {"error": auth_result["error"]})}
+	}
+
+	return {"ok": true}
+}
+
+if SECURITY_PROFILE_IS_PRODUCTION {
+	if AUTH_STRATEGY == "static_bearer" {
+		if len(trim(AUTH_TOKEN)) == 0 {
+			fail_startup("Invalid production security configuration: KUJO_CRUD_AUTH_TOKEN is required for static_bearer strategy when KUJO_CRUD_SECURITY_PROFILE=production")
+		}
+		if len(trim(AUTH_TOKEN)) < MIN_AUTH_SECRET_LENGTH {
+			fail_startup("Invalid production security configuration: KUJO_CRUD_AUTH_TOKEN must be at least " + to_string(MIN_AUTH_SECRET_LENGTH) + " characters when KUJO_CRUD_SECURITY_PROFILE=production")
+		}
+	}
+
+	if AUTH_STRATEGY == "header_value" {
+		if len(trim(AUTH_HEADER_VALUE)) == 0 {
+			fail_startup("Invalid production security configuration: KUJO_CRUD_AUTH_HEADER_VALUE is required for header_value strategy when KUJO_CRUD_SECURITY_PROFILE=production")
+		}
+		if len(trim(AUTH_HEADER_VALUE)) < MIN_AUTH_SECRET_LENGTH {
+			fail_startup("Invalid production security configuration: KUJO_CRUD_AUTH_HEADER_VALUE must be at least " + to_string(MIN_AUTH_SECRET_LENGTH) + " characters when KUJO_CRUD_SECURITY_PROFILE=production")
+		}
+	}
+
+	if CORS_ALLOW_ORIGIN == "*" {
+		fail_startup("Invalid production security configuration: KUJO_CRUD_CORS_ORIGIN cannot be * when KUJO_CRUD_SECURITY_PROFILE=production")
+	}
+}
+
+server := http_listen(API_HOST, API_PORT)
+
+options_paths := ["/", "/health", "/items", "/items/:id", "/projects", "/projects/:id", "/projects/:id/items"]
+for route_path in options_paths {
+	server := server.route("OPTIONS", route_path, func(req) {
+		begin_request(req)
+		log_request_start()
+		return api_text(200, "")
+	})
+}
+
+server := server.route("GET", "/", func(req) {
+	begin_request(req)
+	log_request_start()
+	auth_enabled := is_write_auth_enabled()
+
+	payload := {
+		"service": "Kujo CRUD Starter API",
+		"version": "1.0.0",
+		"security_profile": SECURITY_PROFILE,
+		"auth_strategy": AUTH_STRATEGY,
+		"database": "sqlite",
+		"auth_enabled": auth_enabled,
+		"cors_origin": CORS_ALLOW_ORIGIN,
+		"max_body_bytes": MAX_BODY_BYTES,
+		"trust_proxy_headers": TRUST_PROXY_HEADERS,
+		"resources": ["items", "projects"],
+		"status_values": ["draft", "published", "archived"],
+		"features": [
+			"Health endpoint",
+			"List items with pagination",
+			"List projects",
+			"Create project",
+			"List project items",
+			"Create one item",
+			"Read one item",
+			"Replace one item",
+			"Patch one item",
+			"Delete one item"
+		]
+	}
+	return api_json(200, payload)
+})
+
+server := server.route("GET", "/health", func(req) {
+	begin_request(req)
+	log_request_start()
+	count_result := db_query_safe("SELECT COUNT(*) AS total FROM items", [])
+	if !count_result["ok"] {
+		return api_json(500, {
+			"status": "error",
+			"database": "unavailable"
+		})
+	}
+
+	total_rows := count_result["rows"]
+	total := 0
+	if len(total_rows) > 0 {
+		total := total_rows[0]["total"]
+	}
+
+	return api_json(200, {
+		"status": "ok",
+		"database": "connected",
+		"items": total
+	})
+})
+
+server := server.route("GET", "/items", func(req) {
+	begin_request(req)
+	log_request_start()
+	return list_items(req)
+})
+
+server := server.route("GET", "/projects", func(req) {
+	begin_request(req)
+	log_request_start()
+	return list_projects(req)
+})
+
+server := server.route("GET", "/projects/:id", func(req) {
+	begin_request(req)
+	log_request_start()
+	return get_one_project(req)
+})
+
+server := server.route("GET", "/projects/:id/items", func(req) {
+	begin_request(req)
+	log_request_start()
+	return list_project_items(req)
+})
+
+server := server.route("POST", "/projects", func(req) {
+	begin_request(req)
+	log_request_start()
+	write_access := require_write_access(req)
+	if !write_access["ok"] {
+		return write_access["response"]
+	}
+
+	return create_project(req)
+})
+
+server := server.route("POST", "/items", func(req) {
+	begin_request(req)
+	log_request_start()
+	write_access := require_write_access(req)
+	if !write_access["ok"] {
+		return write_access["response"]
+	}
+
+	return create_item(req)
+})
+
+server := server.route("GET", "/items/:id", func(req) {
+	begin_request(req)
+	log_request_start()
+	return get_one_item(req)
+})
+
+server := server.route("PUT", "/items/:id", func(req) {
+	begin_request(req)
+	log_request_start()
+	write_access := require_write_access(req)
+	if !write_access["ok"] {
+		return write_access["response"]
+	}
+
+	return update_item(req, false)
+})
+
+server := server.route("PATCH", "/items/:id", func(req) {
+	begin_request(req)
+	log_request_start()
+	write_access := require_write_access(req)
+	if !write_access["ok"] {
+		return write_access["response"]
+	}
+
+	return update_item(req, true)
+})
+
+server := server.route("DELETE", "/items/:id", func(req) {
+	begin_request(req)
+	log_request_start()
+	write_access := require_write_access(req)
+	if !write_access["ok"] {
+		return write_access["response"]
+	}
+
+	return delete_item(req)
+})
+
+startup_banner := [
+	"Kujo CRUD API Showcase",
+	"Server: http://" + API_HOST + ":" + to_string(API_PORT),
+	"Database: " + DB_PATH,
+	"CORS origin: " + CORS_ALLOW_ORIGIN,
+	"Auth required for write routes: " + to_string(is_write_auth_enabled()),
+	"Max JSON body bytes: " + to_string(MAX_BODY_BYTES),
+	"Press Ctrl+C to stop"
+]
+print_lines(startup_banner)
+
+export entry_loaded := true
+server.listen()

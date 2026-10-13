@@ -1,0 +1,5 @@
+# Sample writable patch target for demo runs
+
+func sample_demo_patch() {
+    return "demo patch content"
+}

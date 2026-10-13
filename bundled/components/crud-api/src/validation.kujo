@@ -1,0 +1,172 @@
+from src.auth import validate_write_auth
+from src.config import MAX_BODY_BYTES
+
+export func get_header(req, header_name) {
+	if has_key(req, "headers") == 0 {
+		return ""
+	}
+
+	headers := req["headers"]
+	if has_key(headers, header_name) {
+		return to_string(headers[header_name])
+	}
+
+	return ""
+}
+
+export func get_query(req, key, default_value) {
+	if has_key(req, "query") == 0 {
+		return default_value
+	}
+
+	query := req["query"]
+	if has_key(query, key) == 0 {
+		return default_value
+	}
+
+	return to_string(query[key])
+}
+
+export func parse_bounded_int(raw_text, field_name, min_value, max_value) {
+	try {
+		value := parse_int(trim(to_string(raw_text)))
+		if value < min_value {
+			return {"ok": false, "error": field_name + " must be >= " + to_string(min_value)}
+		}
+		if value > max_value {
+			return {"ok": false, "error": field_name + " must be <= " + to_string(max_value)}
+		}
+
+		return {"ok": true, "value": value}
+	} except err {
+		return {"ok": false, "error": field_name + " must be a valid integer"}
+	}
+}
+
+export func require_write_auth(req) {
+	return validate_write_auth(req)
+}
+
+export func parse_body_json(req) {
+	body_text := to_string(req["body"])
+	if len(trim(body_text)) == 0 {
+		return {"ok": false, "error": "Request body is required"}
+	}
+
+	if len(body_text) > MAX_BODY_BYTES {
+		return {"ok": false, "error": "Request body is too large"}
+	}
+
+	content_type := to_lower(get_header(req, "Content-Type"))
+	if len(content_type) == 0 {
+		content_type := to_lower(get_header(req, "content-type"))
+	}
+
+	if len(trim(content_type)) == 0 {
+		return {"ok": false, "error": "Content-Type must be application/json"}
+	}
+
+	content_type_parts := split(content_type, ";")
+	media_type := ""
+	if len(content_type_parts) > 0 {
+		media_type := trim(content_type_parts[0])
+	}
+
+	if media_type != "application/json" {
+		return {"ok": false, "error": "Content-Type must be application/json"}
+	}
+
+	try {
+		data := parse_json(body_text)
+		return {"ok": true, "data": data}
+	} except err {
+		return {"ok": false, "error": "Invalid JSON body"}
+	}
+}
+
+export func parse_item_id(req) {
+	params := req["params"]
+	if has_key(params, "id") == 0 {
+		return {"ok": false, "error": "Missing item id in path"}
+	}
+
+	id_text := trim(to_string(params["id"]))
+	if len(id_text) == 0 {
+		return {"ok": false, "error": "Missing item id in path"}
+	}
+
+	try {
+		item_id := parse_int(id_text)
+		if item_id <= 0 {
+			return {"ok": false, "error": "Item id must be a positive integer"}
+		}
+		return {"ok": true, "id": item_id}
+	} except err {
+		return {"ok": false, "error": "Item id must be a valid integer"}
+	}
+}
+
+export func is_valid_status(status) {
+	return status == "draft" || status == "published" || status == "archived"
+}
+
+export func validate_and_merge(existing, data, require_all_fields) {
+	if require_all_fields {
+		if has_key(data, "title") == 0 {
+			return {"ok": false, "error": "title is required"}
+		}
+		if has_key(data, "content") == 0 {
+			return {"ok": false, "error": "content is required"}
+		}
+	}
+
+	title := existing["title"]
+	content := existing["content"]
+	status := existing["status"]
+	project_id := existing["project_id"]
+
+	if has_key(data, "title") {
+		title := trim(to_string(data["title"]))
+		if len(title) == 0 {
+			return {"ok": false, "error": "title cannot be empty"}
+		}
+		if len(title) > 200 {
+			return {"ok": false, "error": "title cannot exceed 200 characters"}
+		}
+	}
+
+	if has_key(data, "content") {
+		content := trim(to_string(data["content"]))
+		if len(content) == 0 {
+			return {"ok": false, "error": "content cannot be empty"}
+		}
+		if len(content) > 50000 {
+			return {"ok": false, "error": "content cannot exceed 50000 characters"}
+		}
+	}
+
+	if has_key(data, "status") {
+		status := to_lower(trim(to_string(data["status"])))
+		if !is_valid_status(status) {
+			return {"ok": false, "error": "status must be one of: draft, published, archived"}
+		}
+	}
+
+	if has_key(data, "project_id") {
+		if data["project_id"] == null {
+			project_id := null
+		} else {
+			try {
+				parsed_project_id := parse_int(trim(to_string(data["project_id"])))
+				if parsed_project_id <= 0 {
+					return {"ok": false, "error": "project_id must be a positive integer or null"}
+				}
+				project_id := parsed_project_id
+			} except err {
+				return {"ok": false, "error": "project_id must be a positive integer or null"}
+			}
+		}
+	}
+
+	return {"ok": true, "title": title, "content": content, "status": status, "project_id": project_id}
+}

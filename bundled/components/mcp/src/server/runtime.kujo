@@ -1,0 +1,1046 @@
+# MCP Server - Demo
+# A complete MCP server demonstrating tools, resources, and agent interaction.
+#
+# Run: kujo run server.kujo
+#
+# The server starts a local MCP-compatible HTTP server.
+# Agents can discover tools, read resources, and call tool functions.
+
+export entry_loaded := true
+
+from src.core.framework import check_path, safe_read, safe_write, str_schema, bool_schema, int_schema, arr_schema, obj_schema, json_success
+from src.tools.registry import register_all_tools, execute_registered_tool
+from src.resources.registry import register_all_resources, read_registered_resource
+
+# =============================================================================
+# Configuration
+# =============================================================================
+
+func config_has_key(dict_value, key_name) {
+    probe := has_key(dict_value, key_name)
+    if type(probe) == "bool" {
+        return probe
+    }
+    if type(probe) == "int" {
+        return probe == 1
+    }
+    return false
+}
+
+func config_fail(message) {
+    assert(false, "Invalid mcp-server.json: " + message)
+}
+
+func require_config_dict(parent, key_name, scope_name) {
+    if config_has_key(parent, key_name) == false {
+        config_fail(scope_name + "." + key_name + " is required and must be an object")
+    }
+
+    value := parent[key_name]
+    if type(value) != "dict" {
+        config_fail(scope_name + "." + key_name + " must be an object")
+    }
+    return value
+}
+
+func require_positive_int(parent, key_name, scope_name) {
+    if config_has_key(parent, key_name) == false {
+        config_fail(scope_name + "." + key_name + " is required")
+    }
+
+    value := parent[key_name]
+    if type(value) != "int" || value <= 0 {
+        config_fail(scope_name + "." + key_name + " must be a positive integer")
+    }
+    return value
+}
+
+func require_port(parent, key_name, scope_name) {
+    value := require_positive_int(parent, key_name, scope_name)
+    if value > 65535 {
+        config_fail(scope_name + "." + key_name + " must be between 1 and 65535")
+    }
+    return value
+}
+
+func read_optional_positive_int(parent, key_name, scope_name, default_value) {
+    if config_has_key(parent, key_name) == false {
+        return default_value
+    }
+
+    value := parent[key_name]
+    if type(value) != "int" || value <= 0 {
+        config_fail(scope_name + "." + key_name + " must be a positive integer")
+    }
+
+    return value
+}
+
+func read_optional_bool(parent, key_name, scope_name, default_value) {
+    if config_has_key(parent, key_name) == false {
+        return default_value
+    }
+
+    value := parent[key_name]
+    if type(value) != "bool" {
+        config_fail(scope_name + "." + key_name + " must be a boolean")
+    }
+
+    return value == true
+}
+
+func read_optional_string(parent, key_name, scope_name, default_value) {
+    if config_has_key(parent, key_name) == false {
+        return default_value
+    }
+    value := parent[key_name]
+    if type(value) != "string" {
+        config_fail(scope_name + "." + key_name + " must be a string")
+    }
+    return trim(value)
+}
+
+func require_non_empty_string(parent, key_name, scope_name) {
+    if config_has_key(parent, key_name) == false {
+        config_fail(scope_name + "." + key_name + " is required")
+    }
+
+    if type(parent[key_name]) != "string" {
+        config_fail(scope_name + "." + key_name + " must be a non-empty string")
+    }
+
+    value := trim(parent[key_name])
+    if value == "" {
+        config_fail(scope_name + "." + key_name + " must be a non-empty string")
+    }
+    return value
+}
+
+config_raw := read_file("mcp-server.json")
+config := parse_json(config_raw)
+
+if type(config) != "dict" {
+    config_fail("top-level object is required")
+}
+
+server_cfg := require_config_dict(config, "server", "root")
+http_cfg := require_config_dict(config, "http", "root")
+permissions_cfg := require_config_dict(config, "permissions", "root")
+logging_cfg := require_config_dict(config, "logging", "root")
+tools_cfg := require_config_dict(config, "tools", "root")
+resources_cfg := require_config_dict(config, "resources", "root")
+
+SERVER_NAME := require_non_empty_string(server_cfg, "name", "server")
+SERVER_VERSION := require_non_empty_string(server_cfg, "version", "server")
+
+PORT := require_port(http_cfg, "port", "http")
+HOST := "127.0.0.1"
+if config_has_key(http_cfg, "host") {
+    if type(http_cfg["host"]) != "string" || trim(http_cfg["host"]) == "" {
+        config_fail("http.host must be a non-empty string")
+    }
+    HOST := trim(http_cfg["host"])
+}
+
+if config_has_key(permissions_cfg, "allowed_directories") == false || type(permissions_cfg["allowed_directories"]) != "array" || len(permissions_cfg["allowed_directories"]) == 0 {
+    config_fail("permissions.allowed_directories must be a non-empty array")
+}
+
+ALLOWED_DIRS := []
+for allowed_dir_raw in permissions_cfg["allowed_directories"] {
+    if type(allowed_dir_raw) != "string" {
+        config_fail("permissions.allowed_directories entries must be non-empty strings")
+    }
+    allowed_dir := trim(allowed_dir_raw)
+    if allowed_dir == "" {
+        config_fail("permissions.allowed_directories entries must be non-empty strings")
+    }
+    ALLOWED_DIRS := push(ALLOWED_DIRS, allowed_dir)
+}
+
+ALLOWED_DIR := ALLOWED_DIRS[0]
+
+MAX_FILE_SIZE := require_positive_int(permissions_cfg, "max_file_size", "permissions")
+
+if config_has_key(permissions_cfg, "read_only_patterns") == false || type(permissions_cfg["read_only_patterns"]) != "array" {
+    config_fail("permissions.read_only_patterns must be an array")
+}
+READ_ONLY_PATTERNS := permissions_cfg["read_only_patterns"]
+for read_only_pattern in READ_ONLY_PATTERNS {
+    if type(read_only_pattern) != "string" || trim(read_only_pattern) == "" {
+        config_fail("permissions.read_only_patterns entries must be non-empty strings")
+    }
+}
+
+DOCS_DIR := ALLOWED_DIR + "/docs"
+
+LOG_FILE := require_non_empty_string(logging_cfg, "log_file", "logging")
+MAX_LOG_ENTRIES := require_positive_int(logging_cfg, "max_entries", "logging")
+
+if config_has_key(tools_cfg, "enabled") && type(tools_cfg["enabled"]) != "bool" {
+    config_fail("tools.enabled must be a boolean")
+}
+TOOLS_ENABLED := read_optional_bool(tools_cfg, "enabled", "tools", true)
+TOOLS_DEFAULT_TIMEOUT_MS := require_positive_int(tools_cfg, "default_timeout_ms", "tools")
+TOOLS_SCAN_MAX_ENTRIES := read_optional_positive_int(tools_cfg, "scan_max_entries", "tools", 8000)
+TOOLS_SCAN_MAX_FILES := read_optional_positive_int(tools_cfg, "scan_max_files", "tools", 4000)
+TOOLS_SCAN_MAX_BYTES := read_optional_positive_int(tools_cfg, "scan_max_bytes", "tools", 67108864)
+TOOLS_TREE_CACHE_ENABLED := read_optional_bool(tools_cfg, "tree_cache_enabled", "tools", false)
+TREE_INDEX_CACHE := {}
+
+if config_has_key(resources_cfg, "enabled") && type(resources_cfg["enabled"]) != "bool" {
+    config_fail("resources.enabled must be a boolean")
+}
+RESOURCES_ENABLED := read_optional_bool(resources_cfg, "enabled", "resources", true)
+
+MAX_REQUEST_BODY_BYTES := read_optional_positive_int(http_cfg, "max_request_body_bytes", "http", 262144)
+RATE_LIMIT_PER_MINUTE := read_optional_positive_int(http_cfg, "rate_limit_per_minute", "http", 300)
+RATE_LIMIT_ENABLED := read_optional_bool(http_cfg, "rate_limit_enabled", "http", true)
+RATE_LIMIT_STRATEGY := to_lower(read_optional_string(http_cfg, "rate_limit_strategy", "http", "local"))
+if RATE_LIMIT_STRATEGY != "local" && RATE_LIMIT_STRATEGY != "external" {
+    config_fail("http.rate_limit_strategy must be 'local' or 'external'")
+}
+RATE_LIMIT_GATEWAY_HEADER := read_optional_string(http_cfg, "rate_limit_gateway_header", "http", "X-Kujo-Rate-Limit-Token")
+RATE_LIMIT_GATEWAY_TOKEN := read_optional_string(http_cfg, "rate_limit_gateway_token", "http", "")
+if RATE_LIMIT_ENABLED && RATE_LIMIT_STRATEGY == "external" && RATE_LIMIT_GATEWAY_TOKEN == "" {
+    config_fail("http.rate_limit_gateway_token must be non-empty when external rate limiting is enabled")
+}
+
+AUTH_ENABLED := false
+AUTH_TYPE := "bearer"
+AUTH_TOKEN := ""
+
+if config_has_key(config, "auth") {
+    auth_cfg := config["auth"]
+    if type(auth_cfg) != "dict" {
+        config_fail("auth must be an object when provided")
+    }
+
+    if config_has_key(auth_cfg, "enabled") {
+        if type(auth_cfg["enabled"]) != "bool" {
+            config_fail("auth.enabled must be a boolean")
+        }
+        AUTH_ENABLED := auth_cfg["enabled"] == true
+    }
+
+    if config_has_key(auth_cfg, "type") {
+        auth_type_candidate := to_lower(trim(to_string(auth_cfg["type"])))
+        if auth_type_candidate != "bearer" && auth_type_candidate != "api_key" {
+            config_fail("auth.type must be either 'bearer' or 'api_key'")
+        }
+        AUTH_TYPE := auth_type_candidate
+    }
+
+    if config_has_key(auth_cfg, "token") {
+        if type(auth_cfg["token"]) != "string" {
+            config_fail("auth.token must be a string")
+        }
+        AUTH_TOKEN := auth_cfg["token"]
+    }
+}
+
+if AUTH_ENABLED && trim(AUTH_TOKEN) == "" {
+    config_fail("auth.token must be a non-empty string when auth.enabled is true")
+}
+
+# =============================================================================
+# Module-level registries
+# =============================================================================
+
+tools := {}
+resources := {}
+
+# =============================================================================
+# Permission helpers
+# =============================================================================
+
+func resolve_allowed_path(fp) {
+    chk := check_path(fp, ALLOWED_DIRS, READ_ONLY_PATTERNS, false)
+    if !chk["ok"] {
+        return {"ok": false, "path": "", "reason": chk["reason"]}
+    }
+    return {"ok": true, "path": path_absolute(fp), "reason": ""}
+}
+
+func read_in_scope(fp) {
+    return safe_read(fp, ALLOWED_DIRS, READ_ONLY_PATTERNS)
+}
+
+func write_in_scope(fp, content) {
+    return safe_write(fp, content, ALLOWED_DIRS, READ_ONLY_PATTERNS)
+}
+
+# =============================================================================
+# Logging
+# =============================================================================
+
+func log_call(entry_type, source, msg, data) {
+    entry := "[" + format_date(now(), "YYYY-MM-DD HH:mm:ss") + "] " + entry_type + "/" + source + " " + msg
+    append_file(LOG_FILE, entry + "\n")
+}
+
+func read_log_entries() {
+    if !file_exists(LOG_FILE) { return [] }
+    content := read_file(LOG_FILE)
+    lines := split(content, "\n")
+    result := []
+    for line in lines {
+        if trim(line) != "" {
+            result := push(result, {"text": line})
+        }
+    }
+
+    if len(result) <= MAX_LOG_ENTRIES {
+        return result
+    }
+
+    start_index := len(result) - MAX_LOG_ENTRIES
+    trimmed := []
+    idx := start_index
+    while idx < len(result) {
+        trimmed := push(trimmed, result[idx])
+        idx := idx + 1
+    }
+
+    return trimmed
+}
+
+REQUEST_LIMIT_STATE := {
+    "window": "",
+    "count": 0
+}
+
+func enforce_request_limits(req) {
+    body_size := 0
+    try {
+        body_size := len(to_string(req["body"]))
+    } except err {
+    }
+
+    if body_size > MAX_REQUEST_BODY_BYTES {
+        return {"ok": false, "status": 413, "body": {"error": "Request body exceeds configured maximum"}}
+    }
+
+    if RATE_LIMIT_ENABLED == false {
+        return {"ok": true, "status": 200, "body": {}}
+    }
+
+    if RATE_LIMIT_STRATEGY == "external" {
+        gateway_token := trim(get_header_value(req, RATE_LIMIT_GATEWAY_HEADER))
+        if gateway_token != RATE_LIMIT_GATEWAY_TOKEN {
+            return {"ok": false, "status": 429, "body": {"error": "External rate-limit attestation required"}}
+        }
+        return {"ok": true, "status": 200, "body": {}}
+    }
+
+    current_window := format_date(now(), "YYYY-MM-DD HH:mm")
+    if REQUEST_LIMIT_STATE["window"] != current_window {
+        REQUEST_LIMIT_STATE["window"] := current_window
+        REQUEST_LIMIT_STATE["count"] := 0
+    }
+
+    if REQUEST_LIMIT_STATE["count"] >= RATE_LIMIT_PER_MINUTE {
+        return {"ok": false, "status": 429, "body": {"error": "Rate limit exceeded"}}
+    }
+
+    REQUEST_LIMIT_STATE["count"] := REQUEST_LIMIT_STATE["count"] + 1
+    return {"ok": true, "status": 200, "body": {}}
+}
+
+# =============================================================================
+# Tool registration
+# =============================================================================
+
+register_tool := func(name, description, params_schema, handler) {
+    tools[name] := {
+        "name": name,
+        "description": description,
+        "params": params_schema,
+        "handler": handler
+    }
+}
+
+func dict_has_key(dict_value, key_name) {
+    probe := has_key(dict_value, key_name)
+    if type(probe) == "bool" {
+        return probe
+    }
+    if type(probe) == "int" {
+        return probe == 1
+    }
+    return false
+}
+
+func has_parent_path_segment(path_value) {
+    slash_parts := split(path_value, "/")
+    for part in slash_parts {
+        if part == ".." {
+            return true
+        }
+    }
+
+    backslash_parts := split(path_value, "\\")
+    for part in backslash_parts {
+        if part == ".." {
+            return true
+        }
+    }
+
+    return false
+}
+
+func is_safe_relative_path(path_value) {
+    clean := trim(to_string(path_value))
+    if clean == "" {
+        return false
+    }
+    if starts_with(clean, "/") || starts_with(clean, "\\") {
+        return false
+    }
+    if has_parent_path_segment(clean) {
+        return false
+    }
+    return true
+}
+
+func is_safe_doc_name(file_name) {
+    clean := trim(to_string(file_name))
+    if clean == "" {
+        return false
+    }
+    if index_of(clean, "/") >= 0 || index_of(clean, "\\") >= 0 {
+        return false
+    }
+    if clean == "." || clean == ".." {
+        return false
+    }
+    return true
+}
+
+func get_header_value(req, header_name) {
+    if dict_has_key(req, "headers") == false {
+        return ""
+    }
+
+    headers := req["headers"]
+    if type(headers) != "dict" {
+        return ""
+    }
+
+    if dict_has_key(headers, header_name) {
+        return to_string(headers[header_name])
+    }
+
+    header_name_lower := to_lower(header_name)
+    for key in keys(headers) {
+        key_text := to_string(key)
+        if to_lower(key_text) == header_name_lower {
+            return to_string(headers[key])
+        }
+    }
+
+    return ""
+}
+
+func is_configured_host_allowed(req) {
+    expected_host := trim(to_lower(HOST))
+    if expected_host == "" || expected_host == "0.0.0.0" || expected_host == "::" {
+        return true
+    }
+
+    host_header := trim(get_header_value(req, "Host"))
+    if host_header == "" {
+        return false
+    }
+
+    header_parts := split(host_header, ":")
+    host_name := to_lower(trim(header_parts[0]))
+
+    if expected_host == "localhost" {
+        return host_name == "localhost" || host_name == "127.0.0.1"
+    }
+
+    return host_name == expected_host
+}
+
+func is_request_authorized(req) {
+    if AUTH_ENABLED == false {
+        return true
+    }
+
+    expected_token := trim(AUTH_TOKEN)
+    if expected_token == "" {
+        return false
+    }
+
+    if AUTH_TYPE == "api_key" {
+        provided_key := trim(get_header_value(req, "X-API-Key"))
+        return provided_key == expected_token
+    }
+
+    auth_header := trim(get_header_value(req, "Authorization"))
+    if !starts_with(auth_header, "Bearer ") {
+        return false
+    }
+
+    provided_token := trim(substring(auth_header, 7, len(auth_header)))
+    return provided_token == expected_token
+}
+
+func enforce_network_access(req) {
+    if !is_configured_host_allowed(req) {
+        return {"ok": false, "status": 403, "body": {"error": "Host header is not allowed"}}
+    }
+
+    if !is_request_authorized(req) {
+        return {"ok": false, "status": 401, "body": {"error": "Unauthorized request"}}
+    }
+
+    return {"ok": true, "status": 200, "body": {}}
+}
+
+func list_tools() {
+    result := []
+    for n in keys(tools) {
+        t := tools[n]
+        result := push(result, {
+            "name": t["name"],
+            "description": t["description"],
+            "input_schema": t["params"]
+        })
+    }
+    return result
+}
+
+func get_tool(name) {
+    if dict_has_key(tools, name) { return tools[name] }
+    return null
+}
+
+# =============================================================================
+# Resource registration
+# =============================================================================
+
+register_resource := func(uri, name, desc, mime, reader) {
+    resources[uri] := {
+        "uri": uri, "name": name, "desc": desc,
+        "mime": mime, "reader": reader
+    }
+}
+
+func list_resources() {
+    result := []
+    for u in keys(resources) {
+        r := resources[u]
+        result := push(result, {
+            "uri": r["uri"], "name": r["name"],
+            "description": r["desc"], "mime_type": r["mime"]
+        })
+    }
+    return result
+}
+
+func list_standard_tools() {
+    result := []
+    for name in keys(tools) {
+        tool := tools[name]
+        result := push(result, {"name": tool["name"], "description": tool["description"], "inputSchema": tool["params"]})
+    }
+    return result
+}
+
+func list_standard_resources() {
+    result := []
+    for uri in keys(resources) {
+        resource := resources[uri]
+        result := push(result, {"uri": resource["uri"], "name": resource["name"], "description": resource["desc"], "mimeType": resource["mime"]})
+    }
+    return result
+}
+
+func list_prompts() {
+    return [
+        {"name": "onboarding", "description": "Onboard an agent to this repository.", "arguments": []},
+        {"name": "checklist_loop", "description": "Run a bounded implementation checklist loop.", "arguments": []}
+    ]
+}
+
+func read_prompt(prompt_name) {
+    if prompt_name == "onboarding" {
+        return {"ok": true, "description": "Onboard an agent to this repository.", "text": read_file("./docs/onboarding-prompt.md")}
+    }
+    if prompt_name == "checklist_loop" {
+        return {"ok": true, "description": "Run a bounded implementation checklist loop.", "text": read_file("./docs/checklist-loop-workflow.md")}
+    }
+    return {"ok": false, "error": "Prompt not found: " + prompt_name}
+}
+
+# =============================================================================
+# Startup output helpers
+# =============================================================================
+
+func print_lines(lines) {
+    for line in lines {
+        print(line)
+    }
+}
+
+func print_registry_summary(title, entries, description_key) {
+    print(" " + title + ":")
+    for entry_name in keys(entries) {
+        print("   - " + entry_name + ": " + entries[entry_name][description_key])
+    }
+}
+
+# =============================================================================
+# Define demo tools and resources via modular registries
+# =============================================================================
+
+tool_deps := {
+    "obj_schema": obj_schema,
+    "str_schema": str_schema,
+    "arr_schema": arr_schema,
+    "bool_schema": bool_schema,
+    "int_schema": int_schema,
+    "docs_dir": DOCS_DIR,
+    "allowed_dir": ALLOWED_DIR,
+    "allowed_dirs": ALLOWED_DIRS,
+    "read_only_patterns": READ_ONLY_PATTERNS,
+    "default_timeout_ms": TOOLS_DEFAULT_TIMEOUT_MS,
+    "scan_max_entries": TOOLS_SCAN_MAX_ENTRIES,
+    "scan_max_files": TOOLS_SCAN_MAX_FILES,
+    "scan_max_bytes": TOOLS_SCAN_MAX_BYTES,
+    "tree_cache_enabled": TOOLS_TREE_CACHE_ENABLED
+}
+if TOOLS_ENABLED {
+    registered_tools := register_all_tools(tool_deps)
+    for tool_name in keys(registered_tools) {
+        tool_def := registered_tools[tool_name]
+        tools[tool_name] := {
+            "name": tool_def["name"],
+            "description": tool_def["description"],
+            "params": tool_def["params"]
+        }
+    }
+}
+
+resource_deps := {
+    "docs_dir": DOCS_DIR,
+    "allowed_dir": ALLOWED_DIR,
+    "allowed_dirs": ALLOWED_DIRS,
+    "log_file": LOG_FILE,
+    "repo_docs_dir": "./docs"
+}
+if RESOURCES_ENABLED {
+    registered_resources := register_all_resources(resource_deps)
+    for resource_uri in keys(registered_resources) {
+        resource_def := registered_resources[resource_uri]
+        resources[resource_uri] := {
+            "uri": resource_def["uri"],
+            "name": resource_def["name"],
+            "desc": resource_def["desc"],
+            "mime": resource_def["mime"]
+        }
+    }
+}
+
+# =============================================================================
+# MCP route handlers
+# =============================================================================
+
+print_lines([
+    "",
+    "╔════════════════════════════════════════════════╗",
+    "║        MCP Server                        ║",
+    "║        http://" + HOST + ":" + to_string(PORT) + "                    ║",
+    "╚════════════════════════════════════════════════╝",
+    ""
+])
+
+server := http_listen(HOST, PORT)
+
+server := server.route("GET", "/", func(req) {
+    access := enforce_network_access(req)
+    if access["ok"] == false {
+        return json_response(access["status"], access["body"])
+    }
+
+    limits := enforce_request_limits(req)
+    if limits["ok"] == false {
+        return json_response(limits["status"], limits["body"])
+    }
+
+    return json_response(200, {
+        "server": SERVER_NAME, "version": SERVER_VERSION,
+        "endpoints": {
+            "health": "/mcp/v1/health",
+            "tools_list": "POST /mcp/v1/tools/list",
+            "tools_call": "POST /mcp/v1/tools/call",
+            "resources_list": "POST /mcp/v1/resources/list",
+            "resources_read": "POST /mcp/v1/resources/read",
+            "logs": "/mcp/v1/logs"
+        }
+    })
+})
+
+server := server.route("GET", "/mcp/v1/health", func(req) {
+    access := enforce_network_access(req)
+    if access["ok"] == false {
+        return json_response(access["status"], access["body"])
+    }
+
+    limits := enforce_request_limits(req)
+    if limits["ok"] == false {
+        return json_response(limits["status"], limits["body"])
+    }
+
+    return json_response(200, {"status": "ok", "server": SERVER_NAME, "version": SERVER_VERSION})
+})
+
+server := server.route("POST", "/mcp/v1/tools/list", func(req) {
+    access := enforce_network_access(req)
+    if access["ok"] == false {
+        return json_response(access["status"], access["body"])
+    }
+
+    limits := enforce_request_limits(req)
+    if limits["ok"] == false {
+        return json_response(limits["status"], limits["body"])
+    }
+
+    if TOOLS_ENABLED == false {
+        return json_response(200, {"jsonrpc": "2.0", "error": {"code": -32010, "message": "Tools are disabled by configuration"}})
+    }
+
+    log_call("info", "http", "List tools", {})
+    return json_success({"tools": list_tools()})
+})
+
+server := server.route("POST", "/mcp/v1/tools/call", func(req) {
+    access := enforce_network_access(req)
+    if access["ok"] == false {
+        return json_response(access["status"], access["body"])
+    }
+
+    limits := enforce_request_limits(req)
+    if limits["ok"] == false {
+        return json_response(limits["status"], limits["body"])
+    }
+
+    if TOOLS_ENABLED == false {
+        return json_response(200, {"jsonrpc": "2.0", "error": {"code": -32010, "message": "Tools are disabled by configuration"}})
+    }
+
+    data := {}
+    try {
+        data := parse_json(req["body"])
+    } except err {
+        return json_response(200, {"jsonrpc": "2.0", "error": {"code": -32600, "message": "Invalid JSON request body"}})
+    }
+
+    params := null
+    try {
+        params := data["params"]
+    } except err {
+        return json_response(200, {"jsonrpc": "2.0", "error": {"code": -32602, "message": "Missing params object"}})
+    }
+
+    if type(params) != "dict" {
+        return json_response(200, {"jsonrpc": "2.0", "error": {"code": -32602, "message": "params must be an object"}})
+    }
+
+    tname := ""
+    try {
+        if type(params["name"]) != "string" {
+            return json_response(200, {"jsonrpc": "2.0", "error": {"code": -32602, "message": "params.name must be a string"}})
+        }
+        tname := params["name"]
+    } except err {
+        return json_response(200, {"jsonrpc": "2.0", "error": {"code": -32602, "message": "Missing params.name"}})
+    }
+
+    if trim(tname) == "" {
+        return json_response(200, {"jsonrpc": "2.0", "error": {"code": -32602, "message": "params.name must be a non-empty string"}})
+    }
+
+    tparams := {}
+    try {
+        args_val := params["arguments"]
+        if type(args_val) != "dict" {
+            return json_response(200, {"jsonrpc": "2.0", "error": {"code": -32602, "message": "params.arguments must be an object"}})
+        }
+        tparams := args_val
+    } except err {
+    }
+
+    t := get_tool(tname)
+    if t == null {
+        log_call("error", "tool", "Rejected unknown tool", {})
+        return json_response(200, {"jsonrpc": "2.0", "error": {"code": -1, "message": "Tool not found: " + tname}})
+    }
+
+    log_call("info", "http", "Tool call: " + tname, {})
+
+    cacheable_tool := tname == "search_files" || tname == "list_tree_recursive" || tname == "grep_text"
+    refresh_index := false
+    if config_has_key(tparams, "refresh_index") && type(tparams["refresh_index"]) == "bool" {
+        refresh_index := tparams["refresh_index"] == true
+    }
+    cache_key := tname + "|" + to_json(tparams) + "|" + format_date(now(), "YYYY-MM-DD HH:mm")
+    if TOOLS_TREE_CACHE_ENABLED && cacheable_tool && !refresh_index && config_has_key(TREE_INDEX_CACHE, cache_key) {
+        cached_result := TREE_INDEX_CACHE[cache_key]
+        cached_result["cache_hit"] := true
+        log_call("info", "tool", "OK (cached): " + tname, {})
+        return json_response(200, {"jsonrpc": "2.0", "result": cached_result})
+    }
+
+    result := {}
+    try {
+        result := execute_registered_tool(tname, tparams, tool_deps)
+    } except err {
+        err_text := "Tool execution failed"
+        try {
+            err_text := to_string(err)
+        } except nested_err {
+        }
+        log_call("error", "tool", "Exception: " + tname, {})
+        return json_response(200, {"jsonrpc": "2.0", "error": {"code": -1, "message": "Tool error: " + err_text}})
+    }
+
+    result_ok := false
+    try {
+        result_ok := result["ok"] == true
+    } except err {
+        result_ok := false
+    }
+
+    if result_ok {
+        result_data := {}
+        try {
+            result_data := result["data"]
+        } except err {
+        }
+        if TOOLS_TREE_CACHE_ENABLED && cacheable_tool && !refresh_index {
+            TREE_INDEX_CACHE[cache_key] := result_data
+        }
+        log_call("info", "tool", "OK: " + tname, {})
+        return json_response(200, {"jsonrpc": "2.0", "result": result_data})
+    }
+
+    err_msg := "Tool failed"
+    try {
+        err_msg := to_string(result["error"])
+    } except err {
+    }
+
+    err_code := -1
+    if starts_with(to_lower(err_msg), "tool timeout exceeded") {
+        err_code := -32001
+    }
+
+    log_call("error", "tool", "Fail: " + tname, {})
+    return json_response(200, {"jsonrpc": "2.0", "error": {"code": err_code, "message": err_msg}})
+})
+
+server := server.route("POST", "/mcp/v1/resources/list", func(req) {
+    access := enforce_network_access(req)
+    if access["ok"] == false {
+        return json_response(access["status"], access["body"])
+    }
+
+    limits := enforce_request_limits(req)
+    if limits["ok"] == false {
+        return json_response(limits["status"], limits["body"])
+    }
+
+    if RESOURCES_ENABLED == false {
+        return json_response(200, {"jsonrpc": "2.0", "error": {"code": -32011, "message": "Resources are disabled by configuration"}})
+    }
+
+    log_call("info", "http", "List resources", {})
+    return json_success({"resources": list_resources()})
+})
+
+server := server.route("POST", "/mcp/v1/resources/read", func(req) {
+    access := enforce_network_access(req)
+    if access["ok"] == false {
+        return json_response(access["status"], access["body"])
+    }
+
+    limits := enforce_request_limits(req)
+    if limits["ok"] == false {
+        return json_response(limits["status"], limits["body"])
+    }
+
+    if RESOURCES_ENABLED == false {
+        return json_response(200, {"jsonrpc": "2.0", "error": {"code": -32011, "message": "Resources are disabled by configuration"}})
+    }
+
+    data := {}
+    try {
+        data := parse_json(req["body"])
+    } except err {
+        return json_response(200, {"jsonrpc": "2.0", "error": {"code": -32600, "message": "Invalid JSON request body"}})
+    }
+
+    params := null
+    try {
+        params := data["params"]
+    } except err {
+        return json_response(200, {"jsonrpc": "2.0", "error": {"code": -32602, "message": "Missing params object"}})
+    }
+
+    if type(params) != "dict" {
+        return json_response(200, {"jsonrpc": "2.0", "error": {"code": -32602, "message": "params must be an object"}})
+    }
+
+    uri := ""
+    try {
+        if type(params["uri"]) != "string" {
+            return json_response(200, {"jsonrpc": "2.0", "error": {"code": -32602, "message": "params.uri must be a string"}})
+        }
+        uri := params["uri"]
+    } except err {
+        return json_response(200, {"jsonrpc": "2.0", "error": {"code": -32602, "message": "Missing params.uri"}})
+    }
+
+    if trim(uri) == "" {
+        return json_response(200, {"jsonrpc": "2.0", "error": {"code": -32602, "message": "params.uri must be a non-empty string"}})
+    }
+
+    log_call("info", "http", "Read resource: " + uri, {})
+
+    if dict_has_key(resources, uri) == false {
+        return json_response(200, {"jsonrpc": "2.0", "error": {"code": -2, "message": "Resource not found: " + uri}})
+    }
+
+    try {
+        result := read_registered_resource(uri, resource_deps)
+        if result["ok"] {
+            return json_response(200, {"jsonrpc": "2.0", "result": {
+                "contents": [{"uri": uri, "mimeType": result["mime_type"], "text": result["content"]}]
+            }})
+        }
+        return json_response(200, {"jsonrpc": "2.0", "error": {"code": -2, "message": result["error"]}})
+    } except err {
+        err_text := "Resource execution failed"
+        try {
+            err_text := to_string(err)
+        } except nested_err {
+        }
+        return json_response(200, {"jsonrpc": "2.0", "error": {"code": -2, "message": "Resource error: " + err_text}})
+    }
+})
+
+server := server.route("POST", "/mcp/v1", func(req) {
+    access := enforce_network_access(req)
+    if !access["ok"] { return json_response(access["status"], access["body"]) }
+    limits := enforce_request_limits(req)
+    if !limits["ok"] { return json_response(limits["status"], limits["body"]) }
+
+    payload := {}
+    try {
+        payload := parse_json(req["body"])
+    } except err {
+        return json_response(200, {"jsonrpc": "2.0", "id": null, "error": {"code": -32700, "message": "Parse error"}})
+    }
+    if type(payload) != "dict" || !config_has_key(payload, "jsonrpc") || payload["jsonrpc"] != "2.0" || !config_has_key(payload, "method") || type(payload["method"]) != "string" {
+        return json_response(200, {"jsonrpc": "2.0", "id": null, "error": {"code": -32600, "message": "Invalid Request"}})
+    }
+
+    request_id := null
+    if config_has_key(payload, "id") { request_id := payload["id"] }
+    method := payload["method"]
+    params := {}
+    if config_has_key(payload, "params") && type(payload["params"]) == "dict" { params := payload["params"] }
+
+    if method == "notifications/initialized" { return json_response(202, {}) }
+    if method == "ping" { return json_response(200, {"jsonrpc": "2.0", "id": request_id, "result": {}}) }
+    if method == "initialize" {
+        return json_response(200, {"jsonrpc": "2.0", "id": request_id, "result": {
+            "protocolVersion": "2025-11-25",
+            "capabilities": {"tools": {"listChanged": false}, "resources": {"listChanged": false}, "prompts": {"listChanged": false}},
+            "serverInfo": {"name": SERVER_NAME, "version": SERVER_VERSION}
+        }})
+    }
+    if method == "tools/list" {
+        if !TOOLS_ENABLED { return json_response(200, {"jsonrpc": "2.0", "id": request_id, "error": {"code": -32010, "message": "Tools are disabled by configuration"}}) }
+        return json_response(200, {"jsonrpc": "2.0", "id": request_id, "result": {"tools": list_standard_tools()}})
+    }
+    if method == "tools/call" {
+        if !TOOLS_ENABLED { return json_response(200, {"jsonrpc": "2.0", "id": request_id, "error": {"code": -32010, "message": "Tools are disabled by configuration"}}) }
+        if !config_has_key(params, "name") || type(params["name"]) != "string" || trim(params["name"]) == "" {
+            return json_response(200, {"jsonrpc": "2.0", "id": request_id, "error": {"code": -32602, "message": "params.name is required"}})
+        }
+        tool_name := trim(params["name"])
+        if get_tool(tool_name) == null {
+            log_call("error", "tool", "Rejected unknown tool", {})
+            return json_response(200, {"jsonrpc": "2.0", "id": request_id, "error": {"code": -32601, "message": "Tool not found: " + tool_name}})
+        }
+        tool_args := {}
+        if config_has_key(params, "arguments") {
+            if type(params["arguments"]) != "dict" { return json_response(200, {"jsonrpc": "2.0", "id": request_id, "error": {"code": -32602, "message": "params.arguments must be an object"}}) }
+            tool_args := params["arguments"]
+        }
+        outcome := execute_registered_tool(tool_name, tool_args, tool_deps)
+        if outcome["ok"] {
+            log_call("info", "tool", "OK: " + tool_name, {})
+            return json_response(200, {"jsonrpc": "2.0", "id": request_id, "result": {"content": [{"type": "text", "text": to_json(outcome["data"])}], "structuredContent": outcome["data"], "isError": false}})
+        }
+        log_call("error", "tool", "Fail: " + tool_name, {})
+        return json_response(200, {"jsonrpc": "2.0", "id": request_id, "error": {"code": -32000, "message": outcome["error"]}})
+    }
+    if method == "resources/list" {
+        if !RESOURCES_ENABLED { return json_response(200, {"jsonrpc": "2.0", "id": request_id, "error": {"code": -32011, "message": "Resources are disabled by configuration"}}) }
+        return json_response(200, {"jsonrpc": "2.0", "id": request_id, "result": {"resources": list_standard_resources()}})
+    }
+    if method == "resources/read" {
+        if !RESOURCES_ENABLED { return json_response(200, {"jsonrpc": "2.0", "id": request_id, "error": {"code": -32011, "message": "Resources are disabled by configuration"}}) }
+        if !config_has_key(params, "uri") || type(params["uri"]) != "string" || trim(params["uri"]) == "" { return json_response(200, {"jsonrpc": "2.0", "id": request_id, "error": {"code": -32602, "message": "params.uri is required"}}) }
+        uri := trim(params["uri"])
+        if !config_has_key(resources, uri) { return json_response(200, {"jsonrpc": "2.0", "id": request_id, "error": {"code": -32002, "message": "Resource not found: " + uri}}) }
+        outcome := read_registered_resource(uri, resource_deps)
+        if outcome["ok"] { return json_response(200, {"jsonrpc": "2.0", "id": request_id, "result": {"contents": [{"uri": uri, "mimeType": outcome["mime_type"], "text": outcome["content"]}]}}) }
+        return json_response(200, {"jsonrpc": "2.0", "id": request_id, "error": {"code": -32002, "message": outcome["error"]}})
+    }
+    if method == "prompts/list" { return json_response(200, {"jsonrpc": "2.0", "id": request_id, "result": {"prompts": list_prompts()}}) }
+    if method == "prompts/get" {
+        if !config_has_key(params, "name") || type(params["name"]) != "string" { return json_response(200, {"jsonrpc": "2.0", "id": request_id, "error": {"code": -32602, "message": "params.name is required"}}) }
+        prompt := read_prompt(trim(params["name"]))
+        if prompt["ok"] { return json_response(200, {"jsonrpc": "2.0", "id": request_id, "result": {"description": prompt["description"], "messages": [{"role": "user", "content": {"type": "text", "text": prompt["text"]}}]}}) }
+        return json_response(200, {"jsonrpc": "2.0", "id": request_id, "error": {"code": -32602, "message": prompt["error"]}})
+    }
+    return json_response(200, {"jsonrpc": "2.0", "id": request_id, "error": {"code": -32601, "message": "Method not found: " + method}})
+})
+
+server := server.route("GET", "/mcp/v1/logs", func(req) {
+    access := enforce_network_access(req)
+    if access["ok"] == false {
+        return json_response(access["status"], access["body"])
+    }
+
+    limits := enforce_request_limits(req)
+    if limits["ok"] == false {
+        return json_response(limits["status"], limits["body"])
+    }
+
+    entries := read_log_entries()
+    return json_response(200, {"entries": entries, "total": len(entries)})
+})
+
+# =============================================================================
+# Print startup info and start
+# =============================================================================
+
+print_registry_summary("Tools", tools, "description")
+print("")
+print_registry_summary("Resources", resources, "desc")
+print_lines([
+    "",
+    " Logging to: " + LOG_FILE,
+    "",
+    " Press Ctrl+C to stop",
+    ""
+])
+
+server.listen()

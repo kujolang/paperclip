@@ -1,0 +1,303 @@
+# MCP Framework Library
+#
+# Reusable helpers for building MCP servers in Kujo: schema generation,
+# permission checks, safe file I/O, and JSON-RPC response formatting.
+#
+# See server.kujo for a complete working MCP server implementation.
+
+DEFAULT_MAX_FILE_SIZE := 1048576
+
+func load_max_file_size_limit() {
+    try {
+        config_raw := read_file("mcp-server.json")
+        config := parse_json(config_raw)
+        return config["permissions"]["max_file_size"]
+    } except err {
+        return DEFAULT_MAX_FILE_SIZE
+    }
+}
+
+MAX_FILE_SIZE := load_max_file_size_limit()
+
+# =============================================================================
+# Schema Helpers
+# =============================================================================
+
+export func str_schema(desc, enum_vals) {
+    s := {"type": "string", "description": desc}
+    if enum_vals != null && len(enum_vals) > 0 { s["enum"] := enum_vals }
+    return s
+}
+
+export func bool_schema(desc) {
+    return {"type": "boolean", "description": desc}
+}
+
+export func int_schema(desc, min_val, max_val) {
+    s := {"type": "integer", "description": desc}
+    if min_val != null { s["minimum"] := min_val }
+    if max_val != null { s["maximum"] := max_val }
+    return s
+}
+
+export func arr_schema(desc, item_type) {
+    return {"type": "array", "description": desc, "items": {"type": item_type}}
+}
+
+export func obj_schema(desc, props, required) {
+    return {"type": "object", "description": desc, "properties": props, "required": required}
+}
+
+# =============================================================================
+# Permission Helpers
+# =============================================================================
+
+func normalize_path_for_check(fp) {
+    try {
+        if path_exists(fp) {
+            return {"ok": true, "path": path_absolute(fp), "reason": ""}
+        }
+
+        parent := dirname(fp)
+        if parent == "" { parent := "." }
+        if !path_exists(parent) {
+            return {"ok": false, "path": "", "reason": "Path cannot be resolved for permission check"}
+        }
+
+        base := basename(fp)
+        parent_abs := path_absolute(parent)
+        return {"ok": true, "path": parent_abs + "/" + base, "reason": ""}
+    } except err {
+        return {"ok": false, "path": "", "reason": "Path cannot be resolved for permission check"}
+    }
+}
+
+func is_within_allowed_boundary(candidate_abs, allowed_abs) {
+    if candidate_abs == allowed_abs {
+        return true
+    }
+    return starts_with(candidate_abs, allowed_abs + "/")
+}
+
+func normalize_allowed_dirs_for_check(allowed_input) {
+    dirs := []
+
+    if type(allowed_input) == "array" {
+        for raw_dir in allowed_input {
+            dir_text := trim(to_string(raw_dir))
+            if dir_text == "" {
+                return {"ok": false, "dirs": [], "error": "Allowed directory entry cannot be empty"}
+            }
+
+            try {
+                dirs := push(dirs, path_absolute(dir_text))
+            } except err {
+                return {"ok": false, "dirs": [], "error": "Allowed directory cannot be resolved"}
+            }
+        }
+    } else {
+        dir_text := trim(to_string(allowed_input))
+        if dir_text == "" {
+            return {"ok": false, "dirs": [], "error": "Allowed directory cannot be empty"}
+        }
+
+        try {
+            dirs := push(dirs, path_absolute(dir_text))
+        } except err {
+            return {"ok": false, "dirs": [], "error": "Allowed directory cannot be resolved"}
+        }
+    }
+
+    if len(dirs) == 0 {
+        return {"ok": false, "dirs": [], "error": "At least one allowed directory is required"}
+    }
+
+    return {"ok": true, "dirs": dirs, "error": ""}
+}
+
+func wildcard_match(value, pattern) {
+    if pattern == "*" {
+        return true
+    }
+
+    if index_of(pattern, "*") < 0 {
+        return value == pattern
+    }
+
+    if starts_with(pattern, "*") && ends_with(pattern, "*") {
+        if len(pattern) <= 2 {
+            return true
+        }
+        middle := substring(pattern, 1, len(pattern) - 1)
+        return index_of(value, middle) >= 0
+    }
+
+    if starts_with(pattern, "*") {
+        suffix := substring(pattern, 1, len(pattern))
+        return ends_with(value, suffix)
+    }
+
+    if ends_with(pattern, "*") {
+        prefix := substring(pattern, 0, len(pattern) - 1)
+        return starts_with(value, prefix)
+    }
+
+    parts := split(pattern, "*")
+    if len(parts) == 2 {
+        return starts_with(value, parts[0]) && ends_with(value, parts[1])
+    }
+
+    return false
+}
+
+func matches_read_only_pattern(candidate_abs, candidate_rel, candidate_name, raw_pattern) {
+    pattern := trim(to_string(raw_pattern))
+    if pattern == "" {
+        return false
+    }
+
+    if starts_with(pattern, ".") && index_of(pattern, "/") < 0 && index_of(pattern, "*") < 0 {
+        return ends_with(candidate_name, pattern)
+    }
+
+    if wildcard_match(candidate_name, pattern) {
+        return true
+    }
+    if wildcard_match(candidate_rel, pattern) {
+        return true
+    }
+    if wildcard_match(candidate_abs, pattern) {
+        return true
+    }
+
+    return false
+}
+
+export func check_path(fp, allowed_dir, read_only_pats, write_mode) {
+    allowed_dirs_result := normalize_allowed_dirs_for_check(allowed_dir)
+    if !allowed_dirs_result["ok"] {
+        return {"ok": false, "reason": allowed_dirs_result["error"]}
+    }
+    allowed_abs_dirs := allowed_dirs_result["dirs"]
+
+    normalized := normalize_path_for_check(fp)
+    if !normalized["ok"] {
+        return {"ok": false, "reason": normalized["reason"]}
+    }
+
+    candidate_abs := normalized["path"]
+    matched_allowed_abs := ""
+    idx := 0
+    while idx < len(allowed_abs_dirs) {
+        current_allowed_abs := allowed_abs_dirs[idx]
+        if is_within_allowed_boundary(candidate_abs, current_allowed_abs) {
+            matched_allowed_abs := current_allowed_abs
+            break
+        }
+        idx := idx + 1
+    }
+
+    if matched_allowed_abs == "" {
+        return {"ok": false, "reason": "Path is outside allowed directory boundary"}
+    }
+
+    if write_mode {
+        candidate_rel := ""
+        if starts_with(candidate_abs, matched_allowed_abs + "/") {
+            candidate_rel := substring(candidate_abs, len(matched_allowed_abs) + 1, len(candidate_abs))
+        }
+        candidate_name := basename(candidate_abs)
+
+        for pat in read_only_pats {
+            if matches_read_only_pattern(candidate_abs, candidate_rel, candidate_name, pat) {
+                return {"ok": false, "reason": "Path is read-only for write operations"}
+            }
+        }
+    }
+    return {"ok": true, "reason": ""}
+}
+
+export func safe_read(fp, allowed_dir, read_only_pats) {
+    chk := check_path(fp, allowed_dir, read_only_pats, false)
+    if !chk["ok"] { return {"ok": false, "error": chk["reason"]} }
+    if !file_exists(fp) { return {"ok": false, "error": "Not found: " + fp} }
+
+    size_bytes := file_size(fp)
+    if size_bytes > MAX_FILE_SIZE {
+        return {"ok": false, "error": "File exceeds max_file_size limit of " + to_string(MAX_FILE_SIZE) + " bytes"}
+    }
+
+    try {
+        return {"ok": true, "content": read_file(fp)}
+    } except err {
+        err_text := "unknown error"
+        try {
+            err_text := to_string(err)
+        } except nested_err {
+        }
+        return {"ok": false, "error": "Read failed: " + err_text}
+    }
+}
+
+export func safe_write(fp, content, allowed_dir, read_only_pats) {
+    chk := check_path(fp, allowed_dir, read_only_pats, true)
+    if !chk["ok"] { return {"ok": false, "error": chk["reason"]} }
+
+    content_size := len(content)
+    if content_size > MAX_FILE_SIZE {
+        return {"ok": false, "error": "File exceeds max_file_size limit of " + to_string(MAX_FILE_SIZE) + " bytes"}
+    }
+
+    try {
+        write_file(fp, content, true)
+        return {"ok": true, "bytes": len(content)}
+    } except err {
+        err_text := "unknown error"
+        try {
+            err_text := to_string(err)
+        } except nested_err {
+        }
+        return {"ok": false, "error": "Write failed: " + err_text}
+    }
+}
+
+# =============================================================================
+# JSON-RPC Response Helpers
+# =============================================================================
+
+export func json_success(data) {
+    return json_response(200, {"jsonrpc": "2.0", "result": data})
+}
+
+export func json_error(code, msg) {
+    return json_response(200, {"jsonrpc": "2.0", "error": {"code": code, "message": msg}})
+}
+
+# =============================================================================
+# Usage Pattern (see server.kujo for working implementation)
+# =============================================================================
+#
+# The recommended pattern for building an MCP server in Kujo:
+#
+# 1. Define module-level state:
+#    let tools := {}
+#    let resources := {}
+#
+# 2. Register tools at module level:
+#    func register_tool(name, desc, schema, handler) {
+#        tools[name] := {"name": name, "desc": desc, "schema": schema, "handler": handler}
+#    }
+#
+# 3. Register resources at module level:
+#    func register_resource(uri, name, desc, mime, reader) {
+#        resources[uri] := {"uri": uri, "name": name, "desc": desc, "mime": mime, "reader": reader}
+#    }
+#
+# 4. Create HTTP server and register routes:
+#    server := http_server(PORT)
+#    server := server.route("POST", "/mcp/v1/tools/list", func(req) {
+#        return json_success({"tools": list_tools()})
+#    })
+#    server.listen()
+#
+# See server.kujo for a complete working example.

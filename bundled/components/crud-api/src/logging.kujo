@@ -1,0 +1,30 @@
+from src.request_context import current_request_id, current_request_method, current_request_path
+
+export func log_event(level, event_name, details) {
+	entry := {
+		"ts": now(),
+		"level": level,
+		"event": event_name,
+		"request_id": current_request_id(),
+		"method": current_request_method(),
+		"path": current_request_path(),
+		"details": details
+	}
+	print(to_json(entry))
+}
+
+export func log_request_start() {
+	log_event("info", "request.start", {})
+}
+
+export func log_request_complete(status_code) {
+	log_event("info", "request.complete", {
+		"status": status_code
+	})
+}
+
+export func log_security_event(event_name, reason) {
+	log_event("warn", event_name, {
+		"reason": reason
+	})
+}

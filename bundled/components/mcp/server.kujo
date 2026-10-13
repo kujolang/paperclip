@@ -1,0 +1,5 @@
+# MCP Server Bootstrap
+#
+# Thin root entrypoint that delegates runtime behavior to src/server/runtime.kujo.
+
+from src.server.runtime import entry_loaded

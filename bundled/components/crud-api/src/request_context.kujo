@@ -1,0 +1,81 @@
+request_counter := 0
+request_context := {
+	"request_id": "",
+	"method": "",
+	"path": ""
+}
+
+func has_key_true(value, key_name) {
+	probe := has_key(value, key_name)
+	if type(probe) == "bool" {
+		return probe
+	}
+	if type(probe) == "int" {
+		return probe == 1
+	}
+	return false
+}
+
+func get_header(req, header_name) {
+	if has_key_true(req, "headers") == false {
+		return ""
+	}
+
+	headers := req["headers"]
+	if has_key(headers, header_name) {
+		return trim(to_string(headers[header_name]))
+	}
+
+	return ""
+}
+
+func derive_path(req) {
+	if has_key_true(req, "path") {
+		return to_string(req["path"])
+	}
+	if has_key_true(req, "url") {
+		return to_string(req["url"])
+	}
+	return ""
+}
+
+func generate_request_id() {
+	request_counter := request_counter + 1
+	return "req-" + to_string(now()) + "-" + to_string(request_counter)
+}
+
+export func begin_request(req) {
+	request_id := get_header(req, "X-Request-Id")
+	if len(request_id) == 0 {
+		request_id := get_header(req, "x-request-id")
+	}
+
+	if len(request_id) == 0 {
+		request_id := generate_request_id()
+	}
+
+	method := ""
+	if has_key_true(req, "method") {
+		method := to_string(req["method"])
+	}
+
+	request_context := {
+		"request_id": request_id,
+		"method": method,
+		"path": derive_path(req)
+	}
+
+	return request_id
+}
+
+export func current_request_id() {
+	return request_context["request_id"]
+}
+
+export func current_request_method() {
+	return request_context["method"]
+}
+
+export func current_request_path() {
+	return request_context["path"]
+}
