@@ -20,9 +20,11 @@ Artifacts use Paperclip state scopes: Review and Context Packs are stored agains
 
 - npm packages and runtime resolver API documented in the Kujo runtime repository
 - Paperclip manifest API version 1 and minimum host version `2026.824.1`
-- four namespaced agent tools declared in the manifest and worker
+- five namespaced agent tools declared in the manifest and worker
 - component lock schema version 1
 - Review Pack, Failure Evidence, and Context Pack schema version 1
 - additive JSON compatibility within a plugin major version
 
 Review generation captures a git snapshot before parallel read-only ChangeBucket/PatchBrief calls and checks it afterward. Partial PatchBrief failure preserves an accurate ChangeBucket footprint and records component status. Context cache identity combines workspace, HEAD/dirty fingerprint, normalized task, depth, and component version. The v0.1 worker records the key but intentionally regenerates instead of adding a second cache index.
+
+Scout uses a private execution directory with an adapter-owned bounded config, a canonical host-resolved target, and fixed output paths. Its report schema strips raw source snippets and absolute paths before state/tool projection. Strict partial-scan exit 2 is represented as partial evidence; other nonzero exits and limits fail. No arbitrary target or output path is exposed to callers.

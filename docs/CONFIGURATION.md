@@ -35,3 +35,5 @@ Other fixed bounds include a 200 KB Failure Evidence log input, 100 KB Context P
 `features.examples` (default true) controls the fixed bundled first-run example.
 Disable it to hide execution availability for that example. It does not enable
 arbitrary source execution or change the Verification setting.
+
+`features.understand` defaults to `true`; disable it to prevent repository maps through both the panel and agent tool. Doctor distinguishes disabled from blocked Scout readiness.

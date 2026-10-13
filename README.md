@@ -47,7 +47,7 @@ is missing, incompatible, or not Kujo. Correct the configuration, then select
 2. Select **Try the Kujo example** to check and run a small bundled program. It
    demonstrates structured data, a function, and JSON output without a repository,
    network access, or credentials. View its source and result in the panel.
-3. Generate a focused **Context Pack** before the agent reads the repository broadly.
+3. Choose **Understand this repository** for a bounded Scout map, then generate a focused **Context Pack** before the agent reads the repository broadly.
 4. Make and test the change with the project's normal tools.
 5. Generate a **Review Pack** to inspect scope, risk, and suggested checks.
 6. If a command fails, save its bounded output as **Failure Evidence**.
@@ -59,19 +59,21 @@ the project repository.
 
 | Workflow | What it does | Kujo component |
 | --- | --- | --- |
+| **Repository understanding** | Maps project structure, languages, dependencies, routes and heuristic observations; shows partial scans explicitly. | Scout |
 | **Context Pack** | Selects a small, task-specific set of files before an agent reads broadly. | Scent |
 | **Review Pack** | Measures change size, explains risk signals, and prepares a review handoff. | ChangeBucket and PatchBrief |
 | **Failure Evidence** | Turns supplied command details and logs into a bounded, redacted record. | CaseFile |
 
-The four component snapshots are pinned, checksummed, and shipped with the plugin. The
+The five component snapshots are pinned, checksummed, and shipped with the plugin. The
 plugin does not download component code while installing or running.
 
 ## Agent tools
 
-Paperclip agents can call four tools:
+Paperclip agents can call five tools:
 
 | Tool | Use |
 | --- | --- |
+| `kujolang.paperclip:understand-repository` | Inspect the host-resolved repository without accepting a caller path or changing project files. |
 | `kujolang.paperclip:get-context` | Select files for a task at minimal, focused, or broad depth. |
 | `kujolang.paperclip:get-context-content` | Read safe content from files already selected by a Context Pack. |
 | `kujolang.paperclip:review-changes` | Measure a working tree or Git range and create a review handoff. |

@@ -109,3 +109,12 @@ selection. Clean workspaces suggest context selection before a change. Issue
 titles/descriptions seed the editable task through company-scoped `issues.read`.
 Upgrades need that read capability enabled by Paperclip; issue text is treated
 as input text, not as instructions to the plugin.
+
+
+## Understand a repository
+
+Choose **Understand this repository** on an issue or project before selecting task context. Scout displays the project structure, language counts, discovered dependencies and routes, and heuristic observations. It works on clean or empty Git repositories. The agent equivalent is `kujolang.paperclip:understand-repository` with `{}`; Paperclip resolves the company-scoped project workspace.
+
+Reports are created in private temporary storage, normalized into company-scoped plugin state, and removed from disk. No project code runs and no project files change. The adapter does not inherit the repository's `config.json`. Scan depth is six, with limits of 2,000 entries, 500 code files, 8 MB analyzed input, 100 KB per source file, and 250 analysis results. Sensitive filename patterns and common generated directories are excluded; Scout ignore/baseline rules still apply. A timeout is a failed operation, not a successful empty scan.
+
+A partial scan preserves its diagnostics. Heuristic observations are leads for review, not proof of a vulnerability or a security certification. Dependencies/routes are observations, not a full semantic dependency graph. Raw source snippets and absolute report paths are omitted from results; returned strings are defensively redacted. Use a task-specific Context Pack and its separate content-read tool to investigate selected sources. Re-scan after the workspace changes. Clear Kujo data also removes the latest repository map.

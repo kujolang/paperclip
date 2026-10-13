@@ -2,6 +2,13 @@ import type { PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
 import { instanceConfigJsonSchema } from "./config/schema.js";
 import { MINIMUM_HOST_VERSION, PLUGIN_VERSION } from "./config/defaults.js";
 
+export const understandTool = {
+  name: "understand-repository",
+  displayName: "Understand Repository",
+  description: "Map the current project with bounded Scout analysis: structure, languages, dependencies, routes and heuristic observations. Does not modify project files or execute project code. Source content requires a separate Context Pack read.",
+  parametersSchema: { type: "object", additionalProperties: false, properties: {} },
+} as const;
+
 export const reviewTool = {
   name: "review-changes",
   displayName: "Generate Review Pack",
@@ -90,7 +97,7 @@ const manifest: PaperclipPluginManifestV1 = {
   ],
   entrypoints: { worker: "./dist/worker.js", ui: "./dist/ui" },
   instanceConfigSchema: instanceConfigJsonSchema,
-  tools: [reviewTool, failureTool, contextTool, contextContentTool],
+  tools: [understandTool, reviewTool, failureTool, contextTool, contextContentTool],
   skills: [{
     skillKey: "scoped-repository-context",
     displayName: "Scoped Repository Context",
