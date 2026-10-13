@@ -24,7 +24,8 @@ and run pages.
 
 The npm package includes the right Kujo runtime for macOS arm64/x64, Linux arm64/x64,
 and Windows x64. You do not need a separate Kujo install or Kujo API key. Installation
-does not run `preinstall`, `install`, or `postinstall` scripts.
+does not run `preinstall`, `install`, or `postinstall` scripts. The upcoming component
+cohort requires Kujo 1.8.1 or newer when overriding the included runtime.
 
 Use the package name exactly as shown for now. Current Paperclip releases mishandle a
 scoped package with an exact version suffix. The upstream fix is open in

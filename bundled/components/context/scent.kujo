@@ -76,11 +76,6 @@ func collect_repeated_flag_values(argv, flag) {
     return values
 }
 
-func shell_quote(arg) {
-    s := to_string(arg)
-    return "'" + replace(s, "'", "'\"'\"'") + "'"
-}
-
 func parse_cli(argv) {
     if len(argv) == 0 {
         return err(usage_text(), 2)
@@ -250,18 +245,24 @@ func strip_trailing_slashes(path) {
 }
 
 func normalize_selector(repo_root, path) {
-    raw := strip_trailing_slashes(trim(to_string(path)))
+    raw := trim(to_string(path))
     if is_absolute(raw) {
-        return path_rel(repo_root, raw)
+        raw = path_rel(repo_root, strip_trailing_slashes(raw))
     }
-    while starts_with(raw, "./") {
-        raw = substring(raw, 2, len(raw))
+    parts := split(raw, "/")
+    normalized := []
+    i := 0
+    while i < len(parts) {
+        part := parts[i]
+        if part != "" && part != "." {
+            normalized = push(normalized, part)
+        }
+        i = i + 1
     }
-    raw = strip_trailing_slashes(raw)
-    if raw == "" || raw == "." {
+    if len(normalized) == 0 {
         return "."
     }
-    return raw
+    return join(normalized, "/")
 }
 
 func path_has_symlink_segment(path) {
@@ -364,7 +365,7 @@ func discover_instruction_files(repo_root) {
     while i < len(candidates) {
         rel := candidates[i]
         full := path_join(repo_root, rel)
-        if path_exists(full) && path_is_file(full) {
+        if path_exists(full) && path_is_file(full) && !path_has_symlink_segment(full) {
             found = push(found, full)
         }
         i = i + 1
@@ -374,26 +375,14 @@ func discover_instruction_files(repo_root) {
 }
 
 func run_process(args) {
-    parts := []
-    i := 0
-    while i < len(args) {
-        parts = push(parts, shell_quote(args[i]))
-        i = i + 1
-    }
-    cmd := join(parts, " ")
-
     try {
-        return execute_status(cmd)
-    } except e {
-        return {
-            "success": false,
-            "exitcode": 127,
-            "stdout": "",
-            "stderr": to_string(e),
-            "timed_out": false,
-            "stdout_truncated": false,
-            "stderr_truncated": false
+        result := spawn_process(args)
+        if result.stdout_truncated || result.stderr_truncated {
+            return {"success": false, "exitcode": 1, "stdout": "", "stderr": "process output was truncated"}
         }
+        return result
+    } except e {
+        return {"success": false, "exitcode": 127, "stdout": "", "stderr": to_string(e)}
     }
 }
 
@@ -416,34 +405,15 @@ func canonical_path_for_scope(path) {
     return raw
 }
 
-func split_lines(text) {
-    lines := split(text, "\n")
-    out := []
-    i := 0
-    while i < len(lines) {
-        line := lines[i]
-        t := trim(line)
-        if len(t) > 0 {
-            out = push(out, t)
-        }
-        i = i + 1
-    }
-    return out
-}
-
 func split_nul_records(text) {
+    # Git -z uses one terminator per nonempty path. Remove its trailing empty
+    # split item natively; no whitespace or embedded newline is path syntax.
     nul := parse_json("\"\\u0000\"")
     records := split(to_string(text), nul)
-    out := []
-    i := 0
-    while i < len(records) {
-        record := records[i]
-        if record != "" {
-            out = push(out, record)
-        }
-        i = i + 1
+    if len(records) > 0 && records[len(records) - 1] == "" {
+        return slice(records, 0, len(records) - 1)
     }
-    return out
+    return records
 }
 
 func inspect_git(repo_root) {
@@ -492,72 +462,31 @@ func inspect_git(repo_root) {
         }
     }
 
-    staged_seen := {}
-    unstaged_seen := {}
-    untracked_seen := {}
-    changed_seen := {}
-
     staged_files := split_nul_records(to_string(staged_res.stdout))
     unstaged_files := split_nul_records(to_string(unstaged_res.stdout))
     untracked_files := split_nul_records(to_string(untracked_res.stdout))
+    result["staged_files"] = unique(staged_files)
+    result["unstaged_files"] = unique(unstaged_files)
+    result["untracked_files"] = unique(untracked_files)
+    result["changed_files"] = unique(concat(concat(staged_files, unstaged_files), untracked_files))
 
-    idx := 0
-    while idx < len(staged_files) {
-        path := staged_files[idx]
-        idx = idx + 1
-        if path == "" {
-            continue
+    summaries := []
+    groups := [["staged: ", staged_files], ["unstaged: ", unstaged_files], ["untracked: ", untracked_files]]
+    nul := parse_json("\"\\u0000\"")
+    group_index := 0
+    while group_index < len(groups) {
+        group := groups[group_index]
+        paths := group[1]
+        if len(paths) > 0 {
+            # NUL cannot occur inside a Git path. Prefix all records with native
+            # join/split rather than repeatedly copying a growing summary array.
+            prefixed := group[0] + join(paths, nul + group[0])
+            summaries = concat(summaries, split(prefixed, nul))
         }
-        if has_key(staged_seen, path) == 0 {
-            staged_seen[path] = 1
-            result["staged_files"] = push(result["staged_files"], path)
-        }
-        if has_key(changed_seen, path) == 0 {
-            changed_seen[path] = 1
-            result["changed_files"] = push(result["changed_files"], path)
-        }
-        result["diff_summary"] = push(result["diff_summary"], "staged: " + path)
+        group_index = group_index + 1
     }
-
-    idx := 0
-    while idx < len(unstaged_files) {
-        path := unstaged_files[idx]
-        idx = idx + 1
-        if path == "" {
-            continue
-        }
-        if has_key(unstaged_seen, path) == 0 {
-            unstaged_seen[path] = 1
-            result["unstaged_files"] = push(result["unstaged_files"], path)
-        }
-        if has_key(changed_seen, path) == 0 {
-            changed_seen[path] = 1
-            result["changed_files"] = push(result["changed_files"], path)
-        }
-        result["diff_summary"] = push(result["diff_summary"], "unstaged: " + path)
-    }
-
-    idx = 0
-    while idx < len(untracked_files) {
-        path := untracked_files[idx]
-        idx = idx + 1
-        if path == "" {
-            continue
-        }
-        if has_key(untracked_seen, path) == 0 {
-            untracked_seen[path] = 1
-            result["untracked_files"] = push(result["untracked_files"], path)
-        }
-        if has_key(changed_seen, path) == 0 {
-            changed_seen[path] = 1
-            result["changed_files"] = push(result["changed_files"], path)
-        }
-        result["diff_summary"] = push(result["diff_summary"], "untracked: " + path)
-    }
-
-    if len(result["staged_files"]) > 0 || len(result["unstaged_files"]) > 0 || len(result["untracked_files"]) > 0 {
-        result["dirty"] = true
-    }
+    result["diff_summary"] = summaries
+    result["dirty"] = len(result["changed_files"]) > 0
 
     return result
 }
@@ -619,10 +548,6 @@ func contains_nul(text) {
     return contains(to_string(text), nul)
 }
 
-func is_instruction_rel(rel) {
-    return rel == "AGENTS.md" || rel == "AGENTS.override.md" || rel == "CLAUDE.md" || rel == "README.md" || rel == "CONTRIBUTING.md" || rel == "docs/README.md"
-}
-
 func is_doc_rel(rel) {
     return ends_with(lower(rel), ".md") || starts_with(lower(rel), "docs/")
 }
@@ -668,9 +593,10 @@ func path_is_excluded(full, exclude_abs) {
     return false
 }
 
-func read_text_file(path) {
+func read_text_file(repo_root, path) {
     try {
-        content := read_file(path)
+        # Match Kujo's existing 8 MiB read ceiling; never clip before redaction.
+        content := read_file_beneath(repo_root, path_rel(repo_root, path), 8388608)
         if contains_nul(content) {
             return {"ok": false, "error": "binary file"}
         }
@@ -680,9 +606,9 @@ func read_text_file(path) {
     }
 }
 
-func walk_collect(repo_root, current, max_candidates, visited_dirs, depth) {
+func walk_collect(repo_root, current, max_candidates, visited_dirs, depth, exclude_abs) {
     files := []
-    if max_candidates <= 0 {
+    if max_candidates <= 0 || path_is_excluded(current, exclude_abs) {
         return files
     }
     if depth > 20 {
@@ -723,12 +649,15 @@ func walk_collect(repo_root, current, max_candidates, visited_dirs, depth) {
         }
 
         full := path_join(current, name)
+        if path_is_excluded(full, exclude_abs) {
+            continue
+        }
         if path_is_symlink(full) {
             continue
         }
         if path_is_dir(full) {
             remaining := max_candidates - len(files)
-            child_files := walk_collect(repo_root, full, remaining, visited_dirs, depth + 1)
+            child_files := walk_collect(repo_root, full, remaining, visited_dirs, depth + 1, exclude_abs)
             child_idx := 0
             while child_idx < len(child_files) {
                 files = push(files, child_files[child_idx])
@@ -746,8 +675,16 @@ func walk_collect(repo_root, current, max_candidates, visited_dirs, depth) {
 }
 
 func collect_candidates(repo_root, git_info, instruction_files, includes, excludes, task_terms) {
+    exclude_abs := []
+    i := 0
+    while i < len(excludes) {
+        ex := excludes[i]
+        exclude_abs = push(exclude_abs, resolve_path(repo_root, ex))
+        i = i + 1
+    }
+
     visited_dirs := {}
-    all_paths := walk_collect(repo_root, repo_root, 2000, visited_dirs, 0)
+    all_paths := walk_collect(repo_root, repo_root, 2000, visited_dirs, 0, exclude_abs)
 
     i := 0
     while i < len(includes) {
@@ -758,7 +695,7 @@ func collect_candidates(repo_root, git_info, instruction_files, includes, exclud
                 all_paths = push(all_paths, inc_abs)
             } else if path_is_dir(inc_abs) {
                 include_visited := {}
-                include_paths := walk_collect(repo_root, inc_abs, 2000, include_visited, 0)
+                include_paths := walk_collect(repo_root, inc_abs, 2000, include_visited, 0, exclude_abs)
                 add_idx := 0
                 while add_idx < len(include_paths) {
                     all_paths = push(all_paths, include_paths[add_idx])
@@ -777,36 +714,9 @@ func collect_candidates(repo_root, git_info, instruction_files, includes, exclud
         i = i + 1
     }
 
-    changed_map := {}
-    i = 0
-    while i < len(git_info["changed_files"]) {
-        p := git_info["changed_files"][i]
-        changed_map[p] = 1
-        i = i + 1
-    }
-    staged_map := {}
-    i = 0
-    while i < len(git_info["staged_files"]) {
-        p := git_info["staged_files"][i]
-        staged_map[p] = 1
-        i = i + 1
-    }
-    unstaged_map := {}
-    i = 0
-    while i < len(git_info["unstaged_files"]) {
-        p := git_info["unstaged_files"][i]
-        unstaged_map[p] = 1
-        i = i + 1
-    }
-
-    exclude_abs := []
-    i = 0
-    while i < len(excludes) {
-        ex := excludes[i]
-        exclude_abs = push(exclude_abs, resolve_path(repo_root, ex))
-        i = i + 1
-    }
-
+    # Candidate selection is bounded independently of Git's inventory. Native
+    # membership checks avoid constructing three potentially large copied maps
+    # for paths that are never candidates (for example, an excluded bulk tree).
     seen := {}
     candidates := []
 
@@ -848,9 +758,9 @@ func collect_candidates(repo_root, git_info, instruction_files, includes, exclud
             "path": full,
             "rel_path": rel,
             "size_bytes": size,
-            "is_changed": has_key(changed_map, rel),
-            "is_staged": has_key(staged_map, rel),
-            "is_unstaged": has_key(unstaged_map, rel),
+            "is_changed": to_int(contains(git_info["changed_files"], rel)),
+            "is_staged": to_int(contains(git_info["staged_files"], rel)),
+            "is_unstaged": to_int(contains(git_info["unstaged_files"], rel)),
             "is_instruction": has_key(instruction_rel, rel),
             "is_doc": is_doc_rel(rel),
             "is_test": is_test_rel(rel),
@@ -941,30 +851,37 @@ func score_candidate(c, opts, repo_root) {
 }
 
 func sort_scored(scored) {
-    n := len(scored)
+    # collect_candidates guarantees unique paths. Sort primitive score/path
+    # keys natively rather than comparing every pair of candidate dictionaries.
+    scores := []
+    paths_by_score := {}
+    by_path := {}
     i := 0
-    while i < n {
-        j := i + 1
-        while j < n {
-            left := scored[i]
-            right := scored[j]
-            swap := false
-            if right["score"] > left["score"] {
-                swap = true
-            } else if right["score"] == left["score"] && right["candidate"]["rel_path"] < left["candidate"]["rel_path"] {
-                swap = true
-            }
-
-            if swap {
-                tmp := scored[i]
-                scored[i] = scored[j]
-                scored[j] = tmp
-            }
+    while i < len(scored) {
+        item := scored[i]
+        key := to_string(item["score"])
+        if has_key(paths_by_score, key) == 0 {
+            scores = push(scores, item["score"])
+            paths_by_score[key] = []
+        }
+        path := item["candidate"]["rel_path"]
+        paths_by_score[key] = push(paths_by_score[key], path)
+        by_path[path] = item
+        i = i + 1
+    }
+    scores = reverse(sort(scores))
+    ordered := []
+    i = 0
+    while i < len(scores) {
+        paths := sort(paths_by_score[to_string(scores[i])])
+        j := 0
+        while j < len(paths) {
+            ordered = push(ordered, by_path[paths[j]])
             j = j + 1
         }
         i = i + 1
     }
-    return scored
+    return ordered
 }
 
 func file_stem(path) {
@@ -1196,19 +1113,55 @@ func credential_assignment(line) {
 func redact_text(file, content) {
     redactions := []
     text := to_string(content)
+    # Conservative prefilter: every supported credential rule requires one of
+    # these markers. Ordinary text avoids all per-line pattern machinery.
+    candidate_pattern := "[=:]|-----BEGIN|sk-|ghp_|github_pat_|AKIA|sk_live_|[A-Za-z0-9_-]{8,}[.][A-Za-z0-9_-]{8,}[.][A-Za-z0-9_-]{8,}"
+    if !regex_match(text, candidate_pattern) {
+        return {"content": text, "redactions": [], "line_map": {}}
+    }
     lines := split(text, "\n")
     out := []
     in_private_key := false
+    line_map := {}
+
+    patterns := [
+        ["api_key", "[REDACTED:API_KEY]", "api_key"],
+        ["apikey", "[REDACTED:API_KEY]", "api_key"],
+        ["access_token", "[REDACTED:TOKEN]", "access_token"],
+        ["refresh_token", "[REDACTED:TOKEN]", "refresh_token"],
+        ["session_token", "[REDACTED:TOKEN]", "session_token"],
+        ["password", "[REDACTED:PASSWORD]", "password"],
+        ["passwd", "[REDACTED:PASSWORD]", "password"],
+        ["secret", "[REDACTED:SECRET]", "secret"],
+        ["token", "[REDACTED:TOKEN]", "token"],
+        ["cookie", "[REDACTED:TOKEN]", "cookie"],
+        ["webhook", "[REDACTED:SECRET]", "webhook"]
+    ]
+
+    token_patterns := [
+        ["sk-[A-Za-z0-9_-]{20,}", "[REDACTED:TOKEN]", "openai_token", "sk-"],
+        ["ghp_[A-Za-z0-9_]{20,}", "[REDACTED:TOKEN]", "github_token", "ghp_"],
+        ["github_pat_[A-Za-z0-9_]{20,}", "[REDACTED:TOKEN]", "github_token", "github_pat_"],
+        ["AKIA[0-9A-Z]{16}", "[REDACTED:ACCESS_KEY]", "aws_access_key", "AKIA"],
+        ["sk_live_[A-Za-z0-9]{16,}", "[REDACTED:TOKEN]", "stripe_token", "sk_live_"]
+    ]
 
     idx := 0
     while idx < len(lines) {
         line := lines[idx]
         line_no := idx + 1
+        if !in_private_key && !regex_match(line, candidate_pattern) {
+            out = push(out, line)
+            idx = idx + 1
+            continue
+        }
+        output_line := len(out)
         lower_line := lower(line)
 
         if contains(line, "-----BEGIN") && contains(line, "PRIVATE KEY-----") {
             in_private_key = true
             out = push(out, "[REDACTED:PRIVATE_KEY]")
+            line_map[to_string(line_no)] = output_line
             redactions = push(redactions, {"file": file, "line": line_no, "redaction_type": "private_key", "placeholder": "[REDACTED:PRIVATE_KEY]"})
             idx = idx + 1
             continue
@@ -1224,6 +1177,7 @@ func redact_text(file, content) {
 
         if contains(lower_line, "authorization:") {
             out = push(out, "authorization: [REDACTED:TOKEN]")
+            line_map[to_string(line_no)] = output_line
             redactions = push(redactions, {"file": file, "line": line_no, "redaction_type": "authorization_header", "placeholder": "[REDACTED:TOKEN]"})
             idx = idx + 1
             continue
@@ -1234,22 +1188,8 @@ func redact_text(file, content) {
         redaction_type := ""
         assignment := credential_assignment(line)
 
-        patterns := [
-            ["api_key", "[REDACTED:API_KEY]", "api_key"],
-            ["apikey", "[REDACTED:API_KEY]", "api_key"],
-            ["access_token", "[REDACTED:TOKEN]", "access_token"],
-            ["refresh_token", "[REDACTED:TOKEN]", "refresh_token"],
-            ["session_token", "[REDACTED:TOKEN]", "session_token"],
-            ["password", "[REDACTED:PASSWORD]", "password"],
-            ["passwd", "[REDACTED:PASSWORD]", "password"],
-            ["secret", "[REDACTED:SECRET]", "secret"],
-            ["token", "[REDACTED:TOKEN]", "token"],
-            ["cookie", "[REDACTED:TOKEN]", "cookie"],
-            ["webhook", "[REDACTED:SECRET]", "webhook"]
-        ]
-
         p_idx := 0
-        while p_idx < len(patterns) {
+        while assignment["ok"] && p_idx < len(patterns) {
             p := patterns[p_idx]
             if assignment["ok"] && credential_key_matches(assignment["key"], p[0]) {
                 secret_line = true
@@ -1266,49 +1206,37 @@ func redact_text(file, content) {
                 separator_space = " "
             }
             out = push(out, assignment["prefix"] + separator_space + placeholder)
+            line_map[to_string(line_no)] = output_line
             redactions = push(redactions, {"file": file, "line": line_no, "redaction_type": redaction_type, "placeholder": placeholder})
             idx = idx + 1
             continue
         }
 
-        token_patterns := [
-            ["sk-[A-Za-z0-9_-]{20,}", "[REDACTED:TOKEN]", "openai_token"],
-            ["ghp_[A-Za-z0-9_]{20,}", "[REDACTED:TOKEN]", "github_token"],
-            ["github_pat_[A-Za-z0-9_]{20,}", "[REDACTED:TOKEN]", "github_token"],
-            ["AKIA[0-9A-Z]{16}", "[REDACTED:ACCESS_KEY]", "aws_access_key"],
-            ["sk_live_[A-Za-z0-9]{16,}", "[REDACTED:TOKEN]", "stripe_token"]
-        ]
         token_line := line
-        token_found := false
         token_idx := 0
         while token_idx < len(token_patterns) {
             tp := token_patterns[token_idx]
-            if regex_match(token_line, tp[0]) {
+            if contains(token_line, tp[3]) && regex_match(token_line, tp[0]) {
                 token_line = regex_replace(token_line, tp[0], tp[1])
+                line_map[to_string(line_no)] = output_line
                 redactions = push(redactions, {"file": file, "line": line_no, "redaction_type": tp[2], "placeholder": tp[1]})
-                token_found = true
             }
             token_idx = token_idx + 1
         }
-        if token_found {
-            out = push(out, token_line)
-            idx = idx + 1
-            continue
-        }
-
-        if regex_match(line, "[A-Za-z0-9_-]{8,}[.][A-Za-z0-9_-]{8,}[.][A-Za-z0-9_-]{8,}") {
-            redacted_line := regex_replace(line, "[A-Za-z0-9_-]{8,}[.][A-Za-z0-9_-]{8,}[.][A-Za-z0-9_-]{8,}", "[REDACTED:TOKEN]")
+        if len(split(token_line, ".")) >= 3 && regex_match(token_line, "[A-Za-z0-9_-]{8,}[.][A-Za-z0-9_-]{8,}[.][A-Za-z0-9_-]{8,}") {
+            redacted_line := regex_replace(token_line, "[A-Za-z0-9_-]{8,}[.][A-Za-z0-9_-]{8,}[.][A-Za-z0-9_-]{8,}", "[REDACTED:TOKEN]")
             out = push(out, redacted_line)
+            line_map[to_string(line_no)] = output_line
             redactions = push(redactions, {"file": file, "line": line_no, "redaction_type": "jwt", "placeholder": "[REDACTED:TOKEN]"})
             idx = idx + 1
             continue
         }
 
-        out = push(out, line)
+        out = push(out, token_line)
         idx = idx + 1
     }
 
-    return {"content": join(out, "\n"), "redactions": redactions}
+    return {"content": join(out, "\n"), "redactions": redactions, "line_map": line_map}
 }
 
 func reserved_tokens(task) {
@@ -1396,7 +1324,7 @@ func discover_commands(repo_root) {
 
     cargo_path := path_join(repo_root, "Cargo.toml")
     if path_exists(cargo_path) {
-        cargo_read := read_text_file(cargo_path)
+        cargo_read := read_text_file(repo_root, cargo_path)
         cargo_valid := false
         if cargo_read["ok"] {
             try {
@@ -1414,7 +1342,7 @@ func discover_commands(repo_root) {
 
     package_path := path_join(repo_root, "package.json")
     if path_exists(package_path) {
-        pkg_read := read_text_file(package_path)
+        pkg_read := read_text_file(repo_root, package_path)
         if pkg_read["ok"] {
             parsed := null
             parse_ok := false
@@ -1444,7 +1372,7 @@ func discover_commands(repo_root) {
 
     makefile_path := path_join(repo_root, "Makefile")
     if path_exists(makefile_path) {
-        mf := read_text_file(makefile_path)
+        mf := read_text_file(repo_root, makefile_path)
         if mf["ok"] {
             make_lines := split(mf["content"], "\n")
             i := 0
@@ -1469,7 +1397,7 @@ func discover_commands(repo_root) {
         justfile_path = path_join(repo_root, "Justfile")
     }
     if path_exists(justfile_path) {
-        jf := read_text_file(justfile_path)
+        jf := read_text_file(repo_root, justfile_path)
         if jf["ok"] {
             just_lines := split(jf["content"], "\n")
             j := 0
@@ -1526,19 +1454,11 @@ func markdown_fence(content) {
 }
 
 func markdown_section_list(title, items, empty_line) {
-    out := "## " + title + "\n\n"
+    heading := "## " + title + "\n\n"
     if len(items) == 0 {
-        out = out + empty_line + "\n\n"
-        return out
+        return heading + empty_line + "\n\n"
     }
-    i := 0
-    while i < len(items) {
-        item := items[i]
-        out = out + "- " + item + "\n"
-        i = i + 1
-    }
-    out = out + "\n"
-    return out
+    return heading + "- " + join(items, "\n- ") + "\n\n"
 }
 
 func build_markdown(task, target, budget, generated_at, repo_root, git_info, instruction_files, selected_files, changed_files, commands, constraints, excluded_manifest, redactions, manifest, estimated_tokens) {
@@ -1675,19 +1595,16 @@ func build_markdown(task, target, budget, generated_at, repo_root, git_info, ins
 
 func ensure_dir(path) {
     if path_exists(path) {
-        return true
-    }
-
-    parent := dirname(path)
-    if parent != path && !path_exists(parent) {
-        ensure_dir(parent)
-    }
-
-    result := create_dir(path)
-    if !result {
+        if path_is_dir(path) {
+            return true
+        }
         return false
     }
-    return true
+    parent := dirname(path)
+    if parent != path && !ensure_dir(parent) {
+        return false
+    }
+    return create_dir(path)
 }
 
 func path_entry_exists(path) {
@@ -1703,27 +1620,43 @@ func path_entry_exists(path) {
 }
 
 func write_text(path, content) {
-    if path_entry_exists(path) && path_is_symlink(path) {
-        try {
-            removed := delete_file(path)
-            if !removed {
-                return err("failed to replace symlink artifact: " + path, 4)
-            }
-        } except e {
-            return err("failed to replace symlink artifact " + path + ": " + to_string(e), 4)
+    # Preserve write_file's 8 MiB ceiling. UTF-8 uses at most four bytes per
+    # character, so small artifacts need no additional byte-count allocation.
+    if len(content) > 2097152 && utf8_byte_len(content) > 8388608 {
+        return err("artifact exceeds the 8388608-byte write limit: " + path, 4)
+    }
+    temporary := path + ".scent-" + uuid_v4() + ".tmp"
+    try {
+        if !ensure_dir(dirname(path)) {
+            return err("failed to create parent directory for " + path, 4)
         }
+        mode := 384
+        if path_exists(path) && !path_is_symlink(path) && path_is_file(path) {
+            previous := io_file_metadata(path)
+            mode = previous["mode"] % 512
+        }
+        # Start private, preserve existing ordinary permissions, then publish
+        # atomically. Never follow final symlinks or write through hard links.
+        _ = io_write_private_file(temporary, content, 384)
+        if mode != 384 {
+            _ = io_set_permissions(temporary, mode)
+        }
+        if !rename_file(temporary, path) {
+            _ = delete_file(temporary)
+            return err("failed to publish " + path, 4)
+        }
+        return ok(true)
+    } except e {
+        message := "failed to write " + path + ": " + to_string(e)
+        try {
+            if path_exists(temporary) {
+                _ = delete_file(temporary)
+            }
+        } except cleanup_error {
+            message = message + "; temporary cleanup failed: " + to_string(cleanup_error)
+        }
+        return err(message, 4)
     }
-
-    parent := dirname(path)
-    if !ensure_dir(parent) {
-        return err("failed to create parent directory for " + path, 4)
-    }
-
-    wr := write_file(path, content, true)
-    if !wr {
-        return err("failed to write " + path, 4)
-    }
-    return ok(true)
 }
 
 func delete_stale_file(path) {
@@ -1781,7 +1714,7 @@ func run_pack(opts, raw_flags) {
     }
     opts["exclude"] = exclude_scope["value"]
 
-    stamp := "unix-" + to_string(to_int(now() * 1000))
+    stamp := "unix-" + to_string(to_int(now() * 1000)) + "-" + uuid_v4()
     out_dir := opts["out"]
     if out_dir == null {
         out_dir = path_join(path_join(path_join(repo_root, ".scent"), "packs"), stamp)
@@ -1817,7 +1750,7 @@ func run_pack(opts, raw_flags) {
     loop_idx := 0
     while loop_idx < len(selected_candidates) {
         selected_candidate := selected_candidates[loop_idx]
-        read_res := read_text_file(selected_candidate["path"])
+        read_res := read_text_file(repo_root, selected_candidate["path"])
         if !read_res["ok"] {
             read_failures[selected_candidate["rel_path"]] = read_res["error"]
             loop_idx = loop_idx + 1
@@ -1827,7 +1760,7 @@ func run_pack(opts, raw_flags) {
         redacted := redact_text(selected_candidate["rel_path"], read_res["content"])
         clipped := clip_text(redacted["content"], max_file_bytes_value)
 
-        redactions_by_path[selected_candidate["rel_path"]] = redacted["redactions"]
+        redactions_by_path[selected_candidate["rel_path"]] = {"redactions": redacted["redactions"], "line_map": redacted["line_map"]}
 
         content := clipped["content"]
         selected_files = push(selected_files, {
@@ -1854,11 +1787,12 @@ func run_pack(opts, raw_flags) {
         final_file := included_files[loop_idx]
         final_lines := split(final_file["content"], "\n")
         if has_key(redactions_by_path, final_file["path"]) {
-            file_redactions := redactions_by_path[final_file["path"]]
+            file_audit := redactions_by_path[final_file["path"]]
+            file_redactions := file_audit["redactions"]
             red_idx := 0
             while red_idx < len(file_redactions) {
                 redaction_item := file_redactions[red_idx]
-                line_index := to_int(redaction_item["line"]) - 1
+                line_index := file_audit["line_map"][to_string(redaction_item["line"])]
                 if line_index >= 0 && line_index < len(final_lines) && contains(final_lines[line_index], redaction_item["placeholder"]) {
                     redactions = push(redactions, redaction_item)
                 }
@@ -1921,8 +1855,6 @@ func run_pack(opts, raw_flags) {
         loop_idx = loop_idx + 1
     }
 
-    commands := discover_commands(repo_root)
-
     constraints := [
         "Keep scope tight and deterministic.",
         "Do not assume omitted files are irrelevant if errors point elsewhere.",
@@ -1937,6 +1869,21 @@ func run_pack(opts, raw_flags) {
         loop_idx = loop_idx + 1
     }
 
+    if opts["dry_run"] {
+        dry_exit_code := 0
+        if len(warnings) > 0 {
+            dry_exit_code = 1
+        }
+        return ok({
+            "output_dir": out_dir, "context_md": null, "context_json": null,
+            "estimated_tokens": estimated_tokens, "budget": budget_value,
+            "included_files": len(included_files), "warnings": warnings,
+            "selected_files": included_files, "manifest": manifest,
+            "redactions": redactions, "exit_code": dry_exit_code
+        })
+    }
+
+    commands := discover_commands(repo_root)
     generated_at := "unix-" + to_string(to_int(now()))
 
     artifact_names := []
@@ -1956,11 +1903,6 @@ func run_pack(opts, raw_flags) {
         art := artifact_names[loop_idx]
         decision := "include"
         reason := "generated artifact"
-        if opts["dry_run"] {
-            decision = "exclude"
-            reason = "dry-run; artifact not written"
-        }
-
         manifest = push(manifest, {
             "path": art,
             "type": "artifact",
@@ -1983,23 +1925,26 @@ func run_pack(opts, raw_flags) {
         loop_idx = loop_idx + 1
     }
 
-    markdown := build_markdown(
-        task_text,
-        target_value,
-        budget_value,
-        generated_at,
-        repo_root,
-        git_info,
-        instruction_files,
-        included_files,
-        git_info["changed_files"],
-        commands,
-        constraints,
-        excluded_manifest,
-        redactions,
-        manifest,
-        estimated_tokens
-    )
+    markdown := ""
+    if format_value == "md" || format_value == "both" {
+        markdown = build_markdown(
+            task_text,
+            target_value,
+            budget_value,
+            generated_at,
+            repo_root,
+            git_info,
+            instruction_files,
+            included_files,
+            git_info["changed_files"],
+            commands,
+            constraints,
+            excluded_manifest,
+            redactions,
+            manifest,
+            estimated_tokens
+        )
+    }
 
     instruction_rels := []
     loop_idx = 0
@@ -2295,7 +2240,7 @@ test "pack and dry-run smoke" {
     cwd := os_getcwd()
     kujo_bin := env_or("KUJO_BIN", path_join(cwd, "../kujo/target/release/kujo"))
     scent_script := env_or("SCENT_SCRIPT", path_join(cwd, "scent.kujo"))
-    smoke_root := "/tmp/scent_phase8_fix"
+    smoke_root := env_or("SCENT_TEST_ROOT", "/tmp") + "/scent_phase8_fix-" + uuid_v4()
     smoke_repo := smoke_root + "/repo"
     smoke_out := smoke_root + "/out"
     smoke_dry_out := smoke_root + "/dry-run-out"
@@ -2463,7 +2408,7 @@ test "redaction and scoped include hardening" {
     cwd := os_getcwd()
     kujo_bin := env_or("KUJO_BIN", path_join(cwd, "../kujo/target/release/kujo"))
     scent_script := env_or("SCENT_SCRIPT", path_join(cwd, "scent.kujo"))
-    smoke_root := "/tmp/scent_hardening"
+    smoke_root := env_or("SCENT_TEST_ROOT", "/tmp") + "/scent_hardening-" + uuid_v4()
     smoke_repo := smoke_root + "/repo"
     smoke_out := smoke_root + "/out"
 
@@ -2560,7 +2505,7 @@ test "ten bug regressions" {
     cwd := os_getcwd()
     kujo_bin := env_or("KUJO_BIN", path_join(cwd, "../kujo/target/release/kujo"))
     scent_script := env_or("SCENT_SCRIPT", path_join(cwd, "scent.kujo"))
-    bug_root := "/tmp/scent_bug_regressions"
+    bug_root := env_or("SCENT_TEST_ROOT", "/tmp") + "/scent_bug_regressions-" + uuid_v4()
     bug_repo := bug_root + "/repo"
     bug_out := bug_repo + "/pack"
     budget_out := bug_root + "/budget-out"
@@ -2698,7 +2643,7 @@ test "redaction runs before file-size clipping" {
         }
         return audit_run(command)
     }
-    root := "/tmp/scent_regression_redact_clip"
+    root := env_or("SCENT_TEST_ROOT", "/tmp") + "/scent_regression_redact_clip-" + uuid_v4()
     repo := root + "/repo"
     out := root + "/out"
     _ = audit_run("rm -rf " + audit_shq(root) + " && mkdir -p " + audit_shq(repo) + " && cd " + audit_shq(repo) + " && git init -q")
@@ -2741,7 +2686,7 @@ test "max-file-bytes is a UTF-8 byte limit" {
         }
         return audit_run(command)
     }
-    root := "/tmp/scent_regression_utf8_bytes"
+    root := env_or("SCENT_TEST_ROOT", "/tmp") + "/scent_regression_utf8_bytes-" + uuid_v4()
     repo := root + "/repo"
     out := root + "/out"
     _ = audit_run("rm -rf " + audit_shq(root) + " && mkdir -p " + audit_shq(repo) + " && cd " + audit_shq(repo) + " && git init -q")
@@ -2785,7 +2730,7 @@ test "output reuse removes stale optional context artifacts" {
         }
         return audit_run(command)
     }
-    root := "/tmp/scent_regression_output_reuse"
+    root := env_or("SCENT_TEST_ROOT", "/tmp") + "/scent_regression_output_reuse-" + uuid_v4()
     repo := root + "/repo"
     out := root + "/out"
     _ = audit_run("rm -rf " + audit_shq(root) + " && mkdir -p " + audit_shq(repo) + " && cd " + audit_shq(repo) + " && git init -q")
@@ -2843,7 +2788,7 @@ test "git metadata preserves unusual path names exactly" {
         }
         return audit_run(command)
     }
-    root := "/tmp/scent_regression_git_names"
+    root := env_or("SCENT_TEST_ROOT", "/tmp") + "/scent_regression_git_names-" + uuid_v4()
     repo := root + "/repo"
     out := root + "/out"
     newline_name := "odd\nname.txt"
@@ -2898,7 +2843,7 @@ test "recognized secrets in task text are redacted from artifacts" {
         }
         return audit_run(command)
     }
-    root := "/tmp/scent_regression_task_secret"
+    root := env_or("SCENT_TEST_ROOT", "/tmp") + "/scent_regression_task_secret-" + uuid_v4()
     repo := root + "/repo"
     out := root + "/out"
     secret := "sk-ABCDEFGHIJKLMNOPQRSTUVWXYZ123456"
@@ -2946,7 +2891,7 @@ test "files inventory agrees with selected context files" {
         }
         return audit_run(command)
     }
-    root := "/tmp/scent_regression_files_selected"
+    root := env_or("SCENT_TEST_ROOT", "/tmp") + "/scent_regression_files_selected-" + uuid_v4()
     repo := root + "/repo"
     out := root + "/out"
     _ = audit_run("rm -rf " + audit_shq(root) + " && mkdir -p " + audit_shq(repo) + " && cd " + audit_shq(repo) + " && git init -q")
@@ -2992,7 +2937,7 @@ test "selected unreadable files receive an accurate exclusion reason" {
         }
         return audit_run(command)
     }
-    root := "/tmp/scent_regression_unreadable"
+    root := env_or("SCENT_TEST_ROOT", "/tmp") + "/scent_regression_unreadable-" + uuid_v4()
     repo := root + "/repo"
     out := root + "/out"
     _ = audit_run("rm -rf " + audit_shq(root) + " && mkdir -p " + audit_shq(repo) + " && cd " + audit_shq(repo) + " && git init -q")
@@ -3040,7 +2985,7 @@ test "package scripts produce justified validation commands" {
         return audit_run(command)
     }
 
-    root := "/tmp/scent_regression_package_commands"
+    root := env_or("SCENT_TEST_ROOT", "/tmp") + "/scent_regression_package_commands-" + uuid_v4()
     repo := root + "/repo"
     out := root + "/out"
     _ = audit_run("rm -rf " + audit_shq(root) + " && mkdir -p " + audit_shq(repo) + " && cd " + audit_shq(repo) + " && git init -q")
@@ -3083,7 +3028,7 @@ test "changed-file union deduplicates staged and unstaged paths" {
         return audit_run(command)
     }
 
-    root := "/tmp/scent_regression_changed_union"
+    root := env_or("SCENT_TEST_ROOT", "/tmp") + "/scent_regression_changed_union-" + uuid_v4()
     repo := root + "/repo"
     out := root + "/out"
     _ = audit_run("rm -rf " + audit_shq(root) + " && mkdir -p " + audit_shq(repo) + " && cd " + audit_shq(repo) + " && git init -q && git config user.name Test && git config user.email test@example.com")
@@ -3132,7 +3077,7 @@ test "artifact writes replace symlinks instead of following them" {
         return audit_run(command)
     }
 
-    root := "/tmp/scent_regression_artifact_symlink"
+    root := env_or("SCENT_TEST_ROOT", "/tmp") + "/scent_regression_artifact_symlink-" + uuid_v4()
     repo := root + "/repo"
     out := root + "/out"
     victim := root + "/victim.json"
@@ -3181,7 +3126,7 @@ test "fallback traversal uses alphabetical directory order" {
         return audit_run(command)
     }
 
-    root := "/tmp/scent_regression_fallback_sort"
+    root := env_or("SCENT_TEST_ROOT", "/tmp") + "/scent_regression_fallback_sort-" + uuid_v4()
     repo := root + "/repo"
     out := root + "/out"
     _ = audit_run("rm -rf " + audit_shq(root) + " && mkdir -p " + audit_shq(repo) + " && cd " + audit_shq(repo) + " && git init -q")
@@ -3232,7 +3177,7 @@ test "malformed Cargo metadata does not suggest Cargo commands" {
         return audit_run(command)
     }
 
-    root := "/tmp/scent_regression_malformed_cargo"
+    root := env_or("SCENT_TEST_ROOT", "/tmp") + "/scent_regression_malformed_cargo-" + uuid_v4()
     repo := root + "/repo"
     out := root + "/out"
     _ = audit_run("rm -rf " + audit_shq(root) + " && mkdir -p " + audit_shq(repo) + " && cd " + audit_shq(repo) + " && git init -q")

@@ -11,26 +11,21 @@
 #                    commits yet).
 #   range mode     — compare two commits, base..head (no working-tree/untracked).
 
-from src.util import basename
+from src.util import display_path
 
-# The well-known empty-tree object. Diffing against it yields "everything is an
-# addition", which is exactly what we want for a repo that has no commits yet.
-func empty_tree() {
-    return "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
-}
-
-# Quote a path for safe inclusion in a shell command (POSIX single-quote rules).
-func shq(path) {
-    escaped := replace_str(path, "'", "'\\''")
-    return "'" + escaped + "'"
-}
-
-# Run a read-only git command against `repo_path`. `-C` keeps us in the target
-# repo without changing cwd; quotePath=false stops git from octal-escaping
-# non-ASCII paths so our tab parsing stays simple.
+# Structured argv keeps repository paths out of shell syntax. Capture bounds
+# are explicit and incomplete output always fails before parsing.
 func git(repo_path, subcmd) {
-    cmd := "git -C " + shq(repo_path) + " -c core.quotePath=false " + subcmd
-    return execute_status(cmd)
+    argv := concat(["git", "-C", repo_path, "-c", "core.quotePath=false"], subcmd)
+    try {
+        r := spawn_process(argv, {"max_output_bytes": 16777216})
+        if r.timed_out || r.stdout_truncated || r.stderr_truncated {
+            return {"exitcode": -1, "stdout": "", "stderr": "git timed out or exceeded the 16 MiB capture limit"}
+        }
+        return {"exitcode": r.exitcode, "stdout": r.stdout, "stderr": r.stderr}
+    } except process_error {
+        return {"exitcode": -1, "stdout": "", "stderr": "could not execute git: " + to_string(process_error)}
+    }
 }
 
 # Reject ref inputs that are unsafe or ambiguous to pass through the shell/git.
@@ -61,8 +56,8 @@ func safe_ref_value(ref) {
 
 # True if git exists and `repo_path` is inside a working tree.
 export func is_repo(repo_path) {
-    r := git(repo_path, "rev-parse --is-inside-work-tree")
-    if r.exitcode == 0 && trim(r.stdout) == "true" {
+    r := git(repo_path, ["rev-parse", "--is-inside-work-tree"])
+    if r["exitcode"] == 0 && trim(r["stdout"]) == "true" {
         return true
     }
     return false
@@ -70,9 +65,9 @@ export func is_repo(repo_path) {
 
 # Current commit hash, or null when there is none (no git, no repo, no commits).
 export func head_commit(repo_path) {
-    r := git(repo_path, "rev-parse HEAD")
-    if r.exitcode == 0 {
-        return trim(r.stdout)
+    r := git(repo_path, ["rev-parse", "HEAD"])
+    if r["exitcode"] == 0 {
+        return trim(r["stdout"])
     }
     return null
 }
@@ -80,19 +75,24 @@ export func head_commit(repo_path) {
 # Canonical repository root. Git diff paths are root-relative even when `-C`
 # points at a subdirectory, so all file access and untracked paths must use the
 # same root or the model mixes incompatible path bases.
-export func repo_root(repo_path) {
-    r := git(repo_path, "rev-parse --show-toplevel")
-    if r.exitcode == 0 {
-        mut root := r.stdout
+export func read_repo_root(repo_path) {
+    r := git(repo_path, ["rev-parse", "--show-toplevel"])
+    if r["exitcode"] == 0 {
+        mut root := r["stdout"]
         if ends_with(root, "\n") {
             root = substring(root, 0, len(root) - 1)
         }
-        if ends_with(root, "\r") {
-            root = substring(root, 0, len(root) - 1)
-        }
-        return root
+        return {"root": root}
     }
-    return repo_path
+    return {"error": "could not resolve repository root: " + display_path(r["stderr"])}
+}
+
+export func repo_root(repo_path) {
+    result := read_repo_root(repo_path)
+    if has_key(result, "error") == 1 {
+        return repo_path
+    }
+    return result["root"]
 }
 
 # Decide what we are diffing and produce a stable description:
@@ -106,10 +106,10 @@ export func resolve_refs(repo_path, base_flag, head_flag) {
             base = base_flag
         }
         if safe_ref_value(base) == false {
-            return {"error": "invalid --base ref: " + base}
+            return {"error": "invalid --base ref: " + display_path(base)}
         }
         if safe_ref_value(head_flag) == false {
-            return {"error": "invalid --head ref: " + head_flag}
+            return {"error": "invalid --head ref: " + display_path(head_flag)}
         }
         return {
             "mode": "range",
@@ -124,14 +124,21 @@ export func resolve_refs(repo_path, base_flag, head_flag) {
     mut base_label := ""
     if type(base_flag) != "null" && base_flag != "" {
         if safe_ref_value(base_flag) == false {
-            return {"error": "invalid --base ref: " + base_flag}
+            return {"error": "invalid --base ref: " + display_path(base_flag)}
         }
         base = base_flag
         base_label = base_flag
     } else {
-        hc := head_commit(repo_path)
-        if type(hc) == "null" {
-            base = empty_tree()
+        current := git(repo_path, ["rev-parse", "--verify", "--quiet", "HEAD"])
+        if current["exitcode"] != 0 && current["exitcode"] != 1 {
+            return {"error": "could not resolve HEAD: " + display_path(current["stderr"])}
+        }
+        if current["exitcode"] == 1 {
+            empty := git(repo_path, ["hash-object", "-t", "tree", "/dev/null"])
+            if empty["exitcode"] != 0 {
+                return {"error": "could not compute empty tree: " + display_path(trim(empty["stderr"]))}
+            }
+            base = trim(empty["stdout"])
             base_label = "(empty tree)"
         } else {
             base = "HEAD"
@@ -147,61 +154,70 @@ export func resolve_refs(repo_path, base_flag, head_flag) {
     }
 }
 
-func diff_spec_arg(refs) {
-    return shq(refs["spec"])
+# Each analysis consumes checked results; a failed subprocess must never become
+# a successful zero-change report. Keep the original scalar helpers available
+# for existing module consumers, but use read_diff/read_untracked for analysis.
+export func read_diff(repo_path, refs, format) {
+    if format != "--name-status" && format != "--numstat" {
+        return {"error": "unsupported git diff format"}
+    }
+    mut rename_flag := "--no-renames"
+    if has_key(refs, "detect_renames") == 1 && refs["detect_renames"] == true {
+        rename_flag = "--find-renames"
+    }
+    r := git(repo_path, ["diff", format, "-z", rename_flag, "--no-ext-diff", "--no-textconv", "--no-relative", "--ignore-submodules=none", refs["spec"], "--"])
+    if r["exitcode"] != 0 {
+        msg := display_path(trim(r["stderr"]))
+        return {"error": "invalid git revision or range '" + display_path(refs["spec"]) + "': git diff failed: " + msg}
+    }
+    return {"text": r["stdout"]}
 }
 
-# Validate the resolved diff spec once up front so a bad ref does not look like
-# a legitimate empty change.
 export func validate_diff(repo_path, refs) {
-    r := git(repo_path, "diff --name-status --no-renames " + diff_spec_arg(refs))
-    if r.exitcode == 0 {
+    result := read_diff(repo_path, refs, "--name-status")
+    if has_key(result, "error") == 1 {
+        return result["error"]
+    }
+    return ""
+}
+
+export func numstat_text(repo_path, refs) {
+    result := read_diff(repo_path, refs, "--numstat")
+    if has_key(result, "error") == 1 {
         return ""
     }
-    mut msg := trim(r.stderr)
-    if msg == "" {
-        msg = trim(r.stdout)
-    }
-    if msg == "" {
-        msg = "git diff failed"
-    }
-    return "invalid git revision or range '" + refs["spec"] + "': " + msg
+    return result["text"]
 }
 
-# NUL-delimited `git diff --numstat` output for the resolved spec
-# (added\tdeleted\tpath\0; "-" for binary). Renames are disabled.
-export func numstat_text(repo_path, refs) {
-    r := git(repo_path, "diff --numstat -z --no-renames " + diff_spec_arg(refs))
-    if r.exitcode == 0 {
-        return r.stdout
-    }
-    return ""
-}
-
-# NUL-delimited `git diff --name-status` output (status\0path\0).
 export func namestatus_text(repo_path, refs) {
-    r := git(repo_path, "diff --name-status -z --no-renames " + diff_spec_arg(refs))
-    if r.exitcode == 0 {
-        return r.stdout
+    result := read_diff(repo_path, refs, "--name-status")
+    if has_key(result, "error") == 1 {
+        return ""
     }
-    return ""
+    return result["text"]
 }
 
-# Untracked files not yet known to git (respecting .gitignore).
-export func untracked_list(repo_path) {
-    mut out := []
-    r := git(repo_path, "ls-files --full-name --others --exclude-standard -z")
-    if r.exitcode != 0 {
-        return out
+export func read_untracked(repo_path) {
+    r := git(repo_path, ["ls-files", "--full-name", "--others", "--exclude-standard", "-z"])
+    if r["exitcode"] != 0 {
+        return {"error": "git ls-files failed: " + display_path(trim(r["stderr"]))}
     }
+    mut out := []
     nul := parse_json("\"\\u0000\"")
-    paths := split(r.stdout, nul)
-    for name in paths {
+    for name in split(r["stdout"], nul) {
         if name != "" {
             out = push(out, name)
         }
     }
-    return out
+    return {"files": out}
+}
+
+export func untracked_list(repo_path) {
+    result := read_untracked(repo_path)
+    if has_key(result, "error") == 1 {
+        return []
+    }
+    return result["files"]
 }
 
 # Treat a path as binary purely by extension. Used for untracked files, where
@@ -218,35 +234,86 @@ export func is_binary_path(path) {
     return false
 }
 
-# Count the lines in an untracked text file (its "additions"). Tolerates a
-# missing/unreadable file by returning 0.
-export func count_added_lines(repo_path, path) {
-    full := join_path(repo_path, path)
-    if file_exists(full) == false {
-        return 0
-    }
-    # Git records a symbolic link as one line containing its target. Reading
-    # the path would instead follow it, producing wrong churn and potentially
-    # inspecting data outside the repository.
-    if path_is_symlink(full) {
-        return 1
-    }
-    if path_is_file(full) == false {
-        return 0
-    }
-    mut content := ""
+# Count untracked text additions with bounded 64 KiB reads. Each read opens the
+# path independently; compare observed length to the initial size so a file
+# truncated during analysis cannot silently lower the budget.
+export func read_added_lines(repo_path, path) {
     try {
-        content = read_file(full)
-    } except read_error {
+        full := join_path(repo_path, path)
+        # Git records a symbolic link as one line containing its target. Reading
+        # the path would instead follow it, producing wrong churn and potentially
+        # inspecting data outside the repository.
+        if path_is_symlink(full) {
+            return {"lines": 1}
+        }
+        if path_is_file(full) == false {
+            return {"error": "cannot read untracked file: " + display_path(path)}
+        }
+        size := file_size(full)
+        mut offset := 0
+        mut lines := 0
+        mut final_newline := true
+        while offset < size {
+            mut count := 65536
+            if size - offset < count {
+                count = size - offset
+            }
+            chunk := io_read_at(full, offset, count)
+            if len(chunk) != count {
+                return {"error": "untracked file changed during analysis: " + display_path(path)}
+            }
+            decoded := decode_text_lossy(chunk, "utf-8", 196608)
+            lines = lines + len(split(decoded, "\n")) - 1
+            final_newline = ends_with(decoded, "\n")
+            offset = offset + count
+        }
+        if file_size(full) != size {
+            return {"error": "untracked file changed during analysis: " + display_path(path)}
+        }
+        if size > 0 && final_newline == false {
+            lines = lines + 1
+        }
+        return {"lines": lines}
+    } except inspect_error {
+        return {"error": "cannot read untracked file: " + display_path(path)}
+    }
+}
+
+# Legacy scalar helper; analysis uses the checked result above.
+export func count_added_lines(repo_path, path) {
+    result := read_added_lines(repo_path, path)
+    if has_key(result, "error") == 1 {
         return 0
     }
-    if content == "" {
-        return 0
+    return result["lines"]
+}
+
+export func read_untracked_file(repo_path, path) {
+    try {
+        full := join_path(repo_path, path)
+        if path_is_symlink(full) {
+            return {"lines": 1, "binary": false}
+        }
+        # Binary paths are not opened for line counting, but they must still
+        # exist. A file removed after ls-files must not become a false success.
+        if is_binary_path(path) {
+            if path_is_file(full) == false {
+                return {"error": "cannot read untracked file: " + display_path(path)}
+            }
+            return {"lines": 0, "binary": true}
+        }
+        # Git's default binary heuristic checks for NUL in the first 8000
+        # bytes. Preserve extension-based recognition as a conservative
+        # fallback for known binary types without a NUL marker.
+        probe := io_read_at(full, 0, 8000)
+        decoded_probe := decode_text_lossy(probe, "utf-8", 24000)
+        if contains(decoded_probe, parse_json("\"\\u0000\"")) == 1 {
+            return {"lines": 0, "binary": true}
+        }
+        result := read_added_lines(repo_path, path)
+        result["binary"] := false
+        return result
+    } except inspect_error {
+        return {"error": "cannot read untracked file: " + display_path(path)}
     }
-    parts := split(content, "\n")
-    n := len(parts)
-    if parts[n - 1] == "" {
-        return n - 1
-    }
-    return n
 }

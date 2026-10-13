@@ -54,9 +54,9 @@ export func basename(path) {
 # Keep terminal/markdown reports one-record-per-line even when git paths contain
 # legal control characters. JSON output retains the exact original path.
 export func display_path(path) {
-    mut out := replace_str(path, "\\", "\\\\")
-    out = replace_str(out, "\r", "\\r")
-    out = replace_str(out, "\n", "\\n")
-    out = replace_str(out, "\t", "\\t")
+    encoded := to_json(path)
+    mut out := substring(encoded, 1, len(encoded) - 1)
+    out = replace_str(out, "\\\"", "\"")
+    out = replace_str(out, parse_json("\"\\u007f\""), "\\u007f")
     return out
 }

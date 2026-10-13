@@ -69,10 +69,13 @@ func eq_any(s, vals) {
 # --- per-category predicates --------------------------------------------
 
 func is_test(pl, namel) {
+    if contains(pl, "/fuzz/corpus/") == 1 || starts_with(pl, "fuzz/corpus/") {
+        return true
+    }
     if contains_any(pl, ["/test/", "/tests/", "/__tests__/", "/spec/"]) {
         return true
     }
-    if starts_any(pl, ["test/", "tests/", "spec/"]) {
+    if starts_any(pl, ["test/", "tests/", "__tests__/", "spec/"]) {
         return true
     }
     if contains(namel, ".test.") == 1 || contains(namel, ".spec.") == 1 {
@@ -101,11 +104,11 @@ func is_docs(pl, namel) {
 }
 
 func is_lockfile(namel) {
-    return eq_any(namel, ["package-lock.json", "pnpm-lock.yaml", "yarn.lock", "cargo.lock", "poetry.lock", "composer.lock", "go.sum", "gemfile.lock", "pdm.lock", "bun.lockb", "pipfile.lock"])
+    return eq_any(namel, ["package-lock.json", "pnpm-lock.yaml", "yarn.lock", "cargo.lock", "poetry.lock", "composer.lock", "go.sum", "gemfile.lock", "pdm.lock", "bun.lock", "bun.lockb", "pipfile.lock", "uv.lock", "deno.lock", "mix.lock", "pubspec.lock", "gradle.lockfile"])
 }
 
 func is_dependency_manifest(namel) {
-    if eq_any(namel, ["package.json", "pyproject.toml", "cargo.toml", "composer.json", "go.mod", "gemfile", "setup.py", "pipfile", "build.gradle", "pom.xml", "setup.cfg"]) {
+    if eq_any(namel, ["package.json", "pyproject.toml", "cargo.toml", "composer.json", "go.mod", "gemfile", "setup.py", "pipfile", "build.gradle", "build.gradle.kts", "pom.xml", "setup.cfg", "deno.json", "deno.jsonc", "pubspec.yaml", "mix.exs"]) {
         return true
     }
     # requirements.txt / requirements-dev.txt / requirements/foo.txt
@@ -174,7 +177,7 @@ func is_source(pl, namel, is_t, is_d) {
     if is_t || is_d {
         return false
     }
-    return ends_any(namel, [".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".py", ".rs", ".go", ".php", ".rb", ".java", ".c", ".cc", ".cpp", ".cxx", ".h", ".hh", ".hpp", ".cs", ".swift", ".kt", ".kts", ".scala", ".m", ".mm", ".vue", ".svelte", ".kujo", ".kujo", ".lua", ".dart", ".ex", ".exs", ".erl", ".clj", ".sql", ".html", ".css", ".scss"])
+    return ends_any(namel, [".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".py", ".rs", ".go", ".php", ".rb", ".java", ".c", ".cc", ".cpp", ".cxx", ".h", ".hh", ".hpp", ".cs", ".swift", ".kt", ".kts", ".scala", ".m", ".mm", ".vue", ".svelte", ".kujo", ".lua", ".dart", ".ex", ".exs", ".erl", ".clj", ".sql", ".html", ".css", ".scss", ".zig", ".hs", ".fs", ".fsx"])
 }
 
 # Return the list of categories a path belongs to. Always non-empty: a file

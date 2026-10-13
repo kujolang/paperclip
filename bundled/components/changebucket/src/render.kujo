@@ -33,6 +33,30 @@ func cat_label(key) {
     return "Other"
 }
 
+func file_label(f) {
+    if has_key(f, "previous_path") == 1 {
+        return display_path(f["previous_path"]) + " -> " + display_path(f["path"])
+    }
+    return display_path(f["path"])
+}
+
+func directory_names(files) {
+    mut seen := {}
+    mut names := []
+    for f in files {
+        parts := split(f["path"], "/")
+        mut name := "."
+        if len(parts) > 1 {
+            name = parts[0] + "/"
+        }
+        if has_key(seen, name) == 0 {
+            seen[name] := true
+            names = push(names, name)
+        }
+    }
+    return names
+}
+
 func mark(ok) {
     if ok {
         return "PASS"
@@ -62,7 +86,8 @@ func append_text_rows(out, rows) {
 }
 
 # Files sorted by churn descending, truncated to `n`. A copy is sorted in place
-# via selection sort (no sort builtin is relied on).
+# via partial selection sort. Stop after n selections: the unsorted tail is
+# never rendered. This preserves the original selection-sort tie ordering.
 export func top_by_churn(files, n) {
     mut arr := []
     mut i := 0
@@ -71,7 +96,7 @@ export func top_by_churn(files, n) {
         i = i + 1
     }
     mut a := 0
-    while a < len(arr) {
+    while a < len(arr) && a < n {
         mut best := a
         mut b := a + 1
         while b < len(arr) {
@@ -194,8 +219,8 @@ export func render_text(model, cfg, show_budget) {
     out = append_lines(out, [
         "ChangeBucket",
         "",
-        "Base: " + model["base"],
-        "Head: " + model["head"],
+        "Base: " + display_path(model["base"]),
+        "Head: " + display_path(model["head"]),
         "",
         "Summary:"
     ])
@@ -213,13 +238,25 @@ export func render_text(model, cfg, show_budget) {
         ci = ci + 1
     }
 
+    if has_key(model, "directories") == 1 {
+        out = append_lines(out, ["", "Top-level directories:"])
+        names := directory_names(model["files"])
+        mut di := 0
+        while di < len(names) {
+            name := names[di]
+            row := model["directories"][name]
+            out = push(out, "- " + display_path(name) + ": " + commas(row["files_changed"]) + " file(s), churn " + commas(row["total_churn"]))
+            di = di + 1
+        }
+    }
+
     largest := top_by_churn(model["files"], 5)
     if len(largest) > 0 {
         out = append_lines(out, ["", "Largest changes:"])
         mut li := 0
         while li < len(largest) {
             f := largest[li]
-            out = push(out, "- " + display_path(f["path"]) + " (" + f["status"] + ", +" + commas(f["additions"]) + " -" + commas(f["deletions"]) + ", churn " + commas(f["churn"]) + ")")
+            out = push(out, "- " + file_label(f) + " (" + f["status"] + ", +" + commas(f["additions"]) + " -" + commas(f["deletions"]) + ", churn " + commas(f["churn"]) + ")")
             li = li + 1
         }
     }
@@ -280,6 +317,27 @@ func markdown_code(value) {
     return fence + safe + fence
 }
 
+func markdown_file_label(f) {
+    if has_key(f, "previous_path") == 1 {
+        return markdown_code(f["previous_path"]) + " → " + markdown_code(f["path"])
+    }
+    return markdown_code(f["path"])
+}
+
+# Budget messages contain repository filenames. Encode Markdown/HTML syntax
+# without changing ordinary prose or the structured JSON failure messages.
+func markdown_prose(value) {
+    mut safe := replace_str(value, "&", "&amp;")
+    symbols := ["<", ">", "`", "[", "]", "*", "_", "|", "\\"]
+    entities := ["&lt;", "&gt;", "&#96;", "&#91;", "&#93;", "&#42;", "&#95;", "&#124;", "&#92;"]
+    mut i := 0
+    while i < len(symbols) {
+        safe = replace_str(safe, symbols[i], entities[i])
+        i = i + 1
+    }
+    return safe
+}
+
 # Clean markdown report.
 export func render_markdown(model, cfg, show_budget) {
     s := model["summary"]
@@ -310,7 +368,7 @@ export func render_markdown(model, cfg, show_budget) {
         if len(failures) > 0 {
             mut fi := 0
             while fi < len(failures) {
-                out = push(out, "- " + failures[fi])
+                out = push(out, "- " + markdown_prose(failures[fi]))
                 fi = fi + 1
             }
             out = push(out, "")
@@ -331,13 +389,27 @@ export func render_markdown(model, cfg, show_budget) {
     }
     out = append_md_table(out, ["Category", "Count"], ["---", "---:"], category_rows)
 
+    if has_key(model, "directories") == 1 {
+        out = append_lines(out, ["## Top-level Directories", ""])
+        names := directory_names(model["files"])
+        mut rows := []
+        mut di := 0
+        while di < len(names) {
+            name := names[di]
+            row := model["directories"][name]
+            rows = push(rows, [markdown_code(name), commas(row["files_changed"]), commas(row["lines_added"]), commas(row["lines_deleted"]), commas(row["total_churn"])])
+            di = di + 1
+        }
+        out = append_md_table(out, ["Directory", "Files", "+", "-", "Churn"], ["---", "---:", "---:", "---:", "---:"], rows)
+    }
+
     largest := top_by_churn(model["files"], 10)
     out = append_lines(out, ["## Largest Changes", ""])
     mut largest_rows := []
     mut li := 0
     while li < len(largest) {
         f := largest[li]
-        largest_rows = push(largest_rows, [markdown_code(f["path"]), f["status"], commas(f["additions"]), commas(f["deletions"]), commas(f["churn"])])
+        largest_rows = push(largest_rows, [markdown_file_label(f), f["status"], commas(f["additions"]), commas(f["deletions"]), commas(f["churn"])])
         li = li + 1
     }
     out = append_md_table(out, ["File", "Status", "+", "-", "Churn"], ["---", "---", "---:", "---:", "---:"], largest_rows)

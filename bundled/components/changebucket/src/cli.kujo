@@ -9,12 +9,12 @@
 #   1  operational failure (not a git repo), OR a `check` whose budget failed
 #   2  usage error (unknown command)
 
-from src.analyze import analyze
+from src.analyze import analyze_with_options
 from src.budget import empty_config, has_constraints, evaluate
 from src.render import render_text, render_markdown
-from src.util import includes
+from src.util import includes, display_path
 
-VERSION := "1.0.0"
+VERSION := "1.1.0"
 
 # --- argument parsing ---------------------------------------------------
 
@@ -52,7 +52,7 @@ func parse_args(tokens, bool_flags) {
                 }
                 flags[name] := split_flag["value"]
             } else {
-                if i + 1 >= len(tokens) || starts_with(tokens[i + 1], "-") {
+                if i + 1 >= len(tokens) || tokens[i + 1] == "" || starts_with(tokens[i + 1], "-") {
                     return {"positionals": [], "flags": {}, "error": "missing value for --" + name}
                 }
                 flags[name] := tokens[i + 1]
@@ -87,7 +87,7 @@ func has_flag(parsed, name) {
 
 # The set of valueless boolean flags ChangeBucket understands.
 func bool_flags() {
-    return ["json", "markdown", "no-deletes", "no-dependency-changes", "no-lockfile-changes", "no-config-changes", "no-generated-changes"]
+    return ["json", "markdown", "detect-renames", "by-directory", "no-deletes", "no-dependency-changes", "no-lockfile-changes", "no-config-changes", "no-generated-changes"]
 }
 
 func value_flags() {
@@ -158,7 +158,7 @@ func int_flag(parsed, name) {
     if type(v) == "null" || v == "" {
         return null
     }
-    return parse_int(v)
+    return parse_int(trim_leading_zeroes(v))
 }
 
 # Build a budget config from parsed flags.
@@ -182,16 +182,20 @@ func build_config(parsed) {
 # turns into a non-zero exit code.
 func run(parsed, is_check) {
     if has_key(parsed, "error") == 1 {
-        print("error: " + parsed["error"])
+        print("error: " + display_path(parsed["error"]))
         return 2
     }
     if len(parsed["positionals"]) > 0 {
-        print("error: unexpected argument '" + parsed["positionals"][0] + "'")
+        print("error: unexpected argument '" + display_path(parsed["positionals"][0]) + "'")
         return 2
     }
     numeric_error := validate_numeric_flags(parsed)
     if numeric_error != "" {
-        print("error: " + numeric_error)
+        print("error: " + display_path(numeric_error))
+        return 2
+    }
+    if has_flag(parsed, "json") && (has_flag(parsed, "markdown") || has_flag(parsed, "output")) {
+        print("error: --json cannot be combined with --markdown or --output")
         return 2
     }
 
@@ -199,7 +203,8 @@ func run(parsed, is_check) {
     base := flag(parsed, "base")
     head := flag(parsed, "head")
 
-    model := analyze(repo, base, head)
+    options := {"detect_renames": has_flag(parsed, "detect-renames"), "by_directory": has_flag(parsed, "by-directory")}
+    model := analyze_with_options(repo, base, head, options)
     if type(model) == "dict" && has_key(model, "error") == 1 {
         print("error: " + model["error"])
         return 1
@@ -229,15 +234,15 @@ func run(parsed, is_check) {
         if type(output) != "null" && output != "" {
             try {
                 if path_is_dir(output) {
-                    print("error: output path is a directory: " + output)
+                    print("error: output path is a directory: " + display_path(output))
                     return 1
                 }
-                write_file(output, md, true)
+                write_file_atomic(output, md, true)
             } except write_error {
-                print("error: could not write report to " + output + ": " + to_string(write_error))
+                print("error: could not write report to " + display_path(output) + ": " + display_path(to_string(write_error)))
                 return 1
             }
-            print("Wrote report to " + output)
+            print("Wrote report to " + display_path(output))
             return code
         }
         print(md)
@@ -275,6 +280,8 @@ func print_help() {
         "  --json            Emit machine-readable JSON only",
         "  --markdown        Emit a markdown report",
         "  --output <file>   Write a markdown report to a file",
+        "  --detect-renames  Count Git-detected renames as moves (v2 report)",
+        "  --by-directory    Include top-level directory totals (v2 report)",
         "",
         "Budget options (informational on the default command; enforced under `check`):",
         "  --max-files <n>",
@@ -318,7 +325,7 @@ export func main(argv) {
         return run(parse_args(argv, bool_flags()), false)
     }
 
-    print("error: unknown command '" + cmd + "'")
+    print("error: unknown command '" + display_path(cmd) + "'")
     print("Run 'changebucket help' for usage.")
     return 2
 }

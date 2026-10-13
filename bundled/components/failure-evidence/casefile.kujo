@@ -3,6 +3,7 @@
 VERSION := "1.0.0"
 
 DEFAULT_REDACTION_PATTERNS := [
+	"(?s)-----BEGIN [A-Z ]*PRIVATE KEY-----.*?(-----END [A-Z ]*PRIVATE KEY-----|$)",
 	"(?i)(api[_-]?key|secret|token|password|private[_-]?key)\\s*[:=]\\s*[^\\s]+",
 	"(?i)Authorization\\s*:\\s*(Bearer\\s+)?[^\\s]+",
 	"(?i)Bearer\\s+[A-Za-z0-9._~+/-]+=*",
@@ -356,6 +357,54 @@ func merge_config(defaults, parsed) {
 	return defaults
 }
 
+func validate_config_values(cfg) {
+	if type(cfg["output_dir"]) != "string" || len(trim(cfg["output_dir"])) == 0 {
+		return {"ok": false, "error": "output_dir must be a nonempty string"}
+	}
+	if type(cfg["redact"]) != "bool" {
+		return {"ok": false, "error": "redact must be a boolean"}
+	}
+	if type(cfg["max_log_bytes"]) != "int" || cfg["max_log_bytes"] < 0 || cfg["max_log_bytes"] > 16777216 {
+		return {"ok": false, "error": "max_log_bytes must be an integer from 0 to 16777216"}
+	}
+	if type(cfg["default_format"]) != "string" || (to_lower(cfg["default_format"]) != "human" && to_lower(cfg["default_format"]) != "markdown" && to_lower(cfg["default_format"]) != "json") {
+		return {"ok": false, "error": "default_format must be human|markdown|json"}
+	}
+	for section in ["git", "environment"] {
+		for key in keys(cfg[section]) {
+			if key != "include_recent_commits" && type(cfg[section][key]) != "bool" {
+				return {"ok": false, "error": section + "." + key + " must be a boolean"}
+			}
+		}
+	}
+	count := cfg["git"]["include_recent_commits"]
+	if type(count) != "int" || count < 0 {
+		return {"ok": false, "error": "include_recent_commits must be a non-negative integer"}
+	}
+	for pair in [["redaction", "patterns"], ["paths", "include_globs"], ["paths", "exclude_globs"]] {
+		values := cfg[pair[0]][pair[1]]
+		if type(values) != "array" {
+			return {"ok": false, "error": pair[1] + " must be an array"}
+		}
+		for value in values {
+			if type(value) != "string" {
+				return {"ok": false, "error": pair[1] + " entries must be strings"}
+			}
+			if pair[1] == "patterns" {
+				try {
+					# An empty alternative always matches if the full pattern compiles.
+					if !regex_match("", "|" + value) {
+						return {"ok": false, "error": "Invalid redaction regex"}
+					}
+				} except err {
+					return {"ok": false, "error": "Invalid redaction regex"}
+				}
+			}
+		}
+	}
+	return {"ok": true}
+}
+
 func load_config(config_path) {
 	cfg := default_config()
 	if !is_truthy(file_exists(config_path)) {
@@ -365,7 +414,16 @@ func load_config(config_path) {
 	try {
 		raw := read_file(config_path)
 		parsed := parse_toml(raw)
+		for section in ["git", "environment", "redaction", "paths"] {
+			if dict_has_key(parsed, section) && type(parsed[section]) != "dict" {
+				return {"ok": false, "error": "Invalid config section: " + section}
+			}
+		}
 		cfg = merge_config(cfg, parsed)
+		checked := validate_config_values(cfg)
+		if !checked["ok"] {
+			return checked
+		}
 		return {"ok": true, "config": cfg}
 	} except err {
 		return {"ok": false, "error": "Invalid casefile.toml: " + safe_to_string(err)}
@@ -400,7 +458,7 @@ func normalize_path_components(path_value) {
 	components := []
 	i := 0
 	while i < len(parts) {
-		part := trim(parts[i])
+		part := parts[i]
 		if len(part) == 0 || part == "." {
 			i = i + 1
 			continue
@@ -444,6 +502,36 @@ func path_within_root(candidate_path, root_path, label) {
 	return {"ok": true, "path": candidate_path}
 }
 
+# Reject symlinks beneath the trusted physical root, including dangling links.
+# This is a local workspace boundary, not protection against concurrent hostile mutation.
+func is_symlink(path_value) {
+	try {
+		return is_truthy(path_is_symlink(path_value))
+	} except err {
+		return false
+	}
+}
+
+func safe_descendant(candidate, root, label) {
+	check := path_within_root(candidate, root, label)
+	if !check["ok"] {
+		return check
+	}
+	descendant_parts := normalize_path_components(candidate)["components"]
+	trusted_parts := normalize_path_components(root)["components"]
+	if len(descendant_parts) <= len(trusted_parts) {
+		return {"ok": false, "error": label + " must be below its root"}
+	}
+	current := root
+	for i in range(len(trusted_parts), len(descendant_parts)) {
+		current = path_join(current, descendant_parts[i])
+		if is_symlink(current) {
+			return {"ok": false, "error": label + " contains a symlink"}
+		}
+	}
+	return {"ok": true, "path": current}
+}
+
 func resolve_output_dir(repo_root, output_dir) {
 	normalized_output := normalize_path_components(output_dir)
 	if !normalized_output["ok"] {
@@ -455,12 +543,12 @@ func resolve_output_dir(repo_root, output_dir) {
 		resolved = path_join(repo_root, output_dir)
 	}
 
-	outside_check := path_within_root(resolved, repo_root, "output_dir")
+	outside_check := safe_descendant(resolved, repo_root, "output_dir")
 	if !outside_check["ok"] {
 		return outside_check
 	}
 
-	return {"ok": true, "path": resolved}
+	return outside_check
 }
 
 func ensure_directory(path_value) {
@@ -473,7 +561,7 @@ func ensure_directory(path_value) {
 
 func safe_write(path_value, content) {
 	try {
-		write_file(path_value, content, true)
+		write_file_atomic(path_value, content, true)
 		return {"ok": true}
 	} except err {
 		return {"ok": false, "error": "write failed for " + path_value + ": " + safe_to_string(err)}
@@ -535,7 +623,15 @@ func create_case_dir(repo_root, cfg, case_name, force) {
 		return {"ok": false, "error": "case directory already exists: " + case_path}
 	}
 
-	mk_case := ensure_directory(case_path)
+	checked := safe_descendant(case_path, output_root, "case directory")
+	if !checked["ok"] {
+		return checked
+	}
+	mk_case := {"ok": true}
+	if !force || !path_exists(case_path) {
+		created := safe_spawn(["mkdir", "-m", "700", case_path])
+		mk_case = {"ok": proc_exitcode(created) == 0, "error": "case directory already exists or cannot be created: " + case_path}
+	}
 	if !mk_case["ok"] {
 		return mk_case
 	}
@@ -668,7 +764,7 @@ func parse_capture_options(subargs, cfg) {
 				return {"ok": false, "code": 2, "error": "missing value for --max-log-bytes"}
 			}
 			bytes_value := parse_int_value(flag_args[i], -1)
-			if bytes_value < 0 {
+			if bytes_value < 0 || bytes_value > 16777216 {
 				return {"ok": false, "code": 2, "error": "invalid --max-log-bytes value"}
 			}
 			options["max_log_bytes"] = bytes_value
@@ -714,7 +810,7 @@ func parse_capture_options(subargs, cfg) {
 }
 
 func detect_command_version(argv) {
-	result := safe_spawn(argv)
+	result := safe_spawn_with_options(argv, {"timeout_ms": 2000, "max_output_bytes": 4096})
 	if proc_success(result) && proc_exitcode(result) == 0 {
 		output := trim(proc_stdout(result))
 		if len(output) == 0 {
@@ -734,7 +830,7 @@ func detect_command_version(argv) {
 	return null
 }
 
-func detect_environment(repo_root) {
+func detect_environment(repo_root, env_cfg) {
 	env_data := {
 		"os": "unknown",
 		"arch": "unknown",
@@ -754,48 +850,56 @@ func detect_environment(repo_root) {
 		"project_hints": []
 	}
 
-	uname_s := safe_spawn(["uname", "-s"])
-	if proc_success(uname_s) && proc_exitcode(uname_s) == 0 {
-		env_data["os"] = trim(proc_stdout(uname_s))
-	}
-	uname_m := safe_spawn(["uname", "-m"])
-	if proc_success(uname_m) && proc_exitcode(uname_m) == 0 {
-		env_data["arch"] = trim(proc_stdout(uname_m))
-	}
+	if env_cfg["include_os"] {
+		uname_s := safe_spawn(["uname", "-s"])
+		if proc_success(uname_s) && proc_exitcode(uname_s) == 0 {
+			env_data["os"] = trim(proc_stdout(uname_s))
+		}
+		uname_m := safe_spawn(["uname", "-m"])
+		if proc_success(uname_m) && proc_exitcode(uname_m) == 0 {
+			env_data["arch"] = trim(proc_stdout(uname_m))
+		}
 
-	shell_value := env_or("SHELL", "unknown")
-	if len(trim(shell_value)) > 0 {
-		env_data["shell"] = basename(shell_value)
-	}
+		shell_value := env_or("SHELL", "unknown")
+		if len(trim(shell_value)) > 0 {
+			env_data["shell"] = basename(shell_value)
+		}
 
-	ci_value := env_or("CI", "")
-	if len(trim(ci_value)) > 0 {
-		env_data["ci"] = ci_value
 	}
+	if env_cfg["include_ci_context"] {
+		ci_value := env_or("CI", "")
+		if len(trim(ci_value)) > 0 {
+			env_data["ci"] = ci_value
+		}
 
-	env_data["node"] = detect_command_version(["node", "--version"])
-	env_data["npm"] = detect_command_version(["npm", "--version"])
-	env_data["pnpm"] = detect_command_version(["pnpm", "--version"])
-	env_data["yarn"] = detect_command_version(["yarn", "--version"])
-	env_data["python"] = detect_command_version(["python3", "--version"])
-	env_data["pytest"] = detect_command_version(["pytest", "--version"])
-	env_data["php"] = detect_command_version(["php", "--version"])
-	env_data["composer"] = detect_command_version(["composer", "--version"])
-	env_data["go"] = detect_command_version(["go", "version"])
+	}
+	if env_cfg["include_runtime_versions"] {
+		env_data["node"] = detect_command_version(["node", "--version"])
+		env_data["npm"] = detect_command_version(["npm", "--version"])
+		env_data["pnpm"] = detect_command_version(["pnpm", "--version"])
+		env_data["yarn"] = detect_command_version(["yarn", "--version"])
+		env_data["python"] = detect_command_version(["python3", "--version"])
+		env_data["pytest"] = detect_command_version(["pytest", "--version"])
+		env_data["php"] = detect_command_version(["php", "--version"])
+		env_data["composer"] = detect_command_version(["composer", "--version"])
+		env_data["go"] = detect_command_version(["go", "version"])
 
-	if is_truthy(file_exists(path_join(repo_root, "pnpm-lock.yaml"))) {
-		env_data["package_manager"] = "pnpm"
 	}
-	if is_truthy(file_exists(path_join(repo_root, "yarn.lock"))) {
-		env_data["package_manager"] = "yarn"
-	}
-	if is_truthy(file_exists(path_join(repo_root, "package-lock.json"))) {
-		env_data["package_manager"] = "npm"
-	}
-	if is_truthy(file_exists(path_join(repo_root, "composer.json"))) {
-		env_data["package_manager"] = "composer"
-	}
+	if env_cfg["include_package_manager"] {
+		if is_truthy(file_exists(path_join(repo_root, "pnpm-lock.yaml"))) {
+			env_data["package_manager"] = "pnpm"
+		}
+		if is_truthy(file_exists(path_join(repo_root, "yarn.lock"))) {
+			env_data["package_manager"] = "yarn"
+		}
+		if is_truthy(file_exists(path_join(repo_root, "package-lock.json"))) {
+			env_data["package_manager"] = "npm"
+		}
+		if is_truthy(file_exists(path_join(repo_root, "composer.json"))) {
+			env_data["package_manager"] = "composer"
+		}
 
+	}
 	for hint_file in PROJECT_HINT_FILES {
 		if is_truthy(file_exists(path_join(repo_root, hint_file))) {
 			hints := env_data["project_hints"]
@@ -824,7 +928,7 @@ func parse_git_changed_files(status_text) {
 	return files
 }
 
-func collect_git_context(include_recent_commits) {
+func collect_git_context(git_cfg) {
 	ctx := {
 		"is_git_repo": false,
 		"root": null,
@@ -858,46 +962,68 @@ func collect_git_context(include_recent_commits) {
 		ctx["head"] = trim(proc_stdout(head_result))
 	}
 
-	status_result := safe_spawn(["git", "status", "--porcelain"])
-	if proc_success(status_result) && proc_exitcode(status_result) == 0 {
-		ctx["status_summary"] = proc_stdout(status_result)
-		ctx["changed_files"] = parse_git_changed_files(proc_stdout(status_result))
-	}
+	if git_cfg["include_status"] {
+		status_argv := ["git", "status", "--porcelain"]
+		if !git_cfg["include_untracked"] {
+			status_argv = push(status_argv, "--untracked-files=no")
+		}
+		status_result := safe_spawn(status_argv)
+		if proc_success(status_result) && proc_exitcode(status_result) == 0 {
+			ctx["status_summary"] = proc_stdout(status_result)
+			ctx["changed_files"] = parse_git_changed_files(proc_stdout(status_result))
+		}
 
-	diff_result := safe_spawn(["git", "diff", "--stat"])
-	if proc_success(diff_result) && proc_exitcode(diff_result) == 0 {
-		ctx["diff_stat"] = proc_stdout(diff_result)
 	}
+	if git_cfg["include_diff_stat"] {
+		diff_result := safe_spawn(["git", "diff", "--stat"])
+		if proc_success(diff_result) && proc_exitcode(diff_result) == 0 {
+			ctx["diff_stat"] = proc_stdout(diff_result)
+		}
 
-	recent_count := to_string(include_recent_commits)
-	commits_result := safe_spawn(["git", "log", "-n", recent_count, "--oneline"])
-	if proc_success(commits_result) && proc_exitcode(commits_result) == 0 {
-		lines_commits := split(trim(proc_stdout(commits_result)), "\n")
-		for commit_line in lines_commits {
-			if len(trim(commit_line)) > 0 {
-				recent := ctx["recent_commits"]
-				recent = push(recent, commit_line)
-				ctx["recent_commits"] = recent
+	}
+	if git_cfg["include_recent_commits"] > 0 {
+		recent_count := to_string(git_cfg["include_recent_commits"])
+		commits_result := safe_spawn(["git", "log", "-n", recent_count, "--oneline"])
+		if proc_success(commits_result) && proc_exitcode(commits_result) == 0 {
+			lines_commits := split(trim(proc_stdout(commits_result)), "\n")
+			for commit_line in lines_commits {
+				if len(trim(commit_line)) > 0 {
+					recent := ctx["recent_commits"]
+					recent = push(recent, commit_line)
+					ctx["recent_commits"] = recent
+				}
 			}
 		}
-	}
 
+	}
 	return ctx
 }
 
 func write_git_files(case_path, git_ctx) {
-	if !git_ctx["is_git_repo"] {
-		return
+	return require_writes([
+		[path_join(case_path, "git-status.txt"), git_ctx["status_summary"]],
+		[path_join(case_path, "git-diff-stat.txt"), git_ctx["diff_stat"]],
+		[path_join(case_path, "git-recent-commits.txt"), join(git_ctx["recent_commits"], "\n")]
+	])
+}
+
+func redact_metadata(value, enabled, patterns) {
+	if type(value) == "string" {
+		return redact_text(value, enabled, patterns)["text"]
 	}
-	if len(trim(git_ctx["status_summary"])) > 0 {
-		safe_write(path_join(case_path, "git-status.txt"), git_ctx["status_summary"])
+	if type(value) == "array" {
+		result := []
+		for item in value {
+			result = push(result, redact_metadata(item, enabled, patterns))
+		}
+		return result
 	}
-	if len(trim(git_ctx["diff_stat"])) > 0 {
-		safe_write(path_join(case_path, "git-diff-stat.txt"), git_ctx["diff_stat"])
+	if type(value) == "dict" {
+		for key in keys(value) {
+			value[key] = redact_metadata(value[key], enabled, patterns)
+		}
 	}
-	if len(git_ctx["recent_commits"]) > 0 {
-		safe_write(path_join(case_path, "git-recent-commits.txt"), join(git_ctx["recent_commits"], "\n"))
-	}
+	return value
 }
 
 func get_redaction_patterns(cfg) {
@@ -912,7 +1038,7 @@ func get_redaction_patterns(cfg) {
 			}
 		}
 	}
-	return patterns
+	return unique(patterns)
 }
 
 func redact_text(input_text, enabled, patterns) {
@@ -1063,7 +1189,11 @@ func capture_command(case_path, options, redact_enabled, patterns) {
 	}
 
 	start := performance_now()
-	proc := safe_spawn_with_options(argv, {"max_output_bytes": options["max_log_bytes"]})
+	process_limit := options["max_log_bytes"]
+	if process_limit == 0 {
+		process_limit = 1
+	}
+	proc := safe_spawn_with_options(argv, {"max_output_bytes": process_limit})
 	duration_ms := to_int(performance_now() - start)
 	command_redacted := redact_argv(argv, redact_enabled, patterns)
 	stored_argv := []
@@ -1079,6 +1209,11 @@ func capture_command(case_path, options, redact_enabled, patterns) {
 
 	raw_stdout := safe_to_string(proc_stdout(proc))
 	raw_stderr := safe_to_string(proc_stderr(proc))
+	zero_truncated := options["max_log_bytes"] == 0 && (len(raw_stdout) > 0 || len(raw_stderr) > 0)
+	if options["max_log_bytes"] == 0 {
+		raw_stdout = ""
+		raw_stderr = ""
+	}
 	raw_combined := raw_stdout
 	if len(raw_combined) > 0 && len(raw_stderr) > 0 {
 		raw_combined = raw_combined + "\n"
@@ -1088,7 +1223,7 @@ func capture_command(case_path, options, redact_enabled, patterns) {
 	stdout_redacted := redact_text(raw_stdout, redact_enabled, patterns)
 	stderr_redacted := redact_text(raw_stderr, redact_enabled, patterns)
 	combined_redacted := redact_text(raw_combined, redact_enabled, patterns)
-	was_truncated := is_truthy(proc_stdout_truncated(proc)) || is_truthy(proc_stderr_truncated(proc))
+	was_truncated := zero_truncated || is_truthy(proc_stdout_truncated(proc)) || is_truthy(proc_stderr_truncated(proc))
 
 	write_result := require_writes([
 		[path_join(case_path, "stdout.log"), stdout_redacted["text"]],
@@ -1118,16 +1253,27 @@ func capture_command(case_path, options, redact_enabled, patterns) {
 	}
 }
 
-func capture_from_log(case_path, log_path, redact_enabled, patterns) {
+func capture_from_log(case_path, log_path, redact_enabled, patterns, max_log_bytes) {
 	if !is_truthy(file_exists(log_path)) {
 		return {"ok": false, "error": "log file not found: " + log_path}
 	}
 
 	try {
-		raw_log := read_file(log_path)
+		size := file_size(log_path)
+		limit := max_log_bytes
+		if limit == 0 {
+			limit = 1
+		}
+		read_result := safe_spawn_with_options(["head", "-c", to_string(max_log_bytes), path_absolute(log_path)], {"max_output_bytes": limit})
+		if proc_exitcode(read_result) != 0 {
+			return {"ok": false, "error": "failed to read log file: " + proc_stderr(read_result)}
+		}
+		raw_log := proc_stdout(read_result)
 		redacted := redact_text(raw_log, redact_enabled, patterns)
 		display_redacted := redact_text("<from-log> " + log_path, redact_enabled, patterns)
 		write_result := require_writes([
+			[path_join(case_path, "stdout.log"), ""],
+			[path_join(case_path, "stderr.log"), ""],
 			[path_join(case_path, "combined.log"), redacted["text"]],
 			[path_join(case_path, "command.txt"), display_redacted["text"]]
 		])
@@ -1144,7 +1290,7 @@ func capture_from_log(case_path, log_path, redact_enabled, patterns) {
 			"stdout": "",
 			"stderr": "",
 			"combined": redacted["text"],
-			"truncated": false,
+			"truncated": (size > max_log_bytes || proc_stdout_truncated(read_result)),
 			"timed_out": false,
 			"success": true,
 			"redaction_enabled": redact_enabled,
@@ -1156,7 +1302,7 @@ func capture_from_log(case_path, log_path, redact_enabled, patterns) {
 }
 
 func create_manual_case(case_path) {
-	write_result := safe_write(path_join(case_path, "command.txt"), "<manual>")
+	write_result := require_writes([[path_join(case_path, "command.txt"), "<manual>"], [path_join(case_path, "stdout.log"), ""], [path_join(case_path, "stderr.log"), ""], [path_join(case_path, "combined.log"), ""]])
 	if !write_result["ok"] {
 		return write_result
 	}
@@ -1551,6 +1697,9 @@ func capture_command_handler(subargs) {
 	if case_name == null {
 		case_name = "case"
 	}
+	name_redacted := redact_text(case_name, is_truthy(cfg["redact"]) && !options["no_redact"], get_redaction_patterns(cfg))
+	case_name = name_redacted["text"]
+	options["name"] = case_name
 
 	case_result := create_case_dir(repo_root, cfg, case_name, options["force"])
 	if !case_result["ok"] {
@@ -1559,20 +1708,33 @@ func capture_command_handler(subargs) {
 	}
 	case_id := case_result["case_id"]
 	case_path := case_result["case_path"]
+	if options["force"] {
+		invalidated := safe_spawn(["rm", "-f", path_join(case_path, "case.json")])
+		if proc_exitcode(invalidated) != 0 {
+			print_capture_error("cannot invalidate existing case manifest")
+			exit(4)
+		}
+	}
 
 	git_cfg := cfg["git"]
-	git_ctx := collect_git_context(parse_int_value(git_cfg["include_recent_commits"], 5))
-	write_git_files(case_path, git_ctx)
+	git_ctx := collect_git_context(git_cfg)
+	patterns := get_redaction_patterns(cfg)
+	redact_enabled := is_truthy(cfg["redact"]) && !options["no_redact"]
+	git_ctx = redact_metadata(git_ctx, redact_enabled, patterns)
+	git_write := write_git_files(case_path, git_ctx)
+	if !git_write["ok"] {
+		print_capture_error(git_write["error"])
+		exit(4)
+	}
 
-	env_data := detect_environment(repo_root)
+	env_data := detect_environment(repo_root, cfg["environment"])
+	env_data = redact_metadata(env_data, redact_enabled, patterns)
 	env_write := safe_write(path_join(case_path, "environment.json"), to_json_pretty(env_data))
 	if !env_write["ok"] {
 		print_capture_error(env_write["error"])
 		exit(4)
 	}
 
-	patterns := get_redaction_patterns(cfg)
-	redact_enabled := is_truthy(cfg["redact"]) && !options["no_redact"]
 	notes_redacted := redact_text(options["notes"], redact_enabled, patterns)
 	options["notes"] = notes_redacted["text"]
 
@@ -1580,7 +1742,7 @@ func capture_command_handler(subargs) {
 	if options["mode"] == "command" {
 		capture_result = capture_command(case_path, options, redact_enabled, patterns)
 	} else if options["mode"] == "log" {
-		capture_result = capture_from_log(case_path, options["from_log"], redact_enabled, patterns)
+		capture_result = capture_from_log(case_path, options["from_log"], redact_enabled, patterns, options["max_log_bytes"])
 	} else {
 		capture_result = create_manual_case(case_path)
 	}
@@ -1590,7 +1752,7 @@ func capture_command_handler(subargs) {
 		exit(4)
 	}
 	capture_result["redaction_enabled"] = redact_enabled
-	capture_result["redaction_count"] = capture_result["redaction_count"] + notes_redacted["count"]
+	capture_result["redaction_count"] = capture_result["redaction_count"] + notes_redacted["count"] + name_redacted["count"]
 
 	classification := classify_case(capture_result, git_ctx, env_data)
 	recommendations := build_recommendations(capture_result, git_ctx, env_data)
@@ -1602,9 +1764,9 @@ func capture_command_handler(subargs) {
 
 	artifact_write := require_writes([
 		[path_join(case_path, "case.md"), case_markdown],
-		[path_join(case_path, "case.json"), to_json_pretty(case_json_obj)],
-		[path_join(case_path, "reproduction.md"), reproduction_markdown],
-		[path_join(case_path, "handoff.md"), handoff_markdown]
+				[path_join(case_path, "reproduction.md"), reproduction_markdown],
+		[path_join(case_path, "handoff.md"), handoff_markdown],
+		[path_join(case_path, "case.json"), to_json_pretty(case_json_obj)]
 	])
 	if !artifact_write["ok"] {
 		print_capture_error(artifact_write["error"])
@@ -1679,10 +1841,14 @@ func doctor_command_handler() {
 	}
 
 	repo_root := get_repo_root()
-	git_ctx := collect_git_context(5)
-	env_data := detect_environment(repo_root)
+	git_ctx := collect_git_context(cfg["git"])
+	env_data := detect_environment(repo_root, cfg["environment"])
 	output_check := resolve_output_dir(repo_root, safe_to_string(cfg["output_dir"]))
 	writable := false
+	if !output_check["ok"] {
+		print(output_check["error"])
+		exit(2)
+	}
 	if output_check["ok"] {
 		mk := ensure_directory(output_check["path"])
 		writable = mk["ok"]
@@ -1715,7 +1881,8 @@ func doctor_command_handler() {
 	])
 
 	if !cfg_ok {
-		print("Warning: configuration file exists but could not be parsed")
+		print(load_result["error"])
+		exit(2)
 	}
 	exit(0)
 }
@@ -1732,7 +1899,7 @@ func list_case_dirs(output_root) {
 	dirs := []
 	for entry in entries {
 		full_path := path_join(output_root, entry)
-		if is_truthy(path_is_dir(full_path)) {
+		if regex_match(entry, "^[0-9]{4}-[0-9]{2}-[0-9]{2}-[0-9]{6}-.+$") && !is_symlink(full_path) && is_truthy(path_is_dir(full_path)) && !is_symlink(path_join(full_path, "case.json")) && read_case_json(full_path) != null {
 			dirs = push(dirs, entry)
 		}
 	}
@@ -1746,7 +1913,11 @@ func read_case_json(case_dir) {
 	}
 	try {
 		raw := read_file(json_path)
-		return parse_json(raw)
+		parsed := parse_json(raw)
+		if type(parsed) != "dict" || !dict_has_key(parsed, "case") || !dict_has_key(parsed["case"], "id") || parsed["case"]["id"] != basename(case_dir) {
+			return null
+		}
+		return parsed
 	} except err {
 		return null
 	}
@@ -1839,6 +2010,15 @@ func parse_show_options(subargs) {
 	return {"ok": true, "options": options}
 }
 
+func print_case_artifact(path_value) {
+	try {
+		print(read_file(path_value))
+	} except err {
+		print("Failed to read case artifact: " + safe_to_string(err))
+		exit(4)
+	}
+}
+
 func show_command_handler(subargs) {
 	parsed := parse_show_options(subargs)
 	if !parsed["ok"] {
@@ -1865,7 +2045,15 @@ func show_command_handler(subargs) {
 		print("No cases available")
 		exit(2)
 	}
+	if case_id == "." || case_id == ".." || index_of(case_id, "/") >= 0 || index_of(case_id, "\\") >= 0 || is_absolute_path(case_id) {
+		print("Invalid case id")
+		exit(2)
+	}
 	case_path := path_join(output_root, case_id)
+	if !safe_descendant(case_path, output_root, "case")["ok"] {
+		print("Unsafe case path")
+		exit(2)
+	}
 	if !is_truthy(path_exists(case_path)) {
 		print("Case not found: " + case_id)
 		exit(2)
@@ -1873,20 +2061,20 @@ func show_command_handler(subargs) {
 
 	if options["format"] == "json" {
 		json_path := path_join(case_path, "case.json")
-		if !is_truthy(file_exists(json_path)) {
+		if is_symlink(json_path) || !is_truthy(file_exists(json_path)) {
 			print("case.json not found for case: " + case_id)
 			exit(2)
 		}
-		print(read_file(json_path))
+		print_case_artifact(json_path)
 		exit(0)
 	}
 
 	md_path := path_join(case_path, "case.md")
-	if !is_truthy(file_exists(md_path)) {
+	if is_symlink(md_path) || !is_truthy(file_exists(md_path)) {
 		print("case.md not found for case: " + case_id)
 		exit(2)
 	}
-	print(read_file(md_path))
+	print_case_artifact(md_path)
 	exit(0)
 }
 
@@ -1922,6 +2110,9 @@ func parse_clean_options(subargs) {
 				return {"ok": false, "error": "missing value for --older-than"}
 			}
 			options["older_than"] = subargs[i]
+			if parse_days(subargs[i]) < 0 {
+				return {"ok": false, "error": "--older-than must be like 30d"}
+			}
 		} else if arg == "--keep" {
 			i = i + 1
 			if i >= len(subargs) {
@@ -1985,6 +2176,10 @@ func clean_command_handler(subargs) {
 			exit(2)
 		}
 		cutoff := cutoff_stamp_for_days(days)
+		if cutoff == null {
+			print("Could not calculate retention cutoff")
+			exit(4)
+		}
 		if cutoff != null {
 			for case_id in case_dirs {
 				if len(case_id) >= 17 {
@@ -2003,10 +2198,12 @@ func clean_command_handler(subargs) {
 		exit(0)
 	}
 
+	delete_failed := false
 	for case_id in to_delete {
 		target := path_join(output_root, case_id)
-		if !path_within_root(target, output_root, "cleanup target")["ok"] {
+		if !safe_descendant(target, output_root, "cleanup target")["ok"] {
 			print("Skipping unsafe path: " + target)
+			delete_failed = true
 			continue
 		}
 		if options["dry_run"] {
@@ -2016,11 +2213,15 @@ func clean_command_handler(subargs) {
 			if proc_success(rm) && proc_exitcode(rm) == 0 {
 				print("Deleted " + target)
 			} else {
+				delete_failed = true
 				print("Failed to delete " + target + ": " + safe_to_string(proc_stderr(rm)))
 			}
 		}
 	}
 
+	if delete_failed {
+		exit(4)
+	}
 	exit(0)
 }
 

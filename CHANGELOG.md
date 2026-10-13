@@ -8,6 +8,10 @@
 
 ## Unreleased
 
+- Refresh the pinned ChangeBucket, PatchBrief, CaseFile, and Scent sources, including
+  bounded native Git processes, current file classification, and hardened artifact handling.
+- Require Kujo 1.8.1 for the refreshed cohort; keep existing plugin output schemas unchanged.
+
 - Probe the actual Kujo runtime during health checks and use company-specific
   readiness in the task/detail panels instead of an unconditional READY badge.
 - Disable unavailable actions and offer repair guidance with a retry control.
