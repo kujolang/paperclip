@@ -74,7 +74,12 @@ export async function qualifyProductionEvaluation({ call, companyId, projectId, 
   assert.deepEqual((await action("status", { id: failed.id })).data, failed);
   checks.push("production success and failure receipts survive full authenticated host/database restart");
   const other = (await call("/companies", { method: "POST", status: 201, body: { name: "Unrelated production tenant" } })).data.id;
-  await action("status", { id: receipt.id }, { status: 502, body: { companyId: other, key: "manage-evaluation", params: { issueId, operation: "status", id: receipt.id } } });
+  await call("/plugins/kujolang.paperclip/config", { method: "POST", body: { companyId: other, configJson: { features: { execution: true }, capabilityProfile: "ship" } } });
+  // Enable the other tenant too: a disabled feature must not be the reason
+  // this cross-company read is rejected.
+  const deniedTenant = await action("status", { id: receipt.id }, { status: 502, body: { companyId: other, key: "manage-evaluation", params: { issueId, operation: "status", id: receipt.id } } });
+  assert.match(deniedTenant.message, /issue|company|not found/i);
+  assert.doesNotMatch(deniedTenant.message, /disabled/);
   checks.push("production receipt access rejects a different tenant even for the shared board administrator");
   await json("receipts.json", { receipt, failed, pendingId: pending.id, companyId, projectId, issueId });
 }
