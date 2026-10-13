@@ -75,6 +75,10 @@ Select a Git-visible `.kujo` file in **Build with Kujo**, then choose **Check an
 
 The upcoming release requires Paperclip database namespace migrations and authenticated issue-document actions. Upgrade the host before installing it. Legacy latest records migrate on first access, with missing input/definition provenance explicitly marked unknown. Retained payloads have SHA-256 integrity checks; a redacted export carries its own digest. Suggested tests remain suggestions, and supplied failure logs remain supplied evidence.
 
+## Verification evidence
+
+Enable **Verification** in company settings to import `kujo.evaluation-result/v1` JSON, including Eval's `evaluation-result.json`. The panel distinguishes imported pass/fail claims, warnings, skipped-only or empty runs, partial runs, blocked evaluations and errors. It validates the pinned canonical schema and stores a redacted summary with the supplied-byte digest. It does not authenticate the producer, open evidence references, or establish that the result applies to this workspace. See [Verification imports](docs/VERIFICATION.md).
+
 ## Explore Kujo
 
 **Explore Kujo** shows the installed Paperclip adapters, feature/profile selection, platform support, runtime readiness and call-time authorization boundary. Expand the canonical catalog to discover 38 reviewed Kujo Ability definitions. Entries marked **Not integrated yet** are discovery references; their presence does not install a tool or make it executable.
@@ -85,10 +89,11 @@ The plugin ships pinned, checksummed Ability contracts/catalogs and generates it
 
 ## Agent tools
 
-Paperclip agents can call ten tools:
+Paperclip agents can call eleven tools:
 
 | Tool | Use |
 | --- | --- |
+| `kujolang.paperclip:import-verification` | Retain a redacted, explicitly imported evaluation summary; never runs checks. |
 | `kujolang.paperclip:list-capabilities` | Discover scoped tool readiness, profiles and optional ecosystem integrations. |
 | `kujolang.paperclip:list-evidence` | List retained receipts in the current project or run. |
 | `kujolang.paperclip:get-evidence` | Read one redacted export, bounded to 64 KiB. |

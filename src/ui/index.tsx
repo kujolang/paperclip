@@ -20,7 +20,9 @@ import type { LanguageReport, FormatPreview } from "../features/language/schema.
 import type { CapabilityCatalog } from "../abilities/catalog.js";
 import type { EvidenceMetadata } from "../storage/history.js";
 
-type Detail = { catalog?: CapabilityCatalog; history?: EvidenceMetadata[]; language?: LanguageReport | null; sources?: { files: string[]; truncated: boolean }; understanding?: Understanding | null; review: ReviewPack | null; failure: FailureEvidence | null; context: ContextPack | null; readiness?: DoctorReport; workspace?: WorkspaceReadiness; suggestedTask?: string };
+import type { VerificationReport } from "../features/verification/import.js";
+
+type Detail = { verification?: VerificationReport | null; verificationEnabled?: boolean; catalog?: CapabilityCatalog; history?: EvidenceMetadata[]; language?: LanguageReport | null; sources?: { files: string[]; truncated: boolean }; understanding?: Understanding | null; review: ReviewPack | null; failure: FailureEvidence | null; context: ContextPack | null; readiness?: DoctorReport; workspace?: WorkspaceReadiness; suggestedTask?: string };
 type PanelProps = PluginDetailTabProps & { compact?: boolean };
 
 const colors = {
@@ -369,6 +371,46 @@ function EvidenceHistory({ context, records }: { context: PanelProps["context"];
   </section>;
 }
 
+function VerificationSection({ context, report, refresh }: { context: PanelProps["context"]; report: VerificationReport | null; refresh: () => void }) {
+  const importResult = usePluginAction("import-verification");
+  const [json, setJson] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [imported, setImported] = useState<VerificationReport | null>(null);
+  const active = useRef(true);
+  useEffect(() => { active.current = true; return () => { active.current = false; }; }, []);
+  const current = imported ?? report;
+  const bytes = new TextEncoder().encode(json).byteLength;
+  async function submit() {
+    setBusy(true); setError(null);
+    try {
+      const result = await importResult({ entityType: context.entityType, entityId: context.entityId, json }) as VerificationReport;
+      if (!active.current) return;
+      setImported(result); setJson(""); await refresh();
+    } catch (value) { if (active.current) setError(value instanceof Error ? value.message : String(value)); }
+    finally { if (active.current) setBusy(false); }
+  }
+  return <section style={{ ...card, overflowWrap: "anywhere" }} aria-label="Verification evidence">
+    <SectionTitle title="Verification evidence" detail="Bring a canonical Kujo evaluation result into this work record." badge={<StatusBadge status="pending" label="IMPORTED CLAIMS" />} />
+    <div style={muted}>Imports do not run checks or authenticate a producer. Referenced evidence is not opened, and applicability to the current workspace remains unknown.</div>
+    {context.entityType !== "run" && <>
+      <label>Evaluation result JSON<textarea aria-label="Evaluation result JSON" style={input} rows={4} maxLength={65_536} disabled={busy} value={json} onChange={(event) => setJson(event.target.value)} placeholder="Paste kujo.evaluation-result/v1 JSON" /></label>
+      <div style={muted}>{bytes.toLocaleString()} / 65,536 bytes. Only a redacted summary is retained; keep the original report with its producer.</div>
+      <ActionButton disabled={busy || !json.trim() || bytes > 65_536} onClick={() => { void submit(); }}>{busy ? "Importing…" : "Import evaluation result"}</ActionButton>
+    </>}
+    {error && <div role="alert" style={{ color: colors.danger }}>{error}</div>}
+    {current ? <div aria-label="Imported evaluation summary">
+      <strong>Imported · {current.classification}</strong>
+      <div style={muted}>Claimed producer: {current.result.evaluator.name} {current.result.evaluator.version}</div>
+      <div style={muted}>Claimed checks: {current.result.checks.passed} passed · {current.result.checks.failed} failed · {current.result.checks.warned} warned · {current.result.checks.skipped} skipped</div>
+      <div style={muted}>Claimed verdict: {current.result.verdict} · Claimed subject: {current.result.subject.run_id}</div>
+      <div style={muted}>Claimed completion: {current.result.finished_at} · Imported: {current.generatedAt}</div>
+      <div style={muted}>Reference count: {current.referenceCount} · References unverified · Workspace freshness unknown</div>
+      <div style={muted}>Use Evidence history to inspect, compare, export or explicitly attach this imported record.</div>
+    </div> : <div style={muted}>No evaluation result imported. Suggested checks have not been run by this workflow.</div>}
+  </section>;
+}
+
 function KujoPanel({ context, compact = false }: PanelProps) {
   const { data, loading, error, refresh } = usePluginData<Detail>("detail", { entityType: context.entityType, entityId: context.entityId });
   const generateReview = usePluginAction("generate-review");
@@ -425,7 +467,7 @@ function KujoPanel({ context, compact = false }: PanelProps) {
   if (loading) return <Spinner label="Loading Kujo workspace intelligence" />;
   if (error) return <div role="alert" style={{ ...card, color: colors.danger }}>Unable to load Kujo: {error.message}</div>;
 
-  const hasArtifacts = data?.language || data?.understanding || Boolean(data?.review || data?.failure || data?.context);
+  const hasArtifacts = (data?.history?.length ?? 0) > 0 || data?.verification || data?.language || data?.understanding || Boolean(data?.review || data?.failure || data?.context);
 
   return (
     <div style={{ ...panel, ...(compact ? { marginTop: 12 } : {}) }}>
@@ -528,6 +570,8 @@ function KujoPanel({ context, compact = false }: PanelProps) {
       </section>}
 
       {data?.catalog && <CapabilityExplorer key={`catalog:${targetKey}`} catalog={data.catalog} />}
+
+      {data?.verificationEnabled && <VerificationSection key={`verification:${targetKey}:${data.verification?.id ?? "none"}`} context={context} report={data.verification ?? null} refresh={refresh} />}
 
       <EvidenceHistory key={targetKey} context={context} records={data?.history ?? []} />
 

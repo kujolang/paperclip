@@ -137,7 +137,7 @@ Each receipt records source kind (observed, supplied, or migrated legacy), a res
 
 **Attach to this issue** explicitly creates an issue document and requires a host-authenticated human in the same company. Agent calls cannot authorize attachment by passing actor or company fields. Only records retained against that exact issue can be attached. Documents above 400 KB are rejected; use the download instead. Attached documents are separate Paperclip records and remain governed by the host's retention policy.
 
-Retention uses database insertion time: at most 20 records across all five artifact kinds per company/entity, with records older than 30 days inaccessible and removed on the next history read or append. There is no background expiry sweep. Each payload is limited to 5 MB. **Clear Kujo data** removes retained history and legacy latest keys for the selected project/issue; it does not remove documents already attached to issues. No generic SQL or arbitrary file access is exposed.
+Retention uses database insertion time: at most 20 records across all six artifact kinds per company/entity, with records older than 30 days inaccessible and removed on the next history read or append. There is no background expiry sweep. Each payload is limited to 5 MB. **Clear Kujo data** removes retained history and legacy latest keys for the selected project/issue; it does not remove documents already attached to issues. No generic SQL or arbitrary file access is exposed.
 
 Agents can use `kujolang.paperclip:list-evidence` with `{ "scope": "project" }` (default) or `{ "scope": "run" }`, then `kujolang.paperclip:get-evidence` with the same scope and an `evidenceId`. IDs for the project/run/company come from the authenticated host context. Reads above 64 KiB are rejected with a panel-download hint; the tools never attach documents.
 
@@ -147,3 +147,7 @@ Agents can use `kujolang.paperclip:list-evidence` with `{ "scope": "project" }` 
 Use `kujolang.paperclip:list-capabilities` with `{}` for implemented Paperclip tools, or `{ "includeUnavailable": true }` to include canonical ecosystem references. Returned states separate installed adapter, company/profile enablement, platform support, runtime/component readiness and authorization checked on invocation. Missing adapters are not registered as agent tools. The full canonical input definitions remain in the packaged catalog; use the generated Paperclip schemas when calling Paperclip tools.
 
 The **Explore Kujo** panel presents the same data and definition digests. Profile changes belong in company plugin settings. New retained work records link their Paperclip projection identity and exact canonical definition digests in `kujoProjection`; legacy records remain unchanged and do not invent that provenance.
+
+## Import verification evidence
+
+Enable `features.verification` in company settings, then paste a canonical `kujo.evaluation-result/v1` document into **Verification evidence**. Agent calls use `kujolang.paperclip:import-verification` with `{ "json": "<evaluation-result JSON text>" }`; the host supplies the project/company. The UI can also import against the current issue. A run view remains read-only. See [Verification imports](VERIFICATION.md) for classifications and limits. Imported summaries participate in the same history, comparison, export and explicit human attachment workflow.

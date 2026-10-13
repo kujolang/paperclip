@@ -195,3 +195,28 @@ test("capability discovery fits a narrow viewport and resets on company navigati
   await page.evaluate(() => window.__KUJO_NAVIGATE__?.("other-company"));
   await expect(page.getByLabel("Canonical ecosystem catalog")).toHaveCount(0);
 });
+
+test("verification imports show external claims and remain available without a runtime", async ({ page }) => {
+  await page.goto("/?surface=task&entity=issue&verification=1&runtime=broken");
+  const section = page.getByRole("region", { name: "Verification evidence" });
+  await expect(section.getByText("No evaluation result imported.", { exact: false })).toBeVisible();
+  await section.getByLabel("Evaluation result JSON").fill('{"schema":"kujo.evaluation-result/v1"}');
+  await section.getByRole("button", { name: "Import evaluation result" }).click();
+  await expect(section.getByText("Imported · partial")).toBeVisible();
+  await expect(section.getByText("Claimed checks: 3 passed · 0 failed · 0 warned · 1 skipped")).toBeVisible();
+  await expect(section.getByLabel("Evaluation result JSON")).toHaveValue("");
+  await expect(section).toHaveScreenshot("verification-import.png", { animations: "disabled", maxDiffPixelRatio: 0.02 });
+});
+
+test("verification import state cannot follow a pending request across company navigation", async ({ page }) => {
+  await page.goto("/?surface=detail&entity=project&verification=1");
+  await page.evaluate(() => { window.__KUJO_DELAY_IMPORT__ = true; });
+  await page.getByLabel("Evaluation result JSON").fill("private-supplied-json");
+  await page.getByRole("button", { name: "Import evaluation result" }).click();
+  await expect.poll(() => page.evaluate(() => Boolean(window.__KUJO_RESOLVE_IMPORT__))).toBe(true);
+  await page.evaluate(() => window.__KUJO_NAVIGATE__?.("other-company"));
+  await expect(page.getByLabel("Evaluation result JSON")).toHaveValue("");
+  await page.evaluate(() => window.__KUJO_RESOLVE_IMPORT__?.());
+  await expect(page.getByText("Imported · partial")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Import evaluation result" })).toBeDisabled();
+});

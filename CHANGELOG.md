@@ -8,6 +8,8 @@
 
 ## Unreleased
 
+- Import bounded canonical evaluation results through project/issue panels and an agent tool. Preserve imported provenance, distinguish skipped/partial/blocked/error claims, validate pinned schemas, and retain only redacted summaries. Imports and clearing retained data work without a local workspace.
+
 - Add pinned canonical Ability discovery, generated Paperclip tool projections, company capability profiles, explicit readiness/authorization states and projection provenance in new evidence.
 
 - Retain company/entity-scoped evidence history with integrity receipts, bounded retention, legacy migration, comparisons, redacted exports, current freshness inspection and explicit human-only issue-document attachment. Package the host database migration and test it with PostgreSQL.

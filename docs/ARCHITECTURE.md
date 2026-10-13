@@ -20,7 +20,7 @@ Artifacts use company/entity-scoped database rows: Review and Context Packs are 
 
 - npm packages and runtime resolver API documented in the Kujo runtime repository
 - Paperclip manifest API version 1 and minimum host version `2026.824.1`
-- ten namespaced agent tools declared in the manifest and worker
+- eleven namespaced agent tools declared in the manifest and worker
 - component lock schema version 1
 - Review Pack, Failure Evidence, and Context Pack schema version 1
 - additive JSON compatibility within a plugin major version
@@ -46,3 +46,7 @@ Issue documents require the additional `issue.documents.write` capability and a 
 `bundled/ability-sources.lock.json` pins the canonical Ability TypeScript contract and CMD catalog/profile snapshots. `scripts/sync-abilities.mjs` requires clean source checkouts at those commits; runtime never downloads definitions or component code. `scripts/generate-abilities.mjs` verifies source hashes, canonical definition digests, profile inheritance and host projection identities, then deterministically generates `src/abilities/generated.ts`. Build/verification reject drift.
 
 `src/abilities/projections.json` owns Paperclip input schemas, adapter identities and storage effects. Exact canonical definitions are preserved separately, with canonical identities/digests linked from the host projection. This avoids falsely claiming that a canonical local-directory API and a tenant-scoped Paperclip tool share the same inputs, effects or idempotency behavior. Persisted evidence adds `kujoProjection` provenance; this additive metadata is not a canonical execution receipt or approval grant.
+
+## Imported verification
+
+The verification adapter validates the pinned Kujo evaluation-result JSON Schema using Ajv 2020 and date-time formats, then selects and redacts a small summary. Input is bounded to 64 KiB and 32 nested levels. Unknown fields, annotation bodies, raw logs and reference URIs are not retained; no references are fetched. The source-byte SHA-256 and schema provenance remain separate from the retained payload receipt. `verification-latest` is always labeled imported, with no observed execution or workspace freshness. Project/issue ownership comes from host-scoped APIs, not imported subject IDs. The adapter requires no native runtime and has its own feature/profile enforcement.

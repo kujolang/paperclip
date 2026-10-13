@@ -93,6 +93,7 @@ describe("Scout repository understanding", () => {
     expect(changed.understanding.stale).toBe(true);
     const other = await harness.getData<{ understanding: null }>("detail", { ...target, companyId: "other" });
     expect(other.understanding).toBeNull();
+    vi.spyOn(harness.ctx.projects, "get").mockResolvedValue({ id: "project", companyId: "company" } as NonNullable<Awaited<ReturnType<typeof harness.ctx.projects.get>>>);
     await harness.performAction("clear-artifacts", target, { companyId: "company" });
     expect((await harness.getData<{ understanding: null }>("detail", { ...target, companyId: "company" })).understanding).toBeNull();
     await expect(understandRepository({ ...input, config: parsePluginConfig({ features: { understand: false } }) })).rejects.toThrow("disabled");

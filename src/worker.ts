@@ -1,7 +1,7 @@
 import { definePlugin, runWorker, type PluginContext, type ToolRunContext } from "@paperclipai/plugin-sdk";
 import { z } from "zod";
 import { parsePluginConfig } from "./config/schema.js";
-import { catalogTool, listEvidenceTool, readEvidenceTool, languageTool, formatTool, understandTool, contextContentTool, contextTool, failureTool, reviewTool } from "./manifest.js";
+import { importVerificationTool, catalogTool, listEvidenceTool, readEvidenceTool, languageTool, formatTool, understandTool, contextContentTool, contextTool, failureTool, reviewTool } from "./manifest.js";
 import { generateReviewPack } from "./features/review/generate.js";
 import { reviewPackSchema, type ReviewPack } from "./features/review/schema.js";
 import { captureFailure } from "./features/failure/capture.js";
@@ -25,6 +25,8 @@ import { understandingSchema } from "./features/understand/schema.js";
 import { analyzeSource, previewFormat } from "./features/language/analyze.js";
 import { discoverSources, sourcePathSchema } from "./features/language/source.js";
 import { languageReportSchema } from "./features/language/schema.js";
+
+import { importVerification, verificationInput, verificationReportSchema } from "./features/verification/import.js";
 
 const languageInput = z.object({ path: sourcePathSchema }).strict();
 const reviewInput = z.object({
@@ -70,7 +72,7 @@ async function configFor(ctx: PluginContext, companyId: string) {
 
 const historyTarget = z.object({ entityType: z.enum(["project", "issue", "run"]), entityId: z.string().min(1), evidenceId: z.string().min(1).max(100), otherId: z.string().min(1).max(100).optional() }).strict();
 function evidenceEnabled(config: ReturnType<typeof parsePluginConfig>, kind: ArtifactKind) {
-  const feature = { "review-latest": "review", "context-latest": "context", "failure-latest": "failureEvidence", "understand-latest": "understand", "language-latest": "language" } as const;
+  const feature = { "review-latest": "review", "context-latest": "context", "failure-latest": "failureEvidence", "understand-latest": "understand", "language-latest": "language", "verification-latest": "verification" } as const;
   return config.features[feature[kind]];
 }
 
@@ -136,7 +138,27 @@ async function reviewForProject(ctx: PluginContext, runCtx: ToolRunContext, para
   return pack;
 }
 
+async function importForTarget(ctx: PluginContext, target: StateTarget, json: string) {
+  const config = await configFor(ctx, target.companyId);
+  if (!config.features.verification) throw new Error("Verification imports are disabled by configuration or profile");
+  const entity = target.entityType === "project" ? await ctx.projects.get(target.entityId, target.companyId)
+    : target.entityType === "issue" ? await ctx.issues.get(target.entityId, target.companyId) : null;
+  if (!entity || entity.companyId !== target.companyId) throw new Error("Project or issue was not found in this company");
+  const report = importVerification(json);
+  await saveArtifact(ctx, target, "verification-latest", report, { inputs: { sourceDigest: report.sourceDigest }, definition: importVerificationTool, projection: projectionReceipt(importVerificationTool) });
+  await audit(ctx, { ...target, operation: "verification.imported", artifactId: report.id });
+  return report;
+}
+
 function registerTools(ctx: PluginContext) {
+  ctx.tools.register(importVerificationTool.name, importVerificationTool, async (raw, runCtx) => {
+    try {
+      const value = verificationInput.parse(raw);
+      if (!runCtx.companyId || !runCtx.projectId) throw new Error("Host company and project context are required");
+      const data = await importForTarget(ctx, { companyId: runCtx.companyId, entityType: "project", entityId: runCtx.projectId }, value.json);
+      return { content: JSON.stringify(data), data };
+    } catch (error) { return { error: normalizeError(error).message }; }
+  });
   ctx.tools.register(catalogTool.name, catalogTool, async (raw, runCtx) => {
     try {
       const params = z.object({ includeUnavailable: z.boolean().default(false) }).strict().parse(raw);
@@ -317,12 +339,13 @@ function registerUiBridge(ctx: PluginContext) {
     const suggestedTask = issue
       ? `${issue.title}\n\n${issue.description ?? ""}`.trim().slice(0, 10_000)
       : "Understand this repository and identify the best starting points for the next change.";
-    const [review, failure, context, understanding, language] = await Promise.all([
+    const [review, failure, context, understanding, language, verification] = await Promise.all([
       config.features.review ? loadArtifact(ctx, target, "review-latest", reviewPackSchema) : null,
       config.features.failureEvidence ? loadArtifact(ctx, target, "failure-latest", failureEvidenceSchema) : null,
       config.features.context ? loadArtifact(ctx, target, "context-latest", contextPackSchema) : null,
       config.features.understand ? loadArtifact(ctx, target, "understand-latest", understandingSchema) : null,
       config.features.language ? loadArtifact(ctx, target, "language-latest", languageReportSchema) : null,
+      config.features.verification ? loadArtifact(ctx, target, "verification-latest", verificationReportSchema) : null,
     ]);
     const ownedReview = review && (
       (target.entityType === "project" && review.projectId === target.entityId) ||
@@ -344,7 +367,13 @@ function registerUiBridge(ctx: PluginContext) {
     await ensureHistory(ctx, target);
     const history = (await listEvidence(ctx, target)).filter((record) => evidenceEnabled(config, record.kind));
     const readiness = await doctor(config);
-    return { catalog: capabilityCatalog(config, readiness, true), history, language: ownedLanguage, sources, understanding: ownedUnderstanding, review: ownedReview, failure: ownedFailure, context: ownedContext, readiness, workspace: inspection?.readiness, suggestedTask };
+    return { catalog: capabilityCatalog(config, readiness, true), verification, verificationEnabled: config.features.verification, history, language: ownedLanguage, sources, understanding: ownedUnderstanding, review: ownedReview, failure: ownedFailure, context: ownedContext, readiness, workspace: inspection?.readiness, suggestedTask };
+  });
+
+  ctx.actions.register("import-verification", async (params, actionCtx) => {
+    if (!actionCtx.companyId) throw new Error("Company context is required");
+    const value = actionTarget.extend(verificationInput.shape).parse(actionParams(params));
+    return await importForTarget(ctx, { entityType: value.entityType, entityId: value.entityId, companyId: actionCtx.companyId }, value.json);
   });
 
   for (const operation of ["check-kujo-source", "preview-kujo-format"]) ctx.actions.register(operation, async (params, actionCtx) => {
@@ -487,7 +516,8 @@ function registerUiBridge(ctx: PluginContext) {
   ctx.actions.register("clear-artifacts", async (params, actionCtx) => {
     if (!actionCtx.companyId) throw new Error("Company context is required");
     const target = actionTarget.parse(actionParams(params));
-    await resolveWorkspace(ctx, { ...target, companyId: actionCtx.companyId });
+    const entity = target.entityType === "project" ? await ctx.projects.get(target.entityId, actionCtx.companyId) : await ctx.issues.get(target.entityId, actionCtx.companyId);
+    if (!entity || entity.companyId !== actionCtx.companyId) throw new Error("Project or issue was not found in this company");
     await clearArtifacts(ctx, { ...target, companyId: actionCtx.companyId });
     await ctx.activity.log({
       companyId: actionCtx.companyId,
@@ -525,7 +555,7 @@ const plugin = definePlugin({
   async onValidateConfig(value) {
     try {
       const parsed = parsePluginConfig(value);
-      return { ok: true, warnings: parsed.features.verification ? ["Verification is experimental in v0.1."] : [] };
+      return { ok: true, warnings: parsed.features.verification ? ["Verification imports retain external claims; they do not run checks or authenticate producers."] : [] };
     } catch (error) {
       return { ok: false, errors: [error instanceof Error ? error.message : "Invalid configuration"] };
     }
