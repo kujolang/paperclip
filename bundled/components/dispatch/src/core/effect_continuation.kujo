@@ -1,0 +1,135 @@
+# Local trusted-host, one explicitly chosen SQLite effect. No parent execution.
+from src.core.assurance_state import assurance_protected, assurance_feature
+from src.core.assurance_configuration import resolve_run_configuration
+from src.core.state import load_run_state, acquire_run_lock, release_run_lock, persist_run_state
+from src.core.control_journal import reconcile_control_journal, append_control_event
+from src.core.effect_set import assess_effect_set
+from src.core.portable_commitments import portable_json
+from src.core.utils import dict_get_or, ensure_dir
+from src.core.effect_context import resolve_effect_context
+
+func denied() {return {"ok": false, "code": "effect_continuation_denied", "parent_replay": "prohibited"}}
+func reference(value) {return "sha256:" + sha256(portable_json(value))}
+func check(value) {if value != true {throw("effect_continuation_denied")}}
+func notify(options, point) {hook := dict_get_or(options, "effect_boundary", null); if type(hook) == "function" {hook(point)}}
+
+func current(state,options,effect_id,require_candidate) {return resolve_effect_context(state,options,effect_id,require_candidate,null)}
+func save(state, continuation, kind) {
+    state["effect_continuation"] := continuation
+    state["required_features"] := [assurance_feature(state["assurance_negotiation"]), "effect-continuation/v1alpha1"]
+    logged := append_control_event(state,kind,continuation["selection"]["binding"]["subject"]["step_id"],[],{"continuation":continuation})
+    state = logged["run_state"]
+    request := state["human_intervention"]; request["state_revision"] := state["revision"] + 1; state["human_intervention"] := request
+    state = persist_run_state(state)
+    check(sync_directory_beneath(state["run_dir"],"."))
+    return state
+}
+func fresh(output_root, run_id) {loaded := load_run_state(output_root,run_id); check(loaded["ok"]); return loaded["run_state"]}
+func retain(root, raw) {
+    path := "effect-artifacts/" + sha256(raw) + ".json"
+    if file_exists(root + "/" + path) {check(read_file_beneath(root,path,1048576) == raw)}
+    else {check(write_file_atomic_beneath(root,path,raw,false))}
+}
+func immutable_selection(state, selection) {
+    raw := portable_json(selection)
+    check(read_file_beneath(state["run_dir"],"effect-attempts/" + selection["attempt_id"] + ".json",8192) == raw)
+    set_ref := selection["binding"]["set_ref"]
+    sidecar := parse_json(read_file_beneath(state["run_dir"],"effect-artifacts/" + substring(set_ref,7,71) + ".json",8192))
+    for ref in sidecar["observations"] {if ref != null {check("sha256:" + sha256(read_file_beneath(state["run_dir"],"effect-artifacts/" + substring(ref,7,71) + ".json",8192)) == ref)}}
+    for field in ["plan_ref","result_ref","set_ref"] {
+        ref := selection["binding"][field]
+        check("sha256:" + sha256(read_file_beneath(state["run_dir"],"effect-artifacts/" + substring(ref,7,71) + ".json",1048576)) == ref)
+    }
+}
+
+# The operator chooses an ID, never a position/remainder. A surviving selected
+# attempt can be resumed only through admit_effect; selection is never replaced.
+export func select_effect(output_root, run_id, effect_id, options) {
+    loaded := load_run_state(output_root,run_id); if loaded["ok"] == false {return loaded}
+    lock := acquire_run_lock(loaded["run_state"]); if lock["ok"] == false {return lock}
+    answer := denied()
+    try {
+        state := fresh(output_root,run_id);check(has_key(state,"effect_lifecycle") == 0)
+        check(dict_get_or(state,"effect_continuation",null) == null)
+        facts := current(state,options,effect_id,true)
+        notify(options,"before_selection")
+        # Instrumentation/observation may take time. Recheck after it, under lock.
+        reloaded := fresh(output_root,run_id);check(reloaded["revision"] == state["revision"]&&to_json(reloaded["control_journal"]) == to_json(state["control_journal"]))
+        latest := current(reloaded,options,effect_id,true); check(to_json(latest["binding"]) == to_json(facts["binding"]))
+        selection := {"schema":"dispatch.effect-selection/v1alpha1", "binding":facts["binding"], "prior_revision":state["revision"], "prior_journal":{"sequence":state["control_journal"]["sequence"],"last_sha256":state["control_journal"]["last_sha256"]}}
+        selection["attempt_id"] := sha256(portable_json(selection))
+        ensure_dir(state["run_dir"] + "/effect-artifacts")
+        retained := latest["host"]
+        retain(state["run_dir"],retained["result_raw"]);retain(state["run_dir"],retained["set_raw"]);retain(state["run_dir"],portable_json(retained["plan"]))
+        for ref in parse_json(retained["set_raw"])["observations"] {if ref != null {retain(state["run_dir"],retained["read_artifact"](ref))}}
+        check(sync_directory_beneath(state["run_dir"],"effect-artifacts"))
+        ensure_dir(state["run_dir"] + "/effect-attempts");check(sync_directory_beneath(state["run_dir"],"."))
+        check(write_file_atomic_beneath(state["run_dir"],"effect-attempts/" + selection["attempt_id"] + ".json",portable_json(selection),false))
+        check(sync_directory_beneath(state["run_dir"],"effect-attempts"))
+        state = save(state,{"selection":selection,"status":"selected","observation":null},"effect_selected")
+        notify(options,"after_selection")
+        answer = {"ok":true,"attempt_id":selection["attempt_id"],"parent_replay":"prohibited"}
+    } except err {answer = denied()}
+    release_run_lock(lock);return answer
+}
+
+export func admit_effect(output_root, run_id, attempt_id, options) {
+    loaded := load_run_state(output_root,run_id);if loaded["ok"] == false {return loaded}
+    lock := acquire_run_lock(loaded["run_state"]);if lock["ok"] == false {return lock}
+    answer := denied()
+    try {
+        state := fresh(output_root,run_id); continuation := state["effect_continuation"];selection := continuation["selection"]
+        check(selection["attempt_id"] == attempt_id&&continuation["status"] == "selected")
+        immutable_selection(state,selection)
+        check(state["revision"] == selection["prior_revision"] + 1)
+        check(state["control_journal"]["sequence"] == selection["prior_journal"]["sequence"] + 1)
+        facts := current(state,options,selection["binding"]["effect_id"],true)
+        check(to_json(facts["binding"]) == to_json(selection["binding"]))
+        # Same durable exclusive-create claim used by installed participant hosts:
+        # no replace, fsync contents+directory, never reclaim on process death.
+        check(write_file_atomic_beneath(state["run_dir"],"effect-attempts/" + attempt_id + ".claim",portable_json(selection),false))
+        check(sync_directory_beneath(state["run_dir"],"effect-attempts"))
+        continuation["status"] := "admitted"
+        state = save(state,continuation,"effect_admitted")
+        notify(options,"after_admission")
+        admitted_revision := state["revision"]
+        revalidate := func() {
+            reloaded := fresh(output_root,run_id)
+            check(reloaded["revision"] == admitted_revision&&to_json(reloaded["effect_continuation"]) == to_json(continuation))
+            check(read_file_beneath(state["run_dir"],"effect-attempts/" + attempt_id + ".claim",8192) == portable_json(selection))
+            latest := current(reloaded,options,selection["binding"]["effect_id"],true)
+            check(to_json(latest["binding"]) == to_json(selection["binding"]))
+            return true
+        }
+        # The final check also executes after SQLite obtains BEGIN IMMEDIATE,
+        # before any INSERT. Waiting for the sink cannot carry stale eligibility.
+        host := facts["host"]
+        applied := facts["adapter"]["apply"](selection["binding"]["position"],revalidate)
+        check(applied["ok"])
+        notify(options,"after_mutation")
+        observed := facts["adapter"]["observe"](selection["binding"]["position"]);check(observed["ok"])
+        continuation["status"] := "observed";continuation["observation"] := observed["observation"]
+        state = save(state,continuation,"effect_observed")
+        notify(options,"after_observation")
+        answer = {"ok":true,"attempt_id":attempt_id,"observation":observed["observation"],"parent_replay":"prohibited"}
+    } except err {answer = denied()}
+    release_run_lock(lock);return answer
+}
+
+# Lost acknowledgement is inspection only. Even a proved absent effect never
+# clears the consumed claim or manufactures another attempt.
+export func inspect_effect(output_root, run_id, options) {
+    loaded := load_run_state(output_root,run_id);if loaded["ok"] == false {return loaded}
+    lock := acquire_run_lock(loaded["run_state"]);if lock["ok"] == false {return lock}
+    answer := denied()
+    try {
+        state := fresh(output_root,run_id);continuation := state["effect_continuation"];selection := continuation["selection"]
+        immutable_selection(state,selection)
+        facts := current(state,options,selection["binding"]["effect_id"],false)
+        check(to_json(facts["binding"]) == to_json(selection["binding"]))
+        host := facts["host"];observed := facts["adapter"]["observe"](selection["binding"]["position"]);check(observed["ok"])
+        if continuation["status"] == "admitted" {continuation["status"] := "observed";continuation["observation"] := observed["observation"];state = save(state,continuation,"effect_observed")}
+        answer = {"ok":true,"continuation":continuation,"current_observation":observed["observation"],"assessment":facts["assessment"],"parent_replay":"prohibited"}
+    } except err {answer = denied()}
+    release_run_lock(lock);return answer
+}

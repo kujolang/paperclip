@@ -1,0 +1,13 @@
+# Installed family adapter. SQLite identity and truth do not belong in Dispatch's
+# sequential control ledger.
+from src.adapters.sqlite_effect import sqlite_effect_apply_checked, sqlite_effect_observe
+export func sqlite_continuation_adapter(host, policy, descriptor) {
+    if policy["profile"] != "dispatch.sqlite-unique"||policy["profile_version"] != "1beta1" {throw("sqlite_profile_required")}
+    for i in range(0, len(host["plan"]["effects"])) {
+        entry := host["plan"]["effects"][i]; intent := host["intents"][i]
+        if entry["profile"] != policy["profile"]||entry["profile_revision"] != policy["profile_version"]||entry["authority"] != descriptor["issuer"]||entry["operation"] != intent["operation"] {throw("sqlite_mapping_invalid")}
+        for field in ["target", "scope", "request", "key"] {if entry[field + "_ref"] != "sha256:" + intent[field + "_sha256"] {throw("sqlite_mapping_invalid")}}
+        if intent["target_sha256"] != sha256(host["sink_path"]) {throw("sqlite_target_invalid")}
+    }
+    return {"observe":func(index) {return sqlite_effect_observe(host["sink_path"], host["intents"][index])}, "apply":func(index, verify) {return sqlite_effect_apply_checked(host["sink_path"], host["intents"][index], verify)}}
+}

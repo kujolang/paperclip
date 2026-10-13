@@ -29,7 +29,11 @@ If a bad release affected stored data, clear the entity's Kujo data before regen
 Component updates must start from clean, reviewed source repositories at exact commits.
 
 1. Update `components.sources.json` with the source commit and version.
-2. Run `npm run components:sync`.
+2. Run `npm run components:sync`. To update one reviewed snapshot while retaining
+   the others, use `npm run components:sync -- --component dispatch` (substitute
+   the declared component ID). Retained declarations and every retained file
+   checksum must still match; the selected canonical checkout must be clean at
+   its declared commit.
 3. Review the full component diff and generated lock file.
 4. Run `npm run verify` on every supported platform.
 5. Release the plugin only after the referenced Kujo runtime is available on npm.

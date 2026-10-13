@@ -1,0 +1,124 @@
+# Experimental opt-in trust resolution. No change to legacy v1 admission.
+from src.core.utils import dict_get_or
+from src.core.control import validate_execution_result
+from src.core.intervention import retry_is_effect_safe, validate_intervention_decision, prepare_intervention_continuation
+
+func denied(code) {
+    messages := {
+        "assurance_claim_insufficient": "Producer claims or observations do not establish trusted sink enforcement.",
+        "assurance_binding_mismatch": "Assurance identity, scope or result binding does not match this effect.",
+        "assurance_expired_or_future": "Assurance is outside its validity interval; replay remains blocked.",
+        "assurance_issuer_untrusted": "No configured adapter is authorized to verify this assurance.",
+        "assurance_verification_failed": "The trusted adapter could not verify this exact scoped transaction.",
+        "assurance_live_evidence_mismatch": "Live sink facts conflict with the supplied assurance.",
+        "assurance_existing_policy_denied": "Existing v1 replay policy rejects this effect class.",
+        "assurance_result_digest_mismatch": "Exact execution-result bytes differ from the authoritative digest.",
+        "assurance_current_state_mismatch": "Assurance does not bind the current authoritative attempt.",
+        "assurance_continuation_target_mismatch": "Assured effect and requested control-boundary step differ."
+    }
+    return {"ok": false, "code": code, "message": dict_get_or(messages, code, "Effect assurance rejected; replay remains blocked."), "retryable": false}
+}
+
+func digest(value) {return type(value) == "string"&&regex_match(value, "^[0-9a-f]{64}$")}
+func identifier(value) {return type(value) == "string"&&regex_match(value, "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")}
+
+# expected is operator-owned invocation context, never copied from assurance JSON.
+export func assurance_document(expected, observed) {
+    doc := {"schema": "dispatch.effect-assurance/v1alpha1", "compensation": "not_evaluated"}
+    for field in ["issuer", "assurance", "run_id", "step_id", "attempt_id", "effect_id", "result_sha256", "operation", "target_sha256", "scope_sha256", "key_sha256", "request_sha256", "precondition_sha256", "transaction_sha256", "reported_state", "replay_class"] {doc[field] := expected[field]}
+    for field in ["observed_state", "mechanism", "valid_from", "valid_until", "evidence_ref"] {doc[field] := observed[field]}
+    return doc
+}
+
+func valid_document(doc) {
+    fields := ["schema", "compensation", "issuer", "assurance", "run_id", "step_id", "attempt_id", "effect_id", "result_sha256", "operation", "target_sha256", "scope_sha256", "key_sha256", "request_sha256", "precondition_sha256", "transaction_sha256", "reported_state", "replay_class", "observed_state", "mechanism", "valid_from", "valid_until", "evidence_ref"]
+    if type(doc) != "dict"||len(keys(doc)) != len(fields) {return false}
+    for field in fields {if has_key(doc, field) == false {return false}}
+    if doc["schema"] != "dispatch.effect-assurance/v1alpha1"||doc["compensation"] != "not_evaluated" {return false}
+    for field in ["issuer", "run_id", "step_id", "attempt_id", "effect_id"] {if identifier(doc[field]) == false {return false}}
+    for field in ["result_sha256", "target_sha256", "scope_sha256", "key_sha256", "request_sha256", "precondition_sha256", "transaction_sha256"] {if digest(doc[field]) == false {return false}}
+    if contains(["claimed", "observed", "adapter_attested", "independently_verified"], doc["assurance"]) == false {return false}
+    if contains(["create", "update"], doc["operation"]) == false {return false}
+    if contains(["none", "local_reversible", "external_idempotent", "external_non_idempotent", "destructive"], doc["replay_class"]) == false {return false}
+    if contains(["not_started", "started", "committed", "compensated", "failed_before_commit", "unknown"], doc["reported_state"]) == false {return false}
+    if contains(["not_started", "committed"], doc["observed_state"]) == false {return false}
+    if contains(["sqlite_unique_transaction", "git_ref_cas_transaction", "ability_application_gateway"], doc["mechanism"]) == false {return false}
+    if type(doc["evidence_ref"]) != "string"||regex_match(doc["evidence_ref"], "^sha256:[0-9a-f]{64}$") == false {return false}
+    for field in ["valid_from", "valid_until"] {if type(doc[field]) != "int"||doc[field] < 0||doc[field] > 253402300799 {return false}}
+    return doc["valid_until"] > doc["valid_from"]&&doc["valid_until"] - doc["valid_from"] <= 3600
+}
+
+# Shared closed-envelope validation; this is shape, never authenticated proof.
+export validate_effect_assurance_shape := valid_document
+
+export func load_effect_assurance(root, relative_path, expected_digest) {
+    try {
+        if digest(expected_digest) == false {return denied("assurance_digest_invalid")}
+        raw := read_file_beneath(root, relative_path, 8192)
+        if sha256(raw) != expected_digest {return denied("assurance_digest_mismatch")}
+        return {"ok": true, "raw": raw}
+    } except error {return denied("assurance_read_rejected")}
+}
+
+# Registry and expected context are executable host configuration, outside producer JSON.
+# Always resolve fresh; never turn a previously returned decision into a replay token.
+export func resolve_effect_assurance(result_raw, assurance_raw, expected, registry, at_seconds) {
+    try {
+        if type(result_raw) != "string"||byte_length(result_raw) > 1048576||type(assurance_raw) != "string"||byte_length(assurance_raw) > 8192 {return denied("assurance_input_bound")}
+        doc := parse_json(assurance_raw)
+        if valid_document(doc) == false {return denied("assurance_contract_invalid")}
+        if type(at_seconds) != "int"||at_seconds < 0||at_seconds > 253402300799 {return denied("assurance_clock_invalid")}
+        if at_seconds < doc["valid_from"]||at_seconds >= doc["valid_until"] {return denied("assurance_expired_or_future")}
+        result := parse_json(result_raw)
+        if validate_execution_result(result)["ok"] == false||len(result["effects"]) != 1 {return denied("assurance_result_invalid")}
+        if sha256(result_raw) != expected["result_sha256"] {return denied("assurance_result_digest_mismatch")}
+        if to_string(result["attempt"]) != expected["attempt_id"] {return denied("assurance_attempt_mismatch")}
+        for field in ["run_id", "step_id", "attempt_id"] {if result["subject"][field] != expected[field] {return denied("assurance_subject_mismatch")}}
+        effect := result["effects"][0]
+        if effect["effect_id"] != expected["effect_id"]||effect["state"] != expected["reported_state"]||effect["class"] != expected["replay_class"] {return denied("assurance_effect_mismatch")}
+        if effect["class"] != "external_idempotent" {return denied("assurance_existing_policy_denied")}
+        if type(dict_get_or(effect, "idempotency_key", null)) != "string"||sha256(effect["idempotency_key"]) != expected["key_sha256"]||dict_get_or(effect, "enforced_by", "") != expected["issuer"] {return denied("assurance_enforcement_mismatch")}
+        for field in ["issuer", "assurance", "run_id", "step_id", "attempt_id", "effect_id", "result_sha256", "operation", "target_sha256", "scope_sha256", "key_sha256", "request_sha256", "precondition_sha256", "transaction_sha256", "reported_state", "replay_class"] {
+            if doc[field] != expected[field] {return denied("assurance_binding_mismatch")}
+        }
+        if doc["assurance"] != "adapter_attested"&&doc["assurance"] != "independently_verified" {return denied("assurance_claim_insufficient")}
+        # Select using trusted expected issuer, never dispatch to a producer URL/name.
+        adapter := dict_get_or(registry, expected["issuer"], null)
+        if type(adapter) != "dict"||dict_get_or(adapter, "assurance", "") != expected["assurance"]||type(dict_get_or(adapter, "verify", null)) != "function" {return denied("assurance_issuer_untrusted")}
+        verify := adapter["verify"]
+        live := verify(expected)
+        if type(live) != "dict"||dict_get_or(live, "ok", false) != true {
+            code := dict_get_or(live, "code", "")
+            if contains(["ability_principal_mismatch", "ability_request_mismatch", "ability_idempotency_conflict", "ability_business_receipt_mismatch", "ability_business_effect_unverified", "ability_assurance_revoked", "ability_assurance_expired", "ability_transaction_mismatch"], code) {return denied(code)}
+            return denied("assurance_verification_failed")
+        }
+        reconstructed := assurance_document(expected, live["observation"])
+        if valid_document(reconstructed) == false||to_json(doc) != to_json(reconstructed) {return denied("assurance_live_evidence_mismatch")}
+        if dict_get_or(effect, "enforcement_evidence_ref", "") != doc["evidence_ref"] {return denied("assurance_reference_mismatch")}
+        if retry_is_effect_safe({"execution_result": result}) == false {return denied("assurance_existing_policy_denied")}
+        return {"ok": true, "code": "verified_sink_idempotency", "message": "Replay eligible under existing v1 policy; exact scoped sink enforcement verified. Revalidate at execution.", "effect_class": effect["class"], "reported_state": effect["state"], "observed_state": doc["observed_state"], "assurance": doc["assurance"], "mechanism": doc["mechanism"], "valid_until": doc["valid_until"], "assurance_sha256": sha256(assurance_raw)}
+    } except error {return denied("assurance_resolution_failed")}
+}
+
+export func prepare_assured_continuation(state, decision, result_raw, assurance_raw, expected, registry, at_seconds) {
+    try {
+        matched := 0
+        if dict_get_or(dict_get_or(state, "current_control_boundary", {}), "step_id", "") != expected["step_id"]||dict_get_or(dict_get_or(decision, "continuation", {}), "target_step_id", "") != expected["step_id"] {return denied("assurance_continuation_target_mismatch")}
+        if state["run_id"] != expected["run_id"] {return denied("assurance_current_state_mismatch")}
+        for step in state["steps"] {
+            if step["id"] == expected["step_id"] {
+                if to_json(dict_get_or(step, "execution_result", null)) != to_json(parse_json(result_raw))||to_string(dict_get_or(step, "control_attempt", 1)) != expected["attempt_id"] {return denied("assurance_current_state_mismatch")}
+                matched = matched + 1
+            }
+        }
+        if matched != 1 {return denied("assurance_current_state_mismatch")}
+        resolved := resolve_effect_assurance(result_raw, assurance_raw, expected, registry, at_seconds)
+        if resolved["ok"] == false {return resolved}
+        checked := validate_intervention_decision(decision, state)
+        if checked["ok"] == false {return checked}
+        if decision["action"] != "retry_step"&&decision["action"] != "retry_clean" {return denied("assurance_action_unsupported")}
+        prepared := prepare_intervention_continuation(state, decision)
+        if prepared["ok"] {prepared["effect_assurance"] := resolved}
+        return prepared
+    } except error {return denied("assurance_resolution_failed")}
+}

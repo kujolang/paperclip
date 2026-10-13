@@ -1,0 +1,394 @@
+from src.core.intervention import prepare_intervention_continuation
+from src.core.utils import dict_get_or, ensure_dir
+
+func create_lifecycle_event(run_state, event_type, step_id, message, details) {
+    event := {
+        "run_id": dict_get_or(run_state, "run_id", ""),
+        "workflow_id": dict_get_or(run_state, "workflow_id", ""),
+        "status": dict_get_or(run_state, "status", ""),
+        "event_type": event_type,
+        "step_id": step_id,
+        "message": message,
+        "details": details,
+        "timestamp": format_date(now(), "YYYY-MM-DD HH:mm:ss")
+    }
+    event["event_id"] := "evt_" + substring(sha256(to_json({"run_id": event["run_id"], "event_type": event_type, "step_id": step_id, "status": event["status"], "message": message, "details": details})), 0, 24)
+    return event
+}
+
+func create_human_intervention_event(run_state, step, approval, options) {
+    run_id := to_string(dict_get_or(run_state, "run_id", ""))
+    step_id := to_string(dict_get_or(step, "id", ""))
+    workflow_id := to_string(dict_get_or(run_state, "workflow_id", ""))
+    approval_id := to_string(dict_get_or(approval, "id", ""))
+    attempt := dict_get_or(step, "attempts", 1)
+    if attempt <= 0 {
+        attempt := 1
+    }
+    event_id := "evt_" + replace(replace(run_id + "_" + step_id, "-", "_"), " ", "_")
+    return {
+        "schema_version": "1.0",
+        "event_id": event_id,
+        "event_type": "human_intervention_required",
+        "created_at": format_date(now(), "YYYY-MM-DDTHH:mm:ssZ"),
+        "expires_at": null,
+        "run": {
+            "run_id": run_id,
+            "workflow_id": workflow_id,
+            "step_id": step_id,
+            "attempt": attempt
+        },
+        "source": {
+            "tool": "dispatch",
+            "agent_id": dict_get_or(step, "agent_id", null),
+            "project_id": dict_get_or(dict_get_or(run_state, "input", {}), "project_id", null)
+        },
+        "classification": {
+            "reason": dict_get_or(approval, "reason", "approval_required"),
+            "severity": dict_get_or(step, "risk", "high"),
+            "urgency": "normal",
+            "risk_level": dict_get_or(step, "risk", "medium")
+        },
+        "content": {
+            "title": "Human intervention required",
+            "summary": dict_get_or(approval, "summary", "The workflow reached a protected approval gate."),
+            "question": dict_get_or(approval, "summary", "Review this workflow step and choose an action."),
+            "details": ["Approval evidence is persisted in the Dispatch run state and trace."],
+            "suggested_action": "Review the evidence before choosing an action."
+        },
+        "allowed_actions": ["approve", "reject", "request_changes", "reply"],
+        "evidence_refs": [dict_get_or(run_state, "run_dir", "") + "/state.json", dict_get_or(run_state, "run_dir", "") + "/trace.json"],
+        "routing": {
+            "channels": dict_get_or(options, "leash_channels", ["slack", "discord"]),
+            "audience": dict_get_or(options, "leash_audience", ["project-operators"])
+        },
+        "security": {
+            "decision_id": approval_id,
+            "single_use_nonce_reference": "dispatch:" + run_id + ":" + step_id,
+            "contains_sensitive_data": false
+        },
+        "metadata": {
+            "dispatch_callback_url": dict_get_or(options, "leash_callback_url", ""),
+            "source_approval_id": approval_id
+        }
+    }
+}
+
+func create_control_intervention_event(run_state, step, boundary, options) {
+    decision := dict_get_or(boundary, "policy_decision", {})
+    reason := dict_get_or(decision, "reason", {})
+    request_id := "ir_" + substring(sha256(to_json({"boundary_id": dict_get_or(boundary, "boundary_id", ""), "revision": dict_get_or(boundary, "state_revision", 0)})), 0, 24)
+    evidence := []
+    evaluation_result := dict_get_or(boundary, "evaluation_result", null)
+    if type(evaluation_result) == "dict" {
+        for ref in dict_get_or(evaluation_result, "evidence", []) {
+            if type(ref) == "dict" {evidence = push(evidence, ref)}
+        }
+    }
+    # Policy authorization and current replay availability are separate facts.
+    unavailable := []
+    for action in dict_get_or(decision, "allowed_actions", []) {
+        probe := prepare_intervention_continuation({"current_control_boundary": boundary, "steps": [step]}, {"action": action, "continuation": {"target_step_id": dict_get_or(step, "id", "")}})
+        if dict_get_or(probe, "ok", false) == false {
+            unavailable = push(unavailable, {"action": action, "code": probe["error"]["code"], "message": probe["error"]["message"]})
+        }
+    }
+    reason_code := dict_get_or(reason, "code", "policy_review")
+    reason_type := "other"
+    for known in ["approval_required", "evaluation_failed", "policy_denied", "verification_failed", "unsafe_side_effect", "external_dependency", "operator_requested", "changes_requested", "other"] {
+        if reason_code == known {reason_type = known}
+    }
+    callback_target := trim(to_string(dict_get_or(options, "leash_callback_url", "")))
+    if callback_target == "" {
+        callback_target = "dispatch://resume-decision/" + dict_get_or(run_state, "run_id", "")
+    }
+    return {
+        "schema": "kujo.intervention-request/v2",
+        "event_type": "human_intervention_required",
+        "request_id": request_id,
+        "event_id": request_id,
+        "boundary_id": dict_get_or(boundary, "boundary_id", ""),
+        "run_id": dict_get_or(run_state, "run_id", ""),
+        "state_revision": dict_get_or(boundary, "state_revision", dict_get_or(run_state, "revision", 0)),
+        "reason": {"type": reason_type, "code": reason_code, "message": dict_get_or(reason, "message", "Policy requires review.")},
+        "summary": dict_get_or(reason, "message", "Policy requires review."),
+        "policy_decision_ref": dict_get_or(decision, "decision_id", ""),
+        "evidence": evidence,
+        "preservation": dict_get_or(boundary, "preservation", {"status": "not_requested", "actual_mode": "none"}),
+        "allowed_actions": dict_get_or(decision, "allowed_actions", []),
+        "unavailable_actions": unavailable,
+        "created_at": format_date(now(), "YYYY-MM-DDTHH:mm:ssZ"),
+        "expires_at": dict_get_or(boundary, "expires_at", null),
+        "callback": {"target": callback_target, "correlation_id": dict_get_or(boundary, "boundary_id", "")},
+        "run": {"run_id": dict_get_or(run_state, "run_id", ""), "workflow_id": dict_get_or(run_state, "workflow_id", ""), "step_id": dict_get_or(step, "id", ""), "attempt": dict_get_or(step, "attempts", 1)},
+        "security": {"decision_id": request_id, "single_use_nonce_reference": "dispatch:" + dict_get_or(run_state, "run_id", "") + ":" + dict_get_or(boundary, "boundary_id", ""), "contains_sensitive_data": false},
+        "routing": {"channels": dict_get_or(options, "leash_channels", ["slack", "discord"]), "audience": dict_get_or(options, "leash_audience", ["project-operators"])},
+        "metadata": {"dispatch_callback_url": dict_get_or(options, "leash_callback_url", ""), "policy_decision_id": dict_get_or(decision, "decision_id", "")}
+    }
+}
+
+func emit_hook_event(options, event_payload) {
+    callback := dict_get_or(options, "event_hook", null)
+    if type(callback) != "null" {
+        callback(event_payload)
+    }
+    callbacks := dict_get_or(options, "event_hooks", [])
+    if type(callbacks) == "array" {
+        for hook_callback in callbacks {
+            if type(hook_callback) != "null" {
+                hook_callback(event_payload)
+            }
+        }
+    }
+    webhook_sink := dict_get_or(options, "webhook_sink", "")
+    if webhook_sink != "" {
+        dir_path := dirname(webhook_sink)
+        if dir_path != ""&&dir_path != "." {
+            ensure_dir(dir_path)
+        }
+        # Serialize the size check and append across processes. Never unlink this
+        # lock file: a new inode at the same path could admit a second writer.
+        sink_lock := file_lock(webhook_sink + ".dispatch-write.lock", 5000)
+        try {
+            line := to_json(event_payload)
+            # Preserve the no-trailing-newline sink contract without rereading it.
+            if file_exists(webhook_sink)&&file_size(webhook_sink) > 0 {
+                line = "\n" + line
+            }
+            append_file(webhook_sink, line)
+        } except err {
+            file_unlock(sink_lock)
+            return error(to_string(err))
+        }
+        file_unlock(sink_lock)
+    }
+    webhook_url := to_string(dict_get_or(options, "webhook_url", ""))
+    if trim(webhook_url) != "" {
+        deliver_durable_webhook(options, webhook_url, event_payload, "lifecycle")
+    }
+    leash_url := trim(to_string(dict_get_or(options, "leash_url", "")))
+    if event_payload["event_type"] == "human_intervention_required"&&leash_url != "" {
+        deliver_durable_webhook(options, leash_url, event_payload, "leash")
+    }
+    return {
+        "ok": true
+    }
+}
+
+func webhook_attempt_limit() {
+    value := 3
+    try {
+        value = to_int(trim(to_string(env("DISPATCH_WEBHOOK_MAX_ATTEMPTS"))))
+    } except err {
+        value = 3
+    }
+    if value < 1||value > 10 {
+        return 3
+    }
+    return value
+}
+
+func webhook_outbox_path(options) {
+    configured := trim(to_string(env("DISPATCH_WEBHOOK_OUTBOX")))
+    if configured != "" {
+        return configured
+    }
+    return dict_get_or(options, "output_root", "outputs") + "/.dispatch-webhook-outbox.jsonl"
+}
+
+func normalize_webhook_origin(raw_url) {
+    url := trim(to_string(raw_url))
+    lower_url := to_lower(url)
+    allow_local_http := to_lower(trim(to_string(env("DISPATCH_ALLOW_INSECURE_LOCAL_WEBHOOK"))))
+    local_opt_in := allow_local_http == "true"||allow_local_http == "1"||allow_local_http == "yes"||allow_local_http == "on"
+    scheme_prefix := "https://"
+    if starts_with(lower_url, scheme_prefix) == false {
+        if local_opt_in&&starts_with(lower_url, "http://") {scheme_prefix = "http://"}
+        else {return {"ok": false, "message": "Webhook destinations must use HTTPS."}}
+    }
+    remainder := substring(url, len(scheme_prefix), len(url))
+    authority := split(remainder, "/")[0]
+    if trim(authority) == ""||contains(authority, "@")||contains(authority, "?")||contains(authority, "#") {
+        return {"ok": false, "message": "Webhook destination has an invalid authority."}
+    }
+    return {"ok": true, "origin": scheme_prefix + to_lower(authority)}
+}
+
+func webhook_destination_allowed(raw_url) {
+    resolved := normalize_webhook_origin(raw_url)
+    if dict_get_or(resolved, "ok", false) == false {return resolved}
+    for configured in split(to_string(env("DISPATCH_ALLOWED_WEBHOOK_ORIGINS")), ",") {
+        allowed := trim(to_lower(configured))
+        while ends_with(allowed, "/") {allowed = substring(allowed, 0, len(allowed) - 1)}
+        if allowed != ""&&allowed == resolved["origin"] {return {"ok": true, "origin": resolved["origin"]}}
+    }
+    return {"ok": false, "message": "Webhook origin is not allowed by DISPATCH_ALLOWED_WEBHOOK_ORIGINS."}
+}
+
+func validate_webhook_options(options) {
+    urls := [dict_get_or(options, "webhook_url", ""), dict_get_or(options, "leash_url", "")]
+    configured := false
+    for raw_url in urls {
+        if trim(to_string(raw_url)) == "" {continue}
+        configured = true
+        validation := webhook_destination_allowed(raw_url)
+        if dict_get_or(validation, "ok", false) == false {
+            return {"ok": false, "error": {"code": "webhook_destination_not_allowed", "message": validation["message"], "retryable": false}}
+        }
+    }
+    if configured&&trim(to_string(env("DISPATCH_WEBHOOK_SIGNING_KEY"))) == "" {
+        return {"ok": false, "error": {"code": "webhook_signing_key_required", "message": "DISPATCH_WEBHOOK_SIGNING_KEY is required for network webhook delivery.", "retryable": false}}
+    }
+    return {"ok": true}
+}
+
+func append_outbox_record(path, record) {
+    dir_path := dirname(path)
+    if dir_path != ""&&dir_path != "." {
+        ensure_dir(dir_path)
+    }
+    line := to_json(record) + "\n"
+    max_bytes := 10485760
+    try {max_bytes = to_int(trim(to_string(env("DISPATCH_WEBHOOK_OUTBOX_MAX_BYTES"))))} except err {max_bytes = 10485760}
+    if max_bytes <= 0 {max_bytes = 10485760}
+    if len(line) > max_bytes {return {"ok": false, "error": {"code": "webhook_record_too_large", "message": "Webhook outbox record exceeds DISPATCH_WEBHOOK_OUTBOX_MAX_BYTES."}}}
+    if file_exists(path)&&file_size(path) + len(line) > max_bytes {
+        backup_path := path + ".1"
+        if file_exists(backup_path) {delete_file(backup_path)}
+        rename_file(path, backup_path)
+    }
+    append_file(path, line)
+    return {"ok": true}
+}
+
+func signed_webhook_envelope(event_payload, destination, url_hash) {
+    payload_json := to_json(event_payload)
+    envelope := {"schema_version": "1.0", "event_id": dict_get_or(event_payload, "event_id", "evt_" + substring(sha256(payload_json), 0, 24)), "issued_at": format_date(now(), "YYYY-MM-DDTHH:mm:ssZ"), "destination": destination, "url_hash": url_hash, "payload": event_payload}
+    signing_key := trim(to_string(env("DISPATCH_WEBHOOK_SIGNING_KEY")))
+    if signing_key != "" {
+        key_id := trim(to_string(env("DISPATCH_WEBHOOK_SIGNING_KEY_ID")))
+        if key_id == "" {
+            key_id = "default"
+        }
+        signed_message := to_json({"schema_version": envelope["schema_version"], "event_id": envelope["event_id"], "issued_at": envelope["issued_at"], "destination": destination, "url_hash": url_hash, "payload": event_payload})
+        envelope["signature"] := {"algorithm": "hmac-sha256", "key_id": key_id, "value": hmac_sha256(signing_key, signed_message)}
+    }
+    return envelope
+}
+
+func webhook_response_success(response) {
+    if type(response) != "dict" {
+        return false
+    }
+    status := dict_get_or(response, "status", 0)
+    return type(status) == "int"&&status >= 200&&status < 300
+}
+
+func deliver_webhook_envelope(outbox_path, url, destination, envelope) {
+    destination_validation := webhook_destination_allowed(url)
+    if dict_get_or(destination_validation, "ok", false) == false {
+        return {"ok": false, "event_id": envelope["event_id"], "attempts": 0, "error": {"code": "webhook_destination_not_allowed", "message": destination_validation["message"], "retryable": false}}
+    }
+    env_set("KUJO_NET_DESTINATION_POLICY", "deny_private")
+    event_id := envelope["event_id"]
+    max_attempts := webhook_attempt_limit()
+    attempt := 1
+    last_error := ""
+    while attempt <= max_attempts {
+        delivered := false
+        try {
+            response := http_post(url, to_json(envelope))
+            delivered = webhook_response_success(response)
+            if delivered == false&&type(response) == "dict" {
+                last_error = "HTTP status " + to_string(dict_get_or(response, "status", "unknown"))
+            }
+        } except err {
+            last_error = to_string(err)
+        }
+        if delivered {
+            append_outbox_record(outbox_path, {"event_id": event_id, "destination": destination, "status": "delivered", "attempt": attempt, "delivered_at": format_date(now(), "YYYY-MM-DD HH:mm:ss")})
+            return {"ok": true, "event_id": event_id, "attempts": attempt}
+        }
+        if attempt < max_attempts {
+            sleep(attempt * 100)
+        }
+        attempt = attempt + 1
+    }
+    append_outbox_record(outbox_path, {"event_id": event_id, "destination": destination, "status": "dead_letter", "attempts": max_attempts, "error": last_error, "failed_at": format_date(now(), "YYYY-MM-DD HH:mm:ss")})
+    return {"ok": false, "event_id": event_id, "attempts": max_attempts, "dead_letter": true}
+}
+
+func deliver_durable_webhook(options, url, event_payload, destination) {
+    outbox_path := webhook_outbox_path(options)
+    url_hash := sha256(url)
+    envelope := signed_webhook_envelope(event_payload, destination, url_hash)
+    event_id := envelope["event_id"]
+    pending_record := append_outbox_record(outbox_path, {"event_id": event_id, "destination": destination, "url_hash": url_hash, "status": "pending", "attempt": 0, "envelope": envelope, "recorded_at": format_date(now(), "YYYY-MM-DD HH:mm:ss")})
+    if dict_get_or(pending_record, "ok", false) == false {
+        return {"ok": false, "event_id": event_id, "attempts": 0, "error": pending_record["error"]}
+    }
+    return deliver_webhook_envelope(outbox_path, url, destination, envelope)
+}
+
+func webhook_outbox_status(options) {
+    path := webhook_outbox_path(options)
+    backup_path := path + ".1"
+    if file_exists(path) == false&&file_exists(backup_path) == false {
+        return {"ok": true, "path": path, "events": 0, "pending": 0, "delivered": 0, "dead_letter": 0, "latest": {}}
+    }
+    latest := {}
+    for source_path in [backup_path, path] {
+        if file_exists(source_path) == false {continue}
+        for line in split(read_file(source_path), "\n") {
+            if trim(line) == "" {continue}
+            record := null
+            try {record = parse_json(line)} except err {continue}
+            if type(record) == "dict"&&trim(to_string(dict_get_or(record, "event_id", ""))) != "" {
+                event_id := record["event_id"]
+                previous := dict_get_or(latest, event_id, {})
+                if has_key(record, "envelope") == 0&&has_key(previous, "envelope") {record["envelope"] := previous["envelope"]}
+                if has_key(record, "url_hash") == 0&&has_key(previous, "url_hash") {record["url_hash"] := previous["url_hash"]}
+                latest[event_id] := record
+            }
+        }
+    }
+    summary := {"ok": true, "path": path, "events": len(keys(latest)), "pending": 0, "delivered": 0, "dead_letter": 0, "latest": latest}
+    for event_id in keys(latest) {
+        status := dict_get_or(latest[event_id], "status", "pending")
+        if status == "delivered" {summary["delivered"] := summary["delivered"] + 1}
+        else if status == "dead_letter" {summary["dead_letter"] := summary["dead_letter"] + 1}
+        else {summary["pending"] := summary["pending"] + 1}
+    }
+    return summary
+}
+
+func replay_webhook_outbox(options, url, destination) {
+    status := webhook_outbox_status(options)
+    path := status["path"]
+    results := []
+    for event_id in sort(keys(status["latest"])) {
+        record := status["latest"][event_id]
+        record_status := dict_get_or(record, "status", "pending")
+        if record_status != "delivered"&&dict_get_or(record, "destination", "") == destination&&dict_get_or(record, "url_hash", "") == sha256(url)&&type(dict_get_or(record, "envelope", null)) == "dict" {
+            if type(dict_get_or(record["envelope"], "signature", null)) != "dict" {
+                results := push(results, {"ok": false, "event_id": event_id, "attempts": 0, "error": {"code": "unsigned_webhook_envelope", "message": "Unsigned webhook envelopes cannot be replayed.", "retryable": false}})
+                continue
+            }
+            append_outbox_record(path, {"event_id": event_id, "destination": destination, "status": "retrying", "retried_at": format_date(now(), "YYYY-MM-DD HH:mm:ss")})
+            results := push(results, deliver_webhook_envelope(path, url, destination, record["envelope"]))
+        }
+    }
+    delivered := 0
+    for result in results {if dict_get_or(result, "ok", false) {delivered = delivered + 1}}
+    return {"ok": delivered == len(results), "path": path, "attempted": len(results), "delivered": delivered, "failed": len(results) - delivered, "results": results}
+}
+
+export create_lifecycle_event := create_lifecycle_event
+export create_human_intervention_event := create_human_intervention_event
+export create_control_intervention_event := create_control_intervention_event
+export emit_hook_event := emit_hook_event
+export webhook_response_success := webhook_response_success
+export webhook_destination_allowed := webhook_destination_allowed
+export validate_webhook_options := validate_webhook_options
+export webhook_outbox_status := webhook_outbox_status
+export replay_webhook_outbox := replay_webhook_outbox

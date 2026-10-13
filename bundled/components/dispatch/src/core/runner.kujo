@@ -1,0 +1,1902 @@
+from src.core.graph_attempts import program_contract, held_reservation
+from src.core.graph_policy import policy_enabled, policy_ready, dispatch_budget
+from src.core.node_composition import validate_composed_definition, advance_composed_step
+from src.core.node_transition import composition_graph
+from src.core.graph_transition import heterogeneous_graph, graph_contract
+from src.core.control import parent_completion_review
+from src.core.assurance_state import node_controller_features, assurance_protected, validate_assurance_anchor
+from src.core.assurance_configuration import check_negotiated_execution, resolve_run_configuration
+from src.agents.agent import run_agent, run_agent_with_agent
+from src.core.approval import create_approval_request, resolve_approval
+from src.core.control import resolve_control_decision, execution_failure_result
+from src.core.control_journal import append_control_event, reconcile_control_journal
+from src.core.errors import invalid_step_error, approval_rejected_error
+from src.core.handoff import create_handoff, summarize_handoff
+from src.core.hooks import create_lifecycle_event, create_human_intervention_event, create_control_intervention_event, emit_hook_event, validate_webhook_options
+from src.core.memory import add_agent_note, add_step_output
+from src.core.report import build_report_payload, write_report_artifacts
+from src.core.retrieval_preferences import resolve_dispatch_retrieval_preferences
+from src.core.retry import run_with_retry
+from src.core.routing import routing_policy_version, routing_is_enabled, resolve_route, build_effective_agent, evaluate_route_output, route_failure_action, validate_workflow_routing
+from src.core.state import build_persistable_workflow_definition, persist_run_state, load_run_state, append_policy_deny_audit_record, acquire_run_lock, release_run_lock, status_is_terminal
+from src.core.step import mark_step_started, mark_step_succeeded, mark_step_failed, mark_step_paused, mark_step_skipped
+from src.core.trace import append_trace, finalize_trace
+from src.core.utils import dict_get_or, summarize_value, redact_sensitive_data
+from src.tools.tool import call_tool, build_tool_payload
+
+func replace_step(steps, target_index, replacement_step) {
+    if target_index >= 0&&target_index < len(steps) {
+        steps[target_index] := replacement_step
+    }
+    return steps
+}
+
+func array_has(values, expected) {
+    if type(values) != "array" {return false}
+    for value in values {if value == expected {return true}}
+    return false
+}
+
+func scoped_blocked_step_ids(steps, root_step_id, scope_kind) {
+    mut blocked := []
+    if scope_kind == "workflow" {
+        for item in steps {
+            if dict_get_or(item, "status", "pending") == "pending" {blocked = push(blocked, dict_get_or(item, "id", ""))}
+        }
+        return blocked
+    }
+    # A postcondition boundary blocks the producing step's continuation. The
+    # current DAG has dependency edges but no separate branch identity, so
+    # step/descendants/branch all resolve to the transitive dependent closure.
+    mut changed := true
+    while changed {
+        changed = false
+        for item in steps {
+            item_id := dict_get_or(item, "id", "")
+            if item_id == root_step_id||array_has(blocked, item_id) {continue}
+            for dependency_id in dict_get_or(item, "depends_on", []) {
+                if dependency_id == root_step_id||array_has(blocked, dependency_id) {
+                    blocked = push(blocked, item_id)
+                    changed = true
+                }
+            }
+        }
+    }
+    return blocked
+}
+
+func step_blocked_by_control(run_state, step_id) {
+    barrier := dict_get_or(run_state, "control_barrier", null)
+    return type(barrier) == "dict"&&dict_get_or(barrier, "status", "") == "closed_to_admission"&&array_has(dict_get_or(barrier, "blocked_step_ids", []), step_id)
+}
+
+func unblocked_pending_exists(steps, blocked_step_ids) {
+    for item in steps {
+        if dict_get_or(item, "status", "pending") == "pending"&&array_has(blocked_step_ids, dict_get_or(item, "id", "")) == false {return true}
+    }
+    return false
+}
+
+func fail_from_control_decision(run_state, step, decision, control_evaluation, options) {
+    error_payload := {
+        "code": "control_policy_failed",
+        "message": dict_get_or(dict_get_or(decision, "reason", {}), "message", "Workflow policy failed the run."),
+        "retryable": false,
+        "details": {"policy_decision": decision, "evaluation_result_id": dict_get_or(control_evaluation, "result_id", "")}
+    }
+    run_state["status"] := "failed"
+    run_state["failed_at"] := format_date(now(), "YYYY-MM-DD HH:mm:ss")
+    run_state["errors"] := push(run_state["errors"], {"step_id": dict_get_or(step, "id", ""), "error": error_payload, "timestamp": format_date(now(), "YYYY-MM-DD HH:mm:ss")})
+    run_state["trace"] := append_trace(run_state["trace"], "control_policy_failed", dict_get_or(step, "id", ""), error_payload["message"], {"policy_decision": decision})
+    journaled := append_control_event(run_state, "workflow_failed", dict_get_or(step, "id", ""), [dict_get_or(decision, "decision_id", "")], {"reason": dict_get_or(decision, "reason", {})})
+    run_state = journaled["run_state"]
+    emit_lifecycle_event(run_state, options, "control_policy_failed", dict_get_or(step, "id", ""), error_payload["message"], {"policy_decision": decision})
+    run_state["trace"] := finalize_trace(run_state["trace"], "failed")
+    run_state = persist_run_state(run_state)
+    return {"ok": false, "paused": false, "run_state": run_state, "error": error_payload}
+}
+
+func pause_from_control_decision(run_state, step, step_index, decision, control_evaluation, options) {
+    boundary_id := "boundary_" + substring(sha256(to_json({"run_id": dict_get_or(run_state, "run_id", ""), "step_id": dict_get_or(step, "id", ""), "decision_id": dict_get_or(decision, "decision_id", ""), "revision": dict_get_or(run_state, "revision", 0)})), 0, 24)
+    preservation_request := dict_get_or(decision, "preservation", {"required": false, "acceptable_modes": ["none"]})
+    acceptable_modes := dict_get_or(preservation_request, "acceptable_modes", ["none"])
+    if type(acceptable_modes) != "array"||len(acceptable_modes) == 0 {acceptable_modes = ["none"]}
+    preservation := {
+        "schema": "kujo.preservation-outcome/v1",
+        "result_id": "po_" + substring(sha256(boundary_id), 0, 24),
+        "subject": {
+            "run_id": dict_get_or(run_state, "run_id", ""),
+            "step_id": dict_get_or(step, "id", ""),
+            "attempt_id": to_string(dict_get_or(step, "attempts", 1))
+        },
+        "requested_mode": acceptable_modes[0],
+        "actual_mode": "none",
+        "status": "unsupported",
+        "provider": {"name": "dispatch"},
+        "reconstructability": "none",
+        "limitations": ["No execution provider supplied a preservation outcome for this step."],
+        "evidence": [],
+        "created_at": format_date(now(), "YYYY-MM-DDTHH:mm:ssZ"),
+        "cleanup": {"owner": "dispatch-run-retention", "handle": dict_get_or(run_state, "run_dir", "")}
+    }
+    if dict_get_or(preservation_request, "required", false) == false {
+        preservation["status"] := "satisfied"
+        preservation["limitations"] := []
+    }
+    supplied_preservation := dict_get_or(decision, "preservation_outcome", dict_get_or(control_evaluation, "preservation_outcome", null))
+    if type(supplied_preservation) == "dict"&&dict_get_or(supplied_preservation, "schema", "") == "kujo.preservation-outcome/v1" {
+        preservation = supplied_preservation
+    }
+    reexecution_descriptor := dict_get_or(decision, "reexecution_descriptor", dict_get_or(control_evaluation, "reexecution_descriptor", null))
+    scope_kind := dict_get_or(dict_get_or(decision, "scope", {}), "kind", "workflow")
+    blocked_step_ids := scoped_blocked_step_ids(run_state["steps"], dict_get_or(step, "id", ""), scope_kind)
+    quiescing := scope_kind != "workflow"&&unblocked_pending_exists(run_state["steps"], blocked_step_ids)
+    boundary := {
+        "schema": "kujo.control-boundary/v1",
+        "boundary_id": boundary_id,
+        "status": "open",
+        "step_id": dict_get_or(step, "id", ""),
+        "state_revision": 0,
+        "evaluation_result": control_evaluation,
+        "policy_decision": decision,
+        "preservation": preservation,
+        "created_at": format_date(now(), "YYYY-MM-DDTHH:mm:ssZ"),
+        "blocked_step_ids": blocked_step_ids,
+        "quiescing": quiescing
+    }
+    if type(reexecution_descriptor) == "dict" {boundary["reexecution_descriptor"] := reexecution_descriptor}
+    run_state["status"] := "paused"
+    if quiescing {run_state["status"] := "running"}
+    run_state["pause_reason"] := dict_get_or(dict_get_or(decision, "reason", {}), "code", "policy_review")
+    run_state["current_step_index"] := step_index + 1
+    run_state["control_boundaries"] := push(dict_get_or(run_state, "control_boundaries", []), boundary)
+    run_state["current_control_boundary"] := boundary
+    run_state["control_barrier"] := {"boundary_id": boundary_id, "status": "closed_to_admission", "scope": dict_get_or(decision, "scope", {}), "blocked_step_ids": blocked_step_ids, "in_flight": dict_get_or(decision, "in_flight", "allow_finish")}
+    # Explicit finalization contracts keep this parent nonterminal until the
+    # separate locked decision; historical workflows retain their existing path.
+    if has_key(dict_get_or(step, "config", {}), "parent_finalization") {
+        if assurance_protected(run_state) == false {throw("parent_finalization_requires_protected_run")}
+        run_state["parent_finalization_required"] := true
+        if contains(run_state["required_features"], "parent-finalization/v1alpha1") == false {run_state["required_features"] := push(run_state["required_features"], "parent-finalization/v1alpha1")}
+        run_state["required_features"] := node_controller_features(run_state, run_state["required_features"])
+        steps := run_state["steps"];parent := steps[step_index];parent["status"] := "paused";parent["finished_at"] := "";steps[step_index] := parent;run_state["steps"] := steps
+    }
+    # Persist the admission barrier before journaling or requesting review.
+    run_state = persist_run_state(run_state)
+    journaled := append_control_event(run_state, "policy_decision", dict_get_or(step, "id", ""), [dict_get_or(decision, "decision_id", ""), dict_get_or(control_evaluation, "result_id", "")], {"disposition": dict_get_or(decision, "disposition", ""), "scope": dict_get_or(decision, "scope", {})})
+    run_state = journaled["run_state"]
+    pause_event := "workflow_paused"
+    if quiescing {pause_event = "workflow_quiescing"}
+    journaled = append_control_event(run_state, pause_event, dict_get_or(step, "id", ""), [boundary_id], {"reason": dict_get_or(decision, "reason", {}), "preservation_status": dict_get_or(preservation, "status", ""), "blocked_step_ids": blocked_step_ids})
+    run_state = journaled["run_state"]
+    boundary["state_revision"] := dict_get_or(run_state, "revision", 0) + 1
+    boundaries := dict_get_or(run_state, "control_boundaries", [])
+    boundaries[len(boundaries) - 1] := boundary
+    run_state["control_boundaries"] := boundaries
+    run_state["current_control_boundary"] := boundary
+    human_event := create_control_intervention_event(run_state, step, boundary, options)
+    run_state["human_intervention"] := human_event
+    # Retain the reviewed request independently of mutable state. Transport URLs
+    # can contain credentials and are not part of executable policy authority.
+    audit_request := human_event
+    audit_request["callback"] := {"target": "redacted-transport", "correlation_id": boundary_id}
+    audit_request["metadata"] := {"transport_redacted": true}
+    audit_request["routing"] := {}
+    journaled = append_control_event(run_state, "intervention_requested", step["id"], [human_event["request_id"], boundary_id], {"request": audit_request})
+    run_state = journaled["run_state"]
+
+    run_state["trace"] := append_trace(run_state["trace"], "control_boundary_opened", dict_get_or(step, "id", ""), dict_get_or(dict_get_or(decision, "reason", {}), "message", "Workflow paused for review."), {"boundary_id": boundary_id, "policy_decision": decision, "preservation": preservation})
+    run_state = persist_run_state(run_state)
+    emit_lifecycle_event(run_state, options, pause_event, dict_get_or(step, "id", ""), dict_get_or(dict_get_or(decision, "reason", {}), "message", "Workflow paused for review."), {"boundary_id": boundary_id, "policy_decision": decision, "blocked_step_ids": blocked_step_ids})
+    emit_hook_event(options, human_event)
+    return {"ok": true, "paused": quiescing == false, "deferred": quiescing, "run_state": run_state}
+}
+
+func finish_control_quiescence(run_state) {
+    boundary := dict_get_or(run_state, "current_control_boundary", {})
+    boundary["quiescing"] := false
+    run_state["current_control_boundary"] := boundary
+    boundaries := dict_get_or(run_state, "control_boundaries", [])
+    if len(boundaries) > 0 {boundaries[len(boundaries) - 1] := boundary}
+    run_state["control_boundaries"] := boundaries
+    run_state["status"] := "paused"
+    barrier := dict_get_or(run_state, "control_barrier", {})
+    barrier["status"] := "quiesced"
+    run_state["control_barrier"] := barrier
+    journaled := append_control_event(run_state, "workflow_paused", dict_get_or(boundary, "step_id", ""), [dict_get_or(boundary, "boundary_id", "")], {"reason": dict_get_or(dict_get_or(boundary, "policy_decision", {}), "reason", {}), "blocked_step_ids": dict_get_or(boundary, "blocked_step_ids", [])})
+    run_state = journaled["run_state"]
+    run_state = persist_run_state(run_state)
+    return {"ok": true, "paused": true, "run_state": run_state}
+}
+
+# Optional metadata-only retry observation. The supplied sink must be a bounded
+# local callback; failure cannot alter retry policy, backoff or handler execution.
+func observe_dispatch_attempt(options, run_state, step, attempt) {
+    try {
+        sink := dict_get_or(options, "on_attempt_observed", null)
+        if type(sink) == "function" {
+            sink({"run_id":dict_get_or(run_state, "run_id", ""), "step_id":dict_get_or(step, "id", ""), "attempt":attempt, "occurred_at_ms":current_timestamp()})
+        }
+    } except err {return false}
+    return true
+}
+
+func resolve_retry_policy(step, workflow) {
+    if len(keys(dict_get_or(workflow, "control", {}))) > 0 {return {"max_attempts": 1, "base_delay_ms": 0, "retry_on_codes": []}}
+    step_policy := dict_get_or(step, "retry_policy", null)
+    if type(step_policy) == "dict" {
+        return step_policy
+    }
+    return dict_get_or(workflow, "default_retry_policy", {
+        "max_attempts": 1,
+        "base_delay_ms": 0,
+        "max_delay_ms": 0,
+        "strategy": "none",
+        "retry_on_codes": []
+    })
+}
+
+func build_step_input(step, run_state) {
+    input_keys := dict_get_or(step, "input_from", [])
+    step_input := {}
+    for key in input_keys {
+        if key == "input" {
+            step_input["input"] := run_state["input"]
+            continue
+        }
+        if has_key(run_state["data"], key) {
+            step_input[key] := run_state["data"][key]
+        } else {
+            step_input[key] := null
+        }
+    }
+    return step_input
+}
+
+func value_matches_schema_type(value, expected_type) {
+    if expected_type == ""||expected_type == "any" {
+        return true
+    }
+    actual_type := type(value)
+    if expected_type == "number" {
+        return actual_type == "int"||actual_type == "float"
+    }
+    return actual_type == expected_type
+}
+
+func validate_schema_value(value, schema, value_path) {
+    if type(schema) != "dict" {
+        return {
+            "ok": true
+        }
+    }
+    expected_type := dict_get_or(schema, "type", "")
+    if value_matches_schema_type(value, expected_type) == false {
+        return {
+            "ok": false,
+            "message": value_path + " expected type " + expected_type + " but received " + type(value)
+        }
+    }
+
+    if expected_type == "dict"&&type(value) == "dict" {
+        required := dict_get_or(schema, "required", [])
+        for required_key in required {
+            if has_key(value, required_key) == 0 {
+                return {
+                    "ok": false,
+                    "message": value_path + " missing required key \"" + required_key + "\""
+                }
+            }
+        }
+        properties := dict_get_or(schema, "properties", {})
+        if type(properties) == "dict" {
+            for property_key in keys(properties) {
+                if has_key(value, property_key) == 0 {
+                    continue
+                }
+                property_result := validate_schema_value(value[property_key], properties[property_key], value_path + "." + property_key)
+                if property_result["ok"] == false {
+                    return property_result
+                }
+            }
+        }
+    }
+
+    if expected_type == "array"&&type(value) == "array" {
+        item_schema := dict_get_or(schema, "items", null)
+        if type(item_schema) == "dict" {
+            item_index := 0
+            while item_index < len(value) {
+                item_result := validate_schema_value(value[item_index], item_schema, value_path + "[" + to_string(item_index) + "]")
+                if item_result["ok"] == false {
+                    return item_result
+                }
+                item_index := item_index + 1
+            }
+        }
+    }
+
+    return {
+        "ok": true
+    }
+}
+
+func validate_step_schema(step_id, schema_phase, schema, value) {
+    if type(schema) != "dict" {
+        return {
+            "ok": true
+        }
+    }
+    validation := validate_schema_value(value, schema, schema_phase)
+    if validation["ok"] {
+        return validation
+    }
+    return {
+        "ok": false,
+        "error": {
+            "code": "step_" + schema_phase + "_schema_validation_failed",
+            "message": "Schema validation failed for " + schema_phase + " on step " + step_id + ": " + validation["message"],
+            "retryable": false
+        }
+    }
+}
+
+func build_cancelled_result(run_state, reason, options) {
+    run_state["status"] := "cancelled"
+    run_state["cancelled_at"] := format_date(now(), "YYYY-MM-DD HH:mm:ss")
+    run_state["trace"] := append_trace(run_state["trace"], "run_cancelled", "workflow", "Workflow cancelled", {
+        "reason": reason
+    })
+    emit_hook_event(options, create_lifecycle_event(run_state, "run_cancelled", "workflow", "Workflow cancelled", {
+        "reason": reason
+    }))
+    run_state["trace"] := finalize_trace(run_state["trace"], "cancelled")
+    run_state := persist_run_state(run_state)
+    return {
+        "ok": false,
+        "paused": false,
+        "cancelled": true,
+        "run_state": run_state,
+        "error": {
+            "code": "workflow_cancelled",
+            "message": reason,
+            "retryable": false
+        }
+    }
+}
+
+func emit_lifecycle_event(run_state, options, event_type, step_id, message, details) {
+    event_payload := create_lifecycle_event(run_state, event_type, step_id, message, details)
+    emit_hook_event(options, event_payload)
+}
+
+func cancellation_requested(step, options, run_state, after_step) {
+    if dict_get_or(options, "cancel_requested", false)||dict_get_or(run_state, "cancel_requested", false) {
+        return {
+            "cancel": true,
+            "reason": "Cancellation requested before step " + step["id"]
+        }
+    }
+    cancel_after_step_id := dict_get_or(options, "cancel_after_step_id", "")
+    if after_step&&cancel_after_step_id == step["id"] {
+        return {
+            "cancel": true,
+            "reason": "Cancellation requested after step " + step["id"]
+        }
+    }
+    return {
+        "cancel": false,
+        "reason": ""
+    }
+}
+
+func step_status_is_satisfied(steps, target_step_id) {
+    for item in steps {
+        if dict_get_or(item, "id", "") == target_step_id {
+            status := dict_get_or(item, "status", "pending")
+            return status == "completed"||status == "skipped"
+        }
+    }
+    return false
+}
+
+func step_dependencies_satisfied(steps, step) {
+    depends_on := dict_get_or(step, "depends_on", [])
+    for dependency_id in depends_on {
+        if step_status_is_satisfied(steps, dependency_id) == false {
+            return false
+        }
+    }
+    return true
+}
+
+func all_steps_completed(steps) {
+    for step in steps {
+        status := dict_get_or(step, "status", "pending")
+        if status != "completed"&&status != "skipped" {
+            return false
+        }
+    }
+    return true
+}
+
+func completed_report_step_exists(steps) {
+    for step in steps {
+        if dict_get_or(step, "type", "") == "report"&&dict_get_or(step, "status", "") == "completed" {
+            return true
+        }
+    }
+    return false
+}
+
+func paused_approval_payload(executed_data) {
+    if type(executed_data) != "dict" {
+        return {}
+    }
+    if dict_get_or(executed_data, "kind", "") == "route_human_review" {
+        return dict_get_or(executed_data, "approval", {})
+    }
+    return executed_data
+}
+
+func route_key(decision) {
+    return to_string(dict_get_or(decision, "selected_agent_id", "")) + "::" + to_string(dict_get_or(decision, "provider_id", "")) + "::" + to_string(dict_get_or(decision, "model", ""))
+}
+
+func append_route_attempt(run_state, step_id, record) {
+    store := dict_get_or(run_state, "route_attempts", {})
+    items := dict_get_or(store, step_id, [])
+    if type(items) != "array" {
+        items = []
+    }
+    items := push(items, record)
+    store[step_id] := items
+    run_state["route_attempts"] := store
+    return run_state
+}
+
+func persist_selected_route(run_state, step, decision, candidate_evaluations, reused) {
+    step_id := dict_get_or(step, "id", "")
+    decisions := dict_get_or(run_state, "route_decisions", {})
+    decisions[step_id] := decision
+    run_state["route_decisions"] := decisions
+    if reused {
+        run_state["trace"] := append_trace(run_state["trace"], "route_selected", step_id, "Persisted route reused", {
+            "decision": decision,
+            "reason_code": "persisted_route_reused"
+        })
+        return persist_run_state(run_state)
+    }
+    run_state["trace"] := append_trace(run_state["trace"], "route_requested", step_id, "Route requested", {
+        "requested_agent_id": dict_get_or(decision, "requested_agent_id", ""),
+        "policy_version": dict_get_or(decision, "policy_version", "")
+    })
+    run_state["trace"] := append_trace(run_state["trace"], "route_candidates_evaluated", step_id, "Route candidates evaluated", {
+        "candidate_count": dict_get_or(decision, "candidate_count", 0),
+        "candidate_evaluations": candidate_evaluations
+    })
+    for candidate_evaluation in candidate_evaluations {
+        if dict_get_or(candidate_evaluation, "eligible", false) == false {
+            run_state["trace"] := append_trace(run_state["trace"], "route_rejected", step_id, "Routing candidate rejected", candidate_evaluation)
+        }
+    }
+    run_state["trace"] := append_trace(run_state["trace"], "route_selected", step_id, "Route selected", {"decision": decision})
+    run_state := append_route_attempt(run_state, step_id, {
+        "type": "selected",
+        "decision_id": dict_get_or(decision, "decision_id", ""),
+        "route": route_key(decision),
+        "fallback_index": dict_get_or(decision, "fallback_index", 0),
+        "timestamp": format_date(now(), "YYYY-MM-DD HH:mm:ss")
+    })
+    return persist_run_state(run_state)
+}
+
+func resolve_initial_route(step, workflow, run_state) {
+    step_id := dict_get_or(step, "id", "")
+    decisions := dict_get_or(run_state, "route_decisions", {})
+    if type(decisions) == "dict"&&has_key(decisions, step_id) {
+        persisted_decision := decisions[step_id]
+        selected_agent_id := dict_get_or(persisted_decision, "selected_agent_id", "")
+        if has_key(dict_get_or(workflow, "agents", {}), selected_agent_id) == 0 {
+            return {"ok": false, "error": {"code": "persisted_route_unavailable", "message": "Persisted route agent is unavailable: " + selected_agent_id, "retryable": false}}
+        }
+        selected_agent := workflow["agents"][selected_agent_id]
+        active_handler_id := dict_get_or(selected_agent, "handler_id", selected_agent_id)
+        if active_handler_id != dict_get_or(persisted_decision, "handler_id", active_handler_id) {
+            return {"ok": false, "error": {"code": "persisted_route_unavailable", "message": "Persisted route handler no longer matches the selected agent.", "retryable": false}}
+        }
+        persisted_contract := dict_get_or(persisted_decision, "execution_contract", {})
+        active_contract := dict_get_or(selected_agent, "execution_contract", {})
+        if dict_get_or(persisted_contract, "id", "") != dict_get_or(active_contract, "id", "")||dict_get_or(persisted_contract, "version", "") != dict_get_or(active_contract, "version", "") {
+            return {"ok": false, "error": {"code": "persisted_route_unavailable", "message": "Persisted route execution contract no longer matches the selected agent.", "retryable": false}}
+        }
+        workflow_routing := dict_get_or(workflow, "routing", {})
+        current_catalog := dict_get_or(workflow_routing, "model_catalog", {})
+        current_hash := dict_get_or(current_catalog, "catalog_hash", "")
+        persisted_hash := dict_get_or(persisted_decision, "catalog_hash", "")
+        if current_hash != ""&&persisted_hash != ""&&current_hash != persisted_hash {
+            return {"ok": false, "error": {"code": "persisted_route_unavailable", "message": "Persisted route catalog hash does not match the active catalog.", "retryable": false, "details": {"persisted_catalog_hash": persisted_hash, "active_catalog_hash": current_hash}}}
+        }
+        catalog_models := dict_get_or(current_catalog, "models", [])
+        if type(catalog_models) == "array"&&len(catalog_models) > 0 {
+            model_found := false
+            for catalog_model in catalog_models {
+                if dict_get_or(catalog_model, "provider", "") == dict_get_or(persisted_decision, "provider_id", "")&&dict_get_or(catalog_model, "model", "") == dict_get_or(persisted_decision, "model", "") {
+                    model_found = true
+                }
+            }
+            if model_found == false {
+                return {"ok": false, "error": {"code": "persisted_route_unavailable", "message": "Persisted provider/model route is not present in the active catalog.", "retryable": false}}
+            }
+        }
+        return {"ok": true, "decision": persisted_decision, "candidate_evaluations": [], "reused": true}
+    }
+    workflow_routing := dict_get_or(workflow, "routing", {})
+    return resolve_route({
+        "workflow": workflow,
+        "step": step,
+        "step_id": step_id,
+        "requested_agent_id": dict_get_or(step, "agent_id", ""),
+        "model_catalog": dict_get_or(workflow_routing, "model_catalog", {}),
+        "policy_version": dict_get_or(workflow_routing, "policy_version", routing_policy_version()),
+        "fallback_index": 0
+    })
+}
+
+func resolve_fallback_route(step, workflow, previous_decision, excluded_routes, fallback_index, fallback_reason, denied_providers) {
+    workflow_routing := dict_get_or(workflow, "routing", {})
+    overrides := {"excluded_routes": excluded_routes}
+    if len(denied_providers) > 0 {
+        overrides["denied_providers"] := denied_providers
+    }
+    if fallback_reason == "reroute_agent" {
+        existing_denied := dict_get_or(dict_get_or(previous_decision, "constraints", {}), "denied_agents", [])
+        overrides["denied_agents"] := push(existing_denied, dict_get_or(previous_decision, "selected_agent_id", ""))
+    }
+    if fallback_reason == "upgrade_model" {
+        overrides["upgrade_from_quality_tier"] := dict_get_or(previous_decision, "quality_tier", "unknown")
+        overrides["upgrade_from_relative_quality"] := dict_get_or(previous_decision, "relative_quality", null)
+    }
+    return resolve_route({
+        "workflow": workflow,
+        "step": step,
+        "step_id": dict_get_or(step, "id", ""),
+        "requested_agent_id": dict_get_or(step, "agent_id", ""),
+        "model_catalog": dict_get_or(workflow_routing, "model_catalog", {}),
+        "policy_version": dict_get_or(workflow_routing, "policy_version", routing_policy_version()),
+        "constraint_overrides": overrides,
+        "fallback_index": fallback_index
+    })
+}
+
+func record_provider_success(run_state, provider_id) {
+    health := dict_get_or(run_state, "provider_health", {})
+    health[provider_id] := {"consecutive_failures": 0, "open_until_ms": 0, "status": "healthy", "last_success_at": format_date(now(), "YYYY-MM-DD HH:mm:ss")}
+    run_state["provider_health"] := health
+    return run_state
+}
+
+func record_provider_failure(run_state, workflow, provider_id, failure_error) {
+    health := dict_get_or(run_state, "provider_health", {})
+    current := dict_get_or(health, provider_id, {"consecutive_failures": 0, "open_until_ms": 0})
+    failures := dict_get_or(current, "consecutive_failures", 0) + 1
+    config := dict_get_or(dict_get_or(workflow, "routing", {}), "provider_health", {})
+    threshold := dict_get_or(config, "failure_threshold", 3)
+    cooldown_ms := dict_get_or(config, "cooldown_ms", 60000)
+    open_until_ms := 0
+    status := "degraded"
+    if failures >= threshold {
+        open_until_ms = current_timestamp() + cooldown_ms
+        status = "open"
+    }
+    health[provider_id] := {"consecutive_failures": failures, "open_until_ms": open_until_ms, "status": status, "last_error_code": dict_get_or(failure_error, "code", "unknown"), "last_failure_at": format_date(now(), "YYYY-MM-DD HH:mm:ss")}
+    run_state["provider_health"] := health
+    return run_state
+}
+
+func open_provider_ids(run_state) {
+    result := []
+    for provider_id in keys(dict_get_or(run_state, "provider_health", {})) {
+        entry := run_state["provider_health"][provider_id]
+        if dict_get_or(entry, "open_until_ms", 0) > current_timestamp() {
+            result := push(result, provider_id)
+        }
+    }
+    return result
+}
+
+func agent_evaluation_config(step, workflow) {
+    workflow_routing := dict_get_or(workflow, "routing", {})
+    configured := dict_get_or(workflow_routing, "evaluation", {})
+    step_configured := dict_get_or(step, "evaluation", dict_get_or(dict_get_or(step, "config", {}), "evaluation", {}))
+    if type(step_configured) == "dict"&&len(keys(step_configured)) > 0 {
+        return step_configured
+    }
+    return configured
+}
+
+func execute_agent_step(step, workflow, step_input, run_state, tool_registry, options) {
+    resolved_preferences := resolve_dispatch_retrieval_preferences(workflow, run_state["input"], step)
+    previous_output := dict_get_or(step, "output", null)
+    if type(previous_output) == "dict"&&dict_get_or(previous_output, "kind", "") == "route_human_review" {
+        approval_result := resolve_approval(previous_output["approval"], options)
+        if dict_get_or(approval_result, "ok", false) == false {
+            return {"ok": false, "error": approval_result["error"], "attempts": 1, "attempt_records": [], "run_state": run_state}
+        }
+        approval := approval_result["approval"]
+        if dict_get_or(approval_result, "paused", false) {
+            previous_output["approval"] := approval
+            return {"ok": true, "paused": true, "data": previous_output, "attempts": 1, "attempt_records": [], "run_state": run_state}
+        }
+        decision := dict_get_or(approval, "decision", "pending")
+        if decision == "approved" {
+            return {"ok": true, "data": previous_output["candidate_output"], "route_decision": previous_output["route_decision"], "route_evaluation": previous_output["route_evaluation"], "attempts": 1, "attempt_records": [], "run_state": run_state}
+        }
+        if decision == "rejected" {
+            rejected := approval_rejected_error(dict_get_or(approval, "reviewer_note", "Route output rejected by reviewer."))
+            return {"ok": false, "error": rejected["error"], "attempts": 1, "attempt_records": [], "run_state": run_state}
+        }
+    }
+    agent_id := dict_get_or(step, "agent_id", "")
+    routing_enabled := routing_is_enabled(workflow, step)
+    initial_route := resolve_initial_route(step, workflow, run_state)
+    if dict_get_or(initial_route, "ok", false) == false {
+        route_error := dict_get_or(initial_route, "error", {"code": "no_route_available", "message": "No route available.", "retryable": false})
+        run_state["trace"] := append_trace(run_state["trace"], "route_rejected", dict_get_or(step, "id", ""), "Route rejected", {"error": route_error})
+        run_state := persist_run_state(run_state)
+        return {"ok": false, "error": route_error, "attempts": 1, "attempt_records": [], "run_state": run_state}
+    }
+    decision := initial_route["decision"]
+    run_state := persist_selected_route(run_state, step, decision, dict_get_or(initial_route, "candidate_evaluations", []), dict_get_or(initial_route, "reused", false))
+
+    workflow_routing := dict_get_or(workflow, "routing", {})
+    fallback_config := dict_get_or(workflow_routing, "fallback", {})
+    max_fallbacks := dict_get_or(fallback_config, "max_fallbacks", 0)
+    max_evaluation_retries := dict_get_or(fallback_config, "max_evaluation_retries", 1)
+    fallback_count := dict_get_or(decision, "fallback_index", 0)
+    evaluation_retries := 0
+    excluded_routes := []
+    total_attempts := 0
+    all_attempt_records := []
+
+    while true {
+        effective_result := build_effective_agent(workflow["agents"], decision, routing_enabled)
+        if effective_result["ok"] == false {
+            return {"ok": false, "error": effective_result["error"], "attempts": total_attempts + 1, "attempt_records": all_attempt_records, "route_decision": decision, "run_state": run_state}
+        }
+        effective_agent := effective_result["agent"]
+        handler_id := dict_get_or(decision, "handler_id", dict_get_or(effective_agent, "handler_id", dict_get_or(decision, "selected_agent_id", "")))
+        if dict_get_or(effective_agent, "uses_model", false) {
+            run_state["trace"] := append_trace(run_state["trace"], "model_call_started", dict_get_or(step, "id", ""), "Model call started", {
+                "decision_id": dict_get_or(decision, "decision_id", ""),
+                "provider_id": dict_get_or(decision, "provider_id", ""),
+                "model": dict_get_or(decision, "model", "")
+            })
+            run_state := persist_run_state(run_state)
+        }
+
+        policy := resolve_retry_policy(step, workflow)
+        bounded_options := bounded_agent_execution_options(step, workflow, step_input, run_state, decision, effective_agent, handler_id, options, policy)
+        if dict_get_or(bounded_options, "ok", false) == false {
+            return {"ok": false, "error": bounded_options["error"], "attempts": total_attempts + 1, "attempt_records": all_attempt_records, "route_decision": decision, "run_state": run_state}
+        }
+        policy["deadline_ms"] := dict_get_or(bounded_options["options"], "deadline_ms", 0)
+        policy["deadline_error_code"] := dict_get_or(bounded_options["options"], "deadline_error_code", "workflow_budget_exceeded")
+        wrapped := run_with_retry("agent:" + dict_get_or(decision, "selected_agent_id", agent_id) + ":" + dict_get_or(decision, "provider_id", "") + ":" + dict_get_or(decision, "model", ""), policy, func(attempt_number) {
+            observe_dispatch_attempt(options, run_state, step, attempt_number)
+            agent_options := bounded_options["options"]
+            agent_options["step_id"] := dict_get_or(step, "id", "")
+            agent_options["attempt"] := attempt_number
+            agent_options["metadata"] := {"retrieval_preferences": resolved_preferences}
+            return run_agent_with_agent(effective_agent, handler_id, workflow["agents"], step_input, run_state, tool_registry, agent_options)
+        })
+        total_attempts = total_attempts + wrapped["attempts"]
+        for attempt_record in wrapped["attempt_records"] {
+            all_attempt_records := push(all_attempt_records, attempt_record)
+        }
+        if wrapped["attempts"] > 1 {
+            run_state := append_route_attempt(run_state, dict_get_or(step, "id", ""), {
+                "type": "same_route_retry",
+                "decision_id": dict_get_or(decision, "decision_id", ""),
+                "route": route_key(decision),
+                "attempts": wrapped["attempts"],
+                "timestamp": format_date(now(), "YYYY-MM-DD HH:mm:ss")
+            })
+        }
+
+        failure_error := null
+        fallback_reason := ""
+        if wrapped["ok"] {
+            run_state := record_provider_success(run_state, dict_get_or(decision, "provider_id", ""))
+            model_calls := dict_get_or(wrapped["result"], "model_calls", [])
+            if dict_get_or(effective_agent, "uses_model", false) {
+                run_state["trace"] := append_trace(run_state["trace"], "model_call_completed", dict_get_or(step, "id", ""), "Model call completed", {
+                    "decision_id": dict_get_or(decision, "decision_id", ""),
+                    "provider_id": dict_get_or(decision, "provider_id", ""),
+                    "model": dict_get_or(decision, "model", ""),
+                    "model_calls": model_calls
+                })
+            }
+            evaluation := evaluate_route_output(dict_get_or(wrapped["result"], "data", {}), agent_evaluation_config(step, workflow))
+            if evaluation["accepted"] {
+                run_state := append_route_attempt(run_state, dict_get_or(step, "id", ""), {
+                    "type": "completed",
+                    "decision_id": dict_get_or(decision, "decision_id", ""),
+                    "route": route_key(decision),
+                    "evaluation": evaluation,
+                    "timestamp": format_date(now(), "YYYY-MM-DD HH:mm:ss")
+                })
+                run_state := persist_run_state(run_state)
+                return {
+                    "ok": true,
+                    "data": wrapped["result"]["data"],
+                    "trace_events": dict_get_or(wrapped["result"], "trace_events", []),
+                    "model_calls": model_calls,
+                    "route_decision": decision,
+                    "route_evaluation": evaluation,
+                    "attempts": total_attempts,
+                    "attempt_records": all_attempt_records,
+                    "run_state": run_state
+                }
+            }
+            if evaluation["outcome"] == "retry_same_route"&&evaluation_retries < max_evaluation_retries {
+                evaluation_retries = evaluation_retries + 1
+                run_state := append_route_attempt(run_state, dict_get_or(step, "id", ""), {
+                    "type": "same_route_evaluation_retry",
+                    "decision_id": dict_get_or(decision, "decision_id", ""),
+                    "evaluation": evaluation,
+                    "timestamp": format_date(now(), "YYYY-MM-DD HH:mm:ss")
+                })
+                run_state := persist_run_state(run_state)
+                continue
+            }
+            if evaluation["outcome"] == "upgrade_model"||evaluation["outcome"] == "reroute_agent" {
+                failure_error = {"code": "quality_evaluation_failed", "message": "Route output did not satisfy deterministic evaluation.", "retryable": false, "details": evaluation}
+                fallback_reason = evaluation["outcome"]
+            } else if evaluation["outcome"] == "request_human_review" {
+                candidate_output := wrapped["result"]["data"]
+                approval := create_approval_request(dict_get_or(step, "id", ""), "Route output requires human review", summarize_value(candidate_output, 240), {"route_decision": decision, "route_evaluation": evaluation, "candidate_output": candidate_output})
+                approval_result := resolve_approval(approval, options)
+                if dict_get_or(approval_result, "ok", false) == false {
+                    return {"ok": false, "error": approval_result["error"], "attempts": total_attempts, "attempt_records": all_attempt_records, "route_decision": decision, "run_state": run_state}
+                }
+                resolved := approval_result["approval"]
+                if dict_get_or(approval_result, "paused", false) {
+                    return {"ok": true, "paused": true, "data": {"kind": "route_human_review", "approval": resolved, "candidate_output": candidate_output, "route_decision": decision, "route_evaluation": evaluation}, "attempts": total_attempts, "attempt_records": all_attempt_records, "route_decision": decision, "run_state": run_state}
+                }
+                if dict_get_or(resolved, "decision", "") == "approved" {
+                    return {"ok": true, "data": candidate_output, "route_decision": decision, "route_evaluation": evaluation, "attempts": total_attempts, "attempt_records": all_attempt_records, "run_state": run_state}
+                }
+                if dict_get_or(resolved, "decision", "") == "rejected" {
+                    rejected := approval_rejected_error(dict_get_or(resolved, "reviewer_note", "Route output rejected by reviewer."))
+                    return {"ok": false, "error": rejected["error"], "attempts": total_attempts, "attempt_records": all_attempt_records, "route_decision": decision, "run_state": run_state}
+                }
+                continue
+            } else {
+                return {"ok": false, "error": {"code": "quality_evaluation_failed", "message": "Route output did not satisfy deterministic evaluation.", "retryable": false, "details": evaluation}, "attempts": total_attempts, "attempt_records": all_attempt_records, "route_decision": decision, "run_state": run_state}
+            }
+        } else {
+            failure_error = dict_get_or(wrapped["result"], "error", {"code": "agent_execution_failure", "message": "Unknown agent error", "retryable": false})
+            run_state := record_provider_failure(run_state, workflow, dict_get_or(decision, "provider_id", ""), failure_error)
+            if dict_get_or(effective_agent, "uses_model", false) {
+                run_state["trace"] := append_trace(run_state["trace"], "model_call_failed", dict_get_or(step, "id", ""), "Model call failed", {
+                    "decision_id": dict_get_or(decision, "decision_id", ""),
+                    "provider_id": dict_get_or(decision, "provider_id", ""),
+                    "model": dict_get_or(decision, "model", ""),
+                    "error": failure_error
+                })
+            }
+            action := route_failure_action(failure_error, fallback_config)
+            if action["action"] != "fallback" {
+                run_state := append_route_attempt(run_state, dict_get_or(step, "id", ""), {
+                    "type": "failed",
+                    "decision_id": dict_get_or(decision, "decision_id", ""),
+                    "route": route_key(decision),
+                    "error": failure_error,
+                    "timestamp": format_date(now(), "YYYY-MM-DD HH:mm:ss")
+                })
+                run_state := persist_run_state(run_state)
+                return {"ok": false, "error": failure_error, "attempts": total_attempts, "attempt_records": all_attempt_records, "route_decision": decision, "run_state": run_state}
+            }
+            fallback_reason = action["reason"]
+        }
+
+        if fallback_count >= max_fallbacks {
+            run_state := persist_run_state(run_state)
+            return {"ok": false, "error": failure_error, "attempts": total_attempts, "attempt_records": all_attempt_records, "route_decision": decision, "run_state": run_state}
+        }
+        excluded_routes := push(excluded_routes, route_key(decision))
+        next_route := resolve_fallback_route(step, workflow, decision, excluded_routes, fallback_count + 1, fallback_reason, open_provider_ids(run_state))
+        if dict_get_or(next_route, "ok", false) == false {
+            return {"ok": false, "error": dict_get_or(next_route, "error", failure_error), "attempts": total_attempts, "attempt_records": all_attempt_records, "route_decision": decision, "run_state": run_state}
+        }
+        previous_decision := decision
+        decision = next_route["decision"]
+        fallback_count = fallback_count + 1
+        transition := {
+            "fallback_from": route_key(previous_decision),
+            "fallback_reason": fallback_reason,
+            "fallback_to": route_key(decision),
+            "from_decision_id": dict_get_or(previous_decision, "decision_id", ""),
+            "to_decision_id": dict_get_or(decision, "decision_id", "")
+        }
+        run_state["trace"] := append_trace(run_state["trace"], "route_fallback", dict_get_or(step, "id", ""), "Route fallback selected", transition)
+        run_state := append_route_attempt(run_state, dict_get_or(step, "id", ""), {
+            "type": "fallback",
+            "timestamp": format_date(now(), "YYYY-MM-DD HH:mm:ss"),
+            "fallback_from": transition["fallback_from"],
+            "fallback_reason": transition["fallback_reason"],
+            "fallback_to": transition["fallback_to"],
+            "from_decision_id": transition["from_decision_id"],
+            "to_decision_id": transition["to_decision_id"]
+        })
+        run_state := persist_selected_route(run_state, step, decision, dict_get_or(next_route, "candidate_evaluations", []), false)
+    }
+}
+
+func evaluate_tool_authorization(step, step_input, run_state, options) {
+    policy := dict_get_or(options, "tool_authorization_policy", null)
+    if type(policy) == "null" {
+        return {
+            "ok": true
+        }
+    }
+    policy_input := {
+        "run_id": dict_get_or(run_state, "run_id", ""),
+        "workflow_id": dict_get_or(run_state, "workflow_id", ""),
+        "step_id": dict_get_or(step, "id", ""),
+        "tool_name": dict_get_or(step, "tool_name", ""),
+        "step_input": step_input,
+        "status": dict_get_or(run_state, "status", "unknown")
+    }
+    decision := null
+    try {
+        decision = policy(policy_input)
+    } except err {
+        return {
+            "ok": false,
+            "error": {
+                "code": "tool_authorization_error",
+                "message": "Tool authorization policy execution failed for step " + dict_get_or(step, "id", ""),
+                "retryable": false
+            }
+        }
+    }
+
+    if type(decision) == "bool" {
+        if decision {
+            return {"ok": true}
+        }
+        return {
+            "ok": false,
+            "error": {
+                "code": "tool_execution_denied",
+                "message": "Tool execution denied by authorization policy for step " + dict_get_or(step, "id", ""),
+                "retryable": false
+            }
+        }
+    }
+
+    if type(decision) == "dict" {
+        allow := dict_get_or(decision, "allow", dict_get_or(decision, "ok", false))
+        if allow {
+            return {"ok": true}
+        }
+        deny_message := dict_get_or(decision, "message", "Tool execution denied by authorization policy.")
+        return {
+            "ok": false,
+            "error": {
+                "code": "tool_execution_denied",
+                "message": deny_message,
+                "retryable": false
+            }
+        }
+    }
+
+    return {
+        "ok": false,
+        "error": {
+            "code": "tool_authorization_error",
+            "message": "Tool authorization policy must return bool or dict.",
+            "retryable": false
+        }
+    }
+}
+
+func bounded_step_deadline(step, workflow, run_state) {
+    timeout_ms := dict_get_or(step, "timeout_ms", 0)
+    deadline_error_code := "workflow_budget_exceeded"
+    if timeout_ms > 0 {deadline_error_code = "step_timeout_exceeded"}
+    budgets := dict_get_or(workflow, "budgets", {})
+    max_wall_ms := dict_get_or(budgets, "max_wall_time_ms", null)
+    if type(max_wall_ms) == "int" {
+        wall_remaining := max_wall_ms - (current_timestamp() - dict_get_or(run_state, "started_at_ms", current_timestamp()))
+        if wall_remaining <= 0 {return {"ok": false, "error": {"code": "workflow_budget_exceeded", "message": "Workflow wall-time budget expired before tool execution.", "retryable": false}}}
+        if timeout_ms <= 0||wall_remaining < timeout_ms {
+            timeout_ms = wall_remaining
+            deadline_error_code = "workflow_budget_exceeded"
+        }
+    }
+    if timeout_ms > 0 {return {"ok": true, "timeout_ms": timeout_ms, "deadline_ms": current_timestamp() + timeout_ms, "deadline_error_code": deadline_error_code}}
+    return {"ok": true, "timeout_ms": 0, "deadline_ms": 0, "deadline_error_code": deadline_error_code}
+}
+
+func execute_tool_step(step, workflow, step_input, run_state, tool_registry, options) {
+    resolved_preferences := resolve_dispatch_retrieval_preferences(workflow, run_state["input"], step)
+    tool_name := dict_get_or(step, "tool_name", "")
+    tool_payload := build_tool_payload(tool_registry, tool_name, step_input)
+    authorization := evaluate_tool_authorization(step, step_input, run_state, options)
+    if authorization["ok"] == false {
+        auth_error := dict_get_or(authorization, "error", {
+            "code": "tool_execution_denied",
+            "message": "Tool execution denied by authorization policy.",
+            "retryable": false
+        })
+        return {
+            "ok": false,
+            "error": auth_error,
+            "policy_denied": true,
+            "policy_deny_context": {
+                "tool_name": tool_name,
+                "step_input": step_input
+            },
+            "attempts": 1,
+            "attempt_records": []
+        }
+    }
+    policy := resolve_retry_policy(step, workflow)
+    deadline := bounded_step_deadline(step, workflow, run_state)
+    if dict_get_or(deadline, "ok", false) == false {return {"ok": false, "error": deadline["error"], "attempts": 0, "attempt_records": []}}
+    policy["deadline_ms"] := deadline["deadline_ms"]
+    policy["deadline_error_code"] := deadline["deadline_error_code"]
+    wrapped := run_with_retry("tool:" + tool_name, policy, func(attempt_number) {
+        observe_dispatch_attempt(options, run_state, step, attempt_number)
+        context := {
+            "run_id": run_state["run_id"],
+            "step_id": dict_get_or(step, "id", ""),
+            # Stable across retries and restarts; the external effect sink must
+            # enforce this key, since a local checkpoint cannot make effects atomic.
+            "effect_idempotency_key": run_state["run_id"] + ":" + dict_get_or(step, "id", ""),
+            "input": run_state["input"],
+            "metadata": {"retrieval_preferences": resolved_preferences},
+            "sources_dir": dict_get_or(tool_registry, "__sources_dir", "examples/research-report/sources"),
+            "execution_timeout_ms": deadline["timeout_ms"],
+            "deadline_ms": deadline["deadline_ms"],
+            "deadline_error_code": deadline["deadline_error_code"]
+        }
+        context["reexecution_source"] := dict_get_or(step, "reexecution_source", "original")
+        context["preservation"] := dict_get_or(step, "preservation", null)
+        context["retained_evidence"] := dict_get_or(step, "retained_evidence", [])
+        context["retained_input_evidence_ids"] := dict_get_or(step, "retained_input_evidence_ids", [])
+        context["control_attempt"] := dict_get_or(step, "control_attempt", 1)
+        if context["reexecution_source"] == "existing_evidence" {tool_payload = dict_get_or(step, "retained_input", tool_payload)}
+        if type(dict_get_or(step, "reexecution_descriptor", null)) == "dict" {
+            context["reexecution_descriptor"] := step["reexecution_descriptor"]
+            context["reexecution_source"] := dict_get_or(step, "reexecution_source", "clean")
+        }
+        if deadline["deadline_ms"] > 0&&current_timestamp() >= deadline["deadline_ms"] {return {"ok": false, "error": {"code": deadline["deadline_error_code"], "message": "Execution deadline expired before tool call: " + tool_name, "retryable": false}}}
+        tool_result := call_tool(tool_registry, tool_name, tool_payload, context)
+        if deadline["deadline_ms"] > 0&&current_timestamp() >= deadline["deadline_ms"] {return {"ok": false, "error": {"code": deadline["deadline_error_code"], "message": "Execution deadline expired during tool call: " + tool_name, "retryable": false}}}
+        return tool_result
+    })
+    if wrapped["ok"] {
+        return {
+            "ok": true,
+            "data": wrapped["result"]["data"],
+            "trace_events": dict_get_or(wrapped["result"], "trace_events", []),
+            "attempts": wrapped["attempts"],
+            "attempt_records": wrapped["attempt_records"]
+        }
+    }
+    return {
+        "ok": false,
+        "data": dict_get_or(wrapped["result"], "data", null),
+        "error": dict_get_or(wrapped["result"], "error", {"code": "tool_execution_failure", "message": "Unknown tool error", "retryable": false}),
+        "attempts": wrapped["attempts"],
+        "attempt_records": wrapped["attempt_records"]
+    }
+}
+
+func execute_approval_step(step, step_input, run_state, options) {
+    gate := dict_get_or(step, "approval_gate", {})
+    request := create_approval_request(
+    step["id"],
+    dict_get_or(gate, "reason", "Approval required."),
+    dict_get_or(gate, "summary", "Review output before proceeding."),
+    step_input
+    )
+    decision := resolve_approval(request, options)
+    if decision["ok"] == false {
+        return decision
+    }
+    approval := decision["approval"]
+    if decision["paused"] {
+        return {
+            "ok": true,
+            "paused": true,
+            "data": approval,
+            "attempts": 1,
+            "attempt_records": []
+        }
+    }
+    if approval["decision"] == "rejected" {
+        return {
+            "ok": false,
+            "error": approval_rejected_error("Approval rejected: " + dict_get_or(approval, "reviewer_note", "No note"))["error"],
+            "attempts": 1,
+            "attempt_records": []
+        }
+    }
+    if approval["decision"] == "request_changes" {
+        return {
+            "ok": true,
+            "paused": true,
+            "data": approval,
+            "attempts": 1,
+            "attempt_records": []
+        }
+    }
+    return {
+        "ok": true,
+        "paused": false,
+        "data": approval,
+        "attempts": 1,
+        "attempt_records": []
+    }
+}
+
+func execute_handoff_step(step, step_input, run_state) {
+    handoff_cfg := dict_get_or(step, "handoff", {})
+    handoff := create_handoff(
+    dict_get_or(handoff_cfg, "source_agent", "unknown"),
+    dict_get_or(handoff_cfg, "target_agent", "unknown"),
+    dict_get_or(handoff_cfg, "reason", "Handoff"),
+    step_input,
+    summarize_value(step_input, 240),
+    dict_get_or(handoff_cfg, "expected_next_action", "Continue workflow")
+    )
+    run_state["handoffs"] := push(run_state["handoffs"], handoff)
+    return {
+        "ok": true,
+        "data": handoff,
+        "attempts": 1,
+        "attempt_records": []
+    }
+}
+
+func execute_report_step(step, step_input, run_state) {
+    report_payload := build_report_payload(run_state)
+    paths := write_report_artifacts(run_state, report_payload)
+    return {
+        "ok": true,
+        "data": {
+            "report": report_payload,
+            "paths": paths
+        },
+        "attempts": 1,
+        "attempt_records": []
+    }
+}
+
+func bounded_agent_execution_options(step, workflow, step_input, run_state, decision, agent, handler_id, options, retry_policy) {
+    bounded := {}
+    for option_key in keys(options) {bounded[option_key] := options[option_key]}
+    budgets := dict_get_or(workflow, "budgets", {})
+    usage := dict_get_or(run_state, "budget_usage", {})
+    outer_envelope := dict_get_or(retry_policy, "max_attempts", 1)
+    fallback := dict_get_or(dict_get_or(workflow, "routing", {}), "fallback", {})
+    outer_envelope = outer_envelope * (dict_get_or(fallback, "max_fallbacks", 0) + 1)
+    outer_envelope = outer_envelope * (dict_get_or(fallback, "max_evaluation_retries", 0) + 1)
+    if outer_envelope < 1 {outer_envelope = 1}
+    model_round_envelope := 1
+    if handler_id == "model" {model_round_envelope = dict_get_or(dict_get_or(agent, "model_options", {}), "max_tool_rounds", 4) + 1}
+    call_envelope := outer_envelope * model_round_envelope
+    estimated_input_tokens := to_int((len(to_json(step_input)) + len(to_string(dict_get_or(agent, "instructions", ""))) + 3) / 4)
+
+    max_total_tokens := dict_get_or(budgets, "max_total_tokens", null)
+    if type(max_total_tokens) == "int" {
+        remaining_tokens := max_total_tokens - dict_get_or(usage, "total_tokens", 0)
+        attempt_token_budget := to_int(remaining_tokens / outer_envelope)
+        if attempt_token_budget <= estimated_input_tokens {return {"ok": false, "error": {"code": "workflow_budget_exceeded", "message": "Workflow token budget cannot fund the next model input.", "retryable": false}}}
+        bounded["model_total_token_budget"] := attempt_token_budget
+        bounded["model_max_tokens_cap"] := to_int((attempt_token_budget - estimated_input_tokens) / model_round_envelope)
+    }
+
+    max_cost := dict_get_or(budgets, "max_cost_usd", null)
+    estimated_cost := dict_get_or(decision, "estimated_cost", {})
+    output_rate := dict_get_or(estimated_cost, "output_per_million", 0)
+    input_rate := dict_get_or(estimated_cost, "input_per_million", 0)
+    if (type(max_cost) == "int"||type(max_cost) == "float")&&(dict_get_or(agent, "uses_model", false)||handler_id == "model") {
+        if (type(input_rate) != "int"&&type(input_rate) != "float")||(type(output_rate) != "int"&&type(output_rate) != "float")||input_rate < 0||output_rate < 0 {
+            return {"ok": false, "error": {"code": "routing_cost_metadata_required", "message": "Cost-bounded model execution requires non-negative input and output pricing in the authoritative model catalog.", "retryable": false}}
+        }
+        remaining_cost := max_cost - dict_get_or(usage, "estimated_cost_usd", 0)
+        remaining_cost = remaining_cost - (estimated_input_tokens * input_rate / 1000000.0 * call_envelope)
+        if remaining_cost <= 0 {return {"ok": false, "error": {"code": "workflow_budget_exceeded", "message": "Workflow cost budget cannot fund the bounded model-call envelope.", "retryable": false}}}
+        cost_rate_cap := output_rate
+        if input_rate > cost_rate_cap {cost_rate_cap = input_rate}
+        if cost_rate_cap > 0 {
+            cost_total_token_cap := to_int((remaining_cost * 1000000 / cost_rate_cap) / outer_envelope)
+            cost_token_cap := to_int(cost_total_token_cap / model_round_envelope)
+            if cost_token_cap < 1 {return {"ok": false, "error": {"code": "workflow_budget_exceeded", "message": "Workflow cost budget leaves no output-token capacity.", "retryable": false}}}
+            if has_key(bounded, "model_max_tokens_cap") == 0||bounded["model_max_tokens_cap"] > cost_token_cap {bounded["model_max_tokens_cap"] := cost_token_cap}
+            if has_key(bounded, "model_total_token_budget") == 0||bounded["model_total_token_budget"] > cost_total_token_cap {bounded["model_total_token_budget"] := cost_total_token_cap}
+        }
+    }
+    if has_key(bounded, "model_max_tokens_cap")&&bounded["model_max_tokens_cap"] < 1 {return {"ok": false, "error": {"code": "workflow_budget_exceeded", "message": "Workflow budget leaves no model output-token capacity.", "retryable": false}}}
+
+    timeout_ms := dict_get_or(step, "timeout_ms", 0)
+    deadline_error_code := "workflow_budget_exceeded"
+    if timeout_ms > 0 {deadline_error_code = "step_timeout_exceeded"}
+    max_wall_ms := dict_get_or(budgets, "max_wall_time_ms", null)
+    if type(max_wall_ms) == "int" {
+        wall_remaining := max_wall_ms - (current_timestamp() - dict_get_or(run_state, "started_at_ms", current_timestamp()))
+        if wall_remaining <= 0 {return {"ok": false, "error": {"code": "workflow_budget_exceeded", "message": "Workflow wall-time budget expired before model execution.", "retryable": false}}}
+        if timeout_ms <= 0||wall_remaining < timeout_ms {
+            timeout_ms = wall_remaining
+            deadline_error_code = "workflow_budget_exceeded"
+        }
+    }
+    if timeout_ms > 0 {
+        bounded["execution_timeout_ms"] := timeout_ms
+        bounded["deadline_ms"] := current_timestamp() + timeout_ms
+        bounded["deadline_error_code"] := deadline_error_code
+    }
+    return {"ok": true, "options": bounded}
+}
+
+func execute_step(step, workflow, step_input, run_state, tool_registry, options) {
+    step_type := dict_get_or(step, "type", "")
+    if step_type == "agent" {
+        return execute_agent_step(step, workflow, step_input, run_state, tool_registry, options)
+    }
+    if step_type == "tool" {
+        return execute_tool_step(step, workflow, step_input, run_state, tool_registry, options)
+    }
+    if step_type == "approval" {
+        return execute_approval_step(step, step_input, run_state, options)
+    }
+    if step_type == "handoff" {
+        return execute_handoff_step(step, step_input, run_state)
+    }
+    if step_type == "report" {
+        return execute_report_step(step, step_input, run_state)
+    }
+    return invalid_step_error(step["id"], "Unsupported step type: " + step_type)
+}
+
+async func execute_parallel_tool_descriptor(descriptor) {
+    input_validation := validate_step_schema(descriptor["step"]["id"], "input", dict_get_or(descriptor["step"], "input_schema", null), descriptor["step_input"])
+    if input_validation["ok"] == false {
+        return {"step_id": descriptor["step"]["id"], "started_ms": descriptor["started_ms"], "executed": {"ok": false, "error": input_validation["error"], "attempts": 1, "attempt_records": []}}
+    }
+    executed := execute_tool_step(descriptor["step"], descriptor["workflow"], descriptor["step_input"], descriptor["run_state"], descriptor["tool_registry"], descriptor["options"])
+    return {"step_id": descriptor["step"]["id"], "started_ms": descriptor["started_ms"], "executed": executed}
+}
+
+func parallel_execution_enabled(workflow, options) {
+    max_parallel := dict_get_or(workflow, "max_parallel_steps", 1)
+    if type(max_parallel) != "int"||max_parallel <= 1 {
+        return false
+    }
+    if has_key(options, "parallel_execution")&&dict_get_or(options, "parallel_execution", true) == false {
+        return false
+    }
+    return true
+}
+
+func prepare_parallel_tool_batch(workflow, run_state, tool_registry, options) {
+    if parallel_execution_enabled(workflow, options) == false {
+        return {"run_state": run_state, "results": {}}
+    }
+    max_parallel := dict_get_or(workflow, "max_parallel_steps", 1)
+    max_steps := dict_get_or(dict_get_or(workflow, "budgets", {}), "max_steps", null)
+    if type(max_steps) == "int" {
+        remaining_steps := max_steps - dict_get_or(dict_get_or(run_state, "budget_usage", {}), "steps", 0)
+        if remaining_steps < 2 {return {"run_state": run_state, "results": {}}}
+        if remaining_steps < max_parallel {max_parallel = remaining_steps}
+    }
+    candidate_indexes := []
+    step_index := 0
+    while step_index < len(run_state["steps"])&&len(candidate_indexes) < max_parallel {
+        step := run_state["steps"][step_index]
+        if dict_get_or(step, "status", "pending") == "pending"&&step_blocked_by_control(run_state, dict_get_or(step, "id", "")) == false&&dict_get_or(step, "type", "") == "tool"&&dict_get_or(step, "parallel_safe", false)&&step_dependencies_satisfied(run_state["steps"], step) {
+            idempotency_key := trim(to_string(dict_get_or(step, "idempotency_key", "")))
+            idempotency_store := dict_get_or(run_state, "idempotency", {})
+            if dict_get_or(step, "control_attempt", 1) == 1&&idempotency_key != ""&&has_key(idempotency_store, idempotency_key) == 0 {
+                candidate_indexes := push(candidate_indexes, step_index)
+            }
+        }
+        step_index = step_index + 1
+    }
+    if len(candidate_indexes) < 2 {
+        return {"run_state": run_state, "results": {}}
+    }
+    descriptors := []
+    for candidate_index in candidate_indexes {
+        step := mark_step_started(run_state["steps"][candidate_index])
+        step_input := build_step_input(step, run_state)
+        step["input"] := step_input
+        run_state["steps"] := replace_step(run_state["steps"], candidate_index, step)
+        run_state["trace"] := append_trace(run_state["trace"], "step_started", step["id"], "Step started in parallel batch: " + step["name"], {"step_type": step["type"], "parallel": true, "input_summary": summarize_value(step_input, 220)})
+        emit_lifecycle_event(run_state, options, "step_started", step["id"], "Step started in parallel batch: " + step["name"], {"step_type": step["type"], "parallel": true})
+        descriptors := push(descriptors, {"step": step, "step_input": step_input, "workflow": workflow, "run_state": run_state, "tool_registry": tool_registry, "options": options, "started_ms": current_timestamp()})
+    }
+    run_state := persist_run_state(run_state)
+    mapped := promise_wait(parallel_map(descriptors, execute_parallel_tool_descriptor, max_parallel))
+    results := {}
+    for mapped_item in mapped {
+        results[mapped_item["step_id"]] := mapped_item
+    }
+    return {"run_state": run_state, "results": results}
+}
+
+func has_precomputed_results(results) {
+    for result_key in keys(results) {
+        if type(results[result_key]) == "dict" {
+            return true
+        }
+    }
+    return false
+}
+
+func update_budget_usage(run_state, executed) {
+    usage := dict_get_or(run_state, "budget_usage", {"steps": 0, "input_tokens": 0, "output_tokens": 0, "total_tokens": 0, "estimated_cost_usd": 0, "elapsed_ms": 0})
+    usage["steps"] := dict_get_or(usage, "steps", 0) + 1
+    step_input_tokens := 0
+    step_output_tokens := 0
+    for model_call in dict_get_or(executed, "model_calls", []) {
+        call_usage := dict_get_or(model_call, "usage", {})
+        step_input_tokens = step_input_tokens + dict_get_or(call_usage, "input_tokens", 0)
+        step_output_tokens = step_output_tokens + dict_get_or(call_usage, "output_tokens", 0)
+        usage["total_tokens"] := dict_get_or(usage, "total_tokens", 0) + dict_get_or(call_usage, "total_tokens", 0)
+    }
+    usage["input_tokens"] := dict_get_or(usage, "input_tokens", 0) + step_input_tokens
+    usage["output_tokens"] := dict_get_or(usage, "output_tokens", 0) + step_output_tokens
+    decision := dict_get_or(executed, "route_decision", {})
+    estimated_cost := dict_get_or(decision, "estimated_cost", {})
+    input_rate := dict_get_or(estimated_cost, "input_per_million", 0)
+    output_rate := dict_get_or(estimated_cost, "output_per_million", 0)
+    if type(input_rate) != "int"&&type(input_rate) != "float" {input_rate = 0}
+    if type(output_rate) != "int"&&type(output_rate) != "float" {output_rate = 0}
+    usage["estimated_cost_usd"] := dict_get_or(usage, "estimated_cost_usd", 0) + (step_input_tokens * input_rate / 1000000.0) + (step_output_tokens * output_rate / 1000000.0)
+    usage["elapsed_ms"] := current_timestamp() - dict_get_or(run_state, "started_at_ms", current_timestamp())
+    run_state["budget_usage"] := usage
+    return run_state
+}
+
+func budget_limit_error(workflow, run_state, include_step_limit) {
+    budgets := dict_get_or(workflow, "budgets", {})
+    if type(budgets) != "dict" {
+        return null
+    }
+    usage := dict_get_or(run_state, "budget_usage", {})
+    checks := [
+    {"field": "max_steps", "actual": dict_get_or(usage, "steps", 0)},
+    {"field": "max_total_tokens", "actual": dict_get_or(usage, "total_tokens", 0)},
+    {"field": "max_cost_usd", "actual": dict_get_or(usage, "estimated_cost_usd", 0)},
+    {"field": "max_wall_time_ms", "actual": current_timestamp() - dict_get_or(run_state, "started_at_ms", current_timestamp())}
+    ]
+    for check in checks {
+        if check["field"] == "max_steps"&&include_step_limit == false {
+            continue
+        }
+        limit := dict_get_or(budgets, check["field"], null)
+        if (type(limit) == "int"||type(limit) == "float")&&limit >= 0 {
+            exceeded := check["actual"] > limit
+            if check["field"] == "max_steps" {
+                exceeded = check["actual"] >= limit
+            }
+            if exceeded {
+                return {"code": "workflow_budget_exceeded", "message": "Workflow budget exceeded: " + check["field"] + "=" + to_string(limit) + ", actual=" + to_string(check["actual"]), "retryable": false, "details": {"budget": check["field"], "limit": limit, "actual": check["actual"]}}
+            }
+        }
+    }
+    return null
+}
+
+func run_workflow_unlocked(workflow, run_state, tool_registry, options) {
+    if validate_assurance_anchor(run_state) == false {return {"ok": false, "code": "assurance_policy_tampered"}}
+    if assurance_protected(run_state)&&to_json(redact_sensitive_data(build_persistable_workflow_definition(workflow))) != to_json(run_state["workflow_definition"]) {return {"ok": false, "code": "assurance_workflow_mismatch"}}
+    if assurance_protected(run_state) {journal_check := reconcile_control_journal(run_state); if journal_check["ok"] == false {return journal_check}}
+    checked := check_negotiated_execution(run_state, options)
+    if checked["ok"] == false {return checked}
+    for configured_step in workflow["steps"] {
+        if has_key(dict_get_or(configured_step, "config", {}), "parent_finalization")&&(assurance_protected(run_state) == false||len(keys(dict_get_or(workflow, "control", {}))) == 0) {return {"ok":false, "code":"parent_finalization_requires_protected_control"}}
+    }
+    if composition_graph(run_state) {validate_composed_definition(run_state)}
+    routing_validation := validate_workflow_routing(workflow)
+    if dict_get_or(routing_validation, "ok", false) == false {
+        return {"ok": false, "paused": false, "run_state": run_state, "error": {"code": "invalid_routing_config", "message": "Workflow routing configuration is invalid.", "retryable": false, "details": dict_get_or(routing_validation, "errors", [])}}
+    }
+    boundary := dict_get_or(run_state, "current_control_boundary", {})
+    if dict_get_or(boundary, "status", "") == "open"&&dict_get_or(run_state, "status", "") == "paused" {return {"ok": true, "paused": true, "run_state": run_state}}
+    run_state["status"] := "running"
+    total_steps := len(run_state["steps"])
+    index := run_state["current_step_index"]
+    if heterogeneous_graph(run_state) {index = 0}
+    cycle_progress := false
+    precomputed_results := {}
+
+    while true {
+        checked := check_negotiated_execution(run_state, options)
+        if checked["ok"] == false {return checked}
+        budget_error := budget_limit_error(workflow, run_state, true)
+        if type(budget_error) == "dict" {
+            if heterogeneous_graph(run_state) {return pause_graph_outcome(run_state, "graph_budget_blocked")}
+            run_state["status"] := "failed"
+            run_state["errors"] := push(run_state["errors"], {"step_id": "workflow", "error": budget_error, "timestamp": format_date(now(), "YYYY-MM-DD HH:mm:ss")})
+            run_state["trace"] := append_trace(run_state["trace"], "workflow_budget_exceeded", "workflow", budget_error["message"], budget_error["details"])
+            run_state["trace"] := finalize_trace(run_state["trace"], "failed")
+            run_state := persist_run_state(run_state)
+            return {"ok": false, "paused": false, "run_state": run_state, "error": budget_error}
+        }
+        if has_precomputed_results(precomputed_results) == false {
+            parallel_batch := prepare_parallel_tool_batch(workflow, run_state, tool_registry, options)
+            run_state = parallel_batch["run_state"]
+            precomputed_results = parallel_batch["results"]
+        }
+        if index >= total_steps {
+            if all_steps_completed(run_state["steps"]) {
+                if heterogeneous_graph(run_state) {return pause_graph_outcome(run_state, "graph_terminal_decision_required")}
+                break
+            }
+            if cycle_progress == false {
+                if heterogeneous_graph(run_state) {return pause_graph_outcome(run_state, "graph_dependency_blocked")}
+                boundary := dict_get_or(run_state, "current_control_boundary", null)
+                if type(boundary) == "dict"&&dict_get_or(boundary, "status", "") == "open"&&dict_get_or(boundary, "quiescing", false) {
+                    return finish_control_quiescence(run_state)
+                }
+                run_state["status"] := "failed"
+                run_state["failed_at"] := format_date(now(), "YYYY-MM-DD HH:mm:ss")
+                error_payload := {
+                    "code": "dependency_deadlock",
+                    "message": "No runnable steps were found. Check depends_on configuration for cycles or missing dependencies.",
+                    "retryable": false
+                }
+                run_state["errors"] := push(run_state["errors"], {
+                    "step_id": "workflow",
+                    "error": error_payload,
+                    "timestamp": format_date(now(), "YYYY-MM-DD HH:mm:ss")
+                })
+                run_state["trace"] := append_trace(run_state["trace"], "step_failed", "workflow", "Dependency deadlock", {
+                    "error": error_payload
+                })
+                run_state["trace"] := finalize_trace(run_state["trace"], "failed")
+                run_state := persist_run_state(run_state)
+                return {
+                    "ok": false,
+                    "paused": false,
+                    "run_state": run_state,
+                    "error": error_payload
+                }
+            }
+            index = 0
+            cycle_progress = false
+            continue
+        }
+        step := run_state["steps"][index]
+        if step_blocked_by_control(run_state, dict_get_or(step, "id", "")) {
+            index := index + 1
+            continue
+        }
+        cancel_before_step := cancellation_requested(step, options, run_state, false)
+        if cancel_before_step["cancel"] {
+            if heterogeneous_graph(run_state) {return pause_graph_outcome(run_state, "graph_cancellation_requires_decision")}
+            return build_cancelled_result(run_state, cancel_before_step["reason"], options)
+        }
+        ready := step_dependencies_satisfied(run_state["steps"], step)
+        if policy_enabled(run_state) {ready = policy_ready(run_state, step)}
+        if ready == false {
+            index := index + 1
+            continue
+        }
+        existing_status := dict_get_or(step, "status", "pending")
+        if existing_status == "completed"||existing_status == "skipped"||heterogeneous_graph(run_state)&&contains(["failed", "cancelled", "rejected"], existing_status) {
+            index := index + 1
+            run_state["current_step_index"] := index
+            continue
+        }
+
+        if composition_graph(run_state) {
+            if policy_enabled(run_state)&&program_contract(step)&&held_reservation(run_state, step["id"]) == false&&has_key(dict_get_or(run_state, "node_dispatches", {}), step["id"]) == 0&&dispatch_budget(run_state)["exhausted"] {index = index + 1;continue}
+            composed := advance_composed_step(run_state, index, options)
+            if composed["ok"] == false {return composed}
+            if composed["paused"] {
+                if heterogeneous_graph(run_state)&&program_contract(step) == false {run_state = composed["run_state"];index = index + 1;continue}
+                return composed
+            }
+            run_state = composed["run_state"]
+            index = index + 1;cycle_progress = true
+            run_state["current_step_index"] := index
+            continue
+        }
+
+        precomputed := dict_get_or(precomputed_results, step["id"], null)
+        step_input := build_step_input(step, run_state)
+        step_started_ms := current_timestamp()
+        if type(precomputed) != "dict" {
+            step := mark_step_started(step)
+            step["input"] := step_input
+            run_state["steps"] := replace_step(run_state["steps"], index, step)
+            run_state["trace"] := append_trace(run_state["trace"], "step_started", step["id"], "Step started: " + step["name"], {
+                "step_type": step["type"],
+                "input_summary": summarize_value(step_input, 220)
+            })
+            emit_lifecycle_event(run_state, options, "step_started", step["id"], "Step started: " + step["name"], {
+                "step_type": step["type"]
+            })
+            run_state := persist_run_state(run_state)
+        } else {
+            step_input = dict_get_or(step, "input", step_input)
+            step_started_ms = dict_get_or(precomputed, "started_ms", step_started_ms)
+        }
+
+        # Hooks/persistence may have delayed admission or revoked authority.
+        checked = check_negotiated_execution(run_state, options)
+        if checked["ok"] == false {return checked}
+        input_validation := validate_step_schema(step["id"], "input", dict_get_or(step, "input_schema", null), step_input)
+        idempotency_key := to_string(dict_get_or(step, "idempotency_key", ""))
+        idempotency_store := dict_get_or(run_state, "idempotency", {})
+        if type(idempotency_store) != "dict" {
+            idempotency_store = {}
+        }
+        executed := {}
+        if type(precomputed) == "dict" {
+            executed = precomputed["executed"]
+        } else if input_validation["ok"] == false {
+            executed := {
+                "ok": false,
+                "error": input_validation["error"],
+                "attempts": 1,
+                "attempt_records": []
+            }
+        } else if dict_get_or(step, "control_attempt", 1) == 1&&idempotency_key != ""&&has_key(idempotency_store, idempotency_key) == 1 {
+            # Replay-safe: a prior run already produced this keyed result, so
+            # return the cached output instead of re-executing the side effect.
+            executed := {
+                "ok": true,
+                "data": idempotency_store[idempotency_key],
+                "attempts": 1,
+                "attempt_records": [],
+                "idempotent_hit": true
+            }
+            output_validation := validate_step_schema(step["id"], "output", dict_get_or(step, "output_schema", null), dict_get_or(executed, "data", null))
+            if output_validation["ok"] == false {
+                executed := {
+                    "ok": false,
+                    "error": output_validation["error"],
+                    "attempts": 1,
+                    "attempt_records": []
+                }
+            }
+            run_state["trace"] := append_trace(run_state["trace"], "step_idempotent_hit", step["id"], "Reused cached output for idempotency key: " + idempotency_key, {
+                "idempotency_key": idempotency_key
+            })
+        } else {
+            executed := execute_step(step, workflow, step_input, run_state, tool_registry, options)
+            executed_run_state := dict_get_or(executed, "run_state", null)
+            if type(executed_run_state) == "dict" {
+                run_state = executed_run_state
+            }
+            if dict_get_or(executed, "ok", false) {
+                output_validation := validate_step_schema(step["id"], "output", dict_get_or(step, "output_schema", null), dict_get_or(executed, "data", null))
+                if output_validation["ok"] == false {
+                    executed := {
+                        "ok": false,
+                        "error": output_validation["error"],
+                        "attempts": dict_get_or(executed, "attempts", 1),
+                        "attempt_records": dict_get_or(executed, "attempt_records", [])
+                    }
+                }
+                timeout_ms := dict_get_or(step, "timeout_ms", 0)
+                if timeout_ms > 0 {
+                    elapsed_ms := current_timestamp() - step_started_ms
+                    if elapsed_ms > timeout_ms {
+                        executed := {
+                            "ok": false,
+                            "error": {
+                                "code": "step_timeout_exceeded",
+                                "message": "Step " + step["id"] + " exceeded timeout of " + to_string(timeout_ms) + "ms (elapsed " + to_string(elapsed_ms) + "ms)",
+                                "retryable": false
+                            },
+                            "attempts": dict_get_or(executed, "attempts", 1),
+                            "attempt_records": dict_get_or(executed, "attempt_records", [])
+                        }
+                    }
+                }
+            }
+            if dict_get_or(executed, "ok", false)&&dict_get_or(executed, "paused", false) == false&&idempotency_key != "" {
+                idempotency_store[idempotency_key] := dict_get_or(executed, "data", null)
+                run_state["idempotency"] := idempotency_store
+            }
+        }
+        run_state := update_budget_usage(run_state, executed)
+        post_execution_budget_error := budget_limit_error(workflow, run_state, false)
+        if dict_get_or(executed, "ok", false)&&type(post_execution_budget_error) == "dict" {
+            executed := {"ok": false, "error": post_execution_budget_error, "attempts": dict_get_or(executed, "attempts", 1), "attempt_records": dict_get_or(executed, "attempt_records", []), "model_calls": dict_get_or(executed, "model_calls", [])}
+        }
+        if dict_get_or(executed, "paused", false) {
+            paused_data := dict_get_or(executed, "data", {})
+            approval_payload := paused_approval_payload(paused_data)
+            step := mark_step_paused(step, paused_data)
+            run_state["steps"] := replace_step(run_state["steps"], index, step)
+            run_state["status"] := "paused"
+            if step["type"] == "approval"||dict_get_or(paused_data, "kind", "") == "route_human_review" {
+                decision := dict_get_or(approval_payload, "decision", "pending")
+                if decision == "request_changes" {
+                    run_state["status"] := "needs_changes"
+                }
+            }
+            run_state["current_step_index"] := index
+            if step["type"] == "approval"||dict_get_or(paused_data, "kind", "") == "route_human_review" {
+                run_state["approvals"] := push(run_state["approvals"], approval_payload)
+            }
+            if step["type"] == "approval"||dict_get_or(paused_data, "kind", "") == "route_human_review" {
+                human_event := create_human_intervention_event(run_state, step, approval_payload, options)
+                run_state["human_intervention"] := human_event
+            }
+            run_state["trace"] := append_trace(run_state["trace"], "step_paused", step["id"], "Workflow paused at approval gate.", {
+                "decision": dict_get_or(approval_payload, "decision", "pending")
+            })
+            run_state := persist_run_state(run_state)
+            emit_lifecycle_event(run_state, options, "step_paused", step["id"], "Workflow paused at approval gate.", {
+                "decision": dict_get_or(approval_payload, "decision", "pending")
+            })
+            if step["type"] == "approval"||dict_get_or(paused_data, "kind", "") == "route_human_review" {
+                emit_hook_event(options, dict_get_or(run_state, "human_intervention", {}))
+            }
+            return {
+                "ok": true,
+                "paused": true,
+                "run_state": run_state
+            }
+        }
+
+        if dict_get_or(executed, "ok", false) == false&&len(keys(dict_get_or(workflow, "control", {}))) > 0&&dict_get_or(executed, "policy_denied", false) == false {
+            failed_result := dict_get_or(executed, "data", null)
+            normalized := type(failed_result) == "dict"&&(starts_with(dict_get_or(failed_result, "schema", ""), "kujo.execution-result/")||starts_with(dict_get_or(failed_result, "schema", ""), "kujo.evaluation-result/")||has_key(failed_result, "execution_result")||has_key(failed_result, "evaluation_result"))
+            if normalized == false {failed_result = execution_failure_result(step, executed, run_state)}
+            if dict_get_or(failed_result, "schema", "") == "kujo.execution-result/v1"&&dict_get_or(failed_result, "status", "") == "success" {failed_result = execution_failure_result(step, executed, run_state)}
+            resolution := resolve_control_decision(workflow, step, failed_result)
+            if dict_get_or(resolution, "ok", false)&&dict_get_or(resolution, "found", false) {
+                facts := dict_get_or(resolution, "evaluation_result", {})
+                step = mark_step_failed(step, dict_get_or(executed, "error", {}), dict_get_or(executed, "attempts", 1))
+                if dict_get_or(facts, "schema", "") == "kujo.execution-result/v1" {step["execution_result"] := facts}
+                run_state["steps"] := replace_step(run_state["steps"], index, step)
+                decision := resolution["decision"]
+                run_state["control_decisions"] := push(dict_get_or(run_state, "control_decisions", []), decision)
+                logged := append_control_event(run_state, "policy_decided", step["id"], decision["inputs"], {"result": facts, "policy_decision": decision})
+                run_state = logged["run_state"]
+                disposition := decision["disposition"]
+                if disposition == "require_intervention"||disposition == "retry" {
+                    if len(dict_get_or(decision, "allowed_actions", [])) == 0 {decision["allowed_actions"] := ["abort"]}
+                    # Failed actions cannot drain dependent work until explicitly accepted.
+                    decision["scope"] := {"kind": "workflow", "root_step_id": step["id"]}
+                    return pause_from_control_decision(run_state, step, index, decision, facts, options)
+                }
+                if disposition == "cancel" {return build_cancelled_result(run_state, "Cancelled by failure policy.", options)}
+                if disposition != "continue" {return fail_from_control_decision(run_state, step, decision, facts, options)}
+                executed["ok"] := true
+                executed["data"] := failed_result
+            }
+        }
+
+        if dict_get_or(executed, "ok", false) == false {
+            if dict_get_or(executed, "policy_denied", false) {
+                policy_deny_context := dict_get_or(executed, "policy_deny_context", {})
+                policy_deny_error := dict_get_or(executed, "error", {
+                    "code": "tool_execution_denied",
+                    "message": "Tool execution denied by authorization policy.",
+                    "retryable": false
+                })
+                audit_path := append_policy_deny_audit_record(dict_get_or(run_state, "output_root", ""), run_state, step, policy_deny_error, options, dict_get_or(policy_deny_context, "step_input", {}))
+                run_state["trace"] := append_trace(run_state["trace"], "policy_denied", dict_get_or(step, "id", ""), "Tool execution denied by policy", {
+                    "tool_name": dict_get_or(policy_deny_context, "tool_name", dict_get_or(step, "tool_name", "")),
+                    "error": policy_deny_error,
+                    "command_name": dict_get_or(options, "command_name", "workflow"),
+                    "audit_path": audit_path
+                })
+                emit_lifecycle_event(run_state, options, "policy_denied", dict_get_or(step, "id", ""), "Tool execution denied by policy", {
+                    "tool_name": dict_get_or(policy_deny_context, "tool_name", dict_get_or(step, "tool_name", "")),
+                    "error": policy_deny_error,
+                    "audit_path": audit_path
+                })
+            }
+            if dict_get_or(step, "optional", false) {
+                skip_error := dict_get_or(executed, "error", {"code": "step_failure", "message": "Unknown error", "retryable": false})
+                step := mark_step_skipped(step, skip_error, dict_get_or(executed, "attempts", 1))
+                run_state["steps"] := replace_step(run_state["steps"], index, step)
+                run_state["trace"] := append_trace(run_state["trace"], "step_skipped", step["id"], "Optional step skipped after failure: " + step["name"], {
+                    "error": step["error"],
+                    "attempts": step["attempts"]
+                })
+                emit_lifecycle_event(run_state, options, "step_skipped", step["id"], "Optional step skipped after failure: " + step["name"], {
+                    "error": step["error"]
+                })
+                index := index + 1
+                cycle_progress = true
+                run_state["current_step_index"] := index
+                run_state := persist_run_state(run_state)
+                continue
+            }
+            step := mark_step_failed(step, dict_get_or(executed, "error", {"code": "step_failure", "message": "Unknown error", "retryable": false}), dict_get_or(executed, "attempts", 1))
+            run_state["steps"] := replace_step(run_state["steps"], index, step)
+            run_state["status"] := "failed"
+            run_state["failed_at"] := format_date(now(), "YYYY-MM-DD HH:mm:ss")
+            run_state["errors"] := push(run_state["errors"], {
+                "step_id": step["id"],
+                "error": step["error"],
+                "timestamp": format_date(now(), "YYYY-MM-DD HH:mm:ss")
+            })
+            run_state["trace"] := append_trace(run_state["trace"], "step_failed", step["id"], "Step failed", {
+                "error": step["error"],
+                "attempts": step["attempts"],
+                "attempt_records": dict_get_or(executed, "attempt_records", [])
+            })
+            emit_lifecycle_event(run_state, options, "step_failed", step["id"], "Step failed", {
+                "error": step["error"],
+                "attempts": step["attempts"]
+            })
+            run_state["trace"] := finalize_trace(run_state["trace"], "failed")
+            run_state := persist_run_state(run_state)
+            return {
+                "ok": false,
+                "paused": false,
+                "run_state": run_state,
+                "error": step["error"]
+            }
+        }
+
+        output_value := dict_get_or(executed, "data", null)
+        attempts := dict_get_or(executed, "attempts", 1)
+        if step["type"] == "agent" {
+            step["route_decision"] := dict_get_or(executed, "route_decision", dict_get_or(dict_get_or(run_state, "route_decisions", {}), step["id"], null))
+            step["route_evaluation"] := dict_get_or(executed, "route_evaluation", null)
+        }
+        step := mark_step_succeeded(step, output_value, attempts)
+        run_state["steps"] := replace_step(run_state["steps"], index, step)
+        retry_counts := run_state["retry_counts"]
+        retry_counts[step["id"]] := attempts
+        run_state["retry_counts"] := retry_counts
+
+        output_key := dict_get_or(step, "output_key", "")
+        if output_key != "" {
+            run_data := run_state["data"]
+            run_data[output_key] := output_value
+            run_state["data"] := run_data
+            run_state["memory"] := add_step_output(run_state["memory"], output_key, output_value)
+        }
+
+        if step["type"] == "agent" {
+            agent_id := dict_get_or(step, "agent_id", "")
+            run_state["memory"] := add_agent_note(run_state["memory"], agent_id, "Completed step " + step["id"])
+        }
+        if step["type"] == "approval" {
+            run_state["approvals"] := push(run_state["approvals"], output_value)
+        }
+        if step["type"] == "handoff" {
+            run_state["trace"] := append_trace(run_state["trace"], "handoff", step["id"], summarize_handoff(output_value), output_value)
+        }
+
+        # Public custom-trace API: handlers may return a "trace_events" array of
+        # {type, message, payload} objects, which are appended to the run trace.
+        handler_trace_events := dict_get_or(executed, "trace_events", [])
+        if type(handler_trace_events) == "array" {
+            for handler_event in handler_trace_events {
+                if type(handler_event) == "dict" {
+                    run_state["trace"] := append_trace(
+                    run_state["trace"],
+                    to_string(dict_get_or(handler_event, "type", "custom")),
+                    step["id"],
+                    to_string(dict_get_or(handler_event, "message", "Custom trace event")),
+                    dict_get_or(handler_event, "payload", {})
+                    )
+                }
+            }
+        }
+
+        run_state["trace"] := append_trace(run_state["trace"], "step_completed", step["id"], "Step completed: " + step["name"], {
+            "attempts": attempts,
+            "output_summary": summarize_value(output_value, 220),
+            "attempt_records": dict_get_or(executed, "attempt_records", [])
+        })
+        emit_lifecycle_event(run_state, options, "step_completed", step["id"], "Step completed: " + step["name"], {
+            "attempts": attempts
+        })
+
+        control_resolution := resolve_control_decision(workflow, step, output_value)
+        if has_key(dict_get_or(step, "config", {}), "parent_finalization")&&dict_get_or(control_resolution, "ok", false) {
+            facts := dict_get_or(control_resolution, "evaluation_result", {})
+            if dict_get_or(facts, "schema", "") != "kujo.execution-result/v1" {control_resolution = {"ok":false, "error":{"code":"parent_execution_result_required", "message":"Finalization parent requires execution-result/v1.", "retryable":false}}}
+            else if dict_get_or(control_resolution["decision"], "disposition", "") == "continue" {review := parent_completion_review(workflow, step, facts);control_resolution["decision"] := review["decision"]}
+        }
+        if dict_get_or(control_resolution, "ok", false) == false {
+            control_error := dict_get_or(control_resolution, "error", {"code": "invalid_control_result", "message": "Workflow control result is invalid.", "retryable": false})
+            invalid_decision := {
+                "schema": "kujo.policy-decision/v1",
+                "decision_id": "pd_" + substring(sha256(to_json(control_error)), 0, 24),
+                "reason": {"code": dict_get_or(control_error, "code", "invalid_control_result"), "message": dict_get_or(control_error, "message", "Workflow control result is invalid.")},
+                "disposition": "fail"
+            }
+            return fail_from_control_decision(run_state, step, invalid_decision, {}, options)
+        }
+        if dict_get_or(control_resolution, "found", false) {
+            control_decision := control_resolution["decision"]
+            facts := dict_get_or(control_resolution, "evaluation_result", {})
+            if dict_get_or(facts, "schema", "") == "kujo.execution-result/v1" {
+                step["execution_result"] := facts
+                run_state["steps"] := replace_step(run_state["steps"], index, step)
+            }
+            logged := append_control_event(run_state, "policy_decided", step["id"], dict_get_or(control_decision, "inputs", []), {"result": facts, "policy_decision": control_decision})
+            run_state = logged["run_state"]
+            control_evaluation := dict_get_or(control_resolution, "evaluation_result", null)
+            run_state["control_decisions"] := push(dict_get_or(run_state, "control_decisions", []), control_decision)
+            run_state["trace"] := append_trace(run_state["trace"], "control_policy_resolved", step["id"], "Workflow control policy resolved.", {"policy_decision": control_decision, "evaluation_result_id": dict_get_or(control_evaluation, "result_id", "")})
+            disposition := dict_get_or(control_decision, "disposition", "continue")
+            if disposition == "fail" {
+                return fail_from_control_decision(run_state, step, control_decision, control_evaluation, options)
+            }
+            if disposition == "cancel" {
+                run_state["steps"] := replace_step(run_state["steps"], index, step)
+                run_state["current_step_index"] := index + 1
+                return build_cancelled_result(run_state, dict_get_or(dict_get_or(control_decision, "reason", {}), "message", "Cancelled by workflow policy."), options)
+            }
+            if disposition == "require_intervention"||disposition == "retry" {
+                if disposition == "retry"&&len(dict_get_or(control_decision, "allowed_actions", [])) == 0 {
+                    control_decision["allowed_actions"] := ["retry_evaluation", "retry_step", "retry_clean", "abort"]
+                }
+                paused_result := pause_from_control_decision(run_state, step, index, control_decision, control_evaluation, options)
+                if dict_get_or(paused_result, "deferred", false) {
+                    run_state = paused_result["run_state"]
+                    index := index + 1
+                    cycle_progress = true
+                    run_state["current_step_index"] := index
+                    continue
+                }
+                return paused_result
+            }
+        }
+        cancel_after_step := cancellation_requested(step, options, run_state, true)
+        if cancel_after_step["cancel"] {
+            run_state["steps"] := replace_step(run_state["steps"], index, step)
+            run_state["current_step_index"] := index + 1
+            return build_cancelled_result(run_state, cancel_after_step["reason"], options)
+        }
+
+        index := index + 1
+        cycle_progress = true
+        if type(precomputed) == "dict" {
+            precomputed_results[step["id"]] := null
+        }
+        run_state["current_step_index"] := index
+        run_state := persist_run_state(run_state)
+    }
+
+    run_state["status"] := "completed"
+    run_state["completed_at"] := format_date(now(), "YYYY-MM-DD HH:mm:ss")
+    if has_key(run_state["data"], "final_output") {
+        run_state["final_output"] := run_state["data"]["final_output"]
+    }
+    run_state["trace"] := append_trace(run_state["trace"], "run_completed", "workflow", "Workflow completed successfully", {
+        "completed_steps": len(run_state["steps"]),
+        "approvals": len(run_state["approvals"]),
+        "handoffs": len(run_state["handoffs"])
+    })
+    emit_lifecycle_event(run_state, options, "run_completed", "workflow", "Workflow completed successfully", {
+        "completed_steps": len(run_state["steps"])
+    })
+    run_state["trace"] := finalize_trace(run_state["trace"], "completed")
+    if completed_report_step_exists(run_state["steps"]) {
+        final_report_payload := build_report_payload(run_state)
+        write_report_artifacts(run_state, final_report_payload)
+    }
+    run_state := persist_run_state(run_state)
+    return {
+        "ok": true,
+        "paused": false,
+        "run_state": run_state,
+        "metadata": {
+            "route_decisions": dict_get_or(run_state, "route_decisions", {}),
+            "route_attempts": dict_get_or(run_state, "route_attempts", {})
+        }
+    }
+}
+
+# Bounded audit-only mutation after a rejected protected admission. It never
+# repairs divergence or grants authority; a new decision/checkpoint uses new revision.
+func journal_assurance_denial(state, result, options) {
+    try {
+        loaded := load_run_state(state["output_root"], state["run_id"])
+        if loaded["ok"] == false {return false}
+        current := loaded["run_state"]
+        if reconcile_control_journal(current)["ok"] == false {return false}
+        code := dict_get_or(result, "code", dict_get_or(dict_get_or(result, "error", {}), "code", "assurance_admission_denied"))
+        if type(code) != "string"||regex_match(code, "^[a-z0-9_]{1,128}$") == false {code = "assurance_admission_denied"}
+        logged := append_control_event(current, "assurance_resolution_denied", "", [], {"code": code, "policy_sha256": current["assurance_negotiation"]["policy_sha256"], "config_revision": current["assurance_negotiation"]["config_revision"]})
+        current = logged["run_state"]
+        request := dict_get_or(current, "human_intervention", null)
+        if type(request) == "dict" {request["state_revision"] := current["revision"] + 1; current["human_intervention"] := request}
+        persist_run_state(current)
+        return true
+    } except err {return false}
+}
+
+func run_workflow_impl(workflow, run_state, tool_registry, options, admission) {
+    webhook_validation := validate_webhook_options(options)
+    if dict_get_or(webhook_validation, "ok", false) == false {
+        return {"ok": false, "paused": false, "error": webhook_validation["error"], "run_state": run_state}
+    }
+    lock_result := acquire_run_lock(run_state)
+    if dict_get_or(lock_result, "ok", false) == false {
+        return {"ok": false, "paused": false, "error": lock_result["error"], "run_state": run_state}
+    }
+    result := null
+    try {
+            loaded := load_run_state(run_state["output_root"], run_state["run_id"])
+            if loaded["ok"] == false||loaded["run_state"]["run_dir"] != run_state["run_dir"] {throw("Authoritative state unavailable")}
+            if type(admission) == "function"||assurance_protected(run_state)||assurance_protected(loaded["run_state"]) {run_state = loaded["run_state"]}
+        if status_is_terminal(dict_get_or(run_state, "status", "")) {
+            result = {"ok": false, "paused": false, "run_state": run_state, "error": {"code": "terminal_run", "message": "Terminal runs cannot resume.", "retryable": false}}
+        } else {
+            reconciled := reconcile_control_journal(run_state)
+            if reconciled["ok"] == false {result = {"ok": false, "paused": false, "run_state": run_state, "error": reconciled["error"]}} else {
+                run_state = reconciled["run_state"]
+                configured := resolve_run_configuration(run_state, options)
+                if configured["ok"] == false {result = configured}
+                else if type(admission) == "function" {
+                    admitted := admission(run_state)
+                    if admitted["ok"] == false {result = admitted;if has_key(admitted, "run_state") {run_state = admitted["run_state"]}}
+                    else {result = run_workflow_unlocked(workflow, admitted["run_state"], tool_registry, options)}
+                } else {result = run_workflow_unlocked(workflow, run_state, tool_registry, options)}
+            }
+        }
+    } except err {
+        runtime_error := {
+            "code": "workflow_runtime_error",
+            "message": "Workflow execution failed unexpectedly.",
+            "retryable": false
+        }
+        debug_errors := to_lower(trim(to_string(env("DISPATCH_DEBUG_ERRORS"))))
+        if debug_errors == "true"||debug_errors == "1" {
+            runtime_error["details"] := {"internal": to_string(err)}
+        }
+        result = {
+            "ok": false,
+            "paused": false,
+            "error": runtime_error,
+            "run_state": run_state
+        }
+    }
+    if assurance_protected(run_state)&&dict_get_or(result, "ok", false) == false {
+        if journal_assurance_denial(run_state, result, options) == false {result["audit_error"] := {"code": "assurance_denial_audit_unavailable"}}
+    }
+    release_result := release_run_lock(lock_result)
+    if dict_get_or(release_result, "ok", false) == false {
+        result["lock_release_error"] := release_result["error"]
+    }
+    return result
+}
+
+func run_workflow(workflow, run_state, tool_registry, options) {return run_workflow_impl(workflow, run_state, tool_registry, options, null)}
+
+# Experimental host-only callback, never deserialized from workflow/producer data.
+# Reload, admission, publication and execution share the same process-owned run lock.
+export func run_workflow_with_admission(workflow, run_state, tool_registry, options, admission) {
+    if type(admission) != "function" {return {"ok": false, "code": "invalid_admission_callback"}}
+    return run_workflow_impl(workflow, run_state, tool_registry, options, admission)
+}
+
+export run_workflow := run_workflow
+
+export observe_dispatch_attempt := observe_dispatch_attempt
+
+# Internal entrypoint for the CLI decision transaction, which already owns the run lock.
+export run_workflow_under_lock := run_workflow_unlocked
+
+# A derived readiness scan cannot publish graph terminal authority.
+func pause_graph_outcome(state, reason) {
+    loaded := load_run_state(state["output_root"], state["run_id"]);if loaded["ok"] == false {return loaded};state = loaded["run_state"]
+    state["status"] := "paused";state["current_step_index"] := 0;state = persist_run_state(state)
+    return {"ok":true, "paused":true, "reason":reason, "run_state":state}
+}

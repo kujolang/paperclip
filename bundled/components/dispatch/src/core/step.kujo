@@ -1,0 +1,88 @@
+from src.core.utils import dict_get_or, clone_dict
+
+func create_step(step_id, name, step_type, config) {
+    base := {
+        "id": step_id,
+        "metadata": dict_get_or(config, "metadata", {}),
+        "name": name,
+        "type": step_type,
+        "status": "pending",
+        "agent_id": dict_get_or(config, "agent_id", ""),
+        "tool_name": dict_get_or(config, "tool_name", ""),
+        "input_from": dict_get_or(config, "input_from", []),
+        "depends_on": dict_get_or(config, "depends_on", []),
+        "output_key": dict_get_or(config, "output_key", ""),
+        "input_schema": dict_get_or(config, "input_schema", null),
+        "output_schema": dict_get_or(config, "output_schema", null),
+        "timeout_ms": dict_get_or(config, "timeout_ms", 0),
+        "retry_policy": dict_get_or(config, "retry_policy", null),
+        "routing": dict_get_or(config, "routing", {}),
+        "routing_constraints": dict_get_or(config, "routing_constraints", {}),
+        "evaluation": dict_get_or(config, "evaluation", {}),
+        "evaluation_result_path": dict_get_or(config, "evaluation_result_path", ""),
+        "approval_required": dict_get_or(config, "approval_required", false),
+        "approval_gate": dict_get_or(config, "approval_gate", {}),
+        "optional": dict_get_or(config, "optional", false),
+        "parallel_safe": dict_get_or(config, "parallel_safe", false),
+        "idempotency_key": dict_get_or(config, "idempotency_key", ""),
+        "effect_class": dict_get_or(config, "effect_class", "unknown"),
+        "compensation": dict_get_or(config, "compensation", null),
+        "handoff": dict_get_or(config, "handoff", {}),
+        "config": clone_dict(config),
+        "input": null,
+        "output": null,
+        "started_at": "",
+        "finished_at": "",
+        "error": null,
+        "attempts": 0,
+        "route_decision": null,
+        "route_evaluation": null
+    }
+    return base
+}
+
+func mark_step_started(step) {
+    step["status"] := "running"
+    step["started_at"] := format_date(now(), "YYYY-MM-DD HH:mm:ss")
+    return step
+}
+
+func mark_step_succeeded(step, output_value, attempts) {
+    step["status"] := "completed"
+    step["output"] := output_value
+    step["attempts"] := attempts
+    step["finished_at"] := format_date(now(), "YYYY-MM-DD HH:mm:ss")
+    step["error"] := null
+    return step
+}
+
+func mark_step_failed(step, error_value, attempts) {
+    step["status"] := "failed"
+    step["error"] := error_value
+    step["attempts"] := attempts
+    step["finished_at"] := format_date(now(), "YYYY-MM-DD HH:mm:ss")
+    return step
+}
+
+func mark_step_paused(step, output_value) {
+    step["status"] := "paused"
+    step["output"] := output_value
+    step["finished_at"] := format_date(now(), "YYYY-MM-DD HH:mm:ss")
+    return step
+}
+
+func mark_step_skipped(step, error_value, attempts) {
+    step["status"] := "skipped"
+    step["output"] := null
+    step["error"] := error_value
+    step["attempts"] := attempts
+    step["finished_at"] := format_date(now(), "YYYY-MM-DD HH:mm:ss")
+    return step
+}
+
+export create_step := create_step
+export mark_step_started := mark_step_started
+export mark_step_succeeded := mark_step_succeeded
+export mark_step_failed := mark_step_failed
+export mark_step_paused := mark_step_paused
+export mark_step_skipped := mark_step_skipped

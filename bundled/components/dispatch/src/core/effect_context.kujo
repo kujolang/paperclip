@@ -1,0 +1,65 @@
+from src.adapters.sqlite_continuation import sqlite_continuation_adapter
+from src.core.assurance_configuration import resolve_run_configuration
+from src.core.assurance_state import assurance_protected
+from src.core.control_journal import reconcile_control_journal
+from src.core.effect_set import assess_effect_set
+from src.core.portable_commitments import portable_json
+from src.core.preservation_binding import bind_preservation
+from src.core.utils import dict_get_or
+func reference(value) {return "sha256:" + sha256(portable_json(value))}
+func check(value) {if value != true {throw("effect_context_denied")}}
+# Re-resolve installed authority on every call. A serialized candidate or participant
+# cannot supply this host callback. Source inventory includes its adapter/verifier.
+export func resolve_effect_context(state, options, effect_id, require_candidate, basis_raw) {
+    check(assurance_protected(state)); check(reconcile_control_journal(state)["ok"])
+    policy := state["assurance_negotiation"]
+    check(policy["mode"] == "required"&&policy["fallback"] == "deny")
+    check(policy["profile_version"] == "1beta1")
+    boundary := state["current_control_boundary"]; request := state["human_intervention"]
+    check(state["status"] == "paused"&&boundary["status"] == "open")
+    check(request["schema"] == "kujo.intervention-request/v2"&&request["boundary_id"] == boundary["boundary_id"]&&request["state_revision"] == state["revision"])
+    check(contains(request["allowed_actions"], "retry_step") == true)
+    expires := dict_get_or(request, "expires_at", null)
+    if expires != null {check(expires > format_date(now(), "YYYY-MM-DDTHH:mm:ssZ"))}
+    preserve := boundary["preservation"]
+    check(preserve["status"] == "satisfied"&&preserve["actual_mode"] == "filesystem"&&preserve["reconstructability"] == "same_filesystem")
+    check(preserve["retain_until"] > format_date(now(), "YYYY-MM-DDTHH:mm:ssZ"))
+    resolved := resolve_run_configuration(state, options); check(resolved["ok"])
+    installed := resolved["installed"]; host := installed["effect_set"]
+    check(host["environment_valid"] == true)
+    plan := host["plan"]; raw := host["result_raw"]; set_raw := host["set_raw"]
+    if basis_raw != null {set_raw = basis_raw;host["set_raw"] := set_raw}
+    check(plan["config_ref"] == "sha256:" + policy["config_revision"])
+    check(plan["registration_ref"] == reference(host["registration"]))
+    check(plan["subject"]["run_id"] == state["run_id"]&&plan["subject"]["step_id"] == boundary["step_id"])
+    matched := false
+    for step in state["steps"] {
+        check(step["status"] != "running")
+        if step["id"] == boundary["step_id"] {matched = to_json(step["execution_result"]) == to_json(parse_json(raw))&&to_string(dict_get_or(step, "control_attempt", 1)) == plan["subject"]["attempt_id"]}
+    }
+    check(matched)
+    factory := dict_get_or(installed, "continuation_adapter", sqlite_continuation_adapter)
+    check(type(factory) == "function")
+    adapter := factory(host, policy, installed["descriptor"])
+    check(type(adapter["observe"]) == "function"&&type(adapter["apply"]) == "function")
+    index :=  - 1
+    for i in range(0, len(plan["effects"])) {if plan["effects"][i]["effect_id"] == effect_id {index = i}}
+    check(index >= 0)
+    verify := func(entry, previous) {
+        for i in range(0, len(plan["effects"])) {
+            if to_json(entry) == to_json(plan["effects"][i]) {
+                live := adapter["observe"](i);check(live["ok"])
+                item := previous;item["state"] := live["observation"]["observed_state"];item["evidence_ref"] := live["observation"]["evidence_ref"]
+                return item
+            }
+        }
+        return null
+    }
+    assessment := assess_effect_set(raw, set_raw, plan, host["read_artifact"], verify, parse_int(to_string(floor(now_utc_seconds()))))
+    check(assessment["ok"])
+    if require_candidate {check(assessment["effects"][index]["next_action"] == "candidate_for_locked_admission")}
+    preservation := bind_preservation(preserve, plan["subject"], host["environment_ref"], dict_get_or(host, "preservation_binding", null))
+    binding := {"subject": plan["subject"], "result_ref": "sha256:" + sha256(raw), "set_ref": "sha256:" + sha256(set_raw), "plan_ref": reference(plan), "effect_id": effect_id, "position": index, "config_revision": policy["config_revision"], "registration_ref": plan["registration_ref"], "environment_ref": host["environment_ref"], "preservation_ref": preservation["reference"], "boundary_id": boundary["boundary_id"]}
+    check(regex_match(host["environment_ref"], "^sha256:[0-9a-f]{64}$"))
+    return {"binding": binding, "host": host, "adapter":adapter, "assessment": assessment, "preservation":preservation}
+}

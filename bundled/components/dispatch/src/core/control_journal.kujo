@@ -1,0 +1,116 @@
+from src.core.node_transition import node_history_projection
+from src.core.assurance_state import validate_assurance_anchor
+from src.core.parent_transition import validate_parent_artifacts
+from src.core.utils import dict_get_or, redact_sensitive_data, ensure_dir
+
+func append_control_event(run_state, kind, step_id, refs, details) {
+    journal := dict_get_or(run_state, "control_journal", {})
+    sequence := dict_get_or(journal, "sequence", 0) + 1
+    previous_sha256 := dict_get_or(journal, "last_sha256", "")
+    attempt_id := ""
+    for step in dict_get_or(run_state, "steps", []) {if dict_get_or(step, "id", "") == step_id {attempt_id = to_string(dict_get_or(step, "control_attempt", 1))}}
+    event := {
+        "schema": "kujo.control-event/v1",
+        "sequence": sequence,
+        "event_id": "ce_" + substring(sha256(to_json({"run_id": dict_get_or(run_state, "run_id", ""), "sequence": sequence, "kind": kind, "at": current_timestamp()})), 0, 24),
+        "previous_sha256": previous_sha256,
+        "run_id": dict_get_or(run_state, "run_id", ""),
+        "state_revision": dict_get_or(run_state, "revision", 0),
+        "kind": kind,
+        "subject": {"step_id": step_id, "attempt_id": attempt_id},
+        "record_ref": "control-records/" + to_string(sequence) + ".json",
+        "refs": refs,
+        "details": details,
+        "occurred_at": format_date(now(), "YYYY-MM-DDTHH:mm:ssZ")
+    }
+    # Raw producer outputs are evidence artifacts, never durable control payloads.
+    if type(dict_get_or(details, "result", null)) == "dict" {
+        facts := {}
+        for key in keys(details["result"]) {if key != "output" {facts[key] := details["result"][key]}}
+        details["result"] := facts
+        event["details"] := details
+    }
+    redacted := redact_sensitive_data(event)
+    event_sha256 := sha256(to_json(redacted))
+    redacted["event_sha256"] := event_sha256
+    path := dict_get_or(run_state, "run_dir", "") + "/control-events.jsonl"
+    ensure_dir(dirname(path))
+    line := to_json(redacted)
+    if len(line) > 1048576 {throw("control_event_limit: event exceeds 1 MiB")}
+    if file_exists(path)&&file_size(path) > 0 {line = "\n" + line}
+    if file_exists(path)&&file_size(path) + len(line) > 8388608 {throw("control_journal_limit: archive this run before continuing")}
+    ensure_dir(run_state["run_dir"] + "/control-records")
+    write_file_atomic_beneath(run_state["run_dir"], redacted["record_ref"], to_json(redacted), false)
+    sync_directory_beneath(run_state["run_dir"], "control-records")
+    append_file(path, line)
+    run_state["control_journal"] := {"schema": "kujo.control-journal/v1", "path": path, "sequence": sequence, "last_sha256": event_sha256}
+    return {"run_state": run_state, "event": redacted}
+}
+
+export append_control_event := append_control_event
+
+# Run once under the run lock. Never interpret orphan journal records as permission
+# to repeat an action. Torn tails and cursor mismatches require explicit recovery.
+func reconcile_control_journal(run_state) {
+    if validate_assurance_anchor(run_state) == false {return {"ok": false, "error": {"code": "assurance_policy_tampered", "message": "Persisted policy differs from its initial control record.", "retryable": false}}}
+    path := dict_get_or(run_state, "run_dir", "") + "/control-events.jsonl"
+    journal := dict_get_or(run_state, "control_journal", {})
+    sequence := 0
+    previous := ""
+    selected := null
+    replay := null
+    continuation := null
+    lifecycle := null
+    finalized := null
+    node_events := []
+    if file_exists(path) {
+        body := ""
+        try {body = read_file_beneath(run_state["run_dir"], "control-events.jsonl", 8388608)} except err {
+            return {"ok": false, "error": {"code": "control_journal_unreadable", "message": "Journal must be a bounded regular file; archive/review before continuing.", "retryable": false}}
+        }
+        try {
+            for line in split(body, "\n") {
+                if trim(line) == "" {continue}
+                event := parse_json(line)
+                node_events = push(node_events, event)
+                sequence = sequence + 1
+                if event["sequence"] != sequence||event["previous_sha256"] != previous||event["run_id"] != run_state["run_id"] {throw("Invalid control sequence")}
+                unsigned := {}
+                for key in keys(event) {if key != "event_sha256" {unsigned[key] := event[key]}}
+                if sha256(to_json(unsigned)) != event["event_sha256"] {throw("Invalid control digest")}
+                record_ref := dict_get_or(event, "record_ref", "")
+                if record_ref != "" {
+                    if record_ref != "control-records/" + to_string(sequence) + ".json" {throw("Invalid record reference")}
+                    if read_file_beneath(run_state["run_dir"], record_ref, 1048576) != to_json(event) {throw("Control record mismatch")}
+                }
+                if event["kind"] == "assurance_sidecar_selected" {selected = event["details"]["selection"]}
+                if event["kind"] == "assurance_replay_admitted" {replay = event["details"]["replay"]}
+                if contains(["effect_selected","effect_admitted","effect_observed"],event["kind"]) {continuation = event["details"]["continuation"]}
+                if event["kind"] == "effect_lifecycle_recorded" {lifecycle = event["details"]["effect_lifecycle"]}
+                if event["kind"] == "parent_finalized" {
+                    if finalized != null {throw("duplicate_parent_finalization")}
+                    finalized = event["details"];validate_parent_artifacts(run_state, finalized)
+                }
+                previous = event["event_sha256"]
+            }
+        } except err {
+            return {"ok": false, "error": {"code": "control_journal_corrupt", "message": "Control history is corrupt or torn; no action was replayed.", "retryable": false}}
+        }
+    }
+    if file_exists(run_state["run_dir"] + "/control-records/" + to_string(sequence + 1) + ".json") {return {"ok": false, "error": {"code": "control_recovery_required", "message": "Durable event exists beyond the journal tail; inspect before recovery.", "retryable": false}}}
+    if sequence != dict_get_or(journal, "sequence", 0)||previous != dict_get_or(journal, "last_sha256", "") {
+        return {"ok": false, "error": {"code": "control_recovery_required", "message": "Journal and checkpoint differ. Reconcile from retained decision evidence before resuming; automatic replay is prohibited.", "retryable": false}}
+    }
+    if to_json(selected) != to_json(dict_get_or(run_state, "assurance_selection", null))||to_json(replay) != to_json(dict_get_or(run_state, "assurance_replay", null)) {return {"ok": false, "error": {"code": "assurance_journal_state_mismatch", "message": "Assurance selection or replay differs from retained authority.", "retryable": false}}}
+    if to_json(continuation) != to_json(dict_get_or(run_state,"effect_continuation",null)) {return {"ok":false,"code":"effect_journal_state_mismatch"}}
+    if to_json(lifecycle) != to_json(dict_get_or(run_state,"effect_lifecycle",null)) {return {"ok":false,"code":"effect_lifecycle_journal_mismatch"}}
+    if to_json(finalized) != to_json(dict_get_or(run_state, "parent_finalization", null)) {return {"ok":false,"code":"parent_finalization_journal_mismatch"}}
+    if finalized != null {
+        if run_state["status"] != finalized["candidate"]["outcome"]||run_state["current_control_boundary"]["status"] != "resolved" {return {"ok":false,"code":"parent_terminal_state_mismatch"}}
+        for step in run_state["steps"] {if step["id"] == finalized["candidate"]["subject"]["step_id"]&&step["status"] != finalized["candidate"]["outcome"] {return {"ok":false,"code":"parent_terminal_state_mismatch"}}}
+    }
+    try {node_history_projection(run_state, node_events)} except err {return {"ok":false,"code":"node_journal_state_mismatch"}}
+    return {"ok": true, "run_state": run_state}
+}
+
+export reconcile_control_journal := reconcile_control_journal

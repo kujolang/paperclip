@@ -1,0 +1,102 @@
+from src.core.utils import dict_get_or
+from src.tools.tool import register_tool
+
+func create_plugin(plugin_id, agents, agent_handlers, tools) {
+	return {
+		"id": plugin_id,
+		"version": "1",
+		"agents": agents,
+		"agent_handlers": agent_handlers,
+		"tools": tools
+	}
+}
+
+func create_plugin_registry() {
+	return {}
+}
+
+func register_plugin(plugin_registry, plugin_obj) {
+	plugin_registry[plugin_obj["id"]] := plugin_obj
+	return plugin_registry
+}
+
+func array_contains(values, target_value) {
+	for value in values {
+		if value == target_value {
+			return true
+		}
+	}
+	return false
+}
+
+func apply_plugin_to_runtime(workflow, tool_registry, plugin_obj) {
+	agents := dict_get_or(workflow, "agents", {})
+	workflow_tools := dict_get_or(workflow, "tools", [])
+	plugin_agents := dict_get_or(plugin_obj, "agents", {})
+	if type(plugin_agents) == "dict" {
+		for agent_id in keys(plugin_agents) {
+			agents[agent_id] := plugin_agents[agent_id]
+		}
+	}
+
+	plugin_handlers := dict_get_or(plugin_obj, "agent_handlers", {})
+	if type(plugin_handlers) == "dict" {
+		if has_key(agents, "__agent_handlers") == 0 || type(agents["__agent_handlers"]) != "dict" {
+			agents["__agent_handlers"] := {}
+		}
+		agent_handlers := agents["__agent_handlers"]
+		for handler_agent_id in keys(plugin_handlers) {
+			agent_handlers[handler_agent_id] := plugin_handlers[handler_agent_id]
+		}
+		agents["__agent_handlers"] := agent_handlers
+	}
+
+	plugin_tools := dict_get_or(plugin_obj, "tools", [])
+	if type(plugin_tools) == "array" {
+		for tool_obj in plugin_tools {
+			tool_registry := register_tool(tool_registry, tool_obj)
+			tool_name := dict_get_or(tool_obj, "name", "")
+			if tool_name != "" && array_contains(workflow_tools, tool_name) == false {
+				workflow_tools := push(workflow_tools, tool_name)
+			}
+		}
+	}
+	workflow["agents"] := agents
+	workflow["tools"] := workflow_tools
+	active_plugins := dict_get_or(workflow, "active_plugins", [])
+	plugin_ref := {"id": dict_get_or(plugin_obj, "id", ""), "version": dict_get_or(plugin_obj, "version", "1")}
+	already_active := false
+	for active_plugin in active_plugins {
+		if dict_get_or(active_plugin, "id", "") == plugin_ref["id"] {
+			already_active = true
+		}
+	}
+	if already_active == false {
+		active_plugins := push(active_plugins, plugin_ref)
+	}
+	workflow["active_plugins"] := active_plugins
+
+	return {
+		"workflow": workflow,
+		"tool_registry": tool_registry
+	}
+}
+
+func apply_plugins_to_runtime(workflow, tool_registry, plugin_registry) {
+	for plugin_id in keys(plugin_registry) {
+		plugin_obj := plugin_registry[plugin_id]
+		updated := apply_plugin_to_runtime(workflow, tool_registry, plugin_obj)
+		workflow := updated["workflow"]
+		tool_registry := updated["tool_registry"]
+	}
+	return {
+		"workflow": workflow,
+		"tool_registry": tool_registry
+	}
+}
+
+export create_plugin := create_plugin
+export create_plugin_registry := create_plugin_registry
+export register_plugin := register_plugin
+export apply_plugin_to_runtime := apply_plugin_to_runtime
+export apply_plugins_to_runtime := apply_plugins_to_runtime

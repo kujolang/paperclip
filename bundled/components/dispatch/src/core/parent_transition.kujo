@@ -1,0 +1,46 @@
+# Pure terminal transition shared by locked finalization and exact history repair.
+from src.core.utils import dict_get_or
+from src.core.portable_commitments import portable_json
+export func parent_state_body(state) {copy := {};for key in keys(state) {if key != "health" {copy[key] := state[key]}};return to_json(copy)}
+export func validate_parent_topology(state) {
+    expected := state["workflow_definition"]["steps"];actual := state["steps"]
+    if len(expected) != len(actual) {throw("parent_topology_changed")}
+    for i in range(0, len(expected)) {
+        for key in ["id", "optional", "depends_on"] {
+            if to_json(actual[i][key]) != to_json(expected[i][key]) {throw("parent_topology_changed")}
+        }
+    }
+    return true
+}
+export func apply_parent_decision(state, receipt) {
+    validate_parent_topology(state)
+    if receipt["schema"] != "dispatch.parent-finalization/v1alpha1"||receipt["source_sha256"] != sha256(parent_state_body(state))||receipt["prior_revision"] != state["revision"]||receipt["prior_journal"] != state["control_journal"]["last_sha256"]||has_key(state, "parent_finalization") {throw("parent_decision_source_mismatch")}
+    candidate := receipt["candidate"]
+    unsigned := {};for key in keys(candidate) {if key != "candidate_id" {unsigned[key] := candidate[key]}}
+    if sha256(portable_json(unsigned)) != candidate["candidate_id"]||candidate["source_sha256"] != receipt["source_sha256"]||candidate["revision"] != receipt["prior_revision"]||candidate["journal"] != receipt["prior_journal"]||receipt["resulting_revision"] != state["revision"] + 1||candidate["decision_ref"] != receipt["decision_ref"] {throw("parent_decision_binding_mismatch")}
+    if candidate["subject"]["run_id"] != state["run_id"]||contains(["completed", "failed", "cancelled"], candidate["outcome"]) == false {throw("parent_decision_invalid")}
+    steps := state["steps"];matched := false
+    for i in range(0, len(steps)) {
+        step := steps[i]
+        if step["id"] == candidate["subject"]["step_id"] {
+            if step["status"] != "paused" {throw("parent_not_paused")}
+            step["status"] := candidate["outcome"];step["finished_at"] := receipt["decided_at"];steps[i] := step;matched = true
+        } else if step["status"] != "completed"&&!(step["status"] == "skipped"&&dict_get_or(step, "optional", false)) {throw("unresolved_required_work")}
+    }
+    if matched == false {throw("parent_missing")}
+    state["steps"] := steps;state["status"] := candidate["outcome"];state["finished_at"] := receipt["decided_at"]
+    boundary := state["current_control_boundary"];boundary["status"] := "resolved";boundary["resolved_by"] := receipt["decision_ref"];state["current_control_boundary"] := boundary
+    boundaries := state["control_boundaries"];boundaries[len(boundaries) - 1] := boundary;state["control_boundaries"] := boundaries
+    state["human_intervention"] := null
+    state["parent_finalization"] := receipt
+    if contains(state["required_features"], "parent-finalization/v1alpha1") == false {state["required_features"] := push(state["required_features"], "parent-finalization/v1alpha1")}
+    return state
+}
+export func validate_parent_artifacts(state, receipt) {
+    for reference in receipt["artifacts"] {
+        if type(reference) != "string"||regex_match(reference, "^sha256:[0-9a-f]{64}$") == false {throw("invalid_parent_reference")}
+        raw := read_file_beneath(state["run_dir"], "parent-finalization/" + substring(reference, 7, 71) + ".raw", 1048576)
+        if "sha256:" + sha256(raw) != reference {throw("corrupt_parent_artifact")}
+    }
+    return true
+}

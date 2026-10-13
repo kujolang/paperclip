@@ -1,0 +1,57 @@
+# HTTP evidence correlation only. Success never authorizes replay; the caller MUST
+# still use persisted beta negotiation and the live Ability verifier under lock.
+from src.adapters.interop_legacy import correlate_validated_legacy
+from src.core.utils import dict_get_or
+
+func fail() {return {"ok": false, "code": "http_ability_handoff_mismatch"}}
+func ref_valid(value) {return type(value) == "string"&&byte_length(value) == 71&&regex_match(value, "^sha256:[0-9a-f]{64}$")}
+func artifact(root, reference, limit) {
+    if ref_valid(reference) == false {throw("reference")}
+    raw := read_file_beneath(root, "artifacts/" + substring(reference, 7, 71) + ".json", limit)
+    if "sha256:" + sha256(raw) != reference {throw("digest")}
+    return raw
+}
+export func load_http_ability_handoff(root, reference, expected, authoritative_result_raw, assurance_raw) {
+    try {
+        if type(authoritative_result_raw) != "string"||byte_length(authoritative_result_raw) > 1048576||type(assurance_raw) != "string"||byte_length(assurance_raw) > 8192 {return fail()}
+        raw := artifact(root, reference, 4096); doc := parse_json(raw)
+        fields := ["schema", "client_request_id", "http_request_id", "method", "route_id", "operation_id", "ability_id", "ability_version", "definition_digest", "ability_invocation_id", "dispatch_run_id", "dispatch_step_id", "dispatch_attempt_id", "dispatch_effect_id", "outcome", "receipt_id", "receipt_ref", "execution_result_ref", "assurance_ref", "transaction_sha256"]
+        if type(doc) != "dict"||len(keys(doc)) != len(fields)||to_json(doc) != raw||dict_get_or(doc, "schema", "") != "http.ability-handoff/v1alpha1" {return fail()}
+        if doc["method"] != "POST"||doc["route_id"] != "publication_run"||doc["operation_id"] != "publication_create" {return fail()}
+        if doc["receipt_id"] != null {
+            receipt_id := doc["receipt_id"]
+            if type(receipt_id) != "string"||byte_length(receipt_id) > 128||regex_match(receipt_id, "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$") == false||contains(receipt_id, "\n") != 0 {return fail()}
+        }
+        valid := true
+        for field in fields {if has_key(doc, field) == false {valid = false}}
+        for field in ["client_request_id", "http_request_id", "method", "route_id", "operation_id", "ability_id", "ability_version", "ability_invocation_id", "dispatch_run_id", "dispatch_step_id", "dispatch_attempt_id", "dispatch_effect_id"] {
+            if type(doc[field]) != "string"||byte_length(doc[field]) > 128||regex_match(doc[field], "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$") == false||contains(doc[field], "\n") != 0 {valid = false}
+        }
+        for field in ["definition_digest", "transaction_sha256"] {if type(doc[field]) != "string"||byte_length(doc[field]) != 64||regex_match(doc[field], "^[0-9a-f]{64}$") == false {valid = false}}
+        if valid == false {return fail()}
+        for field in ["client_request_id", "method", "route_id", "operation_id", "ability_id", "ability_version", "definition_digest", "ability_invocation_id", "transaction_sha256"] {if doc[field] != expected[field] {valid = false}}
+        if valid == false {return fail()}
+        result_raw := authoritative_result_raw
+        result := parse_json(result_raw)
+        correlation := result["http_correlation"]
+        for field in ["client_request_id", "http_request_id", "method", "route_id", "operation_id", "ability_id", "ability_version", "definition_digest", "ability_invocation_id", "receipt_id", "receipt_ref", "outcome", "transaction_sha256"] {if correlation[field] != doc[field] {valid = false}}
+        if valid == false {return fail()}
+        if doc["receipt_ref"] != null {
+            receipt := parse_json(artifact(root, doc["receipt_ref"], 8192))
+            if receipt["schema"] != "kujo.ability.receipt/v1"||receipt["receipt_id"] != doc["receipt_id"]||receipt["invocation_id"] != doc["ability_invocation_id"]||receipt["ability_id"] != doc["ability_id"]||receipt["ability_version"] != doc["ability_version"]||receipt["definition_digest"] != doc["definition_digest"] {return fail()}
+            if receipt["status"] == "succeeded"&&dict_get_or(dict_get_or(receipt, "result", {}), "transaction", "") != doc["transaction_sha256"] {return fail()}
+            if dict_get_or(dict_get_or(receipt, "idempotency", {}), "key_digest", "") != result["effects"][0]["idempotency_key"] {return fail()}
+            if contains(["response_lost", "timeout", "application_unavailable"], doc["outcome"]) == false {
+                if receipt["status"] == "succeeded" {if doc["outcome"] != "receipt_succeeded" {return fail()}}
+                else {if doc["outcome"] != "application_error" {return fail()}}
+            }
+        } else {if doc["receipt_id"] != null||contains(["response_lost", "timeout", "application_error", "application_unavailable"], doc["outcome"]) == false {return fail()}}
+        if assurance_raw != "" {
+            assurance := parse_json(assurance_raw)
+            if assurance["schema"] != "dispatch.effect-assurance/v1beta1"||assurance["subject"]["result_sha256"] != sha256(result_raw)||assurance["bindings"]["transaction_sha256"] != doc["transaction_sha256"] {return fail()}
+        }
+        generic := correlate_validated_legacy("http", root, doc, expected, result_raw, assurance_raw)
+        if generic["ok"] == false {return fail()}
+        return {"ok": true, "handoff": doc, "result_raw": result_raw, "generic": generic["handoff"]}
+    } except ignored {return fail()}
+}

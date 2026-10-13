@@ -1,0 +1,35 @@
+{
+  "id": "custom_review_workflow",
+  "name": "Custom Review Workflow",
+  "description": "User-authored workflow loaded from a JSON spec via --workflow-file.",
+  "input_schema": {
+    "type": "dict",
+    "required": ["topic"],
+    "properties": { "topic": { "type": "string" } }
+  },
+  "tools": [
+    "mock_web_search",
+    "local_source_lookup",
+    "claim_extraction",
+    "citation_formatter",
+    "markdown_report_writer",
+    "timestamp_tool"
+  ],
+  "steps": [
+    { "id": "plan", "name": "Plan", "type": "agent", "agent_id": "planner", "input_from": ["input"], "output_key": "plan" },
+    { "id": "gather_sources", "name": "Gather Sources", "type": "agent", "agent_id": "research", "input_from": ["input", "plan"], "output_key": "sources" },
+    { "id": "extract_claims", "name": "Extract Claims", "type": "tool", "tool_name": "claim_extraction", "input_from": ["sources"], "output_key": "claims" },
+    { "id": "verify_claims", "name": "Verify Claims", "type": "agent", "agent_id": "verification", "input_from": ["input", "sources", "claims"], "output_key": "verification" },
+    {
+      "id": "approval_gate",
+      "name": "Human Approval Gate",
+      "type": "approval",
+      "approval_required": true,
+      "approval_gate": { "reason": "Confirm findings before finalizing.", "summary": "Review verified claims." },
+      "input_from": ["verification"],
+      "output_key": "approval"
+    },
+    { "id": "finalize", "name": "Finalize Outputs", "type": "report", "input_from": ["verification", "claims", "sources"], "output_key": "final_output" }
+  ],
+  "output_schema": { "type": "dict" }
+}

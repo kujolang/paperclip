@@ -1,0 +1,122 @@
+# Installed operator API: assessment is read-only, finalize never schedules work.
+from src.core.state import load_run_state, acquire_run_lock, release_run_lock, persist_run_state
+from src.core.control_journal import reconcile_control_journal, append_control_event
+from src.core.sequential_effects import finalization_effect_facts
+from src.core.assurance_configuration import resolve_run_configuration
+from src.core.intervention import validate_intervention_decision
+from src.core.control import resolve_control_decision, validate_evaluation_result
+from src.core.parent_transition import parent_state_body, apply_parent_decision, validate_parent_artifacts, validate_parent_topology
+from src.core.portable_commitments import portable_json
+from src.core.utils import dict_get_or, ensure_dir
+func demand(ok, code) {if ok != true {throw(code)}}
+func reference(raw) {return "sha256:" + sha256(raw)}
+func facts(state, options, decision) {
+    demand(reconcile_control_journal(state)["ok"], "recovery_required")
+    demand(has_key(state, "parent_finalization") == 0, "already_finalized")
+    demand(dict_get_or(state, "parent_finalization_required", false), "parent_not_opted_in")
+    validate_parent_topology(state)
+    subject_id := state["current_control_boundary"]["step_id"]
+    parent := null;definition := null
+    for step in state["steps"] {
+        if step["id"] == subject_id {parent = step}
+        else {demand(step["status"] == "completed"||(step["status"] == "skipped"&&dict_get_or(step, "optional", false)), "unresolved_required_work")}
+    }
+    for step in state["workflow_definition"]["steps"] {if step["id"] == subject_id {definition = step}}
+    demand(parent != null&&definition != null&&parent["status"] == "paused", "parent_not_paused")
+    for key in ["config", "depends_on", "output_schema"] {demand(to_json(parent[key]) == to_json(definition[key]), "parent_contract_changed")}
+    contract := parent["config"]["parent_finalization"]
+    demand(contract["schema"] == "dispatch.parent-finalization-policy/v1alpha1", "unsupported_parent_contract")
+    effects := finalization_effect_facts(state, options)
+    binding := effects["binding"];subject := binding["subject"]
+    resolved := resolve_run_configuration(state, options);demand(resolved["ok"], "stale_authority")
+    host := resolved["installed"]["parent_finalization"]
+    outputs := contract["required_outputs"];demand(type(outputs) == "array"&&len(outputs) <= 8, "output_limit")
+    identities := [];artifacts := [];input_ids := [binding["result_ref"]]
+    result := parse_json(effects["host"]["result_raw"])
+    for name in outputs {
+        expected := result["output"][name]
+        supplied := host["read_output"](expected)
+        raw := supplied["metadata_raw"];content := supplied["content_raw"]
+        demand(type(raw) == "string"&&byte_length(raw) <= 16384&&type(content) == "string"&&byte_length(content) <= 1048576, "output_limit")
+        metadata := parse_json(raw)
+        demand(reference(raw) == expected&&metadata["schema"] == "kujo.evidence-ref/v1"&&to_json(metadata["subject"]) == to_json(subject), "output_identity_mismatch")
+        demand(metadata["integrity"]["status"] == "sha256"&&metadata["integrity"]["sha256"] == sha256(content), "output_digest_mismatch")
+        identities = push(identities, {"name":name, "evidence_ref":expected, "content_ref":reference(content)})
+        input_ids = push(input_ids, reference(content));artifacts = push(push(artifacts, raw), content)
+    }
+    evaluator := contract["evaluation"]
+    evaluation_ref := null;outcome := "completed";policy_ref := null
+    if evaluator != null {
+        evaluation_raw := host["evaluation_raw"];demand(type(evaluation_raw) == "string"&&byte_length(evaluation_raw) <= 1048576, "evaluation_limit")
+        evaluation := parse_json(evaluation_raw);demand(validate_evaluation_result(evaluation)["ok"], "evaluation_invalid")
+        demand(to_json(evaluation["subject"]) == to_json(subject)&&to_json(evaluation["input_evidence_ids"]) == to_json(input_ids), "stale_evaluation")
+        demand(to_json(evaluation["evaluator"]) == to_json(evaluator), "evaluator_identity_mismatch")
+        demand(dict_get_or(evaluation, "evaluation_status", "completed") == "completed", "evaluation_incomplete")
+        controlled := resolve_control_decision(state["workflow_definition"], parent, evaluation)
+        demand(controlled["ok"]&&controlled["found"], "evaluation_policy_invalid")
+        policy := controlled["decision"];stable := {};for key in keys(policy) {if key != "decided_at" {stable[key] := policy[key]}}
+        policy_raw := to_json(stable);policy_ref = reference(policy_raw);artifacts = push(artifacts, policy_raw)
+        disposition := policy["disposition"]
+        demand(contains(["continue", "fail", "cancel"], disposition), "requires_review")
+        if disposition == "fail" {outcome = "failed"} else if disposition == "cancel" {outcome = "cancelled"}
+        evaluation_ref = reference(evaluation_raw);artifacts = push(artifacts, evaluation_raw)
+    }
+    demand(decision != null, "requires_review")
+    demand(validate_intervention_decision(decision, state)["ok"]&&decision["action"] == "approve_override", "review_invalid")
+    demand(type(host["authorize_decision"]) == "function"&&host["authorize_decision"](decision, state) == true, "operator_not_authorized")
+    decision_raw := to_json(decision);artifacts = push(artifacts, decision_raw)
+    preserve := dict_get_or(effects, "preservation", null)
+    if preserve != null {for raw in preserve["artifacts"] {artifacts = push(artifacts, raw)}}
+    candidate := {"schema":"dispatch.parent-finalization-candidate/v1alpha1", "subject":subject, "source_sha256":sha256(parent_state_body(state)), "revision":state["revision"], "journal":state["control_journal"]["last_sha256"], "binding":binding, "outputs":identities, "evaluation_ref":evaluation_ref, "policy_ref":policy_ref, "decision_ref":reference(decision_raw), "outcome":outcome}
+    candidate["candidate_id"] := sha256(portable_json(candidate))
+    return {"candidate":candidate, "artifacts":artifacts}
+}
+export func assess_parent_finalization(root, id, decision, options) {
+    try {
+        loaded := load_run_state(root, id);demand(loaded["ok"], "state_unavailable");state := loaded["run_state"]
+        demand(reconcile_control_journal(state)["ok"], "recovery_required")
+        if has_key(state, "parent_finalization") {validate_parent_artifacts(state, state["parent_finalization"]);return {"ok":true, "status":"already_finalized", "decision":state["parent_finalization"]}}
+        checked := facts(state, options, decision)
+        return {"ok":true, "status":"eligible", "candidate":checked["candidate"], "authority":"informational"}
+    } except err {
+        reason := to_string(err);status := "not_eligible"
+        if contains(reason, "requires_review") {status = "requires_review"}
+        if contains(reason, "blocked_by_uncertainty") {status = "blocked_by_uncertainty"}
+        return {"ok":false, "status":status, "reason":reason, "authority":"informational"}
+    }
+}
+export func finalize_parent(root, id, candidate, decision, options) {
+    loaded := load_run_state(root, id);if loaded["ok"] == false {return loaded}
+    lock := acquire_run_lock(loaded["run_state"]);if lock["ok"] == false {return lock}
+    answer := {"ok":false, "status":"rejected"}
+    try {
+        fresh := load_run_state(root, id);demand(fresh["ok"], "state_unavailable");state := fresh["run_state"]
+        checked := facts(state, options, decision)
+        demand(to_json(candidate) == to_json(checked["candidate"]), "stale_candidate")
+        hook := dict_get_or(options, "finalization_boundary", null)
+        if type(hook) == "function" {hook("before_finalization")}
+        # Checks performed after the hook and while holding the actual run lock.
+        fresh = load_run_state(root, id);demand(fresh["ok"], "state_unavailable");state = fresh["run_state"]
+        checked = facts(state, options, decision);demand(to_json(candidate) == to_json(checked["candidate"]), "stale_candidate")
+        ensure_dir(state["run_dir"] + "/parent-finalization");refs := []
+        for raw in checked["artifacts"] {
+            path := "parent-finalization/" + sha256(raw) + ".raw"
+            if file_exists(state["run_dir"] + "/" + path) {demand(read_file_beneath(state["run_dir"], path, 1048576) == raw, "artifact_conflict")}
+            else {demand(write_file_atomic_beneath(state["run_dir"], path, raw, false), "artifact_write_failed")}
+            refs = push(refs, reference(raw))
+        }
+        demand(sync_directory_beneath(state["run_dir"], "parent-finalization")&&sync_directory_beneath(state["run_dir"], "."), "artifact_sync_failed")
+        # Artifact publication can take time. Revalidate again immediately before
+        # the durable terminal decision, including live revocation and freshness.
+        fresh = load_run_state(root, id);demand(fresh["ok"], "state_unavailable");state = fresh["run_state"]
+        latest := facts(state, options, decision);demand(to_json(candidate) == to_json(latest["candidate"]), "stale_candidate")
+        receipt := {"schema":"dispatch.parent-finalization/v1alpha1", "source_sha256":candidate["source_sha256"], "prior_revision":state["revision"], "prior_journal":state["control_journal"]["last_sha256"], "candidate":candidate, "decision_ref":candidate["decision_ref"], "artifacts":refs, "resulting_revision":state["revision"] + 1, "decided_at":format_date(now(), "YYYY-MM-DDTHH:mm:ssZ")}
+        transitioned := apply_parent_decision(state, receipt)
+        logged := append_control_event(state, "parent_finalized", candidate["subject"]["step_id"], refs, receipt)
+        transitioned["control_journal"] := logged["run_state"]["control_journal"]
+        transitioned = persist_run_state(transitioned);sync_directory_beneath(state["run_dir"], ".")
+        if type(hook) == "function" {hook("after_finalization")}
+        answer = {"ok":true, "status":"finalized", "revision":transitioned["revision"], "outcome":transitioned["status"]}
+    } except err {answer["reason"] := to_string(err)}
+    released := release_run_lock(lock);if released["ok"] == false {return released};return answer
+}

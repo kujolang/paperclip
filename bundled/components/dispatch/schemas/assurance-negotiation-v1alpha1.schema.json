@@ -1,0 +1,109 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Immutable persisted assurance selection",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "mode",
+    "fallback",
+    "profile",
+    "profile_version",
+    "config_revision",
+    "policy_sha256"
+  ],
+  "properties": {
+    "schema": {
+      "const": "dispatch.assurance-negotiation/v1alpha1"
+    },
+    "mode": {
+      "enum": [
+        "legacy",
+        "optional",
+        "required"
+      ]
+    },
+    "fallback": {
+      "enum": [
+        "deny",
+        "legacy_unavailable"
+      ]
+    },
+    "profile": {
+      "type": "string",
+      "maxLength": 128
+    },
+    "profile_version": {
+      "type": "string",
+      "maxLength": 128
+    },
+    "config_revision": {
+      "type": "string",
+      "pattern": "^([0-9a-f]{64})?$"
+    },
+    "policy_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    }
+  },
+  "anyOf": [
+    {
+      "properties": {
+        "profile": {
+          "const": ""
+        },
+        "profile_version": {
+          "const": ""
+        },
+        "config_revision": {
+          "const": ""
+        },
+        "fallback": {
+          "const": "deny"
+        },
+        "mode": {
+          "const": "legacy"
+        }
+      }
+    },
+    {
+      "properties": {
+        "profile": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$"
+        },
+        "profile_version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$"
+        },
+        "config_revision": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      },
+      "anyOf": [
+        {
+          "properties": {
+            "mode": {
+              "const": "required"
+            },
+            "fallback": {
+              "const": "deny"
+            }
+          }
+        },
+        {
+          "properties": {
+            "mode": {
+              "const": "optional"
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

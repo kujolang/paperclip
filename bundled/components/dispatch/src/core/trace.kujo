@@ -1,0 +1,278 @@
+from src.core.utils import summarize_value, dict_get_or, redact_sensitive_data
+
+func parse_positive_number(raw_value, default_value) {
+	parsed := default_value
+	try {
+		parsed = to_float(to_string(raw_value))
+	} except err {
+		return default_value
+	}
+	if parsed <= 0 {
+		return default_value
+	}
+	return parsed
+}
+
+func default_trace_limits() {
+	max_events_default := parse_positive_number(env("DISPATCH_TRACE_MAX_EVENTS"), 400)
+	max_payload_chars_default := parse_positive_number(env("DISPATCH_TRACE_MAX_PAYLOAD_CHARS"), 2400)
+	return {
+		"max_events": max_events_default,
+		"max_payload_chars": max_payload_chars_default
+	}
+}
+
+func ensure_trace_limits(trace_state) {
+	limits := dict_get_or(trace_state, "limits", {})
+	defaults := default_trace_limits()
+	max_events := parse_positive_number(dict_get_or(limits, "max_events", defaults["max_events"]), defaults["max_events"])
+	max_payload_chars := parse_positive_number(dict_get_or(limits, "max_payload_chars", defaults["max_payload_chars"]), defaults["max_payload_chars"])
+	trace_state["limits"] := {
+		"max_events": max_events,
+		"max_payload_chars": max_payload_chars
+	}
+	if type(dict_get_or(trace_state, "truncated", null)) != "dict" {
+		trace_state["truncated"] := {
+			"events_dropped": 0,
+			"payloads_truncated": 0,
+			"max_events": max_events,
+			"max_payload_chars": max_payload_chars
+		}
+	}
+	if type(dict_get_or(trace_state, "event_count_total", null)) != "int" {
+		trace_state["event_count_total"] := len(dict_get_or(trace_state, "events", []))
+	}
+	return trace_state
+}
+
+func apply_trace_limits(trace_state, options) {
+	trace_state := ensure_trace_limits(trace_state)
+	limits := dict_get_or(trace_state, "limits", {})
+	if type(options) != "dict" {
+		return trace_state
+	}
+	limits["max_events"] := parse_positive_number(dict_get_or(options, "trace_max_events", dict_get_or(limits, "max_events", 400)), dict_get_or(limits, "max_events", 400))
+	limits["max_payload_chars"] := parse_positive_number(dict_get_or(options, "trace_max_payload_chars", dict_get_or(limits, "max_payload_chars", 2400)), dict_get_or(limits, "max_payload_chars", 2400))
+	trace_state["limits"] := limits
+	truncation := dict_get_or(trace_state, "truncated", {})
+	events := dict_get_or(trace_state, "events", [])
+	if type(events) == "array" && len(events) > limits["max_events"] {
+		kept_events := []
+		event_index := 0
+		while event_index < limits["max_events"] {
+			kept_events := push(kept_events, events[event_index])
+			event_index = event_index + 1
+		}
+		truncation["events_dropped"] := dict_get_or(truncation, "events_dropped", 0) + (len(events) - len(kept_events))
+		trace_state["events"] := kept_events
+	}
+	truncation["max_events"] := limits["max_events"]
+	truncation["max_payload_chars"] := limits["max_payload_chars"]
+	trace_state["truncated"] := truncation
+	return trace_state
+}
+
+func create_trace(run_id, workflow_name) {
+	trace_state := {
+		"run_id": run_id,
+		"trace_id": substring(sha256(run_id + "::" + to_string(current_timestamp())), 0, 32),
+		"workflow_name": workflow_name,
+		"status": "running",
+		"events": [],
+		"started_at": format_date(now(), "YYYY-MM-DD HH:mm:ss"),
+		"finished_at": ""
+	}
+	trace_state := ensure_trace_limits(trace_state)
+	return trace_state
+}
+
+func append_trace(trace_state, event_type, step_id, message, payload) {
+	trace_state := ensure_trace_limits(trace_state)
+	limits := dict_get_or(trace_state, "limits", {})
+	max_events := dict_get_or(limits, "max_events", 400)
+	max_payload_chars := dict_get_or(limits, "max_payload_chars", 2400)
+
+	event_total := dict_get_or(trace_state, "event_count_total", 0) + 1
+	trace_state["event_count_total"] := event_total
+
+	events := dict_get_or(trace_state, "events", [])
+	if len(events) >= max_events {
+		truncation := dict_get_or(trace_state, "truncated", {})
+		truncation["events_dropped"] := dict_get_or(truncation, "events_dropped", 0) + 1
+		truncation["last_drop_at"] := format_date(now(), "YYYY-MM-DD HH:mm:ss")
+		trace_state["truncated"] := truncation
+		return trace_state
+	}
+
+	redacted_payload := redact_sensitive_data(payload)
+	payload_json := to_json(redacted_payload)
+	payload_summary := summarize_value(redacted_payload, max_payload_chars)
+	stored_payload := redacted_payload
+	if len(payload_json) > max_payload_chars {
+		stored_payload := {
+			"truncated": true,
+			"original_size": len(payload_json),
+			"preview": substring(payload_json, 0, max_payload_chars)
+		}
+		payload_summary := "[TRUNCATED payload] " + summarize_value(stored_payload, max_payload_chars)
+		truncation := dict_get_or(trace_state, "truncated", {})
+		truncation["payloads_truncated"] := dict_get_or(truncation, "payloads_truncated", 0) + 1
+		trace_state["truncated"] := truncation
+	}
+
+	event_id := "evt-" + to_string(current_timestamp()) + "-" + to_string(len(trace_state["events"]) + 1)
+	trace_state["events"] := push(events, {
+		"id": event_id,
+		"trace_id": dict_get_or(trace_state, "trace_id", substring(sha256(trace_state["run_id"]), 0, 32)),
+		"span_id": substring(sha256(trace_state["run_id"] + "::" + event_id), 0, 16),
+		"run_id": trace_state["run_id"],
+		"step_id": step_id,
+		"type": event_type,
+		"message": message,
+		"payload": stored_payload,
+		"payload_summary": payload_summary,
+		"timestamp": format_date(now(), "YYYY-MM-DD HH:mm:ss"),
+		"timestamp_unix_nano": to_string(current_timestamp() * 1000000)
+	})
+	return trace_state
+}
+
+func otel_attribute(key, value) {
+	return {"key": key, "value": {"stringValue": to_string(value)}}
+}
+
+func render_otel_trace_json(trace_state) {
+	spans := []
+	for event in dict_get_or(trace_state, "events", []) {
+		attributes := [
+			otel_attribute("dispatch.run_id", dict_get_or(trace_state, "run_id", "")),
+			otel_attribute("dispatch.step_id", dict_get_or(event, "step_id", "")),
+			otel_attribute("dispatch.event_type", dict_get_or(event, "type", "")),
+			otel_attribute("dispatch.payload", to_json(dict_get_or(event, "payload", {})))
+		]
+		spans := push(spans, {"traceId": dict_get_or(event, "trace_id", dict_get_or(trace_state, "trace_id", "")), "spanId": dict_get_or(event, "span_id", ""), "name": "dispatch." + dict_get_or(event, "type", "event"), "kind": 1, "startTimeUnixNano": dict_get_or(event, "timestamp_unix_nano", "0"), "endTimeUnixNano": dict_get_or(event, "timestamp_unix_nano", "0"), "attributes": attributes, "status": {"code": 1, "message": dict_get_or(event, "message", "")}})
+	}
+	return to_json({"resourceSpans": [{"resource": {"attributes": [otel_attribute("service.name", "dispatch"), otel_attribute("dispatch.workflow", dict_get_or(trace_state, "workflow_name", ""))]}, "scopeSpans": [{"scope": {"name": "kujolang.dispatch", "version": "1.3.0"}, "spans": spans}]}]})
+}
+
+func watchdog_event_kind(event_type) {
+	name := to_lower(to_string(event_type))
+	if contains(name, "approval") || contains(name, "human_intervention") { return "approval" }
+	if contains(name, "handoff") { return "handoff" }
+	if contains(name, "tool") { return "tool" }
+	if contains(name, "model") { return "model" }
+	if contains(name, "error") || contains(name, "failed") || contains(name, "repair") { return "workflow" }
+	return "workflow"
+}
+
+func watchdog_event_status(event_type) {
+	name := to_lower(to_string(event_type))
+	if contains(name, "failed") || contains(name, "error") { return "error" }
+	if contains(name, "denied") || contains(name, "rejected") { return "denied" }
+	if contains(name, "cancel") { return "cancelled" }
+	if contains(name, "completed") || contains(name, "approved") || contains(name, "resumed") { return "ok" }
+	return "unset"
+}
+
+# Convert Dispatch lifecycle evidence into Watchdog's metadata-only native
+# ingestion boundary. Dispatch remains the workflow/state owner; Watchdog gets
+# correlation and status, never step input/output, messages, or payload bodies.
+func render_watchdog_native_events(trace_state) {
+	result := []
+	run_id := to_string(dict_get_or(trace_state, "run_id", ""))
+	workflow := to_string(dict_get_or(trace_state, "workflow_name", ""))
+	for event in dict_get_or(trace_state, "events", []) {
+		step_id := to_string(dict_get_or(event, "step_id", ""))
+		refs := [{"type": "run", "id": run_id, "namespace": "dispatch", "relation": "source"}]
+		if workflow != "" { refs = push(refs, {"type": "workflow", "id": workflow, "namespace": "dispatch", "relation": "source"}) }
+		if step_id != "" { refs = push(refs, {"type": "task", "id": step_id, "namespace": "dispatch", "relation": "source"}) }
+		event_type := to_string(dict_get_or(event, "type", "event"))
+		status := watchdog_event_status(event_type)
+		error_value := null
+		if status == "error" { error_value = {"category": "dispatch_workflow", "message": null} }
+		result = push(result, {
+			"schema_version": "watchdog.native-event.v1",
+			"event_id": to_string(dict_get_or(event, "id", "dispatch-event")),
+			"event_kind": watchdog_event_kind(event_type), "instantaneous": true,
+			"trace_id": to_string(dict_get_or(event, "trace_id", dict_get_or(trace_state, "trace_id", run_id))),
+			"span_id": to_string(dict_get_or(event, "span_id", substring(sha256(run_id + "::" + event_type), 0, 16))),
+			"parent_span_id": null, "name": "dispatch." + event_type, "status": status,
+			"started_at_ms": current_timestamp(), "ended_at_ms": null, "references": refs,
+			"attributes": {"dispatch.event_type": event_type, "dispatch.has_payload": type(dict_get_or(event, "payload", null)) != "null"},
+			"usage": null, "costs": [], "error": error_value
+		})
+	}
+	return result
+}
+
+func finalize_trace(trace_state, status) {
+	trace_state["status"] := status
+	trace_state["finished_at"] := format_date(now(), "YYYY-MM-DD HH:mm:ss")
+	return trace_state
+}
+
+func collect_event_type_counts(trace_state) {
+	counts := {}
+	events := dict_get_or(trace_state, "events", [])
+	if type(events) != "array" {
+		events := []
+	}
+	for event in events {
+		event_type := event["type"]
+		if has_key(counts, event_type) {
+			counts[event_type] := counts[event_type] + 1
+		} else {
+			counts[event_type] := 1
+		}
+	}
+	return counts
+}
+
+func render_trace_markdown(trace_state) {
+	trace_state := ensure_trace_limits(trace_state)
+	lines := []
+	events := dict_get_or(trace_state, "events", [])
+	truncation := dict_get_or(trace_state, "truncated", {})
+	if type(events) != "array" {
+		events := []
+	}
+	lines := push(lines, "# Dispatch Trace")
+	lines := push(lines, "")
+	lines := push(lines, "- Run ID: " + to_string(dict_get_or(trace_state, "run_id", "")))
+	lines := push(lines, "- Workflow: " + to_string(dict_get_or(trace_state, "workflow_name", "")))
+	lines := push(lines, "- Status: " + to_string(dict_get_or(trace_state, "status", "")))
+	lines := push(lines, "- Started: " + to_string(dict_get_or(trace_state, "started_at", "")))
+	lines := push(lines, "- Finished: " + to_string(dict_get_or(trace_state, "finished_at", "")))
+	lines := push(lines, "- Event Count: " + to_string(len(events)))
+	lines := push(lines, "- Event Count (Total): " + to_string(dict_get_or(trace_state, "event_count_total", len(events))))
+	lines := push(lines, "- Truncation: dropped=" + to_string(dict_get_or(truncation, "events_dropped", 0)) + " payloads=" + to_string(dict_get_or(truncation, "payloads_truncated", 0)))
+	lines := push(lines, "- Limits: max_events=" + to_string(dict_get_or(truncation, "max_events", 0)) + " max_payload_chars=" + to_string(dict_get_or(truncation, "max_payload_chars", 0)))
+	lines := push(lines, "")
+	lines := push(lines, "## Event Type Counts")
+	lines := push(lines, "")
+
+	type_counts := collect_event_type_counts(trace_state)
+	for key in keys(type_counts) {
+		lines := push(lines, "- " + key + ": " + to_string(type_counts[key]))
+	}
+
+	lines := push(lines, "")
+	lines := push(lines, "## Events")
+	lines := push(lines, "")
+	for event in events {
+		lines := push(lines, "- [" + to_string(dict_get_or(event, "timestamp", "")) + "] " + to_string(dict_get_or(event, "type", "")) + " | step=" + to_string(dict_get_or(event, "step_id", "")) + " | " + to_string(dict_get_or(event, "message", "")))
+		lines := push(lines, "  - Payload: " + summarize_value(dict_get_or(event, "payload", {}), 280))
+	}
+
+	lines := push(lines, "")
+	return join(lines, "\n")
+}
+
+export create_trace := create_trace
+export append_trace := append_trace
+export finalize_trace := finalize_trace
+export collect_event_type_counts := collect_event_type_counts
+export render_trace_markdown := render_trace_markdown
+export render_otel_trace_json := render_otel_trace_json
+export apply_trace_limits := apply_trace_limits
+export render_watchdog_native_events := render_watchdog_native_events

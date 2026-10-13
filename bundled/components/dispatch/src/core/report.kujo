@@ -1,0 +1,239 @@
+from src.core.utils import dict_get_or, redact_sensitive_data
+
+func report_schema_version() {
+	return 1
+}
+
+func ensure_report_contract_fields(report_payload) {
+	if type(report_payload) != "dict" {
+		report_payload = {}
+	}
+	if has_key(report_payload, "artifact_contract_version") == 0 {
+		report_payload["artifact_contract_version"] := 1
+	}
+	if has_key(report_payload, "schema_name") == 0 {
+		report_payload["schema_name"] := "dispatch-run-report"
+	}
+	if has_key(report_payload, "schema_version") == 0 {
+		report_payload["schema_version"] := report_schema_version()
+	}
+	return report_payload
+}
+
+func build_base_report_payload(run_state) {
+	input_payload := dict_get_or(run_state, "input", {})
+	topic := dict_get_or(input_payload, "topic", "Unknown topic")
+	verification := dict_get_or(run_state["data"], "verification", {})
+	claims := dict_get_or(run_state["data"], "claims", {})
+	sources := dict_get_or(run_state["data"], "sources", {})
+	report := dict_get_or(run_state["data"], "report", {})
+
+	key_findings := dict_get_or(report, "key_findings", [])
+	if len(key_findings) == 0 {
+		key_findings := dict_get_or(verification, "key_findings", [])
+	}
+
+	limitations := dict_get_or(report, "limitations", [])
+	if len(limitations) == 0 {
+		limitations := [
+			"The demo relies on local fixture sources rather than live web retrieval.",
+			"Confidence scores are heuristic and intended for workflow demonstration."
+		]
+	}
+
+	workflow_name := to_string(dict_get_or(run_state, "workflow_name", ""))
+	report_title := "Workflow Report"
+	if workflow_name != "" {
+		report_title = workflow_name + " Output"
+	}
+
+	payload := {
+		"title": report_title,
+		"topic": topic,
+		"summary": dict_get_or(report, "summary", "Dispatch generated this report through a multi-step workflow."),
+		"key_findings": key_findings,
+		"claims": dict_get_or(claims, "claims", []),
+		"evidence": dict_get_or(sources, "evidence", []),
+		"citations": dict_get_or(verification, "citations", []),
+		"confidence_notes": dict_get_or(verification, "confidence_notes", []),
+		"limitations": limitations,
+		"generated_timestamp": format_date(now(), "YYYY-MM-DD HH:mm:ss"),
+		"trace_id": run_state["run_id"],
+		"run_id": run_state["run_id"],
+		"artifact_contract_version": 1,
+		"schema_name": "dispatch-run-report",
+		"schema_version": report_schema_version(),
+		"run_status": dict_get_or(run_state, "status", "unknown"),
+		"total_steps": len(dict_get_or(run_state, "steps", [])),
+		"completed_steps": dict_get_or(dict_get_or(run_state, "trace", {}), "events", [])
+	}
+	payload["routing"] := {
+		"decisions": dict_get_or(run_state, "route_decisions", {}),
+		"attempts": dict_get_or(run_state, "route_attempts", {})
+	}
+
+	completed_step_count := 0
+	for step in dict_get_or(run_state, "steps", []) {
+		if dict_get_or(step, "status", "") == "completed" {
+			completed_step_count := completed_step_count + 1
+		}
+	}
+	payload["completed_steps"] := completed_step_count
+
+	return payload
+}
+
+func claim_matches_any(claim, keywords) {
+	haystack := to_lower(to_string(dict_get_or(claim, "claim", "")) + " " + to_string(dict_get_or(claim, "evidence", "")))
+	for keyword in keywords {
+		if contains(haystack, keyword) == 1 {
+			return true
+		}
+	}
+	return false
+}
+
+func bucket_claims(claims, keywords) {
+	matched := []
+	for claim in claims {
+		if claim_matches_any(claim, keywords) {
+			matched := push(matched, to_string(dict_get_or(claim, "claim", "")) + " (`" + to_string(dict_get_or(claim, "status", "unclassified")) + "`)")
+		}
+	}
+	return matched
+}
+
+func build_crud_reliability_report_payload(run_state, base_payload) {
+	claims := dict_get_or(base_payload, "claims", [])
+	base_payload["reliability_sections"] := [
+		{"title": "Contract Checks", "items": bucket_claims(claims, ["contract", "schema", "api", "endpoint", "version"])},
+		{"title": "Migration Safety", "items": bucket_claims(claims, ["migration", "rollback", "data integrity", "backfill"])},
+		{"title": "Authentication And Authorization", "items": bucket_claims(claims, ["auth", "permission", "token", "access"])},
+		{"title": "Error Budget", "items": bucket_claims(claims, ["error", "budget", "reliability", "slo", "latency"])}
+	]
+	return base_payload
+}
+
+func create_report_builder_registry() {
+	return {
+		"crud_reliability_workflow": func(run_state, base_payload) {
+			return build_crud_reliability_report_payload(run_state, base_payload)
+		}
+	}
+}
+
+func build_report_payload(run_state) {
+	base_payload := build_base_report_payload(run_state)
+	registry := create_report_builder_registry()
+	workflow_id := to_string(dict_get_or(run_state, "workflow_id", ""))
+	if has_key(registry, workflow_id) == 1 {
+		builder := registry[workflow_id]
+		return builder(run_state, base_payload)
+	}
+	return base_payload
+}
+
+func append_blank(lines) {
+	return push(lines, "")
+}
+
+func append_section(lines, title) {
+	lines := push(lines, "## " + title)
+	return append_blank(lines)
+}
+
+func append_bullets(lines, values) {
+	for value in values {
+		lines := push(lines, "- " + to_string(value))
+	}
+	return lines
+}
+
+func render_markdown_report(report_payload) {
+	lines := []
+	lines := push(lines, "# " + report_payload["title"])
+	lines := append_blank(lines)
+	lines := append_bullets(lines, [
+		"Topic: " + report_payload["topic"],
+		"Generated: " + report_payload["generated_timestamp"],
+		"Run ID: " + report_payload["run_id"],
+		"Run Status: " + report_payload["run_status"],
+		"Steps Completed: " + to_string(report_payload["completed_steps"]) + "/" + to_string(report_payload["total_steps"])
+	])
+	lines := append_blank(lines)
+	lines := append_section(lines, "Summary")
+	lines := push(lines, report_payload["summary"])
+	lines := append_blank(lines)
+	lines := append_section(lines, "Key Findings")
+	lines := append_bullets(lines, report_payload["key_findings"])
+	lines := append_blank(lines)
+	lines := append_section(lines, "Claims")
+	for claim in report_payload["claims"] {
+		claim_text := dict_get_or(claim, "claim", to_string(claim))
+		claim_status := dict_get_or(claim, "status", "unclassified")
+		lines := push(lines, "- " + claim_text + " (`" + claim_status + "`)")
+	}
+	lines := append_blank(lines)
+	lines := append_section(lines, "Evidence")
+	for evidence in report_payload["evidence"] {
+		source_id := dict_get_or(evidence, "source_id", "source")
+		snippet := dict_get_or(evidence, "snippet", to_string(evidence))
+		lines := push(lines, "- **" + source_id + "**: " + snippet)
+	}
+	lines := append_blank(lines)
+	lines := append_section(lines, "Citations")
+	lines := append_bullets(lines, report_payload["citations"])
+	lines := append_blank(lines)
+	lines := append_section(lines, "Confidence Notes")
+	lines := append_bullets(lines, report_payload["confidence_notes"])
+	if has_key(report_payload, "reliability_sections") == 1 {
+		lines := append_blank(lines)
+		lines := append_section(lines, "Reliability Review")
+		for section in report_payload["reliability_sections"] {
+			lines := push(lines, "### " + to_string(dict_get_or(section, "title", "Section")))
+			section_items := dict_get_or(section, "items", [])
+			if len(section_items) == 0 {
+				lines := push(lines, "- No specific findings matched this category.")
+			} else {
+				lines := append_bullets(lines, section_items)
+			}
+			lines := append_blank(lines)
+		}
+	}
+	lines := append_blank(lines)
+	lines := append_section(lines, "Limitations")
+	lines := append_bullets(lines, report_payload["limitations"])
+	lines := append_blank(lines)
+	if len(keys(dict_get_or(dict_get_or(report_payload, "routing", {}), "decisions", {}))) > 0 {
+		lines := append_section(lines, "Routing")
+		lines := push(lines, "Deterministic route decisions and attempts are included in `report.json` and `state.json`.")
+		lines := append_blank(lines)
+	}
+	lines := append_blank(lines)
+	lines := append_section(lines, "Trace")
+	lines := push(lines, "Trace and state artifacts are saved alongside this report as JSON and Markdown.")
+	lines := append_blank(lines)
+
+	return join(lines, "\n")
+}
+
+func write_report_artifacts(run_state, report_payload) {
+	run_dir := run_state["run_dir"]
+	report_payload = ensure_report_contract_fields(report_payload)
+	redacted_payload := redact_sensitive_data(report_payload)
+	redacted_payload = ensure_report_contract_fields(redacted_payload)
+	report_md := render_markdown_report(redacted_payload)
+	write_file_atomic(run_dir + "/report.md", report_md, true)
+	write_file_atomic(run_dir + "/report.json", to_json(redacted_payload), true)
+	return {
+		"report_md_path": run_dir + "/report.md",
+		"report_json_path": run_dir + "/report.json",
+		"trace_json_path": run_dir + "/trace.json",
+		"trace_md_path": run_dir + "/trace.md",
+		"state_json_path": run_dir + "/state.json"
+	}
+}
+
+export build_report_payload := build_report_payload
+export render_markdown_report := render_markdown_report
+export write_report_artifacts := write_report_artifacts

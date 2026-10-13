@@ -1,0 +1,145 @@
+from src.plugins.rag import create_rag_plugin
+from src.core.plugins import create_plugin
+from src.tools.tool import create_tool
+from src.core.utils import dict_get_or
+
+# Module-level observability state so an event_hook plugin's effect is testable.
+# Element assignment to a module-level mut dict is the supported mutation idiom
+# (same pattern as the reliability tool's attempt counter).
+mut plugin_event_state := {"count": 0, "last_event_type": "", "last_run_id": ""}
+
+func reset_plugin_event_state() {
+	plugin_event_state["count"] := 0
+	plugin_event_state["last_event_type"] := ""
+	plugin_event_state["last_run_id"] := ""
+	return plugin_event_state
+}
+
+func get_plugin_event_state() {
+	return plugin_event_state
+}
+
+func record_plugin_event(event) {
+	plugin_event_state["count"] := dict_get_or(plugin_event_state, "count", 0) + 1
+	plugin_event_state["last_event_type"] := to_string(dict_get_or(event, "event_type", ""))
+	plugin_event_state["last_run_id"] := to_string(dict_get_or(event, "run_id", ""))
+	return true
+}
+
+func sample_echo_tool_handler(params, context) {
+	return {
+		"ok": true,
+		"data": {"echo": to_string(dict_get_or(params, "text", ""))}
+	}
+}
+
+func sample_echo_tool_payload_adapter(step_input) {
+	return {"text": to_string(dict_get_or(dict_get_or(step_input, "input", {}), "topic", ""))}
+}
+
+func sample_echo_agent_handler(agent, step_input, run_state, tool_registry, context) {
+	topic := to_string(dict_get_or(dict_get_or(step_input, "input", {}), "topic", ""))
+	return {
+		"ok": true,
+		"data": {"echoed": topic, "agent": "echo_agent"},
+		"trace_events": [
+			{"type": "plugin_echo", "message": "Echo agent observed topic", "payload": {"topic": topic}}
+		]
+	}
+}
+
+func create_sample_plugin() {
+	agents := {
+		"echo_agent": {
+			"id": "echo_agent",
+			"name": "Echo Agent",
+			"purpose": "Echo the topic for plugin demonstration.",
+			"instructions": "",
+			"model": {},
+			"model_candidates": [],
+			"handler_id": "echo_agent",
+			"execution_contract": {"id": "plugin-echo", "version": "1"},
+			"capabilities": {"echo": true},
+			"routing": {"risk": "low"},
+			"uses_model": false,
+			"tools": ["echo_tool"],
+			"handoff_targets": [],
+			"output_schema": {"type": "dict"},
+			"guardrails": []
+		}
+	}
+	agent_handlers := {
+		"echo_agent": sample_echo_agent_handler
+	}
+	tools := [
+		create_tool(
+			"echo_tool",
+			"Echoes provided text; sample plugin tool.",
+			{"type": "dict"},
+			{"type": "dict"},
+			sample_echo_tool_handler,
+			sample_echo_tool_payload_adapter
+		)
+	]
+	plugin := create_plugin("sample", agents, agent_handlers, tools)
+	plugin["event_hook"] := func(event) {
+		record_plugin_event(event)
+	}
+	return plugin
+}
+
+func create_builtin_plugin_registry() {
+	return {
+		"sample": create_sample_plugin(),
+		"rag": create_rag_plugin()
+	}
+}
+
+func resolve_builtin_plugins(names) {
+	registry := create_builtin_plugin_registry()
+	resolved := []
+	unknown := []
+	for raw_name in names {
+		name := to_lower(trim(to_string(raw_name)))
+		if name == "" {
+			continue
+		}
+		if has_key(registry, name) == 1 {
+			resolved := push(resolved, registry[name])
+		} else {
+			unknown := push(unknown, name)
+		}
+	}
+	return {
+		"plugins": resolved,
+		"unknown": unknown
+	}
+}
+
+func collect_plugin_event_hooks(plugins) {
+	hooks := []
+	for plugin in plugins {
+		hook := dict_get_or(plugin, "event_hook", null)
+		if type(hook) != "null" {
+			hooks := push(hooks, hook)
+		}
+	}
+	return hooks
+}
+
+func emit_builtin_plugin_events(plugins, event) {
+	for plugin in plugins {
+		if dict_get_or(plugin, "id", "") == "sample" {
+			record_plugin_event(event)
+		}
+	}
+	return {"ok": true}
+}
+
+export reset_plugin_event_state := reset_plugin_event_state
+export get_plugin_event_state := get_plugin_event_state
+export create_sample_plugin := create_sample_plugin
+export create_builtin_plugin_registry := create_builtin_plugin_registry
+export resolve_builtin_plugins := resolve_builtin_plugins
+export collect_plugin_event_hooks := collect_plugin_event_hooks
+export emit_builtin_plugin_events := emit_builtin_plugin_events

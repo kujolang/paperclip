@@ -1,0 +1,246 @@
+from src.providers import openai_provider, openrouter_provider, deepseek_provider, custom_openai_compatible_provider
+from src.ai_sdk import create_client, create_message, chat_completion, chat_completion_stream
+
+func dict_get_or(obj, key, default_value) {
+	if type(obj) != "dict" {
+		return default_value
+	}
+	if has_key(obj, key) == 1 {
+		return obj[key]
+	}
+	return default_value
+}
+
+func parse_payload_arg(raw_args) {
+	payload_text := ""
+	i := 0
+	while i < len(raw_args) {
+		token := raw_args[i]
+		if token == "--payload" {
+			if i + 1 < len(raw_args) {
+				payload_text := raw_args[i + 1]
+			}
+		}
+		i := i + 1
+	}
+	return payload_text
+}
+
+func resolve_provider(payload) {
+	provider_id := to_lower(trim(to_string(dict_get_or(payload, "provider_id", "openai"))))
+	model := dict_get_or(payload, "model", "")
+
+	if provider_id == "openai" {
+		provider := openai_provider()
+		if model != "" {
+			provider["default_model"] := model
+		}
+		return {"ok": true, "provider": provider}
+	}
+
+	if provider_id == "openrouter" {
+		provider := openrouter_provider()
+		if model != "" {
+			provider["default_model"] := model
+		}
+		return {"ok": true, "provider": provider}
+	}
+
+	if provider_id == "deepseek" {
+		provider := deepseek_provider()
+		if model != "" {
+			provider["default_model"] := model
+		}
+		return {"ok": true, "provider": provider}
+	}
+
+	if provider_id == "custom" {
+		base_url := dict_get_or(payload, "base_url", "")
+		if base_url == "" {
+			base_url := "https://api.openai.com/v1"
+		}
+		normalized_base_url := trim(to_string(base_url))
+		while ends_with(normalized_base_url, "/") { normalized_base_url = substring(normalized_base_url, 0, len(normalized_base_url) - 1) }
+		allowed := false
+		lower_base_url := to_lower(normalized_base_url)
+		local_opt_in_value := to_lower(trim(to_string(env("DISPATCH_ALLOW_INSECURE_LOCAL_CUSTOM_PROVIDER"))))
+		local_opt_in := local_opt_in_value == "true" || local_opt_in_value == "1" || local_opt_in_value == "yes" || local_opt_in_value == "on"
+		local_http := starts_with(lower_base_url, "http://localhost:") || starts_with(lower_base_url, "http://127.0.0.1:") || lower_base_url == "http://localhost" || lower_base_url == "http://127.0.0.1"
+		if starts_with(lower_base_url, "https://") || (local_opt_in && local_http) {
+			for configured in split(to_string(env("DISPATCH_ALLOWED_CUSTOM_PROVIDER_ORIGINS")), ",") {
+				normalized_configured := trim(configured)
+				while ends_with(normalized_configured, "/") { normalized_configured = substring(normalized_configured, 0, len(normalized_configured) - 1) }
+				if normalized_configured == normalized_base_url { allowed = true }
+			}
+		}
+		if allowed == false {
+			return {"ok": false, "error": {"code": "provider_endpoint_not_allowed", "message": "Custom provider base_url must be an exact HTTPS entry in DISPATCH_ALLOWED_CUSTOM_PROVIDER_ORIGINS."}}
+		}
+		api_key_env := dict_get_or(payload, "api_key_env", "CUSTOM_API_KEY")
+		default_model := model
+		if default_model == "" {
+			default_model := "gpt-4.1-mini"
+		}
+		return {"ok": true, "provider": custom_openai_compatible_provider(base_url, api_key_env, default_model)}
+	}
+
+	return {
+		"ok": false,
+		"error": {
+			"code": "unsupported_provider",
+			"message": "Unsupported provider adapter: " + provider_id,
+			"retryable": false
+		}
+	}
+}
+
+func normalize_messages(raw_messages) {
+	result := []
+	if type(raw_messages) != "array" {
+		return result
+	}
+
+	i := 0
+	while i < len(raw_messages) {
+		entry := raw_messages[i]
+		if type(entry) == "dict" {
+			role := dict_get_or(entry, "role", "")
+			content := dict_get_or(entry, "content", "")
+			if type(role) == "string" {
+				if role != "" && (type(content) == "string" || type(content) == "array" || type(content) == "null") {
+					message := create_message(role, content)
+					for optional_key in ["name", "tool_call_id", "tool_calls"] {
+						if has_key(entry, optional_key) {
+							message[optional_key] := entry[optional_key]
+						}
+					}
+					result := push(result, message)
+				}
+			}
+		}
+		i := i + 1
+	}
+
+	return result
+}
+
+func emit_error(code, message, status_code) {
+	payload := {
+		"ok": false,
+		"provider": "dispatch-bridge",
+		"error": {
+			"code": code,
+			"message": message,
+			"retryable": false
+		},
+		"status_code": status_code,
+		"normalized_at": current_timestamp(),
+		"raw": null
+	}
+	print(to_json(payload))
+}
+
+raw_args := args()
+payload_text := ""
+raw_env_payload := env("DISPATCH_BRIDGE_PAYLOAD")
+if type(raw_env_payload) != "null" {
+	payload_text := trim(to_string(raw_env_payload))
+}
+if payload_text == "" {
+	payload_text := parse_payload_arg(raw_args)
+}
+
+if payload_text == "" {
+	emit_error("invalid_request", "Missing payload. Set DISPATCH_BRIDGE_PAYLOAD or use --payload.", 400)
+	exit(1)
+}
+
+payload := null
+parse_failed := false
+parse_error := ""
+try {
+	payload := parse_json(payload_text)
+} except err {
+	parse_failed := true
+	parse_error := to_string(err)
+}
+
+if parse_failed {
+	emit_error("invalid_json", "Could not parse payload JSON: " + parse_error, 400)
+	exit(1)
+}
+
+if type(payload) != "dict" {
+	emit_error("invalid_request", "Payload must be a JSON object.", 400)
+	exit(1)
+}
+
+provider_result := resolve_provider(payload)
+if dict_get_or(provider_result, "ok", false) == false {
+	provider_error := dict_get_or(provider_result, "error", {})
+	emit_error(
+		dict_get_or(provider_error, "code", "unsupported_provider"),
+		dict_get_or(provider_error, "message", "Unsupported provider adapter."),
+		400
+	)
+	exit(1)
+}
+provider := provider_result["provider"]
+if trim(to_string(dict_get_or(payload, "api_key", ""))) != "" {
+	emit_error("inline_credential_not_allowed", "Inline model credentials are not allowed; configure the provider credential environment variable.", 400)
+	exit(1)
+}
+api_key := null
+messages := normalize_messages(dict_get_or(payload, "messages", []))
+
+if len(messages) == 0 {
+	emit_error("invalid_request", "At least one message is required.", 400)
+	exit(1)
+}
+
+options := {
+	"model": provider["default_model"],
+	"temperature": dict_get_or(payload, "temperature", 0.2),
+	"max_tokens": dict_get_or(payload, "max_tokens", 700),
+	"max_retries": dict_get_or(payload, "max_retries", 2),
+	"retry_delay_ms": dict_get_or(payload, "retry_delay_ms", 250),
+	"trace_id": dict_get_or(dict_get_or(payload, "route", {}), "decision_id", "")
+}
+
+# Preserve provider-neutral structured-output controls at the Dispatch bridge
+# boundary instead of silently dropping options already owned by the AI SDK.
+if has_key(payload, "response_format") {
+	options["response_format"] := payload["response_format"]
+}
+if has_key(payload, "structured_output_schema") {
+	options["structured_output_schema"] := payload["structured_output_schema"]
+}
+if has_key(payload, "structured_output_retryable") {
+	options["structured_output_retryable"] := payload["structured_output_retryable"]
+}
+if has_key(payload, "tools") {
+	options["tools"] := payload["tools"]
+}
+
+if dict_get_or(payload, "offline_fixture", false) {
+	options["offline_fixture"] := true
+}
+
+client := create_client(provider, api_key)
+result := null
+if dict_get_or(payload, "stream", false) {
+	stream_events_path := trim(to_string(dict_get_or(payload, "stream_events_path", "")))
+	if stream_events_path == "" {
+		emit_error("invalid_request", "stream_events_path is required when stream is enabled.", 400)
+		exit(1)
+	}
+	stream_dir := dirname(stream_events_path)
+	if stream_dir != "" && stream_dir != "." && file_exists(stream_dir) == false { create_dir(stream_dir) }
+	write_file(stream_events_path, "", true)
+	result = chat_completion_stream(client, messages, options, func(event) {
+		append_file(stream_events_path, to_json(event) + "\n")
+	})
+} else {
+	result = chat_completion(client, messages, options)
+}
+print(to_json(result))

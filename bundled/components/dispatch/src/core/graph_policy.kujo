@@ -1,0 +1,177 @@
+from src.core.graph_attempts import accounting_enabled, validate_accounting, accounting_budget, current_attempt, attempt_limit
+# Static policy and pure projections. No execution, callbacks or expression language.
+from src.core.utils import dict_get_or
+from src.core.portable_commitments import portable_json
+func need(ok, reason) {if ok != true {throw(reason)}}
+export func static_policy(state) {return dict_get_or(dict_get_or(state["workflow_definition"], "metadata", {}), "graph_policy", null)}
+export func policy_enabled(state) {return static_policy(state) != null}
+export func policy_step(state, id) {for step in state["workflow_definition"]["steps"] {if step["id"] == id {return step}};throw("policy_node_missing")}
+export func policy_branch(state, id) {for item in static_policy(state)["branches"] {if item["id"] == id {return item}};throw("branch_missing")}
+export func policy_group(state, id) {for item in static_policy(state)["subgraphs"] {if item["id"] == id {return item}};throw("subgraph_missing")}
+func prior(state, id) {
+    found := policy_step(state, id)["depends_on"]
+    for round in range(0, 8) {old := found;for node in old {for before in policy_step(state, node)["depends_on"] {if contains(found, before) == false {found = push(found, before)}}}}
+    return found
+}
+export func validate_static_policy(state) {
+    validate_accounting(state)
+    if policy_enabled(state) == false {return true}
+    p := static_policy(state)
+    need(p["schema"] == "dispatch.static-graph-policy/v1alpha1"&&len(p["branches"]) <= 2&&len(p["subgraphs"]) <= 2, "static_policy_unsupported")
+    need(dict_get_or(state["workflow_definition"]["metadata"], "graph_outcome", "") == "dispatch.graph-outcome/v1alpha1", "policy_requires_terminal_authority")
+    need(state["workflow_definition"]["default_retry_policy"]["max_attempts"] == 1, "policy_retry_unsupported")
+    budget := p["budget"];need(type(budget["max_program_dispatches"]) == "int"&&budget["max_program_dispatches"] >= 0&&budget["max_program_dispatches"] <= 8&&budget["on_exhaustion"] == "block", "policy_budget_invalid")
+    ids := [];conditional := [];sources := []
+    for branch in p["branches"] {
+        need(contains(ids, branch["id"]) == false&&len(branch["cases"]) >= 2&&len(branch["cases"]) <= 4, "branch_definition_invalid");ids = push(ids, branch["id"])
+        source := policy_step(state, branch["source"]);sources = push(sources, source["id"])
+        predicate := branch["predicate"];need(contains(["terminal_outcome", "evaluation_verdict", "human_action"], predicate), "branch_predicate_unsupported")
+        if predicate == "evaluation_verdict" {need(source["config"]["terminal_contract"] == "evaluation-result/v1", "branch_source_contract")}
+        if predicate == "human_action" {need(source["config"]["terminal_contract"] == "intervention-decision/v2", "branch_source_contract")}
+        values := []
+        for choice in branch["cases"] {
+            valid := ["completed", "failed", "cancelled", "rejected"]
+            if predicate == "evaluation_verdict" {valid = ["pass", "fail", "warn", "indeterminate"]}
+            if predicate == "human_action" {valid = ["approve_override", "abort", "cancel"]}
+            need(contains(valid, choice["value"])&&contains(values, choice["value"]) == false&&len(choice["nodes"]) > 0, "branch_case_invalid");values = push(values, choice["value"])
+            for id in choice["nodes"] {need(contains(conditional, id) == false&&contains(prior(state, id), source["id"]), "branch_membership_invalid");conditional = push(conditional, id)}
+        }
+    }
+    for id in sources {need(contains(conditional, id) == false, "nested_branch_source_unsupported")}
+    members := [];groups := []
+    for group in p["subgraphs"] {
+        need(contains(groups, group["id"]) == false&&len(group["members"]) > 0&&len(group["entry"]) > 0&&group["policy"] == "required-success", "subgraph_definition_invalid");groups = push(groups, group["id"])
+        for id in group["members"] {
+            need(contains(members, id) == false&&contains(conditional, id) == false&&contains(sources, id) == false, "nested_or_conditional_subgraph_unsupported");members = push(members, id)
+            for entry in group["entry"] {need(contains(group["members"], entry) == false&&contains(prior(state, id), entry), "subgraph_entry_invalid")}
+        }
+    }
+    for step in state["workflow_definition"]["steps"] {
+        action := dict_get_or(step["config"], "on_unsuccessful", {"action":"fail"})
+        need(contains(["fail", "block", "continue_optional", "route", "require_review", "retry_same_node"], action["action"]), "failure_strategy_invalid")
+        if action["action"] == "retry_same_node" {need(accounting_enabled(state)&&step["config"]["terminal_contract"] == "program-attempt/v1alpha1", "retry_accounting_required")}
+        if action["action"] == "continue_optional" {need(step["optional"], "required_failure_cannot_be_ignored")}
+        if action["action"] == "route" {need(policy_branch(state, action["branch"])["source"] == step["id"], "failure_route_source_mismatch")}
+        if action["action"] == "require_review" {review := policy_step(state, action["review_node"]);need(review["config"]["terminal_contract"] == "intervention-decision/v2"&&contains(prior(state, review["id"]), step["id"])&&review["optional"] == false, "failure_review_invalid")}
+        accepted := dict_get_or(step["config"], "accept_terminal", {})
+        for id in keys(accepted) {need(contains(step["depends_on"], id)&&len(accepted[id]) > 0, "terminal_dependency_invalid");for value in accepted[id] {need(contains(["completed", "failed", "rejected", "cancelled"], value), "terminal_dependency_outcome_invalid")}}
+        for group in p["subgraphs"] {
+            if contains(group["members"], step["id"]) {
+                if action["action"] == "require_review" {need(contains(group["members"], action["review_node"]), "review_outside_subgraph")}
+            } else {
+                crossing := false
+                for id in step["depends_on"] {if contains(group["members"], id) {crossing = true}}
+                inputs := dict_get_or(step["config"], "inputs", [])
+                if has_key(step["config"], "node_execution") {inputs = step["config"]["node_execution"]["inputs"]}
+                for input in inputs {if contains(group["members"], input["source_node"]) {crossing = true}}
+                if crossing {need(contains(dict_get_or(step["config"], "after_subgraphs", []), group["id"]), "subgraph_receipt_dependency_required")}
+            }
+        }
+        for id in dict_get_or(step["config"], "after_subgraphs", []) {
+            group := policy_group(state, id);need(contains(group["members"], step["id"]) == false, "subgraph_cycle")
+            for member in group["members"] {need(contains(step["depends_on"], member), "subgraph_dependency_not_declared")}
+        }
+    }
+    return true
+}
+export func path_state(state, id) {
+    if policy_enabled(state) == false {return "active"}
+    for branch in static_policy(state)["branches"] {
+        for choice in branch["cases"] {if contains(choice["nodes"], id) {
+            activation := dict_get_or(dict_get_or(state, "branch_activations", {}), branch["id"], null)
+            if activation == null {return "awaiting_selection"}
+            if activation["candidate"]["selected"] == choice["value"] {return "active"};return "not_selected"
+        }}
+    }
+    return "active"
+}
+export func policy_dependencies(state, step) {
+    deps := [];grouped := []
+    if policy_enabled(state) {for id in dict_get_or(step["config"], "after_subgraphs", []) {for member in policy_group(state, id)["members"] {grouped = push(grouped, member)}}}
+    for id in step["depends_on"] {if path_state(state, id) != "not_selected"&&contains(grouped, id) == false {deps = push(deps, id)}}
+    return deps
+}
+export func dependency_accepts(state, step, id, outcome) {
+    if policy_enabled(state) == false {return outcome == "completed"}
+    accepted := dict_get_or(dict_get_or(step["config"], "accept_terminal", {}), id, ["completed"])
+    return contains(accepted, outcome)
+}
+export func policy_ready(state, step) {
+    if path_state(state, step["id"]) != "active" {return false}
+    if policy_enabled(state) {for group in static_policy(state)["subgraphs"] {if contains(group["members"], step["id"]) {
+        for entry in group["entry"] {fact := dict_get_or(dict_get_or(state, "node_completions", {}), entry, null);if fact == null||fact["terminal"]["outcome"] != "completed" {return false}}
+        if has_key(dict_get_or(state, "subgraph_finalizations", {}), group["id"])&&has_key(dict_get_or(state, "node_completions", {}), step["id"]) == 0 {return false}
+    }}}
+    for id in step["depends_on"] {if path_state(state, id) == "awaiting_selection" {return false}}
+    for id in policy_dependencies(state, step) {
+        terminal := dict_get_or(dict_get_or(state, "node_completions", {}), id, null)
+        if terminal == null||dependency_accepts(state, step, id, terminal["terminal"]["outcome"]) == false {return false}
+    }
+    for id in dict_get_or(step["config"], "after_subgraphs", []) {
+        terminal := dict_get_or(dict_get_or(state, "subgraph_finalizations", {}), id, null)
+        if terminal == null||terminal["candidate"]["outcome"] != "completed" {return false}
+    }
+    return true
+}
+export func policy_controls(state, step) {
+    controls := {"branches":[], "subgraphs":[]};raws := []
+    if policy_enabled(state) == false {return {"controls":controls, "artifacts":raws}}
+    # Each downstream binding retains the exact applicable activation, including joins.
+    prior_ids := push(prior(state, step["id"]), step["id"])
+    for branch in static_policy(state)["branches"] {
+        relevant := false;for choice in branch["cases"] {for id in choice["nodes"] {if contains(prior_ids, id) {relevant = true}}}
+        if relevant {
+            record := state["branch_activations"][branch["id"]];raw := portable_json(record)
+            controls["branches"] := push(controls["branches"], "sha256:" + sha256(raw));raws = push(raws, raw)
+        }
+    }
+    for id in dict_get_or(step["config"], "after_subgraphs", []) {raw := portable_json(state["subgraph_finalizations"][id]);controls["subgraphs"] := push(controls["subgraphs"], "sha256:" + sha256(raw));raws = push(raws, raw)}
+    return {"controls":controls, "artifacts":raws}
+}
+export func dispatch_budget(state) {
+    if accounting_enabled(state) {return accounting_budget(state)}
+    limit := static_policy(state)["budget"]["max_program_dispatches"];used := len(keys(dict_get_or(state, "node_dispatches", {})))
+    return {"unit":"program_dispatch_reservations", "used":used, "limit":limit, "exhausted":used >= limit, "on_exhaustion":"block"}
+}
+export func failure_strategy(state, step, outcome) {
+    if outcome == "completed" {return "satisfied"}
+    action := dict_get_or(step["config"], "on_unsuccessful", {"action":"fail"})
+    if action["action"] == "retry_same_node" {row := current_attempt(state, step["id"]);if row != null&&row["ordinal"] < attempt_limit(state, step["id"]) {return "blocked"}}
+    if action["action"] == "block" {return "blocked"}
+    if action["action"] == "route" {if has_key(dict_get_or(state, "branch_activations", {}), action["branch"]) {return "routed"};return "awaiting_selection"}
+    if action["action"] == "require_review" {
+        review := dict_get_or(dict_get_or(state, "node_completions", {}), action["review_node"], null)
+        if review == null {return "review_required"}
+        if review["terminal"]["outcome"] == "completed" {return "reviewed"};return "failed"
+    }
+    if step["optional"] {return "optional_failure"}
+    return outcome
+}
+export func policy_event(kind) {return contains(["graph_branch_activated", "graph_subgraph_finalized"], kind)}
+export func apply_policy_transition(state, kind, data) {
+    need(policy_enabled(state), "static_policy_required")
+    c := data["candidate"];unsigned := {};for key in keys(c) {if key != "candidate_id" {unsigned[key] := c[key]}}
+    need(c["candidate_id"] == sha256(portable_json(unsigned))&&c["revision"] == state["revision"]&&data["resulting_revision"] == state["revision"] + 1&&c["graph"]["run_id"] == state["run_id"]&&c["graph"]["workflow_ref"] == "sha256:" + sha256(to_json(state["workflow_definition"])), "policy_candidate_stale")
+    if kind == "graph_branch_activated" {
+        records := dict_get_or(state, "branch_activations", {});id := c["branch_id"];branch := policy_branch(state, id)
+        need(has_key(records, id) == 0&&to_json(state["node_completions"][branch["source"]]["terminal"]) == to_json(c["source_terminal"]), "branch_conflict")
+        records[id] := data;state["branch_activations"] := records
+    } else {
+        records := dict_get_or(state, "subgraph_finalizations", {});id := c["subgraph_id"]
+        need(has_key(records, id) == 0&&contains(["completed", "failed", "cancelled"], c["outcome"]), "subgraph_conflict")
+        records[id] := data;state["subgraph_finalizations"] := records
+    }
+    state["status"] := "paused";return state
+}
+export func policy_history(state, events) {
+    branches := {};groups := {}
+    for event in events {
+        if policy_event(event["kind"]) {
+            data := event["details"]["data"];c := data["candidate"]
+            if event["kind"] == "graph_branch_activated" {need(has_key(branches, c["branch_id"]) == 0, "duplicate_branch_activation");branches[c["branch_id"]] := data}
+            else {need(has_key(groups, c["subgraph_id"]) == 0, "duplicate_subgraph_terminal");groups[c["subgraph_id"]] := data}
+        }
+    }
+    need(to_json(branches) == to_json(dict_get_or(state, "branch_activations", {}))&&to_json(groups) == to_json(dict_get_or(state, "subgraph_finalizations", {})), "policy_history_mismatch")
+    return true
+}

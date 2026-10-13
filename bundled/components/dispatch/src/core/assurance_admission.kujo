@@ -1,0 +1,90 @@
+from src.core.utils import dict_get_or, ensure_dir
+from src.core.assurance_state import assurance_protected
+from src.core.assurance_configuration import negotiation_selection, resolve_run_configuration, evaluate_run_assurance
+from src.core.state import create_run_state, load_run_state, acquire_run_lock, release_run_lock, persist_run_state
+from src.core.control_journal import append_control_event, reconcile_control_journal
+from src.core.intervention import prepare_verified_intervention
+from src.core.checkpoint import validate_review_checkpoint
+from src.core.runner import run_workflow_with_admission
+
+func denied(code) {return {"ok": false, "code": code, "error": {"code": code, "message": "Negotiated continuation rejected.", "retryable": false}}}
+# Operator API: descriptor is public committed metadata; host is installed code.
+# Functions/credentials do not enter persisted options or workflow definitions.
+export func create_negotiated_run(workflow, input, output_root, options, descriptor, host) {
+    if len(keys(dict_get_or(workflow, "control", {}))) == 0||dict_get_or(workflow, "max_parallel_steps", 1) != 1 {return denied("assurance_workflow_unsupported")}
+    selection := negotiation_selection(descriptor)
+    provisional := {"assurance_negotiation": selection}
+    checked := resolve_run_configuration(provisional, {"assurance_host": host})
+    if checked["ok"] == false {return checked}
+    creation := {}
+    for key in keys(options) {if key != "assurance_host" {creation[key] := options[key]}}
+    creation["assurance_negotiation"] := selection
+    return {"ok": true, "run_state": create_run_state(workflow, input, output_root, creation)}
+}
+# Explicit association publication: one immutable selected sidecar per source
+# attempt. No producer URL/path resolution. New attempts need a new selection.
+export func select_run_assurance(output_root, run_id, expected, raw) {
+    loaded := load_run_state(output_root, run_id)
+    if loaded["ok"] == false {return loaded}
+    locked := acquire_run_lock(loaded["run_state"])
+    if locked["ok"] == false {return locked}
+    answer := denied("assurance_selection_invalid")
+    try {
+        loaded = load_run_state(output_root, run_id)
+        if loaded["ok"] == false {throw("state unavailable")}
+        state := loaded["run_state"]
+        if assurance_protected(state) == false||byte_length(raw) > 8192||state["run_id"] != expected["run_id"] {throw("invalid selection")}
+        # Association metadata is also bounded before any artifact/journal write.
+        for field in ["step_id", "attempt_id"] {
+            if type(expected[field]) != "string"||len(expected[field]) < 1||len(expected[field]) > 128 {throw("invalid selection subject")}
+        }
+        if regex_match(expected["result_sha256"], "^[0-9a-f]{64}$") == false {throw("invalid result digest")}
+        if dict_get_or(dict_get_or(state, "current_control_boundary", {}), "step_id", "") != expected["step_id"] {throw("selection boundary mismatch")}
+        reconciled := reconcile_control_journal(state)
+        if reconciled["ok"] == false {throw("journal mismatch")}
+        digest := sha256(raw)
+        selection := {"step_id": expected["step_id"], "attempt_id": expected["attempt_id"], "result_sha256": expected["result_sha256"], "sidecar_ref": "assurance/" + digest + ".json", "sidecar_sha256": digest}
+        previous := dict_get_or(state, "assurance_selection", null)
+        if previous != null&&previous["attempt_id"] == selection["attempt_id"]&&previous["step_id"] == selection["step_id"]&&to_json(previous) != to_json(selection) {throw("conflicting assurance")}
+        ensure_dir(state["run_dir"] + "/assurance")
+        if file_exists(state["run_dir"] + "/" + selection["sidecar_ref"]) {if read_file_beneath(state["run_dir"], selection["sidecar_ref"], 8192) != raw {throw("artifact mismatch")}}
+        else {write_file_atomic_beneath(state["run_dir"], selection["sidecar_ref"], raw, false); sync_directory_beneath(state["run_dir"], "assurance")}
+        state["assurance_selection"] := selection
+        logged := append_control_event(state, "assurance_sidecar_selected", expected["step_id"], [], {"selection": selection})
+        state = logged["run_state"]
+        # Preserve review request's optimistic revision when only adding evidence.
+        request := dict_get_or(state, "human_intervention", null)
+        if type(request) == "dict" {request["state_revision"] := state["revision"] + 1; state["human_intervention"] := request}
+        answer = {"ok": true, "run_state": persist_run_state(state)}
+    } except err {answer = denied("assurance_selection_invalid")}
+    release_run_lock(locked)
+    return answer
+}
+
+export func resume_negotiated_review(workflow, state, tools, options, decision) {
+    admission := func(current) {
+        if (has_key(current,"effect_continuation")||has_key(current,"effect_lifecycle")) {return denied("effect_parent_replay_prohibited")}
+        if assurance_protected(current) == false {return denied("assurance_policy_required")}
+        checkpoint := dict_get_or(options, "checkpoint_id", "")
+        if checkpoint != "" {checked := validate_review_checkpoint(current, checkpoint); if checked["ok"] == false {return checked}}
+        resolved := evaluate_run_assurance(current, options)
+        if resolved["ok"] == false {return resolved}
+        expected := resolved["expected"]
+        boundary := dict_get_or(current, "current_control_boundary", {})
+        if boundary["step_id"] != expected["step_id"]||decision["continuation"]["target_step_id"] != expected["step_id"] {return denied("assurance_continuation_target_mismatch")}
+        matched := false
+        for step in current["steps"] {if step["id"] == expected["step_id"] {matched = to_string(dict_get_or(step, "control_attempt", 1)) == expected["attempt_id"]&&to_json(dict_get_or(step, "execution_result", null)) == to_json(parse_json(resolved["result_raw"]))}}
+        if matched == false {return denied("assurance_current_state_mismatch")}
+        if contains(["retry_step", "retry_clean"], decision["action"]) == false {return denied("assurance_action_unsupported")}
+        # resolve again inside the verifier immediately before preparing mutation.
+        prepared := prepare_verified_intervention(current, decision, func(fresh) {return evaluate_run_assurance(fresh, options)})
+        if prepared["ok"] == false {return prepared}
+        next := prepared["run_state"]
+        next["assurance_replay"] := {"step_id": expected["step_id"], "source_attempt": expected["attempt_id"], "next_attempt": parse_int(expected["attempt_id"]) + 1, "result_sha256": expected["result_sha256"]}
+        boundary = next["current_control_boundary"]; boundary["status"] := "closed"; next["current_control_boundary"] := boundary
+        next["control_barrier"] := {"status": "released"}; next["human_intervention"] := null
+        logged := append_control_event(next, "assurance_replay_admitted", expected["step_id"], [], {"policy_sha256": next["assurance_negotiation"]["policy_sha256"], "config_revision": next["assurance_negotiation"]["config_revision"], "resolution": resolved["resolution"], "replay": next["assurance_replay"], "decision": decision})
+        return {"ok": true, "run_state": persist_run_state(logged["run_state"])}
+    }
+    return run_workflow_with_admission(workflow, state, tools, options, admission)
+}

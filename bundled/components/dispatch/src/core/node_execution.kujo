@@ -1,0 +1,43 @@
+# Initial execution uses the existing locked runner admission path. No effect ticket
+# is inherited from a predecessor; subsequent effects still use their own lifecycle.
+from src.core.runner import run_workflow_with_admission
+from src.core.assurance_configuration import resolve_run_configuration
+from src.core.node_composition import persist_node_transition
+from src.core.node_transition import composition_node, node_reference, node_claim_path, validate_node_binding_bytes
+from src.core.portable_commitments import portable_json
+from src.core.utils import dict_get_or
+func demand(ok, code) {if ok != true {throw(code)}}
+export func run_bound_node(workflow, state, tools, options, binding) {
+    effective := {};for key in keys(options) {effective[key] := options[key]}
+    effective["node_execution_ticket"] := func(current) {
+        return current["run_id"] == state["run_id"]&&current["node_execution_admission"]["binding_ref"] == node_reference(binding)&&read_file_beneath(current["run_dir"], node_claim_path(binding), 65536) == portable_json(binding)
+    }
+    admit := func(current) {
+        demand(composition_node(current)&&has_key(current, "node_execution_refusal") == 0&&has_key(current, "node_execution_admission") == 0, "node_already_consumed")
+        demand(to_json(current["node_input_binding"]) == to_json(binding), "node_binding_changed")
+        demand(len(current["steps"]) == 1&&current["steps"][0]["status"] == "pending", "node_not_pending")
+        demand(len(keys(dict_get_or(current["workflow_definition"], "control", {}))) > 0&&has_key(current["workflow_definition"]["steps"][0]["config"], "parent_finalization"), "node_parent_contract_required")
+        demand(resolve_run_configuration(current, options)["ok"], "node_authority_stale")
+        validate_node_binding_bytes(current, binding)
+        hook := dict_get_or(options, "node_boundary", null);if type(hook) == "function" {hook("before_node_admission")}
+        configured := resolve_run_configuration(current, options);demand(configured["ok"], "node_authority_stale")
+        preflight := dict_get_or(configured["installed"], "node_preflight", null)
+        if binding["schema"] == "dispatch.node-input-binding/v1alpha4"&&type(preflight) == "function" {
+            fact := preflight(current);demand(type(fact) == "dict"&&contains(["available", "required_resource_unavailable"], dict_get_or(fact, "status", "")), "node_preflight_invalid")
+            if fact["status"] == "required_resource_unavailable" {
+                current = persist_node_transition(current, "node_execution_refused", {"schema":"dispatch.node-pre-admission-refusal/v1alpha1", "binding_ref":node_reference(binding), "consumer":binding["consumer"], "reason":fact["status"], "authority_ref":"sha256:" + current["assurance_negotiation"]["config_revision"], "resulting_revision":current["revision"] + 1})
+                return {"ok":false, "refused_before_admission":true, "run_state":current, "error":{"code":"node_preflight_refused", "message":"Required local resource unavailable before admission.", "retryable":false}}
+            }
+        }
+        # Same exclusive durable claim primitive as sequential effect admission:
+        # never replace or reclaim after controller death.
+        demand(write_file_atomic_beneath(current["run_dir"], node_claim_path(binding), portable_json(binding), false), "node_already_consumed")
+        demand(sync_directory_beneath(current["run_dir"], "node-input")&&sync_directory_beneath(current["run_dir"], "."), "node_claim_sync_failed")
+        current = persist_node_transition(current, "node_execution_admitted", {"binding_ref":node_reference(binding), "consumer":binding["consumer"]})
+        if type(hook) == "function" {hook("after_node_admission")}
+        demand(resolve_run_configuration(current, options)["ok"], "node_authority_stale")
+        return {"ok":true, "run_state":current}
+    }
+    result := run_workflow_with_admission(workflow, state, tools, effective, admit)
+    return result
+}

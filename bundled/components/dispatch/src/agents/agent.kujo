@@ -1,0 +1,515 @@
+from src.core.utils import dict_get_or
+from src.bridge.sdk_adapter import call_agent_model
+from src.tools.tool import call_tool, get_tool
+from src.core.errors import missing_agent_error, agent_execution_error
+
+func create_agent(agent_id, name, purpose, instructions, model_config, tools, handoff_targets, output_schema, guardrails) {
+	return {
+		"id": agent_id,
+		"name": name,
+		"purpose": purpose,
+		"instructions": instructions,
+		"model": model_config,
+		"model_candidates": [],
+		"handler_id": agent_id,
+		"execution_contract": {"id": agent_id, "version": "1"},
+		"capabilities": {},
+		"routing": {},
+		"tools": tools,
+		"handoff_targets": handoff_targets,
+		"output_schema": output_schema,
+		"guardrails": guardrails
+	}
+}
+
+func bounded_model_options(options, context) {
+	result := options
+	cap := dict_get_or(context, "model_max_tokens_cap", 0)
+	if type(cap) == "int" && cap > 0 && dict_get_or(result, "max_tokens", cap) > cap { result["max_tokens"] := cap }
+	timeout_ms := dict_get_or(context, "execution_timeout_ms", 0)
+	deadline_ms := dict_get_or(context, "deadline_ms", 0)
+	if (type(deadline_ms) == "int" || type(deadline_ms) == "float") && deadline_ms > 0 {
+		remaining_ms := deadline_ms - current_timestamp()
+		if remaining_ms < timeout_ms || timeout_ms <= 0 { timeout_ms = remaining_ms }
+	}
+	if (type(timeout_ms) == "int" || type(timeout_ms) == "float") && timeout_ms > 0 { result["timeout_ms"] := timeout_ms }
+	return result
+}
+
+func execution_budget_error(context, operation_name) {
+	deadline_ms := dict_get_or(context, "deadline_ms", 0)
+	if (type(deadline_ms) == "int" || type(deadline_ms) == "float") && deadline_ms > 0 && current_timestamp() >= deadline_ms {
+		return {"ok": false, "error": {"code": dict_get_or(context, "deadline_error_code", "workflow_budget_exceeded"), "message": "Execution deadline expired before " + operation_name + ".", "retryable": false}}
+	}
+	return null
+}
+
+func call_authorized_tool(tool_registry, tool_name, tool_input, run_state, context) {
+	deadline_error := execution_budget_error(context, "tool execution: " + tool_name)
+	if type(deadline_error) == "dict" { return deadline_error }
+	authorization := authorize_model_tool(tool_name, tool_input, run_state, context)
+	if dict_get_or(authorization, "ok", false) == false { return {"ok": false, "error": authorization["error"]} }
+	result := call_tool(tool_registry, tool_name, tool_input, context)
+	deadline_error = execution_budget_error(context, "tool completion: " + tool_name)
+	if type(deadline_error) == "dict" { return deadline_error }
+	return result
+}
+
+func planner_output(agent, step_input, run_state, context) {
+	topic := dict_get_or(dict_get_or(step_input, "input", {}), "topic", "Unknown topic")
+	prompt := "Create a concise research plan for topic: " + topic
+	deadline_error := execution_budget_error(context, "planner model call")
+	if type(deadline_error) == "dict" { return deadline_error }
+	model_result := call_agent_model(agent, prompt, bounded_model_options({
+		"max_tokens": 180,
+		"temperature": 0.1
+	}, context))
+	if dict_get_or(model_result, "ok", false) == false {
+		return model_result
+	}
+
+	plan := {
+		"topic": topic,
+		"questions": [
+			"What problem does the topic solve?",
+			"What are the core workflow stages and responsibilities?",
+			"What reliability and governance mechanisms are required?",
+			"What evidence supports the final recommendations?"
+		],
+		"source_types": ["technical documentation", "architecture notes", "implementation guides"],
+		"expected_sections": ["Summary", "Findings", "Claims", "Evidence", "Limitations"],
+		"created_at": format_date(now(), "YYYY-MM-DD HH:mm:ss")
+	}
+
+	plan["model_brief"] := dict_get_or(model_result, "output_text", "")
+
+	return {
+		"ok": true,
+		"data": plan,
+		"model_calls": [{
+			"ok": dict_get_or(model_result, "ok", false),
+			"provider": dict_get_or(model_result, "provider", dict_get_or(dict_get_or(agent, "model", {}), "provider", "")),
+			"model": dict_get_or(model_result, "model", dict_get_or(dict_get_or(agent, "model", {}), "model", "")),
+			"usage": dict_get_or(model_result, "usage", {})
+		}]
+	}
+}
+
+func research_output(agent, step_input, run_state, tool_registry, context) {
+	topic := dict_get_or(dict_get_or(step_input, "input", {}), "topic", "")
+	search_result := call_authorized_tool(tool_registry, "mock_web_search", {"query": topic}, run_state, context)
+	if dict_get_or(search_result, "ok", false) == false {
+		return search_result
+	}
+
+	results := dict_get_or(dict_get_or(search_result, "data", {}), "results", [])
+	evidence := []
+	source_docs := []
+	index := 0
+	while index < len(results) {
+		item := results[index]
+		source_id := dict_get_or(item, "source_id", "")
+		if source_id != "" {
+			lookup_result := call_authorized_tool(tool_registry, "local_source_lookup", {"source_id": source_id}, run_state, context)
+			if dict_get_or(lookup_result, "ok", false) {
+				source_docs := push(source_docs, dict_get_or(lookup_result, "data", {}))
+			}
+		}
+		evidence := push(evidence, {
+			"source_id": dict_get_or(item, "source_id", "source"),
+			"path": dict_get_or(item, "path", ""),
+			"snippet": dict_get_or(item, "snippet", ""),
+			"score": dict_get_or(item, "score", 0)
+		})
+		index := index + 1
+	}
+
+	return {
+		"ok": true,
+		"data": {
+			"topic": topic,
+			"query": topic,
+			"results": results,
+			"evidence": evidence,
+			"source_documents": source_docs,
+			"research_note": "Research agent gathered fixture-backed evidence for verification."
+		}
+	}
+}
+
+func verification_output(agent, step_input, run_state, tool_registry, context) {
+	sources := dict_get_or(step_input, "sources", {})
+	evidence := dict_get_or(sources, "evidence", [])
+	claim_bundle := dict_get_or(step_input, "claims", {})
+	claims := dict_get_or(claim_bundle, "claims", [])
+
+	verified_claims := []
+	key_findings := []
+	confidence_notes := []
+	index := 0
+	for claim in claims {
+		status := "supported"
+		if index % 4 == 1 {
+			status := "weakly_supported"
+		}
+		if index % 4 == 2 {
+			status := "conflicting"
+		}
+		if index % 4 == 3 {
+			status := "unsupported"
+		}
+		confidence := 0.9
+		if status == "weakly_supported" {
+			confidence := 0.65
+		}
+		if status == "conflicting" {
+			confidence := 0.45
+		}
+		if status == "unsupported" {
+			confidence := 0.2
+		}
+		verified := claim
+		verified["status"] := status
+		verified["confidence"] := confidence
+		verified_claims := push(verified_claims, verified)
+		key_findings := push(key_findings, dict_get_or(claim, "claim", ""))
+		confidence_notes := push(confidence_notes, "Claim " + dict_get_or(claim, "id", to_string(index + 1)) + " marked " + status + " with confidence " + to_string(confidence) + ".")
+		index := index + 1
+	}
+
+	citations_result := call_authorized_tool(tool_registry, "citation_formatter", {"claims": verified_claims}, run_state, context)
+	citations := []
+	if dict_get_or(citations_result, "ok", false) {
+		citations := dict_get_or(dict_get_or(citations_result, "data", {}), "citations", [])
+	}
+
+	return {
+		"ok": true,
+		"data": {
+			"claims": verified_claims,
+			"key_findings": key_findings,
+			"confidence_notes": confidence_notes,
+			"citations": citations,
+			"evidence_count": len(evidence)
+		}
+	}
+}
+
+func writer_output(agent, step_input, run_state, tool_registry, context) {
+	topic := dict_get_or(dict_get_or(step_input, "input", {}), "topic", "")
+	verification := dict_get_or(step_input, "verification", {})
+	claim_bundle := dict_get_or(step_input, "claims", {})
+	claims := dict_get_or(claim_bundle, "claims", [])
+
+	writer_tool_result := call_authorized_tool(tool_registry, "markdown_report_writer", {
+		"topic": topic,
+		"verification": verification,
+		"claims": claims
+	}, run_state, context)
+	if dict_get_or(writer_tool_result, "ok", false) == false {
+		return writer_tool_result
+	}
+
+	tool_payload := dict_get_or(writer_tool_result, "data", {})
+	model_prompt := "Draft a concise executive summary for this topic: " + topic
+	deadline_error := execution_budget_error(context, "writer model call")
+	if type(deadline_error) == "dict" { return deadline_error }
+	model_result := call_agent_model(agent, model_prompt, bounded_model_options({
+		"max_tokens": 220,
+		"temperature": 0.2
+	}, context))
+	if dict_get_or(model_result, "ok", false) == false {
+		return model_result
+	}
+	tool_payload["summary"] := dict_get_or(model_result, "output_text", tool_payload["summary"])
+	return {
+		"ok": true,
+		"data": tool_payload,
+		"model_calls": [{
+			"ok": dict_get_or(model_result, "ok", false),
+			"provider": dict_get_or(model_result, "provider", dict_get_or(dict_get_or(agent, "model", {}), "provider", "")),
+			"model": dict_get_or(model_result, "model", dict_get_or(dict_get_or(agent, "model", {}), "model", "")),
+			"usage": dict_get_or(model_result, "usage", {})
+		}]
+	}
+}
+
+func model_tool_schema(tool_obj) {
+	parameters := dict_get_or(tool_obj, "input_schema", {"type": "object"})
+	if type(parameters) != "dict" {
+		parameters = {"type": "object"}
+	}
+	if dict_get_or(parameters, "type", "") == "dict" {
+		parameters["type"] := "object"
+	}
+	return {"type": "function", "function": {"name": dict_get_or(tool_obj, "name", ""), "description": dict_get_or(tool_obj, "description", ""), "parameters": parameters}}
+}
+
+func model_agent_allows_tool(agent_tools, requested_name) {
+	for configured_name in agent_tools {
+		if configured_name == requested_name {
+			return true
+		}
+	}
+	return false
+}
+
+func authorize_model_tool(tool_name, tool_input, run_state, context) {
+	policy := dict_get_or(context, "tool_authorization_policy", null)
+	if type(policy) == "null" {
+		return {"ok": true}
+	}
+	decision := null
+	try {
+		decision = policy({"run_id": dict_get_or(run_state, "run_id", ""), "workflow_id": dict_get_or(run_state, "workflow_id", ""), "step_id": dict_get_or(context, "step_id", ""), "tool_name": tool_name, "step_input": tool_input, "status": dict_get_or(run_state, "status", "unknown")})
+	} except err {
+		return {"ok": false, "error": {"code": "tool_authorization_error", "message": "Tool authorization policy failed: " + tool_name, "retryable": false}}
+	}
+	if type(decision) == "bool" && decision {
+		return {"ok": true}
+	}
+	if type(decision) == "dict" && dict_get_or(decision, "allow", dict_get_or(decision, "ok", false)) {
+		return {"ok": true}
+	}
+	return {"ok": false, "error": {"code": "tool_execution_denied", "message": "Tool execution denied by authorization policy: " + tool_name, "retryable": false}}
+}
+
+func model_agent_output(agent, step_input, run_state, tool_registry, context) {
+	agent_tools := dict_get_or(agent, "tools", [])
+	tool_definitions := []
+	for tool_name in agent_tools {
+		tool_obj := get_tool(tool_registry, tool_name)
+		if type(tool_obj) == "null" {
+			return {"ok": false, "error": {"code": "missing_tool", "message": "Declared model tool is unavailable: " + tool_name, "retryable": false}}
+		}
+		tool_definitions := push(tool_definitions, model_tool_schema(tool_obj))
+	}
+
+	model_config := dict_get_or(agent, "model_options", {})
+	max_tool_rounds := dict_get_or(model_config, "max_tool_rounds", 4)
+	if type(max_tool_rounds) != "int" || max_tool_rounds < 0 || max_tool_rounds > 16 {
+		return {"ok": false, "error": {"code": "invalid_tool_budget", "message": "max_tool_rounds must be an integer between 0 and 16.", "retryable": false}}
+	}
+	max_tool_calls := dict_get_or(model_config, "max_tool_calls", 16)
+	if type(max_tool_calls) != "int" || max_tool_calls < 0 || max_tool_calls > 64 {
+		return {"ok": false, "error": {"code": "invalid_tool_budget", "message": "max_tool_calls must be an integer between 0 and 64.", "retryable": false}}
+	}
+
+	messages := [
+		{"role": "system", "content": dict_get_or(agent, "instructions", "")},
+		{"role": "user", "content": to_json({"input": step_input})}
+	]
+	tool_results := {}
+	executed_calls := {}
+	trace_events := []
+	model_calls := []
+	total_tool_calls := 0
+	round := 0
+	model_result := null
+	model_invoker := dict_get_or(agent, "__model_invoker", call_agent_model)
+	remaining_model_tokens := dict_get_or(context, "model_total_token_budget", 0)
+	bounded_total_tokens := type(remaining_model_tokens) == "int" && remaining_model_tokens > 0
+
+	while true {
+		deadline_error := execution_budget_error(context, "model call")
+		if type(deadline_error) == "dict" { return deadline_error }
+		model_options := {"max_tokens": dict_get_or(model_config, "max_tokens", 700), "temperature": dict_get_or(model_config, "temperature", 0.2), "messages": messages}
+		model_options = bounded_model_options(model_options, context)
+		if bounded_total_tokens {
+			estimated_input_tokens := to_int((len(to_json(messages)) + 3) / 4)
+			available_output_tokens := remaining_model_tokens - estimated_input_tokens
+			if available_output_tokens < 1 { return {"ok": false, "error": {"code": "workflow_budget_exceeded", "message": "Model-call envelope has no remaining token capacity.", "retryable": false}, "model_calls": model_calls, "trace_events": trace_events} }
+			if dict_get_or(model_options, "max_tokens", available_output_tokens) > available_output_tokens { model_options["max_tokens"] := available_output_tokens }
+		}
+		if dict_get_or(model_config, "stream", false) {
+			stream_step_id := to_string(dict_get_or(context, "step_id", "model"))
+			if contains(stream_step_id, "/") || contains(stream_step_id, "\\") {
+				return {"ok": false, "error": {"code": "invalid_stream_step_id", "message": "Streaming step ids must not contain path separators.", "retryable": false}}
+			}
+			stream_path := dict_get_or(run_state, "run_dir", "") + "/stream-" + stream_step_id + ".jsonl"
+			model_options["stream"] := true
+			model_options["stream_events_path"] := stream_path
+		}
+		if len(tool_definitions) > 0 {
+			model_options["tools"] := tool_definitions
+		}
+		output_schema := dict_get_or(agent, "output_schema", null)
+		if type(output_schema) == "dict" && len(keys(output_schema)) > 0 {
+			model_options["response_format"] := {"type": "json_object"}
+			model_options["structured_output_schema"] := output_schema
+			model_options["structured_output_retryable"] := false
+		}
+		model_result = model_invoker(agent, to_json({"input": step_input}), model_options)
+		deadline_error = execution_budget_error(context, "model completion")
+		if type(deadline_error) == "dict" { return deadline_error }
+		if dict_get_or(model_result, "ok", false) == false {
+			return model_result
+		}
+		model_calls := push(model_calls, {"ok": true, "provider": dict_get_or(model_result, "provider", ""), "model": dict_get_or(model_result, "model", ""), "usage": dict_get_or(model_result, "usage", {})})
+		if bounded_total_tokens {
+			call_usage := dict_get_or(model_result, "usage", {})
+			charged_tokens := dict_get_or(call_usage, "total_tokens", 0)
+			if type(charged_tokens) != "int" || charged_tokens <= 0 {
+				charged_tokens = to_int((len(to_json(messages)) + 3) / 4) + dict_get_or(model_options, "max_tokens", 0)
+			}
+			remaining_model_tokens = remaining_model_tokens - charged_tokens
+			if remaining_model_tokens < 0 { return {"ok": false, "error": {"code": "workflow_budget_exceeded", "message": "Model call exceeded its reserved token envelope.", "retryable": false}, "model_calls": model_calls, "trace_events": trace_events} }
+		}
+		requested_calls := dict_get_or(model_result, "tool_calls", [])
+		if type(requested_calls) != "array" || len(requested_calls) == 0 {
+			break
+		}
+		if round >= max_tool_rounds || total_tool_calls + len(requested_calls) > max_tool_calls {
+			return {"ok": false, "error": {"code": "tool_budget_exceeded", "message": "Model-directed tool execution exceeded its configured bound.", "retryable": false}, "model_calls": model_calls, "trace_events": trace_events}
+		}
+		messages := push(messages, {"role": "assistant", "content": dict_get_or(model_result, "output_text", ""), "tool_calls": requested_calls})
+		for tool_call in requested_calls {
+			function_spec := dict_get_or(tool_call, "function", {})
+			tool_name := trim(to_string(dict_get_or(function_spec, "name", "")))
+			call_id := trim(to_string(dict_get_or(tool_call, "id", "")))
+			if call_id == "" {
+				call_id = sha256(tool_name + "::" + to_string(dict_get_or(function_spec, "arguments", "")))
+			}
+			if has_key(executed_calls, call_id) {
+				tool_result := executed_calls[call_id]
+				messages := push(messages, {"role": "tool", "tool_call_id": call_id, "name": tool_name, "content": to_json(tool_result)})
+				continue
+			}
+			if model_agent_allows_tool(agent_tools, tool_name) == false {
+				return {"ok": false, "error": {"code": "tool_execution_denied", "message": "Model requested an undeclared tool: " + tool_name, "retryable": false}, "model_calls": model_calls, "trace_events": trace_events}
+			}
+			arguments_text := to_string(dict_get_or(function_spec, "arguments", "{}"))
+			tool_input := null
+			try {
+				tool_input = parse_json(arguments_text)
+			} except err {
+				return {"ok": false, "error": {"code": "invalid_tool_arguments", "message": "Model supplied invalid JSON arguments for tool: " + tool_name, "retryable": false}, "model_calls": model_calls, "trace_events": trace_events}
+			}
+			if type(tool_input) != "dict" {
+				return {"ok": false, "error": {"code": "invalid_tool_arguments", "message": "Tool arguments must be a JSON object: " + tool_name, "retryable": false}, "model_calls": model_calls, "trace_events": trace_events}
+			}
+			trace_events := push(trace_events, {"type": "model_tool_requested", "message": "Model requested tool: " + tool_name, "payload": {"tool_name": tool_name, "tool_call_id": call_id, "round": round + 1}})
+			tool_result := call_authorized_tool(tool_registry, tool_name, tool_input, run_state, context)
+			executed_calls[call_id] := tool_result
+			total_tool_calls = total_tool_calls + 1
+			if dict_get_or(tool_result, "ok", false) == false {
+				return {"ok": false, "error": dict_get_or(tool_result, "error", {"code": "tool_execution_failure", "message": "Model tool failed: " + tool_name, "retryable": false}), "model_calls": model_calls, "trace_events": trace_events}
+			}
+			tool_results[call_id] := {"tool_name": tool_name, "data": dict_get_or(tool_result, "data", {})}
+			trace_events := push(trace_events, {"type": "model_tool_completed", "message": "Model tool completed: " + tool_name, "payload": {"tool_name": tool_name, "tool_call_id": call_id, "round": round + 1}})
+			messages := push(messages, {"role": "tool", "tool_call_id": call_id, "name": tool_name, "content": to_json(dict_get_or(tool_result, "data", {}))})
+		}
+		round = round + 1
+	}
+
+	output_text := to_string(dict_get_or(model_result, "output_text", ""))
+	data := {"text": output_text, "provider": dict_get_or(model_result, "provider", dict_get_or(dict_get_or(agent, "model", {}), "provider", "")), "model": dict_get_or(model_result, "model", dict_get_or(dict_get_or(agent, "model", {}), "model", "")), "tool_results": tool_results}
+	output_schema := dict_get_or(agent, "output_schema", null)
+	if type(output_schema) == "dict" && len(keys(output_schema)) > 0 {
+		try {
+			parsed_output := parse_json(output_text)
+			if type(parsed_output) == "dict" {
+				data = parsed_output
+				data["__model"] := {"provider": dict_get_or(model_result, "provider", ""), "model": dict_get_or(model_result, "model", "")}
+			}
+		} except err {
+			# Live schema failures are normalized by AI SDK; fixture output stays text-first.
+		}
+	}
+	stream_events_path := ""
+	if dict_get_or(model_config, "stream", false) {
+		stream_events_path = dict_get_or(run_state, "run_dir", "") + "/stream-" + dict_get_or(context, "step_id", "model") + ".jsonl"
+		trace_events := push(trace_events, {"type": "model_stream_persisted", "message": "Model stream events persisted", "payload": {"path": stream_events_path}})
+		data["__stream_events_path"] := stream_events_path
+	}
+	return {"ok": true, "data": data, "model_calls": model_calls, "trace_events": trace_events, "tool_call_count": total_tool_calls, "stream_events_path": stream_events_path}
+}
+
+func create_agent_handler_registry() {
+	return {}
+}
+
+func register_agent_handler(handler_registry, agent_id, handler) {
+	handler_registry[agent_id] := handler
+	return handler_registry
+}
+
+func register_default_agent_handlers() {
+		handler_registry := create_agent_handler_registry()
+	handler_registry := register_agent_handler(handler_registry, "planner", func(agent, step_input, run_state, tool_registry, context) {
+		return planner_output(agent, step_input, run_state, context)
+	})
+	handler_registry := register_agent_handler(handler_registry, "research", func(agent, step_input, run_state, tool_registry, context) {
+		return research_output(agent, step_input, run_state, tool_registry, context)
+	})
+	handler_registry := register_agent_handler(handler_registry, "verification", func(agent, step_input, run_state, tool_registry, context) {
+		return verification_output(agent, step_input, run_state, tool_registry, context)
+	})
+	handler_registry := register_agent_handler(handler_registry, "writer", func(agent, step_input, run_state, tool_registry, context) {
+		return writer_output(agent, step_input, run_state, tool_registry, context)
+	})
+	handler_registry := register_agent_handler(handler_registry, "model", func(agent, step_input, run_state, tool_registry, context) {
+		return model_agent_output(agent, step_input, run_state, tool_registry, context)
+	})
+	return handler_registry
+}
+
+func run_agent_with_agent(agent, handler_id, workflow_agents, step_input, run_state, tool_registry, options) {
+	agent_id := dict_get_or(agent, "id", "")
+	context := {
+		"run_id": run_state["run_id"],
+		"input": run_state["input"],
+		"sources_dir": dict_get_or(tool_registry, "__sources_dir", "examples/research-report/sources"),
+		"step_id": dict_get_or(options, "step_id", ""),
+        "attempt": dict_get_or(options, "attempt", 1),
+		"metadata": dict_get_or(options, "metadata", {}),
+		"tool_authorization_policy": dict_get_or(options, "tool_authorization_policy", null),
+		"model_max_tokens_cap": dict_get_or(options, "model_max_tokens_cap", 0),
+		"model_total_token_budget": dict_get_or(options, "model_total_token_budget", 0),
+		"execution_timeout_ms": dict_get_or(options, "execution_timeout_ms", 0),
+		"deadline_ms": dict_get_or(options, "deadline_ms", 0),
+		"deadline_error_code": dict_get_or(options, "deadline_error_code", "workflow_budget_exceeded")
+	}
+	handler_registry := register_default_agent_handlers()
+	if has_key(workflow_agents, "__agent_handlers") {
+		custom_handlers := workflow_agents["__agent_handlers"]
+		if type(custom_handlers) == "dict" {
+			for custom_agent_id in keys(custom_handlers) {
+				handler_registry[custom_agent_id] := custom_handlers[custom_agent_id]
+			}
+		}
+	}
+
+	if has_key(handler_registry, handler_id) == 0 {
+		if type(dict_get_or(agent, "__route_decision", null)) == "dict" {
+			return {
+				"ok": false,
+				"error": {
+					"code": "persisted_route_unavailable",
+					"message": "Routed handler is unavailable: " + handler_id,
+					"retryable": false
+				}
+			}
+		}
+		return agent_execution_error(agent_id, "No implementation exists for handler id " + handler_id + ".", false)
+	}
+	handler := handler_registry[handler_id]
+	return handler(agent, step_input, run_state, tool_registry, context)
+}
+
+func run_agent(agent_id, workflow_agents, step_input, run_state, tool_registry) {
+	if has_key(workflow_agents, agent_id) == 0 {
+		return missing_agent_error(agent_id)
+	}
+	agent := workflow_agents[agent_id]
+	handler_id := dict_get_or(agent, "handler_id", agent_id)
+	return run_agent_with_agent(agent, handler_id, workflow_agents, step_input, run_state, tool_registry, {})
+}
+
+export create_agent := create_agent
+export create_agent_handler_registry := create_agent_handler_registry
+export register_agent_handler := register_agent_handler
+export register_default_agent_handlers := register_default_agent_handlers
+export model_agent_output := model_agent_output
+export run_agent := run_agent
+export run_agent_with_agent := run_agent_with_agent

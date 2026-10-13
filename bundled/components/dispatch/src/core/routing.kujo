@@ -1,0 +1,1271 @@
+from src.core.utils import dict_get_or, clone_dict
+
+func routing_policy_version() {
+	return "1.0.0"
+}
+
+func array_contains(values, expected) {
+	if type(values) != "array" {
+		return false
+	}
+	for value in values {
+		if value == expected {
+			return true
+		}
+	}
+	return false
+}
+
+func normalize_array(value) {
+	if type(value) == "array" {
+		return value
+	}
+	return []
+}
+
+func normalize_dict(value) {
+	if type(value) == "dict" {
+		return value
+	}
+	return {}
+}
+
+func normalize_string(value, fallback) {
+	if type(value) == "string" {
+		resolved := trim(value)
+		if resolved != "" {
+			return resolved
+		}
+	}
+	return fallback
+}
+
+func normalize_number(value, fallback) {
+	if type(value) == "int" || type(value) == "float" {
+		return value
+	}
+	return fallback
+}
+
+func merge_dicts(base, overrides) {
+	result := clone_dict(normalize_dict(base))
+	for key in keys(normalize_dict(overrides)) {
+		result[key] := overrides[key]
+	}
+	return result
+}
+
+func append_unique(values, value) {
+	result := normalize_array(values)
+	if array_contains(result, value) == false {
+		result = push(result, value)
+	}
+	return result
+}
+
+func union_arrays(left, right) {
+	result := []
+	for value in normalize_array(left) {
+		result = append_unique(result, value)
+	}
+	for value in normalize_array(right) {
+		result = append_unique(result, value)
+	}
+	return sort(result)
+}
+
+func intersect_allowlists(left, right) {
+	left_values := normalize_array(left)
+	right_values := normalize_array(right)
+	result := []
+	for value in left_values {
+		if array_contains(right_values, value) {
+			result = append_unique(result, value)
+		}
+	}
+	return sort(result)
+}
+
+func stricter_minimum(left, right) {
+	if type(left) == "null" {
+		return right
+	}
+	if type(right) == "null" {
+		return left
+	}
+	if right > left {
+		return right
+	}
+	return left
+}
+
+func stricter_maximum(left, right) {
+	if type(left) == "null" {
+		return right
+	}
+	if type(right) == "null" {
+		return left
+	}
+	if right < left {
+		return right
+	}
+	return left
+}
+
+func quality_rank(tier) {
+	normalized := to_lower(normalize_string(tier, "unknown"))
+	if normalized == "frontier" {
+		return 5
+	}
+	if normalized == "premium" {
+		return 4
+	}
+	if normalized == "standard" {
+		return 3
+	}
+	if normalized == "economy" {
+		return 2
+	}
+	if normalized == "fixture" {
+		return 1
+	}
+	return 0
+}
+
+func risk_rank(risk) {
+	normalized := to_lower(normalize_string(risk, "unknown"))
+	if normalized == "low" {
+		return 1
+	}
+	if normalized == "medium" {
+		return 2
+	}
+	if normalized == "high" {
+		return 3
+	}
+	if normalized == "critical" {
+		return 4
+	}
+	return 0
+}
+
+func supported_route_provider(provider_id) {
+	return array_contains(["fixture", "openai", "openrouter", "deepseek", "custom"], to_lower(normalize_string(provider_id, "")))
+}
+
+func merge_required_schema(base_schema, added_schema) {
+	broader_schema := normalize_dict(base_schema)
+	narrower_schema := normalize_dict(added_schema)
+	merged_schema := merge_dicts(narrower_schema, broader_schema)
+	merged_schema = merge_dicts(merged_schema, {"required": union_arrays(dict_get_or(broader_schema, "required", []), dict_get_or(narrower_schema, "required", []))})
+	merged_properties := merge_dicts(dict_get_or(narrower_schema, "properties", {}), dict_get_or(broader_schema, "properties", {}))
+	if len(keys(merged_properties)) > 0 { merged_schema = merge_dicts(merged_schema, {"properties": merged_properties}) }
+	return merged_schema
+}
+
+func merge_constraint_layer(base, additions) {
+	broader_constraints := clone_dict(normalize_dict(base))
+	narrower_constraints := normalize_dict(additions)
+	constraint_result := merge_dicts(broader_constraints, narrower_constraints)
+	# A narrower scope may add schema requirements, but it may not replace a
+	# schema already imposed by a broader policy layer.
+	if has_key(broader_constraints, "required_output_schema") {
+		constraint_result = merge_dicts(constraint_result, {"required_output_schema": merge_required_schema(broader_constraints["required_output_schema"], dict_get_or(narrower_constraints, "required_output_schema", {}))})
+	}
+	if has_key(narrower_constraints, "required_capabilities") && has_key(broader_constraints, "required_capabilities") { constraint_result = merge_dicts(constraint_result, {"required_capabilities": union_arrays(broader_constraints["required_capabilities"], narrower_constraints["required_capabilities"])}) }
+	if has_key(narrower_constraints, "required_tools") && has_key(broader_constraints, "required_tools") { constraint_result = merge_dicts(constraint_result, {"required_tools": union_arrays(broader_constraints["required_tools"], narrower_constraints["required_tools"])}) }
+	if has_key(narrower_constraints, "denied_agents") && has_key(broader_constraints, "denied_agents") { constraint_result = merge_dicts(constraint_result, {"denied_agents": union_arrays(broader_constraints["denied_agents"], narrower_constraints["denied_agents"])}) }
+	if has_key(narrower_constraints, "denied_providers") && has_key(broader_constraints, "denied_providers") { constraint_result = merge_dicts(constraint_result, {"denied_providers": union_arrays(broader_constraints["denied_providers"], narrower_constraints["denied_providers"])}) }
+	if has_key(narrower_constraints, "denied_models") && has_key(broader_constraints, "denied_models") { constraint_result = merge_dicts(constraint_result, {"denied_models": union_arrays(broader_constraints["denied_models"], narrower_constraints["denied_models"])}) }
+	if has_key(narrower_constraints, "excluded_routes") && has_key(broader_constraints, "excluded_routes") { constraint_result = merge_dicts(constraint_result, {"excluded_routes": union_arrays(broader_constraints["excluded_routes"], narrower_constraints["excluded_routes"])}) }
+	if has_key(narrower_constraints, "allowed_agents") && has_key(broader_constraints, "allowed_agents") { constraint_result = merge_dicts(constraint_result, {"allowed_agents": intersect_allowlists(broader_constraints["allowed_agents"], narrower_constraints["allowed_agents"])}) }
+	if has_key(narrower_constraints, "allowed_providers") && has_key(broader_constraints, "allowed_providers") { constraint_result = merge_dicts(constraint_result, {"allowed_providers": intersect_allowlists(broader_constraints["allowed_providers"], narrower_constraints["allowed_providers"])}) }
+	if has_key(narrower_constraints, "allowed_models") && has_key(broader_constraints, "allowed_models") { constraint_result = merge_dicts(constraint_result, {"allowed_models": intersect_allowlists(broader_constraints["allowed_models"], narrower_constraints["allowed_models"])}) }
+	if has_key(narrower_constraints, "required_context_tokens") { constraint_result = merge_dicts(constraint_result, {"required_context_tokens": stricter_minimum(dict_get_or(broader_constraints, "required_context_tokens", null), narrower_constraints["required_context_tokens"])}) }
+	if has_key(narrower_constraints, "minimum_reliability") { constraint_result = merge_dicts(constraint_result, {"minimum_reliability": stricter_minimum(dict_get_or(broader_constraints, "minimum_reliability", null), narrower_constraints["minimum_reliability"])}) }
+	if has_key(narrower_constraints, "upgrade_from_relative_quality") { constraint_result = merge_dicts(constraint_result, {"upgrade_from_relative_quality": stricter_minimum(dict_get_or(broader_constraints, "upgrade_from_relative_quality", null), narrower_constraints["upgrade_from_relative_quality"])}) }
+	if has_key(narrower_constraints, "max_input_cost_per_million") { constraint_result = merge_dicts(constraint_result, {"max_input_cost_per_million": stricter_maximum(dict_get_or(broader_constraints, "max_input_cost_per_million", null), narrower_constraints["max_input_cost_per_million"])}) }
+	if has_key(narrower_constraints, "max_output_cost_per_million") { constraint_result = merge_dicts(constraint_result, {"max_output_cost_per_million": stricter_maximum(dict_get_or(broader_constraints, "max_output_cost_per_million", null), narrower_constraints["max_output_cost_per_million"])}) }
+	if has_key(narrower_constraints, "max_latency_ms") { constraint_result = merge_dicts(constraint_result, {"max_latency_ms": stricter_maximum(dict_get_or(broader_constraints, "max_latency_ms", null), narrower_constraints["max_latency_ms"])}) }
+	if has_key(narrower_constraints, "requires_tools") {
+		requires_tools_value := dict_get_or(broader_constraints, "requires_tools", false) || narrower_constraints["requires_tools"] == true
+		constraint_result = merge_dicts(constraint_result, {"requires_tools": requires_tools_value})
+	}
+	if has_key(narrower_constraints, "requires_structured_output") {
+		requires_structured_output_value := dict_get_or(broader_constraints, "requires_structured_output", false) || narrower_constraints["requires_structured_output"] == true
+		constraint_result = merge_dicts(constraint_result, {"requires_structured_output": requires_structured_output_value})
+	}
+	if has_key(narrower_constraints, "output_schema_required") {
+		output_schema_required_value := dict_get_or(broader_constraints, "output_schema_required", false) || narrower_constraints["output_schema_required"] == true
+		constraint_result = merge_dicts(constraint_result, {"output_schema_required": output_schema_required_value})
+	}
+	if has_key(narrower_constraints, "require_catalog_membership") {
+		require_catalog_membership_value := dict_get_or(broader_constraints, "require_catalog_membership", false) || narrower_constraints["require_catalog_membership"] == true
+		constraint_result = merge_dicts(constraint_result, {"require_catalog_membership": require_catalog_membership_value})
+	}
+	if has_key(narrower_constraints, "quality_floor") {
+		current_quality := dict_get_or(broader_constraints, "quality_floor", "unknown")
+		if quality_rank(narrower_constraints["quality_floor"]) > quality_rank(current_quality) { constraint_result = merge_dicts(constraint_result, {"quality_floor": narrower_constraints["quality_floor"]}) } else { constraint_result = merge_dicts(constraint_result, {"quality_floor": current_quality}) }
+	}
+	if has_key(narrower_constraints, "maximum_risk") {
+		current_risk := dict_get_or(broader_constraints, "maximum_risk", "")
+		if current_risk == "" || risk_rank(narrower_constraints["maximum_risk"]) < risk_rank(current_risk) { constraint_result = merge_dicts(constraint_result, {"maximum_risk": narrower_constraints["maximum_risk"]}) } else { constraint_result = merge_dicts(constraint_result, {"maximum_risk": current_risk}) }
+	}
+	if has_key(narrower_constraints, "unknown_metadata") {
+		if dict_get_or(broader_constraints, "unknown_metadata", "") == "reject_constrained" || narrower_constraints["unknown_metadata"] == "reject_constrained" { constraint_result = merge_dicts(constraint_result, {"unknown_metadata": "reject_constrained"}) }
+	}
+	if has_key(narrower_constraints, "upgrade_from_quality_tier") {
+		current_upgrade := dict_get_or(broader_constraints, "upgrade_from_quality_tier", "unknown")
+		if quality_rank(narrower_constraints["upgrade_from_quality_tier"]) > quality_rank(current_upgrade) { constraint_result = merge_dicts(constraint_result, {"upgrade_from_quality_tier": narrower_constraints["upgrade_from_quality_tier"]}) } else { constraint_result = merge_dicts(constraint_result, {"upgrade_from_quality_tier": current_upgrade}) }
+	}
+	return constraint_result
+}
+
+func constraint_field_names() {
+	return [
+		"required_capabilities", "required_tools", "allowed_agents", "denied_agents",
+		"allowed_providers", "denied_providers", "allowed_models", "denied_models",
+		"quality_floor", "requires_tools", "requires_structured_output", "output_schema_required",
+		"required_output_schema", "required_context_tokens", "max_input_cost_per_million",
+		"max_output_cost_per_million", "max_latency_ms", "minimum_reliability", "maximum_risk",
+		"unknown_metadata", "require_catalog_membership"
+	]
+}
+
+func validation_problem(path, message) {
+	return {"field": path, "message": message}
+}
+
+func validate_constraints(config, path) {
+	constraint_errors := []
+	if type(config) != "dict" {
+		return [validation_problem(path, "constraints must be an object.")]
+	}
+	for key in keys(config) {
+		if array_contains(constraint_field_names(), key) == false {
+			constraint_errors := push(constraint_errors, validation_problem(path + "." + key, "Unknown routing constraint."))
+		}
+	}
+	for key in ["required_capabilities", "required_tools", "allowed_agents", "denied_agents", "allowed_providers", "denied_providers", "allowed_models", "denied_models"] {
+		if has_key(config, key) && type(config[key]) != "array" {
+			constraint_errors := push(constraint_errors, validation_problem(path + "." + key, "Value must be an array."))
+		}
+	}
+	for key in ["requires_tools", "requires_structured_output", "output_schema_required", "require_catalog_membership"] {
+		if has_key(config, key) && type(config[key]) != "bool" {
+			constraint_errors := push(constraint_errors, validation_problem(path + "." + key, "Value must be a boolean."))
+		}
+	}
+	for key in ["required_context_tokens", "max_input_cost_per_million", "max_output_cost_per_million", "max_latency_ms"] {
+		if has_key(config, key) {
+			value := config[key]
+			if (type(value) != "int" && type(value) != "float") || value < 0 {
+				constraint_errors := push(constraint_errors, validation_problem(path + "." + key, "Value must be a non-negative number."))
+			}
+		}
+	}
+	if has_key(config, "minimum_reliability") {
+		value := config["minimum_reliability"]
+		if (type(value) != "int" && type(value) != "float") || value < 0 || value > 1 {
+			constraint_errors := push(constraint_errors, validation_problem(path + ".minimum_reliability", "Value must be between 0 and 1."))
+		}
+	}
+	if has_key(config, "quality_floor") && quality_rank(config["quality_floor"]) == 0 && config["quality_floor"] != "unknown" {
+		constraint_errors := push(constraint_errors, validation_problem(path + ".quality_floor", "Unsupported quality tier."))
+	}
+	if has_key(config, "maximum_risk") && risk_rank(config["maximum_risk"]) == 0 {
+		constraint_errors := push(constraint_errors, validation_problem(path + ".maximum_risk", "Risk must be low, medium, high, or critical."))
+	}
+	if has_key(config, "unknown_metadata") && array_contains(["reject_constrained", "allow"], config["unknown_metadata"]) == false {
+		constraint_errors := push(constraint_errors, validation_problem(path + ".unknown_metadata", "Value must be reject_constrained or allow."))
+	}
+	return constraint_errors
+}
+
+func validate_evaluation_config(config, path) {
+	evaluation_errors := []
+	if type(config) != "dict" {
+		return [validation_problem(path, "evaluation must be an object.")]
+	}
+	allowed := ["required_fields", "minimum_confidence", "max_unsupported_claims", "on_failure"]
+	for key in keys(config) {
+		if array_contains(allowed, key) == false {
+			evaluation_errors := push(evaluation_errors, validation_problem(path + "." + key, "Unknown evaluation field."))
+		}
+	}
+	if has_key(config, "required_fields") && type(config["required_fields"]) != "array" {
+		evaluation_errors := push(evaluation_errors, validation_problem(path + ".required_fields", "Value must be an array."))
+	}
+	if has_key(config, "minimum_confidence") {
+		value := config["minimum_confidence"]
+		if (type(value) != "int" && type(value) != "float") || value < 0 || value > 1 {
+			evaluation_errors := push(evaluation_errors, validation_problem(path + ".minimum_confidence", "Value must be between 0 and 1."))
+		}
+	}
+	if has_key(config, "max_unsupported_claims") && (type(config["max_unsupported_claims"]) != "int" || config["max_unsupported_claims"] < 0) {
+		evaluation_errors := push(evaluation_errors, validation_problem(path + ".max_unsupported_claims", "Value must be a non-negative integer."))
+	}
+	if has_key(config, "on_failure") && array_contains(["retry_same_route", "upgrade_model", "reroute_agent", "request_human_review", "failed"], config["on_failure"]) == false {
+		evaluation_errors := push(evaluation_errors, validation_problem(path + ".on_failure", "Unsupported evaluation failure outcome."))
+	}
+	return evaluation_errors
+}
+
+func validate_fallback_config(config, path) {
+	fallback_errors := []
+	if type(config) != "dict" {
+		return [validation_problem(path, "fallback must be an object.")]
+	}
+	allowed := ["max_fallbacks", "max_evaluation_retries", "fallback_on_codes"]
+	for key in keys(config) {
+		if array_contains(allowed, key) == false {
+			fallback_errors := push(fallback_errors, validation_problem(path + "." + key, "Unknown fallback field."))
+		}
+	}
+	for key in ["max_fallbacks", "max_evaluation_retries"] {
+		if has_key(config, key) && (type(config[key]) != "int" || config[key] < 0) {
+			fallback_errors := push(fallback_errors, validation_problem(path + "." + key, "Value must be a non-negative integer."))
+		}
+	}
+	if has_key(config, "fallback_on_codes") && type(config["fallback_on_codes"]) != "array" {
+		fallback_errors := push(fallback_errors, validation_problem(path + ".fallback_on_codes", "Value must be an array."))
+	}
+	return fallback_errors
+}
+
+func validate_routing_envelope(config, path, level) {
+	envelope_errors := []
+	if type(config) != "dict" {
+		return [validation_problem(path, "routing must be an object.")]
+	}
+	allowed := ["enabled", "objective", "allow_agent_substitution", "constraints"]
+	if level == "workflow" {
+		allowed = union_arrays(allowed, ["policy_version", "fallback", "evaluation", "provider_health", "model_catalog", "model_catalog_file", "model_catalog_source", "allow_uncataloged_models"])
+	}
+	if level == "agent" {
+		allowed = union_arrays(allowed, ["risk", "metadata"])
+	}
+	for key in keys(config) {
+		if array_contains(allowed, key) == false {
+			envelope_errors := push(envelope_errors, validation_problem(path + "." + key, "Unknown routing field."))
+		}
+	}
+	for key in ["enabled", "allow_agent_substitution", "allow_uncataloged_models"] {
+		if has_key(config, key) && type(config[key]) != "bool" {
+			envelope_errors := push(envelope_errors, validation_problem(path + "." + key, "Value must be a boolean."))
+		}
+	}
+	if has_key(config, "objective") && array_contains(["quality_first", "cost_first", "latency_first", "balanced"], config["objective"]) == false {
+		envelope_errors := push(envelope_errors, validation_problem(path + ".objective", "Objective must be quality_first, cost_first, latency_first, or balanced."))
+	}
+	if has_key(config, "policy_version") && config["policy_version"] != routing_policy_version() {
+		envelope_errors := push(envelope_errors, validation_problem(path + ".policy_version", "Unsupported routing policy version."))
+	}
+	if has_key(config, "risk") && risk_rank(config["risk"]) == 0 {
+		envelope_errors := push(envelope_errors, validation_problem(path + ".risk", "Risk must be low, medium, high, or critical."))
+	}
+	if has_key(config, "provider_health") {
+		health_config := config["provider_health"]
+		if type(health_config) != "dict" {
+			envelope_errors := push(envelope_errors, validation_problem(path + ".provider_health", "provider_health must be an object."))
+		} else {
+			for health_key in keys(health_config) {
+				if array_contains(["failure_threshold", "cooldown_ms"], health_key) == false {
+					envelope_errors := push(envelope_errors, validation_problem(path + ".provider_health." + health_key, "Unknown provider health field."))
+				}
+			}
+			if has_key(health_config, "failure_threshold") && (type(health_config["failure_threshold"]) != "int" || health_config["failure_threshold"] < 1) {
+				envelope_errors := push(envelope_errors, validation_problem(path + ".provider_health.failure_threshold", "failure_threshold must be a positive integer."))
+			}
+			if has_key(health_config, "cooldown_ms") && (type(health_config["cooldown_ms"]) != "int" || health_config["cooldown_ms"] < 0) {
+				envelope_errors := push(envelope_errors, validation_problem(path + ".provider_health.cooldown_ms", "cooldown_ms must be a non-negative integer."))
+			}
+		}
+	}
+	if has_key(config, "constraints") {
+		for problem in validate_constraints(config["constraints"], path + ".constraints") {
+			envelope_errors := push(envelope_errors, problem)
+		}
+	}
+	if has_key(config, "fallback") {
+		for problem in validate_fallback_config(config["fallback"], path + ".fallback") {
+			envelope_errors := push(envelope_errors, problem)
+		}
+	}
+	if has_key(config, "evaluation") {
+		for problem in validate_evaluation_config(config["evaluation"], path + ".evaluation") {
+			envelope_errors := push(envelope_errors, problem)
+		}
+	}
+	return envelope_errors
+}
+
+func validate_workflow_routing(workflow) {
+	workflow_validation_errors := []
+	workflow_validation_warnings := []
+	workflow_routing := dict_get_or(workflow, "routing", {})
+	for problem in validate_routing_envelope(workflow_routing, "routing", "workflow") {
+		workflow_validation_errors := push(workflow_validation_errors, problem)
+	}
+	if dict_get_or(workflow_routing, "enabled", false) == false {
+		return {"ok": len(workflow_validation_errors) == 0, "errors": workflow_validation_errors, "warnings": workflow_validation_warnings}
+	}
+	catalog := normalize_dict(dict_get_or(workflow_routing, "model_catalog", {}))
+	if dict_get_or(catalog, "schema_name", "") != "ai-sdk-model-catalog" || dict_get_or(catalog, "schema_version", "") != "1.0.0" || normalize_string(dict_get_or(catalog, "id", ""), "") == "" || normalize_string(dict_get_or(catalog, "version", ""), "") == "" || normalize_string(dict_get_or(catalog, "catalog_hash", ""), "") == "" || type(dict_get_or(catalog, "models", null)) != "array" {
+		workflow_validation_errors := push(workflow_validation_errors, validation_problem("routing.model_catalog", "Enabled routing requires an AI SDK model catalog at schema version 1.0.0 with id, version, catalog_hash, and models."))
+	} else {
+		if dict_get_or(catalog, "catalog_hash", "") != canonical_catalog_hash(catalog) {
+			workflow_validation_errors := push(workflow_validation_errors, validation_problem("routing.model_catalog.catalog_hash", "Catalog hash does not match canonical catalog content."))
+		}
+		seen_models := []
+		catalog_index := 0
+		for catalog_model in catalog["models"] {
+			catalog_path := "routing.model_catalog.models[" + to_string(catalog_index) + "]"
+			if type(catalog_model) != "dict" {
+				workflow_validation_errors := push(workflow_validation_errors, validation_problem(catalog_path, "Catalog model must be an object."))
+			} else {
+				provider_id := normalize_string(dict_get_or(catalog_model, "provider", ""), "")
+				model_id := normalize_string(dict_get_or(catalog_model, "model", ""), "")
+				if provider_id == "" || model_id == "" { workflow_validation_errors := push(workflow_validation_errors, validation_problem(catalog_path, "Catalog model requires provider and model.")) }
+				if provider_id != "" && supported_route_provider(provider_id) == false { workflow_validation_errors := push(workflow_validation_errors, validation_problem(catalog_path + ".provider", "Unsupported provider adapter: " + provider_id)) }
+				model_key_value := provider_id + "::" + model_id
+				if array_contains(seen_models, model_key_value) { workflow_validation_errors := push(workflow_validation_errors, validation_problem(catalog_path, "Duplicate provider/model entry: " + model_key_value)) } else { seen_models := push(seen_models, model_key_value) }
+			}
+			catalog_index = catalog_index + 1
+		}
+	}
+	agents := normalize_dict(dict_get_or(workflow, "agents", {}))
+	handlers := ["planner", "research", "verification", "writer", "model"]
+	custom_handlers := normalize_dict(dict_get_or(agents, "__agent_handlers", {}))
+	for handler_id in keys(custom_handlers) {
+		handlers := append_unique(handlers, handler_id)
+	}
+	for agent_id in keys(agents) {
+		if agent_id == "__agent_handlers" || type(agents[agent_id]) != "dict" {
+			continue
+		}
+		agent := agents[agent_id]
+		path := "agents." + agent_id
+		if normalize_string(dict_get_or(agent, "id", ""), "") == "" {
+			workflow_validation_errors := push(workflow_validation_errors, validation_problem(path + ".id", "Agent id is required."))
+		}
+		handler_id := normalize_string(dict_get_or(agent, "handler_id", agent_id), agent_id)
+		if array_contains(handlers, handler_id) == false {
+			workflow_validation_errors := push(workflow_validation_errors, validation_problem(path + ".handler_id", "No executable handler is registered: " + handler_id))
+		}
+		contract := normalize_dict(dict_get_or(agent, "execution_contract", {}))
+		if normalize_string(dict_get_or(contract, "id", ""), "") == "" || normalize_string(dict_get_or(contract, "version", ""), "") == "" {
+			workflow_validation_errors := push(workflow_validation_errors, validation_problem(path + ".execution_contract", "A non-empty id and version are required."))
+		}
+		uses_model := dict_get_or(agent, "uses_model", true)
+		if uses_model && (type(dict_get_or(agent, "model_candidates", null)) != "array" || len(agent["model_candidates"]) == 0) {
+			workflow_validation_errors := push(workflow_validation_errors, validation_problem(path + ".model_candidates", "At least one model candidate is required when routing is enabled."))
+		} else if uses_model {
+			candidate_index := 0
+			for candidate in agent["model_candidates"] {
+				candidate_path := path + ".model_candidates[" + to_string(candidate_index) + "]"
+				if type(candidate) != "dict" || normalize_string(dict_get_or(candidate, "provider", ""), "") == "" || normalize_string(dict_get_or(candidate, "model", ""), "") == "" {
+					workflow_validation_errors := push(workflow_validation_errors, validation_problem(candidate_path, "Candidate requires non-empty provider and model fields."))
+				} else if supported_route_provider(candidate["provider"]) == false {
+					workflow_validation_errors := push(workflow_validation_errors, validation_problem(candidate_path + ".provider", "Unsupported provider adapter: " + to_string(candidate["provider"])))
+				}
+				candidate_index = candidate_index + 1
+			}
+		}
+		if dict_get_or(agent, "handler_id", "") == "model" && trim(to_string(dict_get_or(agent, "instructions", ""))) == "" {
+			workflow_validation_errors := push(workflow_validation_errors, validation_problem(path + ".instructions", "The model handler requires non-empty instructions."))
+		}
+		if type(dict_get_or(agent, "routing", {})) != "dict" {
+			workflow_validation_errors := push(workflow_validation_errors, validation_problem(path + ".routing", "routing must be an object."))
+		} else {
+			for problem in validate_routing_envelope(dict_get_or(agent, "routing", {}), path + ".routing", "agent") {
+				workflow_validation_errors := push(workflow_validation_errors, problem)
+			}
+		}
+		legacy_model := normalize_dict(dict_get_or(agent, "model", {}))
+		if dict_get_or(legacy_model, "provider", "") == "custom" {
+			if trim(to_string(dict_get_or(legacy_model, "base_url", ""))) == "" || trim(to_string(dict_get_or(legacy_model, "api_key_env", ""))) == "" {
+				workflow_validation_errors := push(workflow_validation_errors, validation_problem(path + ".model", "Custom providers require base_url and api_key_env."))
+			}
+		}
+	}
+	step_index := 0
+	for step in normalize_array(dict_get_or(workflow, "steps", [])) {
+		step_path := "steps[" + to_string(step_index) + "]"
+		if type(dict_get_or(step, "routing", {})) != "dict" {
+			workflow_validation_errors := push(workflow_validation_errors, validation_problem(step_path + ".routing", "routing must be an object."))
+		} else {
+			for problem in validate_routing_envelope(dict_get_or(step, "routing", {}), step_path + ".routing", "step") {
+				workflow_validation_errors := push(workflow_validation_errors, problem)
+			}
+		}
+		if type(dict_get_or(step, "evaluation", {})) != "dict" {
+			workflow_validation_errors := push(workflow_validation_errors, validation_problem(step_path + ".evaluation", "evaluation must be an object."))
+		} else if len(keys(dict_get_or(step, "evaluation", {}))) > 0 {
+			for problem in validate_evaluation_config(step["evaluation"], step_path + ".evaluation") {
+				workflow_validation_errors := push(workflow_validation_errors, problem)
+			}
+		}
+		step_index = step_index + 1
+	}
+	return {"ok": len(workflow_validation_errors) == 0, "errors": workflow_validation_errors, "warnings": workflow_validation_warnings}
+}
+
+func routing_is_enabled(workflow, step) {
+	workflow_routing := normalize_dict(dict_get_or(workflow, "routing", {}))
+	step_routing := normalize_dict(dict_get_or(step, "routing", dict_get_or(dict_get_or(step, "config", {}), "routing", {})))
+	if has_key(step_routing, "enabled") {
+		return dict_get_or(step_routing, "enabled", false)
+	}
+	return dict_get_or(workflow_routing, "enabled", false)
+}
+
+func resolve_constraints(workflow, step, requested_agent) {
+	workflow_routing := normalize_dict(dict_get_or(workflow, "routing", {}))
+	agent_routing := normalize_dict(dict_get_or(requested_agent, "routing", {}))
+	step_routing := normalize_dict(dict_get_or(step, "routing", dict_get_or(dict_get_or(step, "config", {}), "routing", {})))
+	constraints := merge_constraint_layer({}, dict_get_or(workflow_routing, "constraints", {}))
+	constraints = merge_constraint_layer(constraints, dict_get_or(agent_routing, "constraints", {}))
+	constraints = merge_constraint_layer(constraints, dict_get_or(step_routing, "constraints", dict_get_or(step, "routing_constraints", {})))
+	step_output_schema := dict_get_or(step, "output_schema", null)
+	if type(step_output_schema) == "dict" && len(keys(step_output_schema)) > 0 && has_key(constraints, "required_output_schema") == 0 {
+		constraints["required_output_schema"] := step_output_schema
+	}
+	return constraints
+}
+
+func execution_compatibility(requested_agent, candidate_agent) {
+	requested_id := normalize_string(dict_get_or(requested_agent, "id", ""), "")
+	candidate_id := normalize_string(dict_get_or(candidate_agent, "id", ""), "")
+	requested_handler := normalize_string(dict_get_or(requested_agent, "handler_id", requested_id), requested_id)
+	candidate_handler := normalize_string(dict_get_or(candidate_agent, "handler_id", candidate_id), candidate_id)
+	if requested_handler == candidate_handler && requested_handler != "" {
+		return {"compatible": true, "reason_code": "same_handler"}
+	}
+	requested_contract := normalize_dict(dict_get_or(requested_agent, "execution_contract", {}))
+	candidate_contract := normalize_dict(dict_get_or(candidate_agent, "execution_contract", {}))
+	requested_contract_id := normalize_string(dict_get_or(requested_contract, "id", ""), "")
+	candidate_contract_id := normalize_string(dict_get_or(candidate_contract, "id", ""), "")
+	requested_version := normalize_string(dict_get_or(requested_contract, "version", ""), "")
+	candidate_version := normalize_string(dict_get_or(candidate_contract, "version", ""), "")
+	if requested_contract_id != "" && requested_version != "" && requested_contract_id == candidate_contract_id && requested_version == candidate_version {
+		return {"compatible": true, "reason_code": "execution_contract_match"}
+	}
+	return {"compatible": false, "reason_code": "execution_contract_mismatch"}
+}
+
+func capability_enabled(agent, capability) {
+	capabilities := dict_get_or(agent, "capabilities", {})
+	if type(capabilities) == "array" {
+		return array_contains(capabilities, capability)
+	}
+	if type(capabilities) == "dict" {
+		return dict_get_or(capabilities, capability, false) == true
+	}
+	return false
+}
+
+func all_capabilities_available(agent, required_capabilities) {
+	for capability in normalize_array(required_capabilities) {
+		if capability_enabled(agent, capability) == false {
+			return false
+		}
+	}
+	return true
+}
+
+func all_tools_available(agent, required_tools) {
+	agent_tools := normalize_array(dict_get_or(agent, "tools", []))
+	for required_tool in normalize_array(required_tools) {
+		if array_contains(agent_tools, required_tool) == false {
+			return false
+		}
+	}
+	return true
+}
+
+func schema_type_matches(expected_type, actual_type) {
+	if expected_type == actual_type {
+		return true
+	}
+	return array_contains(["dict", "object"], expected_type) && array_contains(["dict", "object"], actual_type)
+}
+
+func output_schema_compatible(agent_schema, required_schema) {
+	if type(required_schema) != "dict" || len(keys(required_schema)) == 0 {
+		return true
+	}
+	if type(agent_schema) != "dict" || len(keys(agent_schema)) == 0 {
+		return false
+	}
+	expected_type := dict_get_or(required_schema, "type", "")
+	actual_type := dict_get_or(agent_schema, "type", "")
+	if expected_type != "" && actual_type != "" && schema_type_matches(expected_type, actual_type) == false {
+		return false
+	}
+	agent_required := normalize_array(dict_get_or(agent_schema, "required", []))
+	agent_properties := normalize_dict(dict_get_or(agent_schema, "properties", {}))
+	required_properties := normalize_dict(dict_get_or(required_schema, "properties", {}))
+	for field in normalize_array(dict_get_or(required_schema, "required", [])) {
+		if array_contains(agent_required, field) == false {
+			return false
+		}
+		if has_key(required_properties, field) && has_key(agent_properties, field) {
+			expected_field_type := dict_get_or(required_properties[field], "type", "")
+			actual_field_type := dict_get_or(agent_properties[field], "type", "")
+			if expected_field_type != "" && actual_field_type != "" && schema_type_matches(expected_field_type, actual_field_type) == false {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func find_catalog_entry(catalog, provider_id, model_id) {
+	for entry in normalize_array(dict_get_or(catalog, "models", [])) {
+		if type(entry) == "dict" {
+			if dict_get_or(entry, "provider", "") == provider_id && dict_get_or(entry, "model", "") == model_id {
+				return entry
+			}
+		}
+	}
+	return {}
+}
+
+func sort_catalog_models(models) {
+	sorted_models := []
+	for model_entry in normalize_array(models) {
+		inserted := false
+		next_models := []
+		entry_key := to_string(dict_get_or(model_entry, "provider", "")) + "::" + to_string(dict_get_or(model_entry, "model", ""))
+		for existing_entry in sorted_models {
+			existing_key := to_string(dict_get_or(existing_entry, "provider", "")) + "::" + to_string(dict_get_or(existing_entry, "model", ""))
+			ordered_keys := sort([entry_key, existing_key])
+			if inserted == false && entry_key != existing_key && ordered_keys[0] == entry_key {
+				next_models := push(next_models, model_entry)
+				inserted = true
+			}
+			next_models := push(next_models, existing_entry)
+		}
+		if inserted == false {
+			next_models := push(next_models, model_entry)
+		}
+		sorted_models = next_models
+	}
+	return sorted_models
+}
+
+func canonical_catalog_hash(catalog) {
+	payload := {
+		"schema_name": dict_get_or(catalog, "schema_name", "ai-sdk-model-catalog"),
+		"schema_version": dict_get_or(catalog, "schema_version", "1.0.0"),
+		"id": dict_get_or(catalog, "id", ""),
+		"version": dict_get_or(catalog, "version", ""),
+		"models": sort_catalog_models(dict_get_or(catalog, "models", [])),
+		"metadata": dict_get_or(catalog, "metadata", {})
+	}
+	return sha256(to_json(payload))
+}
+
+func catalog_models_valid(catalog) {
+	seen := {}
+	for entry in normalize_array(dict_get_or(catalog, "models", [])) {
+		if type(entry) != "dict" {
+			return false
+		}
+		provider_id := normalize_string(dict_get_or(entry, "provider", ""), "")
+		model_id := normalize_string(dict_get_or(entry, "model", ""), "")
+		if provider_id == "" || model_id == "" {
+			return false
+		}
+		key := provider_id + "::" + model_id
+		if has_key(seen, key) {
+			return false
+		}
+		seen[key] := true
+		if quality_rank(dict_get_or(entry, "quality_tier", "unknown")) == 0 && dict_get_or(entry, "quality_tier", "unknown") != "unknown" {
+			return false
+		}
+		for bounded_field in ["relative_quality", "reliability_score"] {
+			bounded_value := dict_get_or(entry, bounded_field, null)
+			if type(bounded_value) != "null" && ((type(bounded_value) != "int" && type(bounded_value) != "float") || bounded_value < 0 || bounded_value > 1) {
+				return false
+			}
+		}
+		context_window := dict_get_or(entry, "context_window", null)
+		if type(context_window) != "null" && (type(context_window) != "int" || context_window <= 0) {
+			return false
+		}
+		for non_negative_field in ["input_cost_per_million", "output_cost_per_million", "typical_latency_ms"] {
+			value := dict_get_or(entry, non_negative_field, null)
+			if type(value) != "null" && ((type(value) != "int" && type(value) != "float") || value < 0) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func normalize_model_candidate(agent, raw_candidate, catalog) {
+	candidate := normalize_dict(raw_candidate)
+	legacy_model := normalize_dict(dict_get_or(agent, "model", {}))
+	provider_id := normalize_string(dict_get_or(candidate, "provider", dict_get_or(legacy_model, "provider", "openai")), "openai")
+	model_id := normalize_string(dict_get_or(candidate, "model", dict_get_or(legacy_model, "model", "")), "")
+	catalog_entry := find_catalog_entry(catalog, provider_id, model_id)
+	resolved := merge_dicts({}, candidate)
+	if len(keys(catalog_entry)) > 0 {
+		# The SDK catalog is authoritative for operational model metadata. Agent
+		# candidates identify routes; they cannot spoof quality, price, or capacity.
+		resolved = merge_dicts({}, catalog_entry)
+	}
+	resolved["provider"] := provider_id
+	resolved["model"] := model_id
+	resolved["catalog_member"] := len(keys(catalog_entry)) > 0
+	if has_key(resolved, "enabled") == 0 {
+		resolved["enabled"] := true
+	}
+	if has_key(resolved, "quality_tier") == 0 {
+		resolved["quality_tier"] := "unknown"
+	}
+	return resolved
+}
+
+func agent_model_candidates(agent, catalog) {
+	raw_candidates := dict_get_or(agent, "model_candidates", [])
+	if type(raw_candidates) != "array" || len(raw_candidates) == 0 {
+		raw_candidates = [dict_get_or(agent, "model", {})]
+	}
+	models_out := []
+	for raw_candidate in raw_candidates {
+		resolved := normalize_model_candidate(agent, raw_candidate, catalog)
+		if dict_get_or(resolved, "model", "") != "" {
+			models_out = push(models_out, resolved)
+		}
+	}
+	return models_out
+}
+
+func candidate_key(candidate) {
+	model_metadata := normalize_dict(dict_get_or(candidate, "model_metadata", {}))
+	provider_id := dict_get_or(candidate, "provider", dict_get_or(model_metadata, "provider", ""))
+	model_id := dict_get_or(candidate, "model", dict_get_or(model_metadata, "model", ""))
+	return to_string(dict_get_or(candidate, "selected_agent_id", "")) + "::" + to_string(provider_id) + "::" + to_string(model_id)
+}
+
+func unknown_rejects(constraints) {
+	return dict_get_or(constraints, "unknown_metadata", "reject_constrained") == "reject_constrained"
+}
+
+func candidate_rejection_reasons(candidate, requested_agent, constraints) {
+	reasons := []
+	agent := dict_get_or(candidate, "agent", {})
+	model := dict_get_or(candidate, "model_metadata", {})
+	compatibility := execution_compatibility(requested_agent, agent)
+	if compatibility["compatible"] == false {
+		reasons := push(reasons, compatibility["reason_code"])
+	}
+	if dict_get_or(model, "enabled", true) == false {
+		reasons := push(reasons, "model_disabled")
+	}
+	if dict_get_or(constraints, "require_catalog_membership", true) && dict_get_or(model, "catalog_member", false) == false {
+		reasons := push(reasons, "model_not_in_catalog")
+	}
+	if all_capabilities_available(agent, dict_get_or(constraints, "required_capabilities", [])) == false {
+		reasons := push(reasons, "capability_mismatch")
+	}
+	if all_tools_available(agent, dict_get_or(constraints, "required_tools", [])) == false {
+		reasons := push(reasons, "tool_mismatch")
+	}
+	if len(normalize_array(dict_get_or(constraints, "required_tools", []))) > 0 && dict_get_or(model, "supports_tools", false) == false {
+		reasons := push(reasons, "model_tools_unsupported")
+	}
+	allowed_agents := normalize_array(dict_get_or(constraints, "allowed_agents", []))
+	denied_agents := normalize_array(dict_get_or(constraints, "denied_agents", []))
+	selected_agent_id := dict_get_or(candidate, "selected_agent_id", "")
+	if len(allowed_agents) > 0 && array_contains(allowed_agents, selected_agent_id) == false {
+		reasons := push(reasons, "agent_not_allowed")
+	}
+	if array_contains(denied_agents, selected_agent_id) {
+		reasons := push(reasons, "agent_denied")
+	}
+	provider_id := dict_get_or(model, "provider", "")
+	if supported_route_provider(provider_id) == false {
+		reasons := push(reasons, "provider_adapter_unavailable")
+	}
+	if provider_id == "custom" {
+		legacy_model := normalize_dict(dict_get_or(agent, "model", {}))
+		if trim(to_string(dict_get_or(legacy_model, "base_url", ""))) == "" || trim(to_string(dict_get_or(legacy_model, "api_key_env", ""))) == "" {
+			reasons := push(reasons, "custom_provider_config_missing")
+		}
+	}
+	allowed_providers := normalize_array(dict_get_or(constraints, "allowed_providers", []))
+	denied_providers := normalize_array(dict_get_or(constraints, "denied_providers", []))
+	if len(allowed_providers) > 0 && array_contains(allowed_providers, provider_id) == false {
+		reasons := push(reasons, "provider_not_allowed")
+	}
+	if array_contains(denied_providers, provider_id) {
+		reasons := push(reasons, "provider_denied")
+	}
+	model_id := dict_get_or(model, "model", "")
+	allowed_models := normalize_array(dict_get_or(constraints, "allowed_models", []))
+	denied_models := normalize_array(dict_get_or(constraints, "denied_models", []))
+	if len(allowed_models) > 0 && array_contains(allowed_models, model_id) == false {
+		reasons := push(reasons, "model_not_allowed")
+	}
+	if array_contains(denied_models, model_id) {
+		reasons := push(reasons, "model_denied")
+	}
+	quality_floor := normalize_string(dict_get_or(constraints, "quality_floor", "unknown"), "unknown")
+	if quality_rank(dict_get_or(model, "quality_tier", "unknown")) < quality_rank(quality_floor) {
+		reasons := push(reasons, "quality_below_floor")
+	}
+	upgrade_tier := normalize_string(dict_get_or(constraints, "upgrade_from_quality_tier", ""), "")
+	if upgrade_tier != "" {
+		model_rank := quality_rank(dict_get_or(model, "quality_tier", "unknown"))
+		upgrade_rank := quality_rank(upgrade_tier)
+		model_relative := dict_get_or(model, "relative_quality", null)
+		upgrade_relative := dict_get_or(constraints, "upgrade_from_relative_quality", null)
+		if model_rank < upgrade_rank {
+			reasons := push(reasons, "model_not_an_upgrade")
+		} else if model_rank == upgrade_rank {
+			if type(model_relative) == "null" || type(upgrade_relative) == "null" || model_relative <= upgrade_relative {
+				reasons := push(reasons, "model_not_an_upgrade")
+			}
+		}
+	}
+	if dict_get_or(constraints, "requires_tools", false) && dict_get_or(model, "supports_tools", false) == false {
+		reasons := push(reasons, "model_tools_unsupported")
+	}
+	if dict_get_or(constraints, "requires_structured_output", false) && dict_get_or(model, "supports_structured_output", false) == false {
+		reasons := push(reasons, "structured_output_unsupported")
+	}
+	if dict_get_or(constraints, "output_schema_required", false) && type(dict_get_or(agent, "output_schema", null)) != "dict" {
+		reasons := push(reasons, "output_schema_missing")
+	}
+	if output_schema_compatible(dict_get_or(agent, "output_schema", null), dict_get_or(constraints, "required_output_schema", null)) == false {
+		reasons := push(reasons, "output_schema_incompatible")
+	}
+	required_context := normalize_number(dict_get_or(constraints, "required_context_tokens", 0), 0)
+	context_window := dict_get_or(model, "context_window", null)
+	if required_context > 0 {
+		if type(context_window) == "null" && unknown_rejects(constraints) {
+			reasons := push(reasons, "context_capacity_unknown")
+		} else if type(context_window) != "null" && context_window < required_context {
+			reasons := push(reasons, "context_capacity_insufficient")
+		}
+	}
+	max_input_cost := dict_get_or(constraints, "max_input_cost_per_million", null)
+	input_cost := dict_get_or(model, "input_cost_per_million", null)
+	if type(max_input_cost) != "null" {
+		if type(input_cost) == "null" && unknown_rejects(constraints) {
+			reasons := push(reasons, "input_cost_unknown")
+		} else if type(input_cost) != "null" && input_cost > max_input_cost {
+			reasons := push(reasons, "input_cost_exceeded")
+		}
+	}
+	max_output_cost := dict_get_or(constraints, "max_output_cost_per_million", null)
+	output_cost := dict_get_or(model, "output_cost_per_million", null)
+	if type(max_output_cost) != "null" {
+		if type(output_cost) == "null" && unknown_rejects(constraints) {
+			reasons := push(reasons, "output_cost_unknown")
+		} else if type(output_cost) != "null" && output_cost > max_output_cost {
+			reasons := push(reasons, "output_cost_exceeded")
+		}
+	}
+	max_latency := dict_get_or(constraints, "max_latency_ms", null)
+	latency := dict_get_or(model, "typical_latency_ms", null)
+	if type(max_latency) != "null" {
+		if type(latency) == "null" && unknown_rejects(constraints) {
+			reasons := push(reasons, "latency_unknown")
+		} else if type(latency) != "null" && latency > max_latency {
+			reasons := push(reasons, "latency_exceeded")
+		}
+	}
+	minimum_reliability := dict_get_or(constraints, "minimum_reliability", null)
+	reliability := dict_get_or(model, "reliability_score", null)
+	if type(minimum_reliability) != "null" {
+		if type(reliability) == "null" && unknown_rejects(constraints) {
+			reasons := push(reasons, "reliability_unknown")
+		} else if type(reliability) != "null" && reliability < minimum_reliability {
+			reasons := push(reasons, "reliability_below_floor")
+		}
+	}
+	maximum_risk := normalize_string(dict_get_or(constraints, "maximum_risk", "critical"), "critical")
+	candidate_risk := dict_get_or(model, "risk", dict_get_or(dict_get_or(agent, "routing", {}), "risk", "unknown"))
+	if risk_rank(candidate_risk) == 0 && has_key(constraints, "maximum_risk") && unknown_rejects(constraints) {
+		reasons := push(reasons, "risk_unknown")
+	} else if risk_rank(candidate_risk) > risk_rank(maximum_risk) {
+		reasons := push(reasons, "risk_exceeded")
+	}
+	excluded_routes := normalize_array(dict_get_or(constraints, "excluded_routes", []))
+	if array_contains(excluded_routes, candidate_key(candidate)) {
+		reasons := push(reasons, "route_excluded")
+	}
+	return reasons
+}
+
+func optional_score(value, unknown_value) {
+	if type(value) == "int" || type(value) == "float" {
+		return value
+	}
+	return unknown_value
+}
+
+func candidate_balanced_score(candidate) {
+	model := candidate["model_metadata"]
+	quality := quality_rank(dict_get_or(model, "quality_tier", "unknown"))
+	relative := optional_score(dict_get_or(model, "relative_quality", null), 0)
+	reliability := optional_score(dict_get_or(model, "reliability_score", null), 0)
+	cost := optional_score(dict_get_or(model, "input_cost_per_million", null), 1000000) + optional_score(dict_get_or(model, "output_cost_per_million", null), 1000000)
+	latency := optional_score(dict_get_or(model, "typical_latency_ms", null), 1000000)
+	return quality * 1000000 + relative * 100000 + reliability * 100000 - cost * 100 - latency
+}
+
+func candidate_better(left, right, objective) {
+	left_model := left["model_metadata"]
+	right_model := right["model_metadata"]
+	left_cost := optional_score(dict_get_or(left_model, "input_cost_per_million", null), 1000000000) + optional_score(dict_get_or(left_model, "output_cost_per_million", null), 1000000000)
+	right_cost := optional_score(dict_get_or(right_model, "input_cost_per_million", null), 1000000000) + optional_score(dict_get_or(right_model, "output_cost_per_million", null), 1000000000)
+	left_latency := optional_score(dict_get_or(left_model, "typical_latency_ms", null), 1000000000)
+	right_latency := optional_score(dict_get_or(right_model, "typical_latency_ms", null), 1000000000)
+	if objective == "cost_first" && left_cost != right_cost {
+		return left_cost < right_cost
+	}
+	if objective == "latency_first" && left_latency != right_latency {
+		return left_latency < right_latency
+	}
+	if objective == "balanced" {
+		left_balanced := candidate_balanced_score(left)
+		right_balanced := candidate_balanced_score(right)
+		if left_balanced != right_balanced {
+			return left_balanced > right_balanced
+		}
+	}
+	left_quality := quality_rank(dict_get_or(left_model, "quality_tier", "unknown"))
+	right_quality := quality_rank(dict_get_or(right_model, "quality_tier", "unknown"))
+	if left_quality != right_quality {
+		return left_quality > right_quality
+	}
+	left_relative := optional_score(dict_get_or(left_model, "relative_quality", null), -1)
+	right_relative := optional_score(dict_get_or(right_model, "relative_quality", null), -1)
+	if left_relative != right_relative {
+		return left_relative > right_relative
+	}
+	left_reliability := optional_score(dict_get_or(left_model, "reliability_score", null), -1)
+	right_reliability := optional_score(dict_get_or(right_model, "reliability_score", null), -1)
+	if left_reliability != right_reliability {
+		return left_reliability > right_reliability
+	}
+	if left_cost != right_cost {
+		return left_cost < right_cost
+	}
+	if left_latency != right_latency {
+		return left_latency < right_latency
+	}
+	left_efficiency := optional_score(dict_get_or(left_model, "token_efficiency", null), -1)
+	right_efficiency := optional_score(dict_get_or(right_model, "token_efficiency", null), -1)
+	if left_efficiency != right_efficiency {
+		return left_efficiency > right_efficiency
+	}
+	left_key := candidate_key(left)
+	right_key := candidate_key(right)
+	if left_key == right_key {
+		return false
+	}
+	ordered_keys := sort([left_key, right_key])
+	return ordered_keys[0] == left_key
+}
+
+func sort_candidates(candidates, objective) {
+	ranked_out := []
+	for candidate in candidates {
+		inserted := false
+		next_ranked := []
+		for existing in ranked_out {
+			if inserted == false && candidate_better(candidate, existing, objective) {
+				next_ranked := push(next_ranked, candidate)
+				inserted := true
+			}
+			next_ranked := push(next_ranked, existing)
+		}
+		if inserted == false {
+			next_ranked := push(next_ranked, candidate)
+		}
+		ranked_out = next_ranked
+	}
+	return ranked_out
+}
+
+func sort_candidates_by_key(candidates) {
+	result := []
+	for candidate in candidates {
+		inserted := false
+		updated := []
+		for existing in result {
+			if inserted == false && candidate_key(candidate) < candidate_key(existing) {
+				updated := push(updated, candidate)
+				inserted = true
+			}
+			updated := push(updated, existing)
+		}
+		if inserted == false {
+			updated := push(updated, candidate)
+		}
+		result = updated
+	}
+	return result
+}
+
+func candidate_agents(requested_agent_id, agents, allow_substitution) {
+	result := []
+	if has_key(agents, requested_agent_id) {
+		result := push(result, agents[requested_agent_id])
+	}
+	if allow_substitution {
+		ids := keys(agents)
+		ids = sort(ids)
+		for agent_id in ids {
+			if agent_id != requested_agent_id && agent_id != "__agent_handlers" {
+				if type(agents[agent_id]) == "dict" {
+					result := push(result, agents[agent_id])
+				}
+			}
+		}
+	}
+	return result
+}
+
+func decision_id_payload(decision) {
+	return {
+		"policy_version": dict_get_or(decision, "policy_version", ""),
+		"objective": dict_get_or(decision, "objective", "quality_first"),
+		"catalog_id": dict_get_or(decision, "catalog_id", ""),
+		"catalog_version": dict_get_or(decision, "catalog_version", ""),
+		"catalog_hash": dict_get_or(decision, "catalog_hash", ""),
+		"step_id": dict_get_or(decision, "step_id", ""),
+		"requested_agent_id": dict_get_or(decision, "requested_agent_id", ""),
+		"selected_agent_id": dict_get_or(decision, "selected_agent_id", ""),
+		"provider_id": dict_get_or(decision, "provider_id", ""),
+		"model": dict_get_or(decision, "model", ""),
+		"constraints": dict_get_or(decision, "constraints", {}),
+		"fallback_index": dict_get_or(decision, "fallback_index", 0)
+	}
+}
+
+func build_decision(request, candidate, constraints, candidate_count, reason_codes) {
+	model := candidate["model_metadata"]
+	agent := candidate["agent"]
+	catalog := normalize_dict(dict_get_or(request, "model_catalog", {}))
+	decision := {
+		"decision_id": "",
+		"policy_version": normalize_string(dict_get_or(request, "policy_version", routing_policy_version()), routing_policy_version()),
+		"objective": normalize_string(dict_get_or(request, "objective", "quality_first"), "quality_first"),
+		"catalog_id": dict_get_or(catalog, "id", ""),
+		"catalog_version": dict_get_or(catalog, "version", ""),
+		"catalog_hash": dict_get_or(catalog, "catalog_hash", ""),
+		"step_id": dict_get_or(request, "step_id", ""),
+		"requested_agent_id": dict_get_or(request, "requested_agent_id", ""),
+		"selected_agent_id": dict_get_or(candidate, "selected_agent_id", ""),
+		"selected_agent_role": dict_get_or(agent, "role", dict_get_or(agent, "purpose", "")),
+		"handler_id": dict_get_or(agent, "handler_id", dict_get_or(candidate, "selected_agent_id", "")),
+		"execution_contract": dict_get_or(agent, "execution_contract", {}),
+		"provider_id": dict_get_or(model, "provider", ""),
+		"model": dict_get_or(model, "model", ""),
+		"quality_tier": dict_get_or(model, "quality_tier", "unknown"),
+		"relative_quality": dict_get_or(model, "relative_quality", null),
+		"reason_codes": reason_codes,
+		"constraints": constraints,
+		"candidate_count": candidate_count,
+		"estimated_cost": {
+			"input_per_million": dict_get_or(model, "input_cost_per_million", null),
+			"output_per_million": dict_get_or(model, "output_cost_per_million", null),
+			"currency": dict_get_or(model, "currency", "USD")
+		},
+		"estimated_latency_ms": dict_get_or(model, "typical_latency_ms", null),
+		"selected_at": dict_get_or(request, "selected_at", format_date(now(), "YYYY-MM-DD HH:mm:ss")),
+		"fallback_index": dict_get_or(request, "fallback_index", 0)
+	}
+	decision["decision_id"] := "route-" + sha256(to_json(decision_id_payload(decision)))
+	return decision
+}
+
+func resolve_route(request) {
+	workflow := normalize_dict(dict_get_or(request, "workflow", {}))
+	step := normalize_dict(dict_get_or(request, "step", {}))
+	agents := normalize_dict(dict_get_or(workflow, "agents", {}))
+	requested_agent_id := normalize_string(dict_get_or(request, "requested_agent_id", dict_get_or(step, "agent_id", "")), "")
+	if has_key(agents, requested_agent_id) == 0 {
+		return {"ok": false, "error": {"code": "no_route_available", "message": "Requested agent is not registered: " + requested_agent_id, "retryable": false, "details": {"reason_codes": ["requested_agent_missing"]}}}
+	}
+	requested_agent := agents[requested_agent_id]
+	constraints := resolve_constraints(workflow, step, requested_agent)
+	constraints = merge_constraint_layer(constraints, dict_get_or(request, "constraint_overrides", {}))
+	routing_enabled := routing_is_enabled(workflow, step)
+	if routing_enabled == false {
+		legacy_candidates := agent_model_candidates(requested_agent, {})
+		if len(legacy_candidates) == 0 {
+			legacy_candidates = [{"provider": "openai", "model": "gpt-4.1-mini", "quality_tier": "unknown", "enabled": true}]
+		}
+		legacy_candidate := {"selected_agent_id": requested_agent_id, "agent": requested_agent, "model_metadata": legacy_candidates[0]}
+		return {"ok": true, "decision": build_decision(request, legacy_candidate, {}, 1, ["legacy_static"]), "candidate_evaluations": []}
+	}
+
+	workflow_routing := normalize_dict(dict_get_or(workflow, "routing", {}))
+	step_routing := normalize_dict(dict_get_or(step, "routing", dict_get_or(dict_get_or(step, "config", {}), "routing", {})))
+	policy_version := normalize_string(dict_get_or(workflow_routing, "policy_version", routing_policy_version()), routing_policy_version())
+	if policy_version != routing_policy_version() {
+		return {"ok": false, "error": {"code": "unsupported_routing_policy_version", "message": "Unsupported routing policy version: " + policy_version, "retryable": false}}
+	}
+	objective := normalize_string(dict_get_or(step_routing, "objective", dict_get_or(workflow_routing, "objective", "quality_first")), "quality_first")
+	if array_contains(["quality_first", "cost_first", "latency_first", "balanced"], objective) == false {
+		return {"ok": false, "error": {"code": "unsupported_routing_objective", "message": "Unsupported deterministic routing objective: " + objective, "retryable": false}}
+	}
+	request["objective"] := objective
+	allow_substitution := dict_get_or(step_routing, "allow_agent_substitution", dict_get_or(workflow_routing, "allow_agent_substitution", false))
+	catalog := normalize_dict(dict_get_or(request, "model_catalog", dict_get_or(workflow_routing, "model_catalog", {})))
+	if dict_get_or(catalog, "schema_name", "") != "ai-sdk-model-catalog" || dict_get_or(catalog, "schema_version", "") != "1.0.0" || normalize_string(dict_get_or(catalog, "id", ""), "") == "" || normalize_string(dict_get_or(catalog, "version", ""), "") == "" || normalize_string(dict_get_or(catalog, "catalog_hash", ""), "") == "" || type(dict_get_or(catalog, "models", null)) != "array" {
+		return {"ok": false, "error": {"code": "invalid_model_catalog", "message": "Enabled routing requires an AI SDK model catalog at schema version 1.0.0 with id, version, catalog_hash, and models.", "retryable": false}}
+	}
+	if dict_get_or(catalog, "catalog_hash", "") != canonical_catalog_hash(catalog) {
+		return {"ok": false, "error": {"code": "invalid_model_catalog", "message": "Model catalog hash does not match canonical catalog content.", "retryable": false}}
+	}
+	if catalog_models_valid(catalog) == false || dict_get_or(dict_get_or(catalog, "validation", {"ok": true}), "ok", true) == false {
+		return {"ok": false, "error": {"code": "invalid_model_catalog", "message": "Model catalog entries do not satisfy the AI SDK metadata contract.", "retryable": false}}
+	}
+	if dict_get_or(workflow_routing, "allow_uncataloged_models", false) {
+		constraints["require_catalog_membership"] := false
+	} else {
+		constraints["require_catalog_membership"] := true
+	}
+	candidates := []
+	seen_candidates := {}
+	for agent in candidate_agents(requested_agent_id, agents, allow_substitution) {
+		for model in agent_model_candidates(agent, catalog) {
+			candidate := {
+				"selected_agent_id": dict_get_or(agent, "id", ""),
+				"agent": agent,
+				"model_metadata": model
+			}
+			key := candidate_key(candidate)
+			if has_key(seen_candidates, key) == 0 {
+				candidates := push(candidates, candidate)
+				seen_candidates[key] := true
+			}
+		}
+	}
+	candidates = sort_candidates_by_key(candidates)
+	evaluations := []
+	eligible := []
+	for candidate in candidates {
+		rejections := candidate_rejection_reasons(candidate, requested_agent, constraints)
+		evaluations := push(evaluations, {"candidate_key": candidate_key(candidate), "eligible": len(rejections) == 0, "reason_codes": rejections})
+		if len(rejections) == 0 {
+			eligible := push(eligible, candidate)
+		}
+	}
+	if len(eligible) == 0 {
+		return {
+			"ok": false,
+			"error": {
+				"code": "no_route_available",
+				"message": "No routing candidate satisfied hard constraints for step " + dict_get_or(step, "id", "") + ".",
+				"retryable": false,
+				"details": {"candidate_count": len(candidates), "candidate_evaluations": evaluations, "constraints": constraints}
+			},
+			"candidate_evaluations": evaluations
+		}
+	}
+	ranked := sort_candidates(eligible, objective)
+	selected := ranked[0]
+	reason_codes := ["hard_constraints_satisfied", objective, "deterministic_tiebreak"]
+	if dict_get_or(selected, "selected_agent_id", "") != requested_agent_id {
+		reason_codes := push(reason_codes, "compatible_agent_substitution")
+	} else {
+		reason_codes := push(reason_codes, "requested_agent_preserved")
+	}
+	decision := build_decision(request, selected, constraints, len(candidates), reason_codes)
+	return {"ok": true, "decision": decision, "candidate_evaluations": evaluations}
+}
+
+func build_effective_agent(workflow_agents, decision, routing_enabled) {
+	selected_agent_id := dict_get_or(decision, "selected_agent_id", "")
+	if has_key(workflow_agents, selected_agent_id) == 0 {
+		return {"ok": false, "error": {"code": "persisted_route_unavailable", "message": "Selected agent is unavailable: " + selected_agent_id, "retryable": false}}
+	}
+	agent := clone_dict(workflow_agents[selected_agent_id])
+	agent["model"] := merge_dicts(dict_get_or(agent, "model", {}), {
+		"provider": dict_get_or(decision, "provider_id", ""),
+		"model": dict_get_or(decision, "model", "")
+	})
+	agent["__route_decision"] := decision
+	agent["__routing_enabled"] := routing_enabled
+	return {"ok": true, "agent": agent}
+}
+
+func evaluate_route_output(output, evaluation_config) {
+	config := normalize_dict(evaluation_config)
+	if len(keys(config)) == 0 {
+		return {"accepted": true, "outcome": "accepted", "reason_codes": ["evaluation_not_configured"]}
+	}
+	data := normalize_dict(output)
+	reasons := []
+	for field in normalize_array(dict_get_or(config, "required_fields", [])) {
+		if has_key(data, field) == 0 {
+			reasons := push(reasons, "required_field_missing:" + to_string(field))
+		}
+	}
+	minimum_confidence := dict_get_or(config, "minimum_confidence", null)
+	if type(minimum_confidence) != "null" {
+		confidence := dict_get_or(data, "confidence", null)
+		if type(confidence) == "null" || confidence < minimum_confidence {
+			reasons := push(reasons, "confidence_below_minimum")
+		}
+	}
+	max_unsupported := dict_get_or(config, "max_unsupported_claims", null)
+	if type(max_unsupported) != "null" {
+		unsupported := dict_get_or(data, "unsupported_claims", 0)
+		if type(unsupported) == "array" {
+			unsupported = len(unsupported)
+		}
+		if type(unsupported) != "int" || unsupported > max_unsupported {
+			reasons := push(reasons, "unsupported_claim_limit_exceeded")
+		}
+	}
+	if len(reasons) == 0 {
+		return {"accepted": true, "outcome": "accepted", "reason_codes": ["evaluation_passed"]}
+	}
+	outcome := normalize_string(dict_get_or(config, "on_failure", "failed"), "failed")
+	allowed_outcomes := ["retry_same_route", "upgrade_model", "reroute_agent", "request_human_review", "failed"]
+	if array_contains(allowed_outcomes, outcome) == false {
+		outcome = "failed"
+		reasons := push(reasons, "invalid_evaluation_failure_outcome")
+	}
+	return {"accepted": false, "outcome": outcome, "reason_codes": reasons}
+}
+
+func route_failure_action(error, fallback_config) {
+	error_map := normalize_dict(error)
+	code := normalize_string(dict_get_or(error_map, "code", ""), "")
+	if dict_get_or(error_map, "retryable", false) || array_contains(["timeout", "rate_limit", "network_error", "sdk_bridge_exec_error", "http_429", "http_5xx"], code) {
+		return {"action": "retry_same_route", "reason": code}
+	}
+	if array_contains(["provider_unavailable", "context_incompatible", "structured_output_invalid", "quality_evaluation_failed", "unsupported_feature"], code) {
+		return {"action": "fallback", "reason": code}
+	}
+	if array_contains(normalize_array(dict_get_or(fallback_config, "fallback_on_codes", [])), code) {
+		return {"action": "fallback", "reason": code}
+	}
+	return {"action": "fail", "reason": code}
+}
+
+export routing_policy_version := routing_policy_version
+export supported_route_provider := supported_route_provider
+export validate_workflow_routing := validate_workflow_routing
+export merge_constraint_layer := merge_constraint_layer
+export routing_is_enabled := routing_is_enabled
+export execution_compatibility := execution_compatibility
+export resolve_constraints := resolve_constraints
+export resolve_route := resolve_route
+export build_effective_agent := build_effective_agent
+export evaluate_route_output := evaluate_route_output
+export route_failure_action := route_failure_action

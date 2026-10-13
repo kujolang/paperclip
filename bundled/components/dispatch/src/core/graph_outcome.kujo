@@ -1,0 +1,223 @@
+from src.core.resource_ledger import resources_enabled, eval_budget, eval_current, resource_raw
+from src.core.graph_attempts import program_contract, accounting_enabled, accounting_budget, held_reservation
+from src.core.graph_policy import policy_enabled, path_state, failure_strategy, static_policy, dispatch_budget, policy_group
+# Installed local operator API. Inspect is informational; apply never runs nodes.
+from src.core.node_composition import runtime, spec, validate_node_outputs, local_node_inputs, node_terminal, program_node_state, retain, persist_node_transition
+from src.core.node_transition import node_reference, node_raw, node_claim_path
+from src.core.graph_transition import heterogeneous_graph, graph_contract
+from src.core.parent_transition import parent_state_body
+from src.core.state import load_run_state, acquire_run_lock, release_run_lock
+from src.core.control import validate_evaluation_result, resolve_control_decision
+from src.core.intervention import validate_intervention_decision
+from src.core.hooks import create_control_intervention_event
+from src.core.portable_commitments import portable_json
+from src.core.utils import dict_get_or
+func demand(ok, reason) {if ok != true {throw(reason)}}
+func same(a, b) {return to_json(a) == to_json(b)}
+func subject(graph, id) {return {"run_id":graph["run_id"], "step_id":id, "decision_instance":"1"}}
+export func candidate(graph, data) {
+    data["source_sha256"] := sha256(parent_state_body(graph));data["revision"] := graph["revision"];data["journal"] := graph["control_journal"]["last_sha256"]
+    data["graph"] := {"run_id":graph["run_id"], "workflow_ref":"sha256:" + sha256(to_json(graph["workflow_definition"]))}
+    data["authority_ref"] := "sha256:" + graph["assurance_negotiation"]["config_revision"]
+    data["candidate_id"] := sha256(portable_json(data));return data
+}
+func actor_valid(actor) {
+    if type(actor) != "dict" {return false}
+    for field in ["id", "type", "authenticated_by", "authorization"] {if type(dict_get_or(actor, field, null)) != "string"||trim(actor[field]) == "" {return false}}
+    return contains(["human", "policy_engine", "system"], actor["type"])
+}
+export func authorize(host, actor, graph, intent) {demand(actor_valid(actor)&&type(host["authorize_graph"]) == "function"&&host["authorize_graph"](actor, graph, intent) == true, "graph_operator_not_authorized")}
+func stable_policy(policy) {stable := {};for key in keys(policy) {if key != "decided_at" {stable[key] := policy[key]}};return stable}
+func local_facts(graph, id, decision, host) {
+    demand(has_key(dict_get_or(graph, "node_completions", {}), id) == 0, "node_already_terminal")
+    step := spec(graph, id);binding := graph["graph_node_bindings"][id]
+    current := local_node_inputs(graph, id, host);demand(same(binding, current["binding"]), "stale_terminal_inputs")
+    binding_ref := node_reference(binding);raws := current["artifacts"];raws = push(raws, portable_json(binding))
+    contract := graph_contract(step);outcome := "completed";fact := null;policy := null
+    if contract == "evaluation-result/v1" {
+        input := binding["inputs"][0]
+        raw := ""
+        if resources_enabled(graph) {row := eval_current(graph, id);demand(row != null&&row["dispatch"] != null&&row["resolution"] != null&&row["resolution"]["candidate"]["outcome"] == "completed"&&row["binding_ref"] == binding_ref, "eval_consumed_result_required");raw = resource_raw(graph, row["resolution"]["candidate"]["result_ref"])} else {raw = host["read_evaluation"](id, binding)};demand(type(raw) == "string"&&byte_length(raw) <= 1048576, "evaluation_limit")
+        evaluation := parse_json(raw);demand(validate_evaluation_result(evaluation)["ok"], "evaluation_invalid")
+        demand(same(evaluation["subject"], input["producer_subject"])&&same(evaluation["input_evidence_ids"], [input["result_ref"], input["content_ref"]]), "stale_evaluation_subject")
+        demand(same(evaluation["evaluator"], step["config"]["evaluator"]), "evaluator_identity_mismatch")
+        demand(dict_get_or(evaluation, "evaluation_status", "completed") == "completed", "evaluation_incomplete")
+        resolved := resolve_control_decision(graph["workflow_definition"], step, evaluation)
+        demand(resolved["ok"]&&resolved["found"], "evaluation_policy_invalid");policy = stable_policy(resolved["decision"])
+        disposition := policy["disposition"];demand(contains(["continue", "fail", "cancel"], disposition), "evaluation_requires_review")
+        if disposition == "fail" {outcome = "failed"} else if disposition == "cancel" {outcome = "cancelled"}
+        fact = "sha256:" + sha256(raw);raws = push(push(raws, raw), to_json(policy))
+    } else {
+        demand(contract == "intervention-decision/v2", "nonlocal_terminal_contract")
+        review := graph["graph_reviews"][id]
+        view := {"status":"paused", "revision":graph["revision"], "current_control_boundary":review["boundary"], "human_intervention":review["request"]}
+        demand(decision != null&&validate_intervention_decision(decision, view)["ok"], "human_decision_stale_or_invalid")
+        demand(same(decision["subject"], subject(graph, id))&&decision["input_binding_ref"] == binding_ref, "human_decision_subject_mismatch")
+        demand(type(host["authorize_decision"]) == "function"&&host["authorize_decision"](decision, graph, binding) == true, "human_not_authorized")
+        if decision["action"] == "abort" {outcome = "rejected"} else if decision["action"] == "cancel" {outcome = "cancelled"} else {demand(decision["action"] == "approve_override", "human_action_invalid")}
+        fact = "sha256:" + sha256(to_json(decision));raws = push(push(raws, to_json(decision)), to_json(review))
+    }
+    data := {"schema":"dispatch.node-terminal-candidate/v1alpha1", "node_id":id, "subject":subject(graph, id), "contract":contract, "binding_ref":binding_ref, "fact_ref":fact, "policy_ref":null, "outcome":outcome}
+    if contract == "evaluation-result/v1"&&resources_enabled(graph) {data["eval_attempt_id"] := eval_current(graph, id)["attempt_id"]}
+    if policy != null {data["policy_ref"] := "sha256:" + sha256(to_json(policy))}
+    return {"candidate":candidate(graph, data), "artifacts":raws}
+}
+func observed(graph, id, checked) {
+    receipt := {"schema":"dispatch.node-terminal-receipt/v1alpha1", "candidate":checked["candidate"], "resulting_revision":graph["revision"] + 1}
+    raw := to_json(receipt);raws := push(checked["artifacts"], raw);retain(graph, raws)
+    refs := [];for bytes in raws {ref := "sha256:" + sha256(bytes);if contains(refs, ref) == false {refs = push(refs, ref)}}
+    c := checked["candidate"]
+    terminal := {"schema":"dispatch.node-terminal/v1alpha1", "node_id":id, "contract":c["contract"], "subject":c["subject"], "facts_ref":"sha256:" + sha256(raw), "finalized_revision":receipt["resulting_revision"], "outcome":c["outcome"], "authority_ref":c["authority_ref"]}
+    return {"node_id":id, "terminal":terminal, "artifacts":refs}
+}
+export func outcome_facts(graph, host) {return scoped_outcome_facts(graph, host, null)}
+export func scoped_outcome_facts(graph, host, scope) {
+    nodes := [];raws := [];required_failed := false;required_cancelled := false;pending := false;inflight := false;policy_block := false
+    for step in graph["workflow_definition"]["steps"] {
+        id := step["id"];if scope != null&&contains(scope, id) == false {continue}
+        required := step["optional"] == false;terminal := null;reason := "terminal_fact_missing"
+        path := path_state(graph, id)
+        if path != "active" {
+            demand(has_key(dict_get_or(graph, "node_dispatches", {}), id) == 0&&has_key(dict_get_or(graph, "node_completions", {}), id) == 0, "inactive_node_history_conflict")
+            if path == "awaiting_selection" {policy_block = true}
+            nodes = push(nodes, {"node_id":id, "required":false, "declared_required":required, "terminal":null, "reason":path});continue
+        }
+        if has_key(dict_get_or(graph, "node_completions", {}), id) {
+            checked := node_terminal(graph, id, host, false);terminal = checked["identity"]
+            demand(same(terminal, graph["node_completions"][id]["terminal"]), "graph_terminal_observation_stale")
+            for raw in checked["artifacts"] {raws = push(raws, raw)}
+            if program_contract(step) == false {
+                input := local_node_inputs(graph, id, host);demand(same(input["binding"], graph["graph_node_bindings"][id]), "stale_terminal_inputs")
+            }
+            if program_contract(step)&&terminal["outcome"] == "completed" {validate_node_outputs(graph, id, host)}
+            reason = "terminal"
+            strategy := terminal["outcome"]
+            if policy_enabled(graph) {strategy = failure_strategy(graph, step, terminal["outcome"]);reason = strategy}
+            if contains(["blocked", "awaiting_selection", "review_required"], strategy) {policy_block = true}
+            if required&&contains(["failed", "rejected"], strategy) {required_failed = true}
+            if required&&strategy == "cancelled" {required_cancelled = true}
+        } else {
+            if required {pending = true}
+            # A surviving dispatch may admit in another child process. Even before
+            # the claim exists it cannot be waived by optional graph completion.
+            if has_key(dict_get_or(graph, "node_dispatches", {}), id) {inflight = true;reason = "dispatched_node_requires_terminal_evidence"}
+            if program_contract(step) {
+                child := program_node_state(graph, id, host)
+                if has_key(child, "node_execution_admission")||has_key(child, "node_input_binding")&&file_exists(child["run_dir"] + "/" + node_claim_path(child["node_input_binding"])) {
+                    inflight = true;reason = "consumed_node_requires_terminal_evidence"
+                }
+            } else if graph_contract(step) == "intervention-decision/v2" {reason = "human_review_pending"}
+        }
+        nodes = push(nodes, {"node_id":id, "required":required, "terminal":terminal, "reason":reason})
+    }
+    outcome := "blocked"
+    groups := []
+    if policy_enabled(graph)&&scope == null {
+        for group in static_policy(graph)["subgraphs"] {
+            receipt := dict_get_or(dict_get_or(graph, "subgraph_finalizations", {}), group["id"], null)
+            if receipt == null {if required_failed == false&&required_cancelled == false {policy_block = true};groups = push(groups, {"subgraph_id":group["id"], "reason":"terminal_decision_missing"})}
+            else {
+                exact := scoped_outcome_facts(graph, host, group["members"])["candidate"]
+                demand(same(exact["nodes"], receipt["candidate"]["nodes"])&&exact["outcome"] == receipt["candidate"]["outcome"], "subgraph_terminal_stale")
+                raw := portable_json(receipt);raws = push(raws, raw);groups = push(groups, {"subgraph_id":group["id"], "terminal_ref":"sha256:" + sha256(raw), "outcome":receipt["candidate"]["outcome"]})
+            }
+        }
+    }
+    # A group settles only its members. Whole-graph settlement still includes
+    # every reservation and consumed invocation; capacity remains graph-wide.
+    if accounting_enabled(graph) {
+        accounting_budget(graph)
+        for id in keys(dict_get_or(graph, "graph_attempts", {})) {
+            if (scope == null||contains(scope, id))&&held_reservation(graph, id) {policy_block = true}
+        }
+    }
+    if resources_enabled(graph) {
+        eval_budget(graph)
+        for id in keys(dict_get_or(graph, "eval_attempts", {})) {
+            if scope != null&&contains(scope, id) == false {continue}
+            for row in graph["eval_attempts"][id] {
+                if row["dispatch"] == null&&row["release"] == null {policy_block = true}
+                if row["dispatch"] != null&&row["resolution"] == null {inflight = true}
+            }
+        }
+    }
+    if inflight == false&&policy_block == false {
+        if required_failed {outcome = "failed"} else if required_cancelled {outcome = "cancelled"} else if pending == false {outcome = "completed"}
+    }
+    data := {"schema":"dispatch.graph-outcome-candidate/v1alpha1", "outcome":outcome, "nodes":nodes, "policy":"required-success/no-unfinished-admission/v1alpha1"}
+    if policy_enabled(graph) {data["schema"] := "dispatch.graph-outcome-candidate/v1alpha2";data["policy"] := "static-active-path/v1alpha1";branches := [];for id in keys(dict_get_or(graph, "branch_activations", {})) {record := graph["branch_activations"][id];raw := portable_json(record);branches = push(branches, {"branch_id":id, "selected":record["candidate"]["selected"], "activation_ref":"sha256:" + sha256(raw)});raws = push(raws, raw)};data["branches"] := branches;data["subgraphs"] := groups;data["budget"] := dispatch_budget(graph)}
+    if accounting_enabled(graph) {raw := to_json(dict_get_or(graph, "graph_attempts", {}));data["accounting_ref"] := "sha256:" + sha256(raw);raws = push(raws, raw)}
+    if resources_enabled(graph) {raw := to_json({"eval_attempts":dict_get_or(graph, "eval_attempts", {}), "sources":dict_get_or(graph, "resource_sources", {})});data["resources_ref"] := "sha256:" + sha256(raw);data["eval_budget"] := eval_budget(graph);raws = push(raws, raw)}
+    return {"candidate":candidate(graph, data), "artifacts":raws}
+}
+func review_request(graph, id, host) {
+    binding := graph["graph_node_bindings"][id];demand(graph_contract(spec(graph, id)) == "intervention-decision/v2"&&has_key(dict_get_or(graph, "node_completions", {}), id) == 0, "review_node_required")
+    demand(same(local_node_inputs(graph, id, host)["binding"], binding), "stale_terminal_inputs")
+    policy := {"decision_id":"review:" + node_reference(binding), "reason":{"code":"approval_required", "message":"Review exact graph node input binding."}, "allowed_actions":["approve_override", "abort", "cancel"]}
+    boundary := {"schema":"kujo.control-boundary/v1", "boundary_id":"node-review:" + id + ":" + to_string(graph["revision"] + 1), "status":"open", "step_id":id, "state_revision":graph["revision"] + 1, "policy_decision":policy, "preservation":{"status":"not_requested", "actual_mode":"none"}}
+    request := create_control_intervention_event(graph, spec(graph, id), boundary, {})
+    request["callback"] := {"target":"dispatch://graph-node-decision/" + graph["run_id"] + "/" + id, "correlation_id":boundary["boundary_id"]}
+    request["routing"] := {};request["metadata"] := {"input_binding_ref":node_reference(binding)}
+    return {"node_id":id, "binding_ref":node_reference(binding), "boundary":boundary, "request":request}
+}
+export func graph_terminal_operation(root, run_id, request, options) {
+    loaded := load_run_state(root, run_id);if loaded["ok"] == false {return loaded}
+    op := request["operation"];readonly := contains(["graph-assess", "node-assess"], op);lock := null;answer := {"ok":false}
+    if readonly == false {lock = acquire_run_lock(loaded["run_state"]);if lock["ok"] == false {return lock}}
+    try {
+        graph := load_run_state(root, run_id)["run_state"];demand(heterogeneous_graph(graph), "heterogeneous_graph_required");host := runtime(graph, options)
+        if has_key(graph, "graph_finalization") {
+            demand(readonly, "graph_already_finalized");answer = {"ok":true, "status":"already_finalized", "receipt":graph["graph_finalization"]}
+        } else {
+            id := dict_get_or(request, "node_id", "");decision := dict_get_or(request, "decision", null)
+            if op == "optional-cancel" {graph = cancel_optional(graph, id, request["actor"], host, options);answer = {"ok":true, "outcome":"cancelled", "revision":graph["revision"]}}
+            else if op == "review-open" {data := review_request(graph, id, host);graph = persist_node_transition(graph, "graph_review_requested", data);answer = {"ok":true, "review":data}}
+            else if op == "node-assess" {facts := local_facts(graph, id, decision, host);answer = {"ok":true, "candidate":facts["candidate"], "authority":"informational"}}
+            else if op == "graph-assess" {facts := outcome_facts(graph, host);answer = {"ok":true, "candidate":facts["candidate"], "authority":"informational"}}
+            else if op == "node-finalize"||op == "graph-finalize" {
+                checked := null
+                if op == "node-finalize" {checked = local_facts(graph, id, decision, host)} else {checked = outcome_facts(graph, host);authorize(host, request["actor"], graph, checked["candidate"]);demand(checked["candidate"]["outcome"] != "blocked", "graph_blocked")}
+                demand(same(checked["candidate"], request["candidate"]), "stale_graph_candidate")
+                hook := dict_get_or(options, "graph_boundary", null);if type(hook) == "function" {hook("before_terminal")}
+                retain(graph, checked["artifacts"])
+                graph = load_run_state(root, run_id)["run_state"];host = runtime(graph, options)
+                latest := null
+                if op == "node-finalize" {latest = local_facts(graph, id, decision, host)} else {latest = outcome_facts(graph, host);authorize(host, request["actor"], graph, latest["candidate"])}
+                demand(same(latest["candidate"], request["candidate"]), "stale_graph_candidate")
+                if op == "node-finalize" {
+                    data := observed(graph, id, latest)
+                    # Artifact publication can delay the decision; repeat live checks.
+                    current := local_facts(graph, id, decision, runtime(graph, options));demand(same(current["candidate"], latest["candidate"]), "stale_graph_candidate")
+                    graph = persist_node_transition(graph, "node_terminal_observed", data)
+                } else {
+                    actor_raw := to_json(request["actor"]);retain(graph, [actor_raw]);refs := ["sha256:" + sha256(actor_raw)];for raw in latest["artifacts"] {refs = push(refs, "sha256:" + sha256(raw))}
+                    last := outcome_facts(graph, runtime(graph, options));demand(same(last["candidate"], request["candidate"]), "stale_graph_candidate");authorize(runtime(graph, options), request["actor"], graph, last["candidate"])
+                    receipt := {"schema":"dispatch.graph-finalization/v1alpha1", "candidate":latest["candidate"], "actor_ref":"sha256:" + sha256(actor_raw), "artifacts":refs, "resulting_revision":graph["revision"] + 1, "decided_at":format_date(now(), "YYYY-MM-DDTHH:mm:ssZ")}
+                    graph = persist_node_transition(graph, "graph_finalized", receipt)
+                }
+                if type(hook) == "function" {hook("after_terminal")}
+                answer = {"ok":true, "revision":graph["revision"], "outcome":latest["candidate"]["outcome"]}
+            } else {throw("graph_operation_unsupported")}
+        }
+    } except err {answer = {"ok":false, "reason":to_string(err), "authority":"informational"}}
+    if lock != null {release_run_lock(lock)};return answer
+}
+
+func cancel_optional(graph, id, actor, host, options) {
+    step := spec(graph, id)
+    demand(held_reservation(graph, id) == false, "release_reservation_before_cancellation")
+    demand(step["optional"]&&has_key(dict_get_or(graph, "node_completions", {}), id) == 0&&has_key(dict_get_or(graph, "node_dispatches", {}), id) == 0, "optional_cancel_not_permitted")
+    demand(graph_contract(step) == "parent-finalization/v1alpha1", "optional_cancel_requires_program")
+    child := program_node_state(graph, id, host);lock := acquire_run_lock(child);demand(lock["ok"], "node_locked")
+    try {
+        child = program_node_state(graph, id, host)
+        demand(child["steps"][0]["status"] == "pending"&&has_key(child, "node_execution_admission") == 0, "optional_already_admitted")
+        if has_key(child, "node_input_binding") {demand(file_exists(child["run_dir"] + "/" + node_claim_path(child["node_input_binding"])) == false, "optional_already_consumed")}
+        data := candidate(graph, {"schema":"dispatch.node-terminal-candidate/v1alpha1", "node_id":id, "contract":"parent-finalization/v1alpha1", "subject":{"run_id":child["run_id"], "step_id":step["config"]["node_execution"]["step_id"], "attempt_id":"1"}, "outcome":"cancelled", "fact_type":"optional_cancel", "never_admitted_source":sha256(parent_state_body(child)), "actor_ref":"sha256:" + sha256(to_json(actor))})
+        authorize(runtime(graph, options), actor, graph, data)
+        recorded := observed(graph, id, {"candidate":data, "artifacts":[to_json(actor)]})
+        authorize(runtime(graph, options), actor, graph, data)
+        graph = persist_node_transition(graph, "node_terminal_observed", recorded)
+    } except err {release_run_lock(lock);throw(to_string(err))}
+    release_run_lock(lock);return graph
+}

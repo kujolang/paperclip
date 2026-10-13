@@ -1,0 +1,239 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "dispatch.node-input-binding/v1alpha2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "graph",
+    "node_id",
+    "consumer",
+    "predecessors",
+    "inputs",
+    "artifacts"
+  ],
+  "properties": {
+    "schema": {
+      "const": "dispatch.node-input-binding/v1alpha2"
+    },
+    "graph": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "run_id",
+        "workflow_ref"
+      ],
+      "properties": {
+        "run_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "workflow_ref": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        }
+      }
+    },
+    "node_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "consumer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "run_id",
+        "step_id",
+        "attempt_id"
+      ],
+      "properties": {
+        "run_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "step_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "attempt_id": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "predecessors": {
+      "type": "array",
+      "maxItems": 8,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "node_id",
+          "terminal"
+        ],
+        "properties": {
+          "node_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "terminal": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "schema",
+              "node_id",
+              "contract",
+              "subject",
+              "facts_ref",
+              "finalized_revision",
+              "outcome",
+              "authority_ref"
+            ],
+            "properties": {
+              "schema": {
+                "const": "dispatch.node-terminal/v1alpha1"
+              },
+              "node_id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "contract": {
+                "enum": [
+                  "parent-finalization/v1alpha1",
+                  "evaluation-result/v1",
+                  "intervention-decision/v2"
+                ]
+              },
+              "subject": {
+                "type": "object",
+                "required": [
+                  "run_id"
+                ],
+                "properties": {
+                  "run_id": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                }
+              },
+              "facts_ref": {
+                "type": "string",
+                "pattern": "^sha256:[0-9a-f]{64}$"
+              },
+              "finalized_revision": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "outcome": {
+                "enum": [
+                  "completed",
+                  "failed",
+                  "rejected",
+                  "cancelled"
+                ]
+              },
+              "authority_ref": {
+                "type": "string",
+                "pattern": "^sha256:[0-9a-f]{64}$"
+              }
+            }
+          }
+        }
+      }
+    },
+    "inputs": {
+      "type": "array",
+      "maxItems": 8,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "producer_node",
+          "producer_subject",
+          "result_ref",
+          "finalization_ref",
+          "finalized_revision",
+          "output_name",
+          "type_id",
+          "schema_ref",
+          "evidence_ref",
+          "content_ref",
+          "name"
+        ],
+        "properties": {
+          "producer_node": {
+            "type": "string",
+            "minLength": 1
+          },
+          "producer_subject": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "run_id",
+              "step_id",
+              "attempt_id"
+            ],
+            "properties": {
+              "run_id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "step_id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "attempt_id": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          },
+          "result_ref": {
+            "type": "string",
+            "pattern": "^sha256:[0-9a-f]{64}$"
+          },
+          "finalization_ref": {
+            "type": "string",
+            "pattern": "^sha256:[0-9a-f]{64}$"
+          },
+          "finalized_revision": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "output_name": {
+            "type": "string",
+            "minLength": 1
+          },
+          "type_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "schema_ref": {
+            "type": "string",
+            "pattern": "^sha256:[0-9a-f]{64}$"
+          },
+          "evidence_ref": {
+            "type": "string",
+            "pattern": "^sha256:[0-9a-f]{64}$"
+          },
+          "content_ref": {
+            "type": "string",
+            "pattern": "^sha256:[0-9a-f]{64}$"
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "artifacts": {
+      "type": "array",
+      "maxItems": 64,
+      "items": {
+        "type": "string",
+        "pattern": "^sha256:[0-9a-f]{64}$"
+      }
+    }
+  }
+}

@@ -1,0 +1,73 @@
+# Experimental local sink. Paths/configuration belong to the operator, not the producer.
+# A single SQLite transaction owns both the unique key and logical effect.
+func open_sink(path) {
+    db := db_connect("sqlite", path)
+    db_query(db, "PRAGMA journal_mode=WAL", [])
+    db_query(db, "PRAGMA synchronous=FULL", [])
+    db_query(db, "PRAGMA busy_timeout=2000", [])
+    return db
+}
+
+export func sqlite_effect_init(path) {
+    db := open_sink(path)
+    db_execute(db, "CREATE TABLE IF NOT EXISTS effect_keys(scope TEXT NOT NULL, key TEXT NOT NULL, intent TEXT NOT NULL, PRIMARY KEY(scope,key))", [])
+    db_execute(db, "CREATE TABLE IF NOT EXISTS logical_effects(tx TEXT PRIMARY KEY, request TEXT NOT NULL)", [])
+    db_close(db)
+}
+
+export func sqlite_effect_transaction(intent) {return sha256(to_json(intent))}
+
+func valid_intent(intent) {
+    if type(intent) != "dict"||len(keys(intent)) != 8 {return false}
+    for field in ["target_sha256", "scope_sha256", "key_sha256", "request_sha256", "precondition_sha256"] {
+        if has_key(intent, field) == false||type(intent[field]) != "string"||regex_match(intent[field], "^[0-9a-f]{64}$") == false {return false}
+    }
+    return intent["operation"] == "create"&&type(intent["valid_from"]) == "int"&&type(intent["valid_until"]) == "int"&&intent["valid_from"] >= 0&&intent["valid_until"] <= 253402300799&&intent["valid_until"] > intent["valid_from"]&&intent["valid_until"] - intent["valid_from"] <= 3600
+}
+
+func apply_impl(path, intent, crash_boundary, verify) {
+    if valid_intent(intent) == false {return {"ok": false}}
+    stamp := now_utc_seconds()
+    if stamp < intent["valid_from"]||stamp >= intent["valid_until"] {return {"ok": false}}
+    db := open_sink(path)
+    db_execute(db, "BEGIN IMMEDIATE", [])
+    try {
+        if type(verify) == "function"&&verify() != true {throw("admission_denied")}
+    } except err {db_execute(db,"ROLLBACK",[]); db_close(db); return {"ok":false}}
+    db_execute(db, "INSERT INTO effect_keys(scope,key,intent) VALUES(?,?,?) ON CONFLICT(scope,key) DO NOTHING", [intent["scope_sha256"], intent["key_sha256"], to_json(intent)])
+    rows := db_query(db, "SELECT intent FROM effect_keys WHERE scope=? AND key=? LIMIT 1", [intent["scope_sha256"], intent["key_sha256"]])
+    if len(rows) != 1||rows[0]["intent"] != to_json(intent)||now_utc_seconds() >= intent["valid_until"] {
+        db_execute(db, "ROLLBACK", [])
+        db_close(db)
+        return {"ok": false}
+    }
+    tx := sqlite_effect_transaction(intent)
+    db_execute(db, "INSERT INTO logical_effects(tx,request) VALUES(?,?) ON CONFLICT(tx) DO NOTHING", [tx, intent["request_sha256"]])
+    if crash_boundary == "before_commit" {print("CRASH_BOUNDARY"); sleep(30000)}
+    db_execute(db, "COMMIT", [])
+    db_close(db)
+    if crash_boundary == "after_commit" {print("CRASH_BOUNDARY"); sleep(30000)}
+    return {"ok": true}
+}
+
+export func sqlite_effect_observe(path, intent) {
+    if valid_intent(intent) == false||file_exists(path) == false {return {"ok": false}}
+    db := open_sink(path)
+    rows := db_query(db, "SELECT intent FROM effect_keys WHERE scope=? AND key=? LIMIT 1", [intent["scope_sha256"], intent["key_sha256"]])
+    tx := sqlite_effect_transaction(intent)
+    effects := db_query(db, "SELECT request FROM logical_effects WHERE tx=? LIMIT 1", [tx])
+    db_close(db)
+    state := "not_started"
+    if len(rows) > 0 {
+        if rows[0]["intent"] != to_json(intent)||len(effects) != 1||effects[0]["request"] != intent["request_sha256"] {return {"ok": false}}
+        state = "committed"
+    } else if len(effects) != 0 {return {"ok": false}}
+    return {"ok": true, "observation": {"observed_state": state, "mechanism": "sqlite_unique_transaction", "valid_from": intent["valid_from"], "valid_until": intent["valid_until"], "evidence_ref": "sha256:" + sha256(to_json(["sqlite_unique_transaction", tx, state]))}}
+}
+
+export func sqlite_effect_apply(path, intent, crash_boundary) {return apply_impl(path,intent,crash_boundary,null)}
+# Host revalidation occurs while the sink writer transaction is held.
+export func sqlite_effect_apply_checked(path, intent, verify) {
+    if type(verify) != "function" {return {"ok":false}}
+    return apply_impl(path,intent,"",verify)
+}

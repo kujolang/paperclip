@@ -1,0 +1,272 @@
+from src.core.graph_transition import graph_event
+from src.core.node_transition import apply_node_transition, node_history_projection, node_recovery_safe, node_claim_path, node_reference, node_raw, validate_node_binding_bytes
+# Operator-only retained-host reconciliation. No adapter execution is imported.
+from src.core.parent_transition import apply_parent_decision, validate_parent_artifacts
+from src.core.state import load_run_state, acquire_run_lock, release_run_lock, persist_run_state, normalize_output_root, validate_run_id
+from src.core.control_journal import append_control_event, reconcile_control_journal
+from src.core.assurance_state import node_controller_features, assurance_feature
+from src.core.sequential_effects import recovery_lifecycle_view
+from src.core.portable_commitments import portable_json
+from src.core.utils import dict_get_or, ensure_dir
+
+func demand(ok, code) {if ok != true {throw(code)}}
+func same(a, b) {return to_json(a) == to_json(b)}
+func state_body(state) {copy := {};for key in keys(state) {if key != "health" {copy[key] := state[key]}};return to_json(copy)}
+func names(root, directory) {
+    if file_exists(root + "/" + directory) == false {return []}
+    entries := list_dir(root + "/" + directory);demand(len(entries) <= 2048, "inventory_limit")
+    return sort(entries)
+}
+func artifact(state, reference) {
+    demand(type(reference) == "string"&&regex_match(reference, "^sha256:[0-9a-f]{64}$"), "invalid_reference")
+    raw := read_file_beneath(state["run_dir"], "effect-lifecycle/" + substring(reference, 7, 71) + ".json", 1048576)
+    demand("sha256:" + sha256(raw) == reference, "corrupt_artifact")
+    value := parse_json(raw);demand(portable_json(value) == raw, "noncanonical_artifact");return value
+}
+func event_check(state, event, sequence, previous) {
+    demand(event["schema"] == "kujo.control-event/v1"&&event["run_id"] == state["run_id"]&&event["sequence"] == sequence&&event["previous_sha256"] == previous, "journal_divergence")
+    unsigned := {};for key in keys(event) {if key != "event_sha256" {unsigned[key] := event[key]}}
+    demand(sha256(to_json(unsigned)) == event["event_sha256"], "corrupt_control_record")
+    demand(event["record_ref"] == "control-records/" + to_string(sequence) + ".json", "invalid_control_reference")
+    if event["kind"] == "parent_finalized" {validate_parent_artifacts(state, event["details"])}
+    if event["kind"] == "retained_host_reconciled" {
+        receipt := event["details"];reference := "reconciliation/" + sha256(to_json(receipt)) + ".json"
+        demand(same(event["refs"], [reference]), "corrupt_recovery_reference")
+        demand(read_file_beneath(state["run_dir"], reference, 1048576) == to_json(receipt), "corrupt_recovery_receipt")
+        demand(sha256(read_file_beneath(state["run_dir"], receipt["source_journal_ref"], 8388608)) == receipt["source"]["journal_sha256"], "corrupt_recovery_source")
+        demand(sha256(read_file_beneath(state["run_dir"], receipt["source_state_ref"], 8388608)) == receipt["source"]["state_sha256"], "corrupt_recovery_source")
+    }
+}
+func advance(state, event) {
+    demand((state["status"] == "paused"&&dict_get_or(dict_get_or(state, "current_control_boundary", {}), "status", "") == "open")||has_key(state, "parent_finalization")||node_recovery_safe(state), "unsupported_active_state")
+    demand(event["state_revision"] == state["revision"], "state_revision_divergence")
+    if graph_event(event["kind"])||contains(["node_inputs_bound", "node_execution_refused", "node_execution_admitted", "node_start_requested", "node_terminal_observed"], event["kind"]) {state = apply_node_transition(state, event["kind"], event["details"])}
+    else if event["kind"] == "parent_finalized" {state = apply_parent_decision(state, event["details"])}
+    else if event["kind"] == "effect_lifecycle_recorded" {
+        before := dict_get_or(state, "effect_lifecycle", []);after := event["details"]["effect_lifecycle"]
+        demand(len(after) == len(before) + 1&&len(after) <= 64, "conflicting_lifecycle")
+        for i in range(0, len(before)) {demand(before[i] == after[i], "conflicting_lifecycle")}
+        item := artifact(state, after[len(after) - 1])
+        demand(item["schema"] == "dispatch.effect-lifecycle-event/v1alpha1"&&item["prior_revision"] == state["revision"]&&item["prior_journal"] == state["control_journal"]["last_sha256"], "orphan_binding_mismatch")
+        demand(same(event["refs"], [after[len(after) - 1]]), "orphan_reference_mismatch")
+        state["effect_lifecycle"] := after
+        state["required_features"] := [assurance_feature(state["assurance_negotiation"]), "sequential-effects/v1alpha1"]
+        if dict_get_or(state, "parent_finalization_required", false) {state["required_features"] := push(state["required_features"], "parent-finalization/v1alpha1")}
+        state["required_features"] := node_controller_features(state, state["required_features"])
+    } else if event["kind"] == "retained_host_reconciled" {
+        demand(event["details"]["schema"] == "dispatch.reconciliation-receipt/v1alpha1", "unsupported_recovery_receipt")
+        demand(event["details"]["reconstructed_sha256"] == sha256(state_body(state)), "recovery_source_mismatch")
+    } else {throw("unsupported_history_reconstruction")}
+    state["control_journal"] := {"schema":"kujo.control-journal/v1", "path":state["run_dir"] + "/control-events.jsonl", "sequence":event["sequence"], "last_sha256":event["event_sha256"]}
+    state["revision"] := state["revision"] + 1
+    if dict_get_or(state, "human_intervention", null) != null {request := state["human_intervention"];request["state_revision"] := state["revision"];state["human_intervention"] := request}
+    return state
+}
+func inventory(state) {
+    root := state["run_dir"];files := [];total := 0
+    for directory in ["control-records", "effect-lifecycle", "checkpoints", "reconciliation", "parent-finalization", "node-input"] {
+        for name in names(root, directory) {
+            demand(contains(name, "/") == 0&&contains(name, "\\") == 0, "unsupported_directory")
+            path := directory + "/" + name;raw := read_file_beneath(root, path, 8388608)
+            total = total + byte_length(raw);demand(total <= 33554432, "inventory_limit")
+            files = push(files, {"path":path, "sha256":sha256(raw), "bytes":byte_length(raw)})
+        }
+    }
+    return files
+}
+func retained_environment(state) {
+    findings := []
+    for step in state["steps"] {
+        for key in ["execution_result", "evaluation_result"] {
+            value := dict_get_or(step, key, {})
+            preservation := dict_get_or(value, "preservation_outcome", null)
+            if preservation != null {
+                deadline := dict_get_or(preservation, "retain_until", "")
+                workspace := dict_get_or(dict_get_or(preservation, "cleanup", {}), "handle", "")
+                available := null
+                if dict_get_or(preservation, "actual_mode", "") == "filesystem"&&workspace != "" {available = path_exists(workspace)}
+                findings = push(findings, {"step_id":step["id"], "preservation":preservation, "expired":(deadline != ""&&deadline <= format_date(now(), "YYYY-MM-DDTHH:mm:ssZ")), "workspace_available":available, "verification":"owner_adapter_required", "reexecution_descriptor":dict_get_or(value, "reexecution_descriptor", dict_get_or(step, "reexecution_descriptor", null))})
+            }
+        }
+    }
+    return findings
+}
+func analyze(state) {
+    files := inventory(state);root := state["run_dir"]
+    raw := "";if file_exists(root + "/control-events.jsonl") {raw = read_file_beneath(root, "control-events.jsonl", 8388608)}
+    indexed := [];previous := "";sequence := 0;duplicates := 0
+    for line in split(raw, "\n") {
+        if trim(line) == "" {continue}
+        event := parse_json(line)
+        if event["sequence"] <= sequence {
+            demand(event["sequence"] > 0&&same(indexed[event["sequence"] - 1], event), "conflicting_duplicate")
+            duplicates = duplicates + 1
+        } else {
+            event_check(state, event, sequence + 1, previous)
+            demand(read_file_beneath(root, event["record_ref"], 1048576) == to_json(event), "record_index_mismatch")
+            indexed = push(indexed, event);sequence = sequence + 1;previous = event["event_sha256"]
+        }
+    }
+    indexed_count := sequence;events := indexed
+    while file_exists(root + "/control-records/" + to_string(sequence + 1) + ".json") {
+        demand(sequence < 2048, "inventory_limit")
+        event := parse_json(read_file_beneath(root, "control-records/" + to_string(sequence + 1) + ".json", 1048576))
+        event_check(state, event, sequence + 1, previous)
+        demand(read_file_beneath(root, event["record_ref"], 1048576) == to_json(event), "noncanonical_control_record")
+        events = push(events, event);sequence = sequence + 1;previous = event["event_sha256"]
+    }
+    demand(len(names(root, "control-records")) == sequence, "conflicting_orphan")
+    cursor := state["control_journal"];at := cursor["sequence"]
+    demand(at > 0&&at <= sequence&&events[at - 1]["event_sha256"] == cursor["last_sha256"], "state_ahead_or_divergent")
+    # The surviving checkpoint must agree with the entire prefix it names.
+    lifecycle := null;selected := null;replay := null;legacy := null;finalized := null
+    for i in range(0, at) {
+        event := events[i]
+        if event["kind"] == "effect_lifecycle_recorded" {lifecycle = event["details"]["effect_lifecycle"]}
+        if event["kind"] == "parent_finalized" {demand(finalized == null, "duplicate_parent_finalization");finalized = event["details"]}
+        if event["kind"] == "assurance_sidecar_selected" {selected = event["details"]["selection"]}
+        if event["kind"] == "assurance_replay_admitted" {replay = event["details"]["replay"]}
+        if contains(["effect_selected", "effect_admitted", "effect_observed"], event["kind"]) {legacy = event["details"]["continuation"]}
+    }
+    demand(same(lifecycle, dict_get_or(state, "effect_lifecycle", null))&&same(selected, dict_get_or(state, "assurance_selection", null))&&same(replay, dict_get_or(state, "assurance_replay", null))&&same(legacy, dict_get_or(state, "effect_continuation", null)), "checkpoint_prefix_mismatch")
+    demand(same(finalized, dict_get_or(state, "parent_finalization", null)), "parent_checkpoint_mismatch")
+    prefix_events := [];for i in range(0, at) {prefix_events = push(prefix_events, events[i])};node_history_projection(state, prefix_events)
+    reconstructed := state
+    for i in range(at, sequence) {reconstructed = advance(reconstructed, events[i])}
+    node_history_projection(reconstructed, events)
+    view := recovery_lifecycle_view(reconstructed)
+    if view["anchor"] != null {
+        anchor := view["anchor"];matched := false
+        parent := parse_json(read_file_beneath(root, "effect-lifecycle/" + substring(anchor["result_ref"], 7, 71) + ".parent", 1048576))
+        for step in state["steps"] {
+            if step["id"] == anchor["subject"]["step_id"] {demand(same(step["execution_result"], parent), "parent_checkpoint_mismatch");matched = true}
+        }
+        demand(matched&&anchor["subject"]["run_id"] == state["run_id"], "parent_checkpoint_mismatch")
+    }
+    claims := [];unresolved := [];orphans := [];evidence_conditions := []
+    for file in files {
+        path := file["path"]
+        if starts_with(path, "effect-lifecycle/")&&ends_with(path, ".json") {
+            reference := "sha256:" + substring(basename(path), 0, 64);value := artifact(state, reference)
+            schema := dict_get_or(value, "schema", "")
+            if schema == "dispatch.effect-set/v1alpha1" {
+                artifact(state, value["plan_ref"])
+                parent_ref := "effect-lifecycle/" + substring(value["result_ref"], 7, 71) + ".parent"
+                demand("sha256:" + sha256(read_file_beneath(root, parent_ref, 1048576)) == value["result_ref"], "missing_parent_evidence")
+                for observation in value["observations"] {if observation != null {artifact(state, observation)}}
+            }
+            if schema == "dispatch.effect-observation/v1alpha1" {evidence_conditions = push(evidence_conditions, {"reference":reference, "effect_id":value["effect_id"], "expired":(value["valid_until"] <= now_utc_seconds())})}
+            if dict_get_or(value, "schema", "") == "dispatch.effect-lifecycle-event/v1alpha1"&&contains(dict_get_or(reconstructed, "effect_lifecycle", []), reference) == false {orphans = push(orphans, reference)}
+        }
+        if starts_with(path, "reconciliation/")&&ends_with(path, ".json") {demand(file["sha256"] == substring(basename(path), 0, 64), "corrupt_recovery_receipt")}
+        if starts_with(path, "checkpoints/cp_") {
+            manifest := parse_json(read_file_beneath(root, path, 65536))
+            demand(manifest["schema"] == "dispatch.review-checkpoint/v1"&&manifest["run_id"] == state["run_id"], "corrupt_checkpoint")
+            demand(path == "checkpoints/" + manifest["checkpoint_id"] + ".json"&&manifest["checkpoint_id"] == "cp_" + manifest["state_sha256"]&&manifest["state_ref"] == "checkpoints/state-" + manifest["state_sha256"] + ".json", "corrupt_checkpoint_reference")
+            demand(sha256(read_file_beneath(root, manifest["state_ref"], 8388608)) == manifest["state_sha256"], "corrupt_checkpoint_snapshot")
+        }
+        if starts_with(path, "node-input/")&&ends_with(path, ".raw") {demand(file["sha256"] == substring(basename(path), 0, 64), "corrupt_node_artifact")}
+        if (starts_with(path, "parent-finalization/")&&ends_with(path, ".raw"))||(starts_with(path, "effect-lifecycle/")&&ends_with(path, ".preservation")) {demand(file["sha256"] == substring(basename(path), 0, 64), "corrupt_retained_bytes")}
+        if starts_with(path, "effect-lifecycle/")&&ends_with(path, ".parent") {demand(file["sha256"] == substring(basename(path), 0, 64), "corrupt_parent_bytes")}
+        if starts_with(path, "effect-lifecycle/")&&ends_with(path, ".claim") {
+            attempt := substring(basename(path), 0, 64)
+            demand(has_key(view["attempts"], attempt) != 0, "unbound_consumption_claim")
+            item := view["attempts"][attempt]
+            demand(item["cancelled"] == false, "conflicting_consumption_claim")
+            demand(read_file_beneath(root, path, 8192) == portable_json(item["selection"]), "corrupt_consumption_claim")
+            claims = push(claims, attempt)
+            if item["consumed"] == false {unresolved = push(unresolved, {"attempt_id":attempt, "finding":"consumed_claim_without_admission_record"})}
+        }
+    }
+    node_binding := dict_get_or(reconstructed, "node_input_binding", null)
+    node_refs := dict_get_or(reconstructed, "resource_artifacts", []);if node_binding != null {node_refs = node_binding["artifacts"]}
+    for id in keys(dict_get_or(reconstructed, "graph_node_bindings", {})) {for ref in reconstructed["graph_node_bindings"][id]["artifacts"] {node_refs = push(node_refs, ref)}}
+    if has_key(reconstructed, "graph_finalization") {for ref in reconstructed["graph_finalization"]["artifacts"] {node_refs = push(node_refs, ref)}}
+    for field in ["branch_activations", "subgraph_finalizations"] {for id in keys(dict_get_or(reconstructed, field, {})) {for ref in reconstructed[field][id]["artifacts"] {node_refs = push(node_refs, ref)}}}
+    for id in keys(dict_get_or(reconstructed, "node_completions", {})) {for ref in reconstructed["node_completions"][id]["artifacts"] {node_refs = push(node_refs, ref)}}
+    for id in keys(dict_get_or(reconstructed, "graph_attempts", {})) {for row in reconstructed["graph_attempts"][id] {for field in ["reservation", "release", "terminal"] {if row[field] != null {for ref in row[field]["artifacts"] {node_refs = push(node_refs, ref)}}}}}
+    for file in files {
+        path := file["path"]
+        if starts_with(path, "node-input/")&&ends_with(path, ".claim") {
+            demand(node_binding != null&&path == node_claim_path(node_binding), "unbound_node_claim")
+            demand(read_file_beneath(root, path, 65536) == portable_json(node_binding), "corrupt_node_claim")
+            claims = push(claims, node_reference(node_binding))
+            if has_key(reconstructed, "node_execution_admission") == 0 {unresolved = push(unresolved, {"finding":"node_consumed_without_admission_record", "binding_ref":node_reference(node_binding)})}
+        }
+        if starts_with(path, "node-input/")&&ends_with(path, ".raw")&&contains(node_refs, "sha256:" + file["sha256"]) == false {orphans = push(orphans, "sha256:" + file["sha256"])}
+    }
+    if has_key(reconstructed, "node_execution_admission")&&has_key(reconstructed, "parent_finalization") == 0 {unresolved = push(unresolved, {"finding":"node_consumed_not_finalized", "binding_ref":node_reference(node_binding)})}
+    for attempt in keys(view["attempts"]) {
+        item := view["attempts"][attempt]
+        demand(item["consumed"] == false||contains(claims, attempt), "missing_consumption_claim")
+        item["admission_recorded"] := item["consumed"]
+        item["consumed"] := (item["consumed"]||contains(claims, attempt))
+        attempts := view["attempts"];attempts[attempt] := item;view["attempts"] := attempts
+        if item["consumed"]&&item["observation"] == null {unresolved = push(unresolved, {"attempt_id":attempt, "finding":"uncertain_effect"})}
+    }
+    repairs := []
+    if indexed_count != sequence||duplicates > 0 {repairs = push(repairs, "rebuild_journal_index")}
+    if at != sequence {repairs = push(repairs, "reconstruct_lifecycle_checkpoint")}
+    classification := "consistent"
+    if len(repairs) > 0 {classification = "reconcilable"}
+    if len(orphans) > 0 {classification = "needs_operator_review";repairs = []}
+    if len(repairs) > 0 {
+        if node_recovery_safe(state) == false&&has_key(state, "parent_finalization") == 0&&(state["status"] != "paused"||dict_get_or(dict_get_or(state, "current_control_boundary", {}), "status", "") != "open") {classification = "needs_operator_review";repairs = []}
+        for step in state["steps"] {if step["status"] == "running" {classification = "needs_operator_review";repairs = []}}
+    }
+    if has_key(state, "effect_continuation") {classification = "unsupported_legacy_selection";repairs = []}
+    # Stable source identity covers every surviving authority artifact, not mtime.
+    source := {"state_sha256":sha256(state_body(state)), "journal_sha256":sha256(raw), "files":files}
+    report := {"schema":"dispatch.recovery-assessment/v1alpha1", "run_id":state["run_id"], "classification":classification, "source":source, "state_revision":state["revision"], "journal_sequence":sequence, "indexed_sequence":indexed_count, "exact_duplicates":duplicates, "orphans":orphans, "consumed_claims":claims, "evidence_conditions":evidence_conditions, "lifecycle":view, "unresolved":unresolved, "safe_repairs":repairs, "continuation":"not_authorized", "authority":dict_get_or(state, "assurance_negotiation", null), "control_boundary":dict_get_or(state, "current_control_boundary", null), "steps":state["steps"], "environment":retained_environment(state)}
+    report["assessment_id"] := sha256(to_json(report))
+    return {"report":report, "state":reconstructed, "events":events, "journal_raw":raw}
+}
+export func inspect_retained_run(root, id) {
+    loaded := load_run_state(root, id)
+    if loaded["ok"] == false {
+        surviving := []
+        try {normalized := normalize_output_root(root);valid := validate_run_id(id);if normalized["ok"]&&valid["ok"] {surviving = inventory({"run_dir":normalized["output_root"] + "/" + valid["run_id"]})}} except err {surviving = []}
+        return {"ok":false, "schema":"dispatch.recovery-assessment/v1alpha1", "classification":"missing_required_authority", "error":loaded["error"], "surviving_files":surviving, "continuation":"not_authorized"}
+    }
+    try {return {"ok":true, "assessment":analyze(loaded["run_state"])["report"]}} except err {
+        surviving := [];try {surviving = inventory(loaded["run_state"])} except unavailable {surviving = []}
+        return {"ok":false, "schema":"dispatch.recovery-assessment/v1alpha1", "classification":"corrupt_or_unsupported", "error":to_string(err), "surviving_files":surviving, "continuation":"not_authorized"}
+    }
+}
+export func plan_retained_reconciliation(root, id) {
+    checked := inspect_retained_run(root, id);if checked["ok"] == false {return checked}
+    report := checked["assessment"]
+    return {"ok":true, "assessment":report, "plan":{"schema":"dispatch.reconciliation-plan/v1alpha1", "run_id":id, "assessment_id":report["assessment_id"], "repairs":report["safe_repairs"], "prohibited":["replay", "resume", "select", "unconsume", "change_policy", "extend_preservation", "infer_completion"]}}
+}
+export func apply_retained_reconciliation(root, id, plan, operator) {
+    result := {"ok":false, "error":"reconciliation_rejected", "continuation":"not_authorized"}
+    loaded := load_run_state(root, id);if loaded["ok"] == false {return loaded}
+    lock := acquire_run_lock(loaded["run_state"]);if lock["ok"] == false {return lock}
+    try {
+        demand(type(operator) == "string"&&regex_match(operator, "^[A-Za-z0-9_.:@-]{1,128}$"), "operator_required")
+        fresh := load_run_state(root, id);demand(fresh["ok"], "missing_authority")
+        analyzed := analyze(fresh["run_state"]);report := analyzed["report"]
+        expected := plan_retained_reconciliation(root, id);demand(expected["ok"]&&same(expected["plan"], plan), "stale_or_modified_plan")
+        demand(report["assessment_id"] == plan["assessment_id"]&&len(report["safe_repairs"]) > 0, "no_safe_repair")
+        state := analyzed["state"];directory := state["run_dir"]
+        demand((state["status"] == "paused"&&dict_get_or(dict_get_or(state, "current_control_boundary", {}), "status", "") == "open")||has_key(state, "parent_finalization")||node_recovery_safe(state), "unsupported_active_state")
+        for step in state["steps"] {demand(step["status"] != "running", "inflight_work")}
+        ensure_dir(directory + "/reconciliation")
+        source_ref := "reconciliation/" + report["assessment_id"] + ".journal"
+        if file_exists(directory + "/" + source_ref) == false {write_file_atomic_beneath(directory, source_ref, analyzed["journal_raw"], false)}
+        snapshot_ref := "reconciliation/" + report["assessment_id"] + ".state"
+        if file_exists(directory + "/" + snapshot_ref) == false {write_file_atomic_beneath(directory, snapshot_ref, state_body(fresh["run_state"]), false)}
+        receipt := {"schema":"dispatch.reconciliation-receipt/v1alpha1", "operator":operator, "plan":plan, "source":report["source"], "source_journal_ref":source_ref, "source_state_ref":snapshot_ref, "unresolved":report["unresolved"], "reconstructed_sha256":sha256(state_body(state)), "resulting_revision":state["revision"] + 1}
+        receipt_ref := "reconciliation/" + sha256(to_json(receipt)) + ".json"
+        write_file_atomic_beneath(directory, receipt_ref, to_json(receipt), false)
+        sync_directory_beneath(directory, "reconciliation");sync_directory_beneath(directory, ".")
+        lines := [];for event in analyzed["events"] {lines = push(lines, to_json(event))}
+        write_file_atomic_beneath(directory, "control-events.jsonl", join(lines, "\n"), true);sync_directory_beneath(directory, ".")
+        logged := append_control_event(state, "retained_host_reconciled", dict_get_or(dict_get_or(state, "current_control_boundary", {}), "step_id", ""), [receipt_ref], receipt)
+        state = logged["run_state"];if dict_get_or(state, "human_intervention", null) != null {request := state["human_intervention"];request["state_revision"] := state["revision"] + 1;state["human_intervention"] := request}
+        state = persist_run_state(state);sync_directory_beneath(directory, ".")
+        demand(reconcile_control_journal(state)["ok"], "repaired_journal_invalid")
+        result = {"ok":true, "schema":"dispatch.reconciliation-result/v1alpha1", "run_id":id, "revision":state["revision"], "receipt_ref":receipt_ref, "continuation":"not_authorized"}
+    } except err {result["error"] := to_string(err)}
+    released := release_run_lock(lock);if released["ok"] == false {return released};return result
+}

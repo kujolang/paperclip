@@ -1,0 +1,171 @@
+from src.core.errors import missing_tool_error
+from src.core.utils import dict_get_or
+from src.tools.source_lookup import mock_web_search_handler, local_source_lookup_handler, normalize_sources_dir
+from src.tools.content_processing import claim_extraction_handler, citation_formatter_handler, markdown_report_writer_handler, timestamp_tool_handler
+from src.tools.reliability_tools import flaky_reliability_handler
+
+func create_tool(name, description, input_schema, output_schema, handler, payload_adapter) {
+	return {
+		"name": name,
+		"description": description,
+		"input_schema": input_schema,
+		"output_schema": output_schema,
+		"handler": handler,
+		"payload_adapter": payload_adapter
+	}
+}
+
+func create_tool_registry() {
+	return {}
+}
+
+func register_tool(registry, tool_obj) {
+	registry[tool_obj["name"]] := tool_obj
+	return registry
+}
+
+func get_tool(registry, tool_name) {
+	if has_key(registry, tool_name) {
+		return registry[tool_name]
+	}
+	return null
+}
+
+func call_tool(registry, tool_name, input_payload, context) {
+	tool_obj := get_tool(registry, tool_name)
+	if type(tool_obj) == "null" {
+		return missing_tool_error(tool_name)
+	}
+	deadline_ms := dict_get_or(context, "deadline_ms", 0)
+	if (type(deadline_ms) == "int" || type(deadline_ms) == "float") && deadline_ms > 0 && dict_get_or(tool_obj, "__dispatch_deadline_bounded", false) == false {
+		return {"ok": false, "error": {"code": "tool_timeout_isolation_required", "message": "Tool cannot run under a hard execution deadline without a Dispatch-reviewed bounded implementation: " + tool_name, "retryable": false}}
+	}
+
+	handler := tool_obj["handler"]
+	result := handler(input_payload, context)
+	return result
+}
+
+func default_payload_adapter(step_input) {
+	return step_input
+}
+
+func mock_web_search_payload_adapter(step_input) {
+	topic := dict_get_or(dict_get_or(step_input, "input", {}), "topic", "")
+	return {"query": topic}
+}
+
+func flaky_reliability_payload_adapter(step_input) {
+	return {"failures_before_success": 1}
+}
+
+func claim_extraction_payload_adapter(step_input) {
+	return {"sources": dict_get_or(step_input, "sources", {})}
+}
+
+func citation_formatter_payload_adapter(step_input) {
+	return {"claims": dict_get_or(dict_get_or(step_input, "verification", {}), "claims", [])}
+}
+
+func build_tool_payload(registry, tool_name, step_input) {
+	tool_obj := get_tool(registry, tool_name)
+	if type(tool_obj) == "null" {
+		return step_input
+	}
+	adapter := dict_get_or(tool_obj, "payload_adapter", null)
+	if type(adapter) == "null" {
+		return step_input
+	}
+	return adapter(step_input)
+}
+
+func register_default_tools(sources_dir) {
+	registry := create_tool_registry()
+	normalized_sources_dir := normalize_sources_dir(sources_dir)
+
+	registry := register_tool(registry, create_tool(
+		"mock_web_search",
+		"Searches local fixture sources and returns relevant snippets.",
+		{"type": "dict", "required": ["query"]},
+		{"type": "dict"},
+		mock_web_search_handler,
+		mock_web_search_payload_adapter
+	))
+
+	registry := register_tool(registry, create_tool(
+		"local_source_lookup",
+		"Reads a local source fixture by source id.",
+		{"type": "dict", "required": ["source_id"]},
+		{"type": "dict"},
+		local_source_lookup_handler,
+		default_payload_adapter
+	))
+
+	registry := register_tool(registry, create_tool(
+		"claim_extraction",
+		"Extracts claims and citations from evidence snippets.",
+		{"type": "dict"},
+		{"type": "dict"},
+		claim_extraction_handler,
+		claim_extraction_payload_adapter
+	))
+
+	registry := register_tool(registry, create_tool(
+		"citation_formatter",
+		"Formats claim citations for final reports.",
+		{"type": "dict"},
+		{"type": "dict"},
+		citation_formatter_handler,
+		citation_formatter_payload_adapter
+	))
+
+	registry := register_tool(registry, create_tool(
+		"markdown_report_writer",
+		"Creates report summary and markdown-ready findings payload.",
+		{"type": "dict"},
+		{"type": "dict"},
+		markdown_report_writer_handler,
+		default_payload_adapter
+	))
+
+	registry := register_tool(registry, create_tool(
+		"timestamp_tool",
+		"Returns current date/time metadata.",
+		{"type": "dict"},
+		{"type": "dict"},
+		timestamp_tool_handler,
+		default_payload_adapter
+	))
+
+	registry := register_tool(registry, create_tool(
+		"flaky_reliability_tool",
+		"Deliberately fails before succeeding to demonstrate retries.",
+		{"type": "dict"},
+		{"type": "dict"},
+		flaky_reliability_handler,
+		flaky_reliability_payload_adapter
+	))
+	mock_tool := registry["mock_web_search"]; mock_tool["__dispatch_deadline_bounded"] := true; registry["mock_web_search"] := mock_tool
+	lookup_tool := registry["local_source_lookup"]; lookup_tool["__dispatch_deadline_bounded"] := true; registry["local_source_lookup"] := lookup_tool
+	claim_tool := registry["claim_extraction"]; claim_tool["__dispatch_deadline_bounded"] := true; registry["claim_extraction"] := claim_tool
+	citation_tool := registry["citation_formatter"]; citation_tool["__dispatch_deadline_bounded"] := true; registry["citation_formatter"] := citation_tool
+	writer_tool := registry["markdown_report_writer"]; writer_tool["__dispatch_deadline_bounded"] := true; registry["markdown_report_writer"] := writer_tool
+	timestamp_tool := registry["timestamp_tool"]; timestamp_tool["__dispatch_deadline_bounded"] := true; registry["timestamp_tool"] := timestamp_tool
+	flaky_tool := registry["flaky_reliability_tool"]; flaky_tool["__dispatch_deadline_bounded"] := true; registry["flaky_reliability_tool"] := flaky_tool
+
+	if normalized_sources_dir["ok"] {
+		registry["__sources_dir"] := normalized_sources_dir["sources_dir"]
+	} else {
+		registry["__sources_dir"] := sources_dir
+	}
+	return registry
+}
+
+export create_tool := create_tool
+export create_tool_registry := create_tool_registry
+export register_tool := register_tool
+export get_tool := get_tool
+export call_tool := call_tool
+export build_tool_payload := build_tool_payload
+export register_default_tools := register_default_tools
+export normalize_sources_dir := normalize_sources_dir

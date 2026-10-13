@@ -1,0 +1,75 @@
+from src.core.utils import dict_get_or, clone_array
+
+func create_memory(input_payload) {
+	return {
+		"workflow": {
+			"topic": dict_get_or(input_payload, "topic", ""),
+			"created_at": format_date(now(), "YYYY-MM-DD HH:mm:ss")
+		},
+		"agents": {},
+		"step_outputs": {},
+		"history": []
+	}
+}
+
+func add_workflow_note(memory, key, value) {
+	workflow_meta := memory["workflow"]
+	workflow_meta[key] := value
+	memory["workflow"] := workflow_meta
+	return memory
+}
+
+func add_agent_note(memory, agent_id, note) {
+	agents_map := memory["agents"]
+	if has_key(agents_map, agent_id) == 0 {
+		agents_map[agent_id] := []
+	}
+	agent_notes := agents_map[agent_id]
+	agent_notes := push(agent_notes, {
+		"note": note,
+		"timestamp": format_date(now(), "YYYY-MM-DD HH:mm:ss")
+	})
+	agents_map[agent_id] := agent_notes
+	memory["agents"] := agents_map
+	return memory
+}
+
+func add_step_output(memory, step_id, output_value) {
+	step_outputs := memory["step_outputs"]
+	step_outputs[step_id] := output_value
+	memory["step_outputs"] := step_outputs
+	memory["history"] := push(memory["history"], {
+		"step_id": step_id,
+		"timestamp": format_date(now(), "YYYY-MM-DD HH:mm:ss")
+	})
+	return memory
+}
+
+func lookup_step_output(memory, step_id) {
+	if has_key(memory["step_outputs"], step_id) {
+		return memory["step_outputs"][step_id]
+	}
+	return null
+}
+
+func history_lookup(memory, limit_count) {
+	history := dict_get_or(memory, "history", [])
+	if len(history) <= limit_count {
+		return clone_array(history)
+	}
+	start := len(history) - limit_count
+	result := []
+	i := start
+	while i < len(history) {
+		result := push(result, history[i])
+		i := i + 1
+	}
+	return result
+}
+
+export create_memory := create_memory
+export add_workflow_note := add_workflow_note
+export add_agent_note := add_agent_note
+export add_step_output := add_step_output
+export lookup_step_output := lookup_step_output
+export history_lookup := history_lookup

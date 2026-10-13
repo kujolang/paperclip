@@ -1,0 +1,168 @@
+from src.core.utils import dict_get_or
+
+func normalize_tool_name(value) {
+	name := to_lower(trim(to_string(value)))
+	if name == "" {
+		return ""
+	}
+	return name
+}
+
+func parse_tool_name_list(raw_value) {
+	items := []
+	seen := {}
+	if type(raw_value) == "array" {
+		for raw_item in raw_value {
+			name := normalize_tool_name(raw_item)
+			if name == "" {
+				continue
+			}
+			if has_key(seen, name) == 0 {
+				seen[name] := true
+				items := push(items, name)
+			}
+		}
+		return items
+	}
+
+	raw_text := replace(to_string(raw_value), "\n", ",")
+	for part in split(raw_text, ",") {
+		name := normalize_tool_name(part)
+		if name == "" {
+			continue
+		}
+		if has_key(seen, name) == 0 {
+			seen[name] := true
+			items := push(items, name)
+		}
+	}
+	return items
+}
+
+func create_policy_profile_aliases() {
+	return {
+		"dev": {
+			"allow_tools": [],
+			"deny_tools": []
+		},
+		"development": {
+			"allow_tools": [],
+			"deny_tools": []
+		},
+		"staging": {
+			"allow_tools": [],
+			"deny_tools": ["flaky_reliability_tool"]
+		},
+		"prod": {
+			"allow_tools": ["mock_web_search", "local_source_lookup", "claim_extraction", "citation_formatter", "markdown_report_writer", "timestamp_tool"],
+			"deny_tools": ["flaky_reliability_tool"]
+		},
+		"production": {
+			"allow_tools": ["mock_web_search", "local_source_lookup", "claim_extraction", "citation_formatter", "markdown_report_writer", "timestamp_tool"],
+			"deny_tools": ["flaky_reliability_tool"]
+		}
+	}
+}
+
+func resolve_policy_profile_alias(profile_name) {
+	normalized := normalize_tool_name(profile_name)
+	if normalized == "" {
+		return {
+			"ok": true,
+			"profile_name": "",
+			"allow_tools": [],
+			"deny_tools": []
+		}
+	}
+	profiles := create_policy_profile_aliases()
+	if has_key(profiles, normalized) == 0 {
+		return {
+			"ok": false,
+			"message": "Unknown policy profile alias: " + normalized + ". Supported aliases: dev, development, staging, prod, production"
+		}
+	}
+	selected := profiles[normalized]
+	return {
+		"ok": true,
+		"profile_name": normalized,
+		"allow_tools": parse_tool_name_list(dict_get_or(selected, "allow_tools", [])),
+		"deny_tools": parse_tool_name_list(dict_get_or(selected, "deny_tools", []))
+	}
+}
+
+func build_tool_authorization_policy_with_profile(policy_profile_name, allowed_tools, denied_tools) {
+	profile_result := resolve_policy_profile_alias(policy_profile_name)
+	if profile_result["ok"] == false {
+		return profile_result
+	}
+
+	explicit_allow_tools := parse_tool_name_list(allowed_tools)
+	explicit_deny_tools := parse_tool_name_list(denied_tools)
+	effective_allow_tools := dict_get_or(profile_result, "allow_tools", [])
+	effective_deny_tools := dict_get_or(profile_result, "deny_tools", [])
+
+	if len(explicit_allow_tools) > 0 {
+		effective_allow_tools = explicit_allow_tools
+	}
+	if len(explicit_deny_tools) > 0 {
+		effective_deny_tools = explicit_deny_tools
+	}
+
+	policy_settings := build_tool_authorization_policy(effective_allow_tools, effective_deny_tools)
+	policy_settings["ok"] := true
+	policy_settings["policy_profile"] := dict_get_or(profile_result, "profile_name", "")
+	policy_settings["profile_allow_tools"] := dict_get_or(profile_result, "allow_tools", [])
+	policy_settings["profile_deny_tools"] := dict_get_or(profile_result, "deny_tools", [])
+	policy_settings["explicit_allow_tools"] := explicit_allow_tools
+	policy_settings["explicit_deny_tools"] := explicit_deny_tools
+	return policy_settings
+}
+
+func build_tool_authorization_policy(allowed_tools, denied_tools) {
+	allow_list := parse_tool_name_list(allowed_tools)
+	deny_list := parse_tool_name_list(denied_tools)
+	allow_lookup := {}
+	deny_lookup := {}
+
+	for tool_name in allow_list {
+		allow_lookup[tool_name] := true
+	}
+	for tool_name in deny_list {
+		deny_lookup[tool_name] := true
+	}
+
+	policy := null
+	if len(allow_list) > 0 || len(deny_list) > 0 {
+		policy = func(policy_input) {
+			tool_name := normalize_tool_name(dict_get_or(policy_input, "tool_name", ""))
+			if has_key(deny_lookup, tool_name) == 1 {
+				return {
+					"allow": false,
+					"message": "Tool execution denied by policy: " + tool_name
+				}
+			}
+			if len(allow_list) > 0 {
+				if has_key(allow_lookup, tool_name) == 0 {
+					return {
+						"allow": false,
+						"message": "Tool not in allowed policy set: " + tool_name
+					}
+				}
+			}
+			return true
+		}
+	}
+
+	return {
+		"allowed_tools": allow_list,
+		"denied_tools": deny_list,
+		"policy": policy
+	}
+}
+
+export normalize_tool_name := normalize_tool_name
+export parse_tool_name_list := parse_tool_name_list
+export build_tool_authorization_policy := build_tool_authorization_policy
+export create_policy_profile_aliases := create_policy_profile_aliases
+export resolve_policy_profile_alias := resolve_policy_profile_alias
+export build_tool_authorization_policy_with_profile := build_tool_authorization_policy_with_profile

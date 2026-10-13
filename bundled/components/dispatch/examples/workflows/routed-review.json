@@ -1,0 +1,73 @@
+{
+  "id": "routed-review",
+  "name": "Routed Review",
+  "description": "Demonstrates deterministic quality-first model routing with offline fixture metadata.",
+  "input_schema": {"type": "dict", "required": ["topic"]},
+  "agents": {
+    "planner": {
+      "id": "planner",
+      "name": "Routed Planner",
+      "role": "planner",
+      "purpose": "Create a concise review plan.",
+      "instructions": "Create a concise review plan.",
+      "handler_id": "planner",
+      "execution_contract": {"id": "research-planner", "version": "1"},
+      "capabilities": {"plan_research": true},
+      "model": {"provider": "fixture", "model": "dispatch-standard"},
+      "model_candidates": [
+        {"provider": "fixture", "model": "dispatch-standard"},
+        {"provider": "fixture", "model": "dispatch-frontier"}
+      ],
+      "tools": [],
+      "handoff_targets": [],
+      "output_schema": {"type": "dict"},
+      "guardrails": [],
+      "routing": {"risk": "low"},
+      "uses_model": true
+    }
+  },
+  "tools": [],
+  "steps": [
+    {
+      "id": "plan",
+      "name": "Plan Review",
+      "type": "agent",
+      "agent_id": "planner",
+      "input_from": ["input"],
+      "output_key": "plan",
+      "routing": {
+        "constraints": {
+          "required_capabilities": ["plan_research"],
+          "quality_floor": "standard",
+          "required_context_tokens": 4000,
+          "maximum_risk": "low"
+        }
+      }
+    },
+    {
+      "id": "finalize",
+      "name": "Finalize",
+      "type": "report",
+      "input_from": ["plan"],
+      "output_key": "final_output"
+    }
+  ],
+  "routing": {
+    "enabled": true,
+    "policy_version": "1.0.0",
+    "allow_agent_substitution": false,
+    "constraints": {
+      "unknown_metadata": "reject_constrained"
+    },
+    "fallback": {
+      "max_fallbacks": 1,
+      "max_evaluation_retries": 1,
+      "fallback_on_codes": ["provider_unavailable", "structured_output_invalid"]
+    },
+    "model_catalog_file": "routed-review.catalog.json"
+  },
+  "memory_config": {},
+  "default_retry_policy": {"max_attempts": 2, "base_delay_ms": 0, "max_delay_ms": 0, "strategy": "none", "retry_on_codes": ["timeout", "rate_limit"]},
+  "approval_config": {"auto_approve": true},
+  "output_schema": {"type": "dict"}
+}

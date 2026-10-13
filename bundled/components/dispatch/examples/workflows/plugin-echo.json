@@ -1,0 +1,13 @@
+{
+  "id": "plugin-echo",
+  "name": "Scoped plugin echo",
+  "description": "A minimal tool workflow using the sample plugin under an explicit tool allowlist.",
+  "input_schema": {"type": "dict", "required": ["topic"]},
+  "tools": ["echo_tool"],
+  "steps": [
+    {"id": "echo", "name": "Echo topic", "type": "tool", "tool_name": "echo_tool", "input_from": ["input"], "output_key": "echo"},
+    {"id": "finalize", "name": "Write report", "type": "report", "input_from": ["echo"], "output_key": "final_output"}
+  ],
+  "default_retry_policy": {"max_attempts": 1, "base_delay_ms": 0, "max_delay_ms": 0},
+  "output_schema": {"type": "dict"}
+}

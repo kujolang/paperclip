@@ -1,0 +1,98 @@
+# Pure, opt-in accounting projection. Dispatch is consumption, not proof of work.
+from src.core.utils import dict_get_or
+from src.core.portable_commitments import portable_json
+func need(ok, reason) {if ok != true {throw(reason)}}
+export func accounting_enabled(state) {return dict_get_or(dict_get_or(dict_get_or(state, "workflow_definition", {}), "metadata", {}), "graph_accounting", "") == "dispatch.graph-attempt-accounting/v1alpha1"}
+export func program_contract(step) {return contains(["parent-finalization/v1alpha1", "program-attempt/v1alpha1"], dict_get_or(step["config"], "terminal_contract", "parent-finalization/v1alpha1"))}
+func definition(state, id) {for step in state["workflow_definition"]["steps"] {if step["id"] == id {return step}};throw("attempt_node_missing")}
+export func attempt_runs(state, id) {
+    node := definition(state, id)["config"]["node_execution"]
+    return push([node["run_id"]], dict_get_or(node, "retry_run_id", ""))
+}
+export func attempt_limit(state, id) {return dict_get_or(definition(state, id)["config"]["node_execution"], "max_attempts", 1)}
+export func current_attempt(state, id) {
+    rows := dict_get_or(dict_get_or(state, "graph_attempts", {}), id, [])
+    if len(rows) == 0 {return null};return rows[len(rows) - 1]
+}
+export func attempt_run(state, id) {row := current_attempt(state, id);if row != null {return row["run_id"]};return attempt_runs(state, id)[0]}
+export func held_reservation(state, id) {row := current_attempt(state, id);return row != null&&row["dispatch"] == null&&row["release"] == null}
+export func validate_accounting(state) {
+    metadata := dict_get_or(state["workflow_definition"], "metadata", {})
+    if has_key(metadata, "graph_accounting") == 0 {return true}
+    need(accounting_enabled(state)&&has_key(metadata, "graph_policy"), "attempt_accounting_unsupported")
+    runs := []
+    for step in state["workflow_definition"]["steps"] {
+        if program_contract(step) {
+            node := step["config"]["node_execution"];limit := attempt_limit(state, step["id"])
+            need(type(limit) == "int"&&limit >= 1&&limit <= 2, "node_attempt_limit_invalid")
+            if limit == 2 {need(step["config"]["terminal_contract"] == "program-attempt/v1alpha1"&&dict_get_or(node, "retry_run_id", "") != ""&&dict_get_or(dict_get_or(step["config"], "on_unsuccessful", {}), "action", "") == "retry_same_node", "retry_contract_required")}
+            else {need(has_key(node, "retry_run_id") == 0, "undeclared_retry_run")}
+            ids := attempt_runs(state, step["id"])
+            for i in range(0, limit) {need(type(ids[i]) == "string"&&ids[i] != ""&&contains(runs, ids[i]) == false, "duplicate_attempt_run");runs = push(runs, ids[i])}
+        }
+    }
+    return true
+}
+export func accounting_budget(state) {
+    consumed := 0;reserved := 0;released := 0;nodes := []
+    history := dict_get_or(state, "graph_attempts", {})
+    for step in state["workflow_definition"]["steps"] {if program_contract(step) {
+        used := 0;held := 0;rows := dict_get_or(history, step["id"], [])
+        for row in rows {if row["dispatch"] != null {consumed = consumed + 1;used = used + 1} else if row["release"] != null {released = released + 1} else {reserved = reserved + 1;held = held + 1}}
+        nodes = push(nodes, {"node_id":step["id"], "limit":attempt_limit(state, step["id"]), "consumed":used, "reserved":held, "remaining":attempt_limit(state, step["id"]) - used - held})
+    }}
+    limit := state["workflow_definition"]["metadata"]["graph_policy"]["budget"]["max_program_dispatches"]
+    need(consumed + reserved <= limit, "graph_attempt_budget_oversubscribed")
+    return {"unit":"program_dispatches", "limit":limit, "used":consumed, "consumed":consumed, "reserved":reserved, "released":released, "available":limit - consumed - reserved, "exhausted":consumed + reserved >= limit, "on_exhaustion":"block", "nodes":nodes}
+}
+export func attempt_event(kind) {return contains(["graph_attempt_reserved", "graph_reservation_released", "graph_attempt_retried"], kind)}
+# All callers provide source-checked journal transitions. This fold additionally
+# validates lineage and prevents duplicate consumption even during reconstruction.
+export func fold_attempt(state, kind, data) {
+    if accounting_enabled(state) == false {need(attempt_event(kind) == false, "attempt_accounting_required");return state}
+    if attempt_event(kind) == false&&contains(["node_start_requested", "node_terminal_observed"], kind) == false {return state}
+    c := data;if attempt_event(kind) {c = data["candidate"]}
+    id := c["node_id"];step := definition(state, id)
+    if program_contract(step) == false {need(attempt_event(kind) == false, "program_attempt_required");return state}
+    history := dict_get_or(state, "graph_attempts", {});rows := dict_get_or(history, id, []);row := current_attempt(state, id)
+    if kind == "graph_attempt_reserved"||kind == "graph_attempt_retried" {
+        ordinal := 1;prior := null
+        if row != null {
+            ordinal = row["ordinal"];prior = row["reservation"]["candidate"]["previous_terminal_ref"]
+            if kind == "graph_attempt_retried" {
+                need(row["dispatch"] != null&&row["terminal"] != null&&row["terminal"]["terminal"]["outcome"] == "failed", "retry_terminal_required")
+                ordinal = ordinal + 1;prior = "sha256:" + sha256(portable_json(row["terminal"]))
+            } else {need(row["release"] != null&&row["dispatch"] == null, "attempt_already_reserved")}
+        } else {need(kind == "graph_attempt_reserved", "retry_prior_missing")}
+        need(ordinal <= attempt_limit(state, id)&&c["ordinal"] == ordinal&&c["run_id"] == attempt_runs(state, id)[ordinal - 1]&&c["previous_terminal_ref"] == prior, "attempt_lineage_mismatch")
+        need(accounting_budget(state)["available"] > 0, "graph_attempt_budget_exhausted")
+        need(len(rows) < 16, "attempt_reservation_history_limit")
+        row = {"ordinal":ordinal, "run_id":c["run_id"], "reservation":data, "dispatch":null, "release":null, "terminal":null}
+        rows = push(rows, row)
+    } else {
+        # Optional never-dispatched cancellation is still a terminal policy fact,
+        # not an execution unit. It may have no reservation at all.
+        if kind == "node_terminal_observed"&&(row == null||row["release"] != null) {need(data["terminal"]["outcome"] == "cancelled", "attempt_reservation_missing");return state}
+        need(row != null, "attempt_reservation_missing")
+        if kind == "graph_reservation_released" {
+            need(row["dispatch"] == null&&row["release"] == null&&row["terminal"] == null&&c["reservation_id"] == row["reservation"]["candidate"]["candidate_id"], "reservation_release_unsafe")
+            row["release"] := data
+        } else if kind == "node_start_requested" {
+            need(row["dispatch"] == null&&row["release"] == null&&row["terminal"] == null&&data["consumer"]["run_id"] == row["run_id"], "attempt_dispatch_conflict")
+            row["dispatch"] := data
+        } else {
+            need(row["terminal"] == null&&row["release"] == null&&data["terminal"]["subject"]["run_id"] == row["run_id"], "attempt_terminal_conflict")
+            need(row["dispatch"] != null||data["terminal"]["outcome"] == "cancelled", "attempt_dispatch_missing")
+            row["terminal"] := data
+        }
+        rows[len(rows) - 1] := row
+    }
+    history[id] := rows;state["graph_attempts"] := history;accounting_budget(state);return state
+}
+export func attempt_history(state, events) {
+    view := {"workflow_definition":dict_get_or(state, "workflow_definition", {})}
+    for event in events {if event["kind"] == "graph_resources_reserved" {for item in event["details"]["data"]["candidate"]["programs"] {ref := item["record_ref"];raw := read_file_beneath(state["run_dir"], "node-input/" + substring(ref, 7, 71) + ".raw", 1048576);need("sha256:" + sha256(raw) == ref, "resource_artifact_corrupt");view = fold_attempt(view, "graph_attempt_reserved", parse_json(raw))}};if attempt_event(event["kind"])||contains(["node_start_requested", "node_terminal_observed"], event["kind"]) {view = fold_attempt(view, event["kind"], event["details"]["data"])}}
+    need(to_json(dict_get_or(view, "graph_attempts", {})) == to_json(dict_get_or(state, "graph_attempts", {})), "attempt_history_mismatch");return true
+}
+
+export func attempt_terminal_schema(contract) {if contract == "program-attempt/v1alpha1" {return "dispatch.node-terminal/v1alpha2"};return "dispatch.node-terminal/v1alpha1"}

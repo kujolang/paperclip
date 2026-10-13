@@ -1,0 +1,30 @@
+# portable-json/v1: bounded JSON, ASCII keys, Unicode scalar values, safe integers.
+# Used only by proposed beta commitments; historical alpha serialization is unchanged.
+func encode(value, depth) {
+    if depth > 8 {throw("commitment_depth_invalid")}
+    kind := type(value)
+    if kind == "dict" {
+        if len(keys(value)) > 64 {throw("commitment_fields_invalid")}
+        parts := []
+        for key in sort(keys(value)) {
+            if regex_match(key, "^[A-Za-z0-9_.:-]{1,128}$") == false {throw("commitment_key_invalid")}
+            parts = push(parts, to_json(key) + ":" + encode(value[key], depth + 1))
+        }
+        return "{" + join(parts, ",") + "}"
+    }
+    if kind == "array" {
+        if len(value) > 64 {throw("commitment_items_invalid")}
+        parts := []
+        for item in value {parts = push(parts, encode(item, depth + 1))}
+        return "[" + join(parts, ",") + "]"
+    }
+    if kind == "int" {if value < -9007199254740991||value > 9007199254740991 {throw("commitment_integer_invalid")}; return to_json(value)}
+    if kind == "string"||kind == "bool"||kind == "null" {return to_json(value)}
+    throw("commitment_type_invalid")
+}
+export func portable_json(value) {
+    raw := encode(value, 0)
+    if byte_length(raw) > 8192 {throw("commitment_bound")}
+    return raw
+}
+export func portable_digest(value) {return sha256(portable_json(value))}

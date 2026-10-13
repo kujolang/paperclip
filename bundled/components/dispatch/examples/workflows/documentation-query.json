@@ -1,0 +1,10 @@
+{
+  "id": "documentation-query",
+  "name": "Documentation query",
+  "description": "Read the configured RAG corpus using optional task code preferences.",
+  "metadata": {"retrieval_preferences": {"programming_language": "javascript"}},
+  "input_schema": {"type": "dict"},
+  "tools": ["documentation_query"],
+  "steps": [{"id": "docs", "name": "Retrieve documentation", "type": "tool", "tool_name": "documentation_query", "input_from": ["input"], "output_key": "documentation"}],
+  "default_retry_policy": {"max_attempts": 1, "base_delay_ms": 0, "max_delay_ms": 0}
+}

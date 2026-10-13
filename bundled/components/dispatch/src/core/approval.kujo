@@ -1,0 +1,100 @@
+from src.core.utils import dict_get_or, to_bool
+from src.core.decision import normalize_decision
+
+func print_kv(label, value) {
+	print(label + ": " + to_string(value))
+}
+
+func create_approval_request(step_id, reason, summary, review_data) {
+	return {
+		"id": "approval-" + step_id + "-" + to_string(current_timestamp()),
+		"step_id": step_id,
+		"reason": reason,
+		"summary": summary,
+		"data": review_data,
+		"requested_at": format_date(now(), "YYYY-MM-DD HH:mm:ss"),
+		"decision": "pending",
+		"reviewer_note": "",
+		"reviewed_at": ""
+	}
+}
+
+func resolve_approval(request_obj, options) {
+	auto_approve := dict_get_or(options, "auto_approve", false)
+	interactive := to_bool(dict_get_or(options, "interactive", true), true)
+	simulated_decision := dict_get_or(options, "simulated_decision", "")
+	simulated_note := dict_get_or(options, "simulated_note", "")
+	# Callback decisions are step-scoped; explicit CLI-wide decisions remain global.
+	decision_step := dict_get_or(options, "simulated_decision_step_id", "")
+	if decision_step != "" && decision_step != dict_get_or(request_obj, "step_id", "") {
+		simulated_decision = ""
+		simulated_note = ""
+	}
+
+	if to_bool(auto_approve, false) {
+		request_obj["decision"] := "approved"
+		request_obj["reviewer_note"] := "Auto-approved by --yes flag."
+		request_obj["reviewed_at"] := format_date(now(), "YYYY-MM-DD HH:mm:ss")
+		return {
+			"ok": true,
+			"paused": false,
+			"approval": request_obj
+		}
+	}
+
+	if simulated_decision != "" {
+		normalized := normalize_decision(simulated_decision, "pending")
+		if normalized == "invalid" {
+			return {
+				"ok": false,
+				"paused": false,
+				"error": {
+					"code": "invalid_approval_decision",
+					"message": "Unsupported simulated decision: " + to_string(simulated_decision),
+					"retryable": false
+				}
+			}
+		}
+		request_obj["decision"] := normalized
+		request_obj["reviewer_note"] := simulated_note
+		request_obj["reviewed_at"] := format_date(now(), "YYYY-MM-DD HH:mm:ss")
+		return {
+			"ok": true,
+			"paused": false,
+			"approval": request_obj
+		}
+	}
+
+	if interactive == false {
+		return {
+			"ok": true,
+			"paused": true,
+			"approval": request_obj
+		}
+	}
+
+	print("Approval Required")
+	print_kv("Reason", request_obj["reason"])
+	print_kv("Summary", request_obj["summary"])
+	print_kv("Data Preview", to_json(request_obj["data"]))
+	decision_raw := to_lower(trim(input("Decision (approve/reject/changes): ")))
+	note := input("Reviewer note (optional): ")
+
+	decision := normalize_decision(decision_raw, "pending")
+	if decision == "invalid" {
+		decision := "request_changes"
+	}
+
+	request_obj["decision"] := decision
+	request_obj["reviewer_note"] := note
+	request_obj["reviewed_at"] := format_date(now(), "YYYY-MM-DD HH:mm:ss")
+
+	return {
+		"ok": true,
+		"paused": false,
+		"approval": request_obj
+	}
+}
+
+export create_approval_request := create_approval_request
+export resolve_approval := resolve_approval

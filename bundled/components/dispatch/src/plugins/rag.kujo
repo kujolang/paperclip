@@ -1,0 +1,55 @@
+from src.core.plugins import create_plugin
+from src.tools.tool import create_tool
+from src.core.utils import dict_get_or
+
+func rag_error(code, message) {
+ return {"ok": false, "error": {"code": code, "message": message, "retryable": false}}
+}
+
+func rag_handler(payload, context) {
+ base_url := trim(env_or("DISPATCH_RAG_URL", ""))
+ if base_url == "" { return rag_error("rag_not_configured", "Set DISPATCH_RAG_URL for the documentation plugin.") }
+ if starts_with(base_url, "http://") == false && starts_with(base_url, "https://") == false { return rag_error("rag_invalid_url", "RAG endpoint must be HTTP(S).") }
+ if ends_with(base_url, "/") { base_url = substring(base_url, 0, len(base_url) - 1) }
+ question := dict_get_or(payload, "query", "")
+ if type(question) != "string" || trim(question) == "" || len(question) > 4000 { return rag_error("invalid_tool_arguments", "Documentation query must contain 1–4000 characters.") }
+ body := {"query": question}
+ namespace := env_or("DISPATCH_RAG_NAMESPACE", "")
+ if namespace != "" { body["namespace"] := namespace }
+ preferences := dict_get_or(dict_get_or(context, "metadata", {}), "retrieval_preferences", {})
+ if env_or("DISPATCH_RAG_SUPPORTS_PREFERENCES", "0") == "1" && len(keys(preferences)) > 0 { body["retrieval_preferences"] := preferences }
+ headers := {"Content-Type": "application/json", "Accept": "application/json"}
+ token := env_or("DISPATCH_RAG_TOKEN", "")
+ if token != "" { headers["Authorization"] := "Bearer " + token }
+ timeout_ms := 10000
+ deadline_ms := dict_get_or(context, "deadline_ms", 0)
+ if deadline_ms > 0 {
+  remaining := deadline_ms - current_timestamp()
+  if remaining <= 0 { return rag_error("rag_timeout", "Documentation query deadline expired.") }
+  if remaining < timeout_ms { timeout_ms = remaining }
+ }
+ try {
+  wire := http_request(base_url + "/query", {"method": "POST", "headers": headers, "body": to_json(body), "timeout": timeout_ms / 1000.0, "redirects": "none", "pin_dns": true, "max_response_bytes": 262144})
+  match wire {
+   case Ok(response): {
+    status := dict_get_or(response, "_status", dict_get_or(response, "status", 0))
+    if status < 200 || status > 299 { return rag_error("rag_upstream_failed", "Documentation service returned an unsuccessful HTTP status.") }
+    envelope := parse_json(dict_get_or(response, "_body", dict_get_or(response, "body", "")))
+    data := dict_get_or(envelope, "data", {})
+    if dict_get_or(envelope, "ok", false) != true || type(dict_get_or(data, "citations", null)) != "array" { return rag_error("rag_invalid_response", "Documentation response requires citations.") }
+    return {"ok": true, "data": {"citations": data["citations"], "count": len(data["citations"])}}
+   }
+   case Err(error): { return rag_error("rag_transport_failed", "Documentation transport failed.") }
+  }
+ } except error { return rag_error("rag_transport_failed", "Documentation transport failed.") }
+}
+
+export create_rag_plugin := func() {
+ tool := create_tool("documentation_query", "Retrieve documentation and source citations from a configured Kujo RAG server.", {"type": "dict"}, {"type": "dict"}, func(payload, context) { return rag_handler(payload, context) }, func(step_input) {
+  task := dict_get_or(step_input, "input", {})
+  return {"query": dict_get_or(task, "query", dict_get_or(task, "topic", ""))}
+ })
+ # This handler enforces the supplied absolute deadline in its native HTTP call.
+ tool["__dispatch_deadline_bounded"] := true
+ return create_plugin("rag", {}, {}, [tool])
+}

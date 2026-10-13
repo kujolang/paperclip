@@ -1,0 +1,233 @@
+from src.core.assurance_state import assurance_protected
+from src.core.utils import dict_get_or
+
+func intervention_error(code, message) {
+    return {"ok": false, "error": {"code": code, "message": message, "retryable": false}}
+}
+
+func value_allowed(value, allowed) {
+    if type(allowed) != "array" {return false}
+    for candidate in allowed {
+        if value == candidate {return true}
+    }
+    return false
+}
+
+func validate_intervention_decision(decision, run_state) {
+    if type(decision) != "dict"||dict_get_or(decision, "schema", "") != "kujo.intervention-decision/v2" {
+        return intervention_error("invalid_intervention_decision", "Decision schema must be kujo.intervention-decision/v2.")
+    }
+    if len(to_json(decision)) > 1048576 {return intervention_error("invalid_intervention_decision", "Decision exceeds 1 MiB.")}
+    required := ["decision_id", "request_id", "boundary_id", "action", "reason", "decided_at"]
+    for field in required {
+        if type(dict_get_or(decision, field, null)) != "string"||trim(decision[field]) == "" {
+            return intervention_error("invalid_intervention_decision", "Decision requires " + field + ".")
+        }
+    }
+    expected_revision := dict_get_or(decision, "expected_state_revision", 0)
+    if type(expected_revision) != "int"||expected_revision < 1 {
+        return intervention_error("invalid_intervention_decision", "Decision requires a positive expected_state_revision.")
+    }
+    actor := dict_get_or(decision, "actor", null)
+    if type(actor) != "dict" {
+        return intervention_error("invalid_intervention_decision", "Decision requires an authenticated actor.")
+    }
+    for field in ["id", "type", "authenticated_by", "authorization"] {
+        if type(dict_get_or(actor, field, null)) != "string"||trim(actor[field]) == "" {
+            return intervention_error("invalid_intervention_decision", "Decision actor requires " + field + ".")
+        }
+    }
+    if value_allowed(dict_get_or(actor, "type", ""), ["human", "policy_engine", "system"]) == false {
+        return intervention_error("invalid_intervention_decision", "Decision actor type is invalid.")
+    }
+    action := dict_get_or(decision, "action", "")
+    if value_allowed(action, ["resume_from_boundary", "retry_evaluation", "retry_step", "retry_clean", "amend_inputs", "approve_override", "abort", "cancel"]) == false {
+        return intervention_error("invalid_intervention_decision", "Decision action is invalid.")
+    }
+    if dict_get_or(run_state, "status", "") != "paused" {return intervention_error("control_boundary_not_open", "Only paused boundaries accept decisions.")}
+    boundary := dict_get_or(run_state, "current_control_boundary", null)
+    request := dict_get_or(run_state, "human_intervention", null)
+    if type(boundary) != "dict"||dict_get_or(boundary, "status", "") != "open" {
+        return intervention_error("control_boundary_not_open", "Run does not have an open control boundary.")
+    }
+    if type(request) != "dict"||dict_get_or(request, "schema", "") != "kujo.intervention-request/v2" {
+        return intervention_error("intervention_request_missing", "Run does not have a matching v2 intervention request.")
+    }
+    if dict_get_or(decision, "boundary_id", "") != dict_get_or(boundary, "boundary_id", "") {
+        return intervention_error("stale_intervention_decision", "Decision boundary_id does not match the open boundary.")
+    }
+    if dict_get_or(decision, "request_id", "") != dict_get_or(request, "request_id", "") {
+        return intervention_error("stale_intervention_decision", "Decision request_id does not match the open request.")
+    }
+    if expected_revision != dict_get_or(run_state, "revision", 0)||expected_revision != dict_get_or(request, "state_revision", 0) {
+        return intervention_error("stale_intervention_decision", "Decision expected_state_revision does not match current run state.")
+    }
+    if value_allowed(action, dict_get_or(request, "allowed_actions", [])) == false {
+        return intervention_error("intervention_action_not_allowed", "Decision action is not allowed for this boundary.")
+    }
+    expires := dict_get_or(request, "expires_at", null)
+    if type(expires) == "string"&&expires <= format_date(now(), "YYYY-MM-DDTHH:mm:ssZ") {return intervention_error("expired_intervention", "Intervention request expired.")}
+    continuation := dict_get_or(decision, "continuation", {})
+    if type(continuation) != "dict" {
+        return intervention_error("invalid_intervention_decision", "Decision continuation must be an object.")
+    }
+    if value_allowed(action, ["retry_evaluation", "retry_step", "retry_clean", "amend_inputs"]) {
+        if trim(to_string(dict_get_or(continuation, "target_step_id", ""))) == ""||dict_get_or(continuation, "new_attempt", false) != true {
+            return intervention_error("invalid_continuation", "Retry and amendment decisions require target_step_id and new_attempt=true.")
+        }
+    }
+    sources := {"retry_evaluation": "existing_evidence", "retry_step": "preserved_workspace", "retry_clean": "original_source", "amend_inputs": "amended_inputs"}
+    if has_key(sources, action)&&has_key(continuation, "source")&&continuation["source"] != sources[action] {return intervention_error("invalid_continuation", "Continuation source does not match its typed action.")}
+    if action == "amend_inputs"&&trim(to_string(dict_get_or(continuation, "input_ref", ""))) == "" {
+        return intervention_error("invalid_continuation", "amend_inputs requires continuation.input_ref.")
+    }
+    return {"ok": true, "boundary": boundary, "request": request, "action": action, "continuation": continuation}
+}
+
+func find_step_index(steps, step_id) {
+    index := 0
+    while index < len(steps) {
+        if dict_get_or(steps[index], "id", "") == step_id {return index}
+        index = index + 1
+    }
+    return - 1
+}
+
+# Legacy v1 trusted-adapter boundary: nonempty enforcement references permit
+# external_idempotent even with unknown completion. Other unknown effects reject.
+func retry_is_effect_safe(step) {
+    observed := dict_get_or(step, "execution_result", {})
+    effects := dict_get_or(observed, "effects", null)
+    if type(effects) == "array" {
+        if len(effects) == 0 {return false}
+        for effect in effects {
+            kind := dict_get_or(effect, "class", "unknown")
+            state := dict_get_or(effect, "state", "unknown")
+            if kind == "none" {continue}
+            if kind == "local_reversible"&&state != "unknown"&&state != "started" {continue}
+            if kind == "external_idempotent"&&type(dict_get_or(effect, "idempotency_key", null)) == "string"&&type(dict_get_or(effect, "enforced_by", null)) == "string"&&type(dict_get_or(effect, "enforcement_evidence_ref", null)) == "string"&&trim(to_string(dict_get_or(effect, "idempotency_key", ""))) != ""&&trim(to_string(dict_get_or(effect, "enforced_by", ""))) != ""&&trim(to_string(dict_get_or(effect, "enforcement_evidence_ref", ""))) != "" {continue}
+            return false
+        }
+        return true
+    }
+    return value_allowed(dict_get_or(step, "effect_class", "unknown"), ["none", "local_reversible"])
+}
+
+func reset_step_for_attempt(step) {
+    step["control_attempt"] := dict_get_or(step, "control_attempt", 1) + 1
+    step["previous_attempt"] := {"input": dict_get_or(step, "input", null), "output": dict_get_or(step, "output", null), "execution_result": dict_get_or(step, "execution_result", null)}
+    step["status"] := "pending"
+    step["input"] := null
+    step["output"] := null
+    step["started_at"] := ""
+    step["finished_at"] := ""
+    step["error"] := null
+    step["route_decision"] := null
+    step["route_evaluation"] := null
+    return step
+}
+
+func prepare_intervention_continuation_impl(run_state, decision) {
+    action := dict_get_or(decision, "action", "")
+    continuation := dict_get_or(decision, "continuation", {})
+    boundary := dict_get_or(run_state, "current_control_boundary", {})
+    target_step_id := dict_get_or(continuation, "target_step_id", dict_get_or(boundary, "step_id", ""))
+    if target_step_id != dict_get_or(boundary, "step_id", "") {return intervention_error("invalid_continuation_target", "A decision cannot replay an unrelated step.")}
+    if (action == "resume_from_boundary"||action == "approve_override")&&dict_get_or(run_state, "parent_finalization_required", false) {return intervention_error("parent_finalization_required", "Use explicit locked parent finalization for this protected parent.")}
+    if action == "resume_from_boundary"||action == "approve_override" {
+        steps := dict_get_or(run_state, "steps", [])
+        idx := find_step_index(steps, target_step_id)
+        if idx >= 0&&dict_get_or(steps[idx], "status", "") == "failed" {
+            item := steps[idx]
+            item["status"] := "skipped"
+            item["accepted_by_decision"] := dict_get_or(decision, "decision_id", "")
+            steps[idx] := item
+            run_state["steps"] := steps
+        }
+        return {"ok": true, "run_state": run_state, "mode": "continue", "target_step_id": dict_get_or(boundary, "step_id", "")}
+    }
+    if action == "abort" {return {"ok": true, "run_state": run_state, "mode": "abort", "target_step_id": target_step_id}}
+    if action == "cancel" {return {"ok": true, "run_state": run_state, "mode": "cancel", "target_step_id": target_step_id}}
+    if action == "retry_clean" {
+        descriptor := dict_get_or(boundary, "reexecution_descriptor", null)
+        if type(descriptor) != "dict"||dict_get_or(descriptor, "schema", "") != "kujo.reexecution-descriptor/v1"||value_allowed(dict_get_or(descriptor, "capability", "inspectable"), ["re_executable", "deterministic_replay"]) == false||dict_get_or(descriptor, "mode", "clean_workspace") != "clean_workspace" {
+            return intervention_error("retry_clean_unavailable", "retry_clean requires a provider re-execution descriptor; it cannot be approximated with the current workspace.")
+        }
+        steps := dict_get_or(run_state, "steps", [])
+        target_index := find_step_index(steps, target_step_id)
+        if target_index < 0 {return intervention_error("invalid_continuation_target", "Continuation target step was not found: " + target_step_id)}
+        target_step := steps[target_index]
+        if retry_is_effect_safe(target_step) == false {
+            return intervention_error("unsafe_retry", "retry_clean cannot duplicate an unsafe external effect without an idempotency contract.")
+        }
+        config := dict_get_or(target_step, "config", {})
+        if dict_get_or(config, "reexecution_modes", []) == []||value_allowed("clean_workspace", dict_get_or(config, "reexecution_modes", [])) == false {return intervention_error("retry_clean_unavailable", "Trusted action adapter must support clean_workspace.")}
+        if dict_get_or(dict_get_or(descriptor, "effects", {}), "automatic_retry_allowed", false) != true {return intervention_error("unsafe_retry", "Descriptor does not permit replay.")}
+        target_step = reset_step_for_attempt(target_step)
+        target_step["reexecution_descriptor"] := descriptor
+        target_step["reexecution_source"] := "clean"
+        steps[target_index] := target_step
+        run_state["steps"] := steps
+        run_state["current_step_index"] := target_index
+        return {"ok": true, "run_state": run_state, "mode": "retry_clean", "target_step_id": target_step_id, "reexecution_descriptor": descriptor}
+    }
+    steps := dict_get_or(run_state, "steps", [])
+    target_index := find_step_index(steps, target_step_id)
+    if target_index < 0 {return intervention_error("invalid_continuation_target", "Continuation target step was not found: " + target_step_id)}
+    target_step := steps[target_index]
+    if (action == "retry_step"||action == "retry_evaluation"||action == "amend_inputs")&&retry_is_effect_safe(target_step) == false {
+        return intervention_error("unsafe_retry", "Retry requires known reversible effects or evidenced sink-enforced idempotency.")
+    }
+    if action == "retry_evaluation" {
+        evaluation := dict_get_or(boundary, "evaluation_result", {})
+        if dict_get_or(evaluation, "schema", "") != "kujo.evaluation-result/v1"||dict_get_or(dict_get_or(target_step, "config", {}), "control_role", "") != "evaluator" {return intervention_error("invalid_evaluator_target", "Evaluator-only replay requires an evaluator action and retained evaluation facts.")}
+        target_step["reexecution_source"] := "existing_evidence"
+        target_step["retained_evidence"] := dict_get_or(evaluation, "evidence", [])
+        target_step["retained_input_evidence_ids"] := dict_get_or(evaluation, "input_evidence_ids", [])
+        target_step["retained_input"] := dict_get_or(target_step, "input", null)
+    }
+    if action == "retry_step" {
+        preservation := dict_get_or(boundary, "preservation", {})
+        if type(dict_get_or(preservation, "retain_until", null)) == "string"&&preservation["retain_until"] <= format_date(now(), "YYYY-MM-DDTHH:mm:ssZ") {return intervention_error("preservation_unavailable", "Retained workspace deadline expired.")}
+        if dict_get_or(preservation, "status", "") != "satisfied"||dict_get_or(preservation, "actual_mode", "") != "filesystem"||dict_get_or(preservation, "reconstructability", "") != "same_filesystem" {return intervention_error("preservation_unavailable", "Same-workspace retry requires retained filesystem evidence.")}
+        if value_allowed("same_workspace", dict_get_or(dict_get_or(target_step, "config", {}), "reexecution_modes", [])) == false {return intervention_error("preservation_unavailable", "Trusted action adapter must support same_workspace.")}
+        target_step["reexecution_source"] := "preserved_workspace"
+        target_step["preservation"] := preservation
+    }
+    output_key := dict_get_or(target_step, "output_key", "")
+
+    target_step = reset_step_for_attempt(target_step)
+    steps[target_index] := target_step
+    run_state["steps"] := steps
+    if output_key != "" {
+        data := dict_get_or(run_state, "data", {})
+        data[output_key] := null
+        run_state["data"] := data
+        memory := dict_get_or(run_state, "memory", {})
+        step_outputs := dict_get_or(memory, "step_outputs", {})
+        step_outputs[output_key] := null
+        memory["step_outputs"] := step_outputs
+        run_state["memory"] := memory
+    }
+    run_state["current_step_index"] := target_index
+    return {"ok": true, "run_state": run_state, "mode": "retry", "target_step_id": target_step_id}
+}
+
+export validate_intervention_decision := validate_intervention_decision
+func prepare_intervention_continuation(run_state, decision) {
+    if assurance_protected(run_state) {return intervention_error("assurance_controller_incompatible", "This run requires persisted negotiation before continuation.")}
+    return prepare_intervention_continuation_impl(run_state, decision)
+}
+export prepare_intervention_continuation := prepare_intervention_continuation
+
+# Installed controller callback, never deserialized from state or producer JSON.
+export func prepare_verified_intervention(run_state, decision, verify) {
+    if type(verify) != "function" {return intervention_error("assurance_controller_incompatible", "Installed admission verifier required.")}
+    checked := validate_intervention_decision(decision, run_state)
+    if checked["ok"] == false {return checked}
+    verified := verify(run_state)
+    if verified["ok"] == false {return verified}
+    return prepare_intervention_continuation_impl(run_state, decision)
+}
+
+export retry_is_effect_safe := retry_is_effect_safe

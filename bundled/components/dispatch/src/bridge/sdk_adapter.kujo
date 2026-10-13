@@ -1,0 +1,398 @@
+from src.core.utils import dict_get_or, to_bool, ensure_dir
+
+func env_or(key, fallback_value) {
+	raw := env(key)
+	if type(raw) == "null" {
+		return fallback_value
+	}
+	value := trim(to_string(raw))
+	if value == "" {
+		return fallback_value
+	}
+	return value
+}
+
+func model_fixture_enabled(options) {
+	if has_key(options, "offline_fixture") {
+		return to_bool(options["offline_fixture"], false)
+	}
+	env_value := env_or("DISPATCH_OFFLINE_FIXTURE", "false")
+	return to_bool(env_value, false)
+}
+
+func custom_provider_api_key_env_allowed(api_key_env) {
+	key_name := trim(to_string(api_key_env))
+	if key_name == "CUSTOM_API_KEY" {
+		return true
+	}
+	for configured_name in split(env_or("DISPATCH_ALLOWED_CUSTOM_API_KEY_ENVS", ""), ",") {
+		if trim(configured_name) == key_name && key_name != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func normalize_provider_endpoint(raw_value) {
+	value := trim(to_string(raw_value))
+	while ends_with(value, "/") { value = substring(value, 0, len(value) - 1) }
+	return value
+}
+
+func custom_provider_endpoint_allowed(base_url) {
+	endpoint := normalize_provider_endpoint(base_url)
+	lower_endpoint := to_lower(endpoint)
+	secure := starts_with(lower_endpoint, "https://")
+	local_opt_in_value := to_lower(trim(to_string(env("DISPATCH_ALLOW_INSECURE_LOCAL_CUSTOM_PROVIDER"))))
+	local_opt_in := local_opt_in_value == "true" || local_opt_in_value == "1" || local_opt_in_value == "yes" || local_opt_in_value == "on"
+	local_http := starts_with(lower_endpoint, "http://localhost:") || starts_with(lower_endpoint, "http://127.0.0.1:") || lower_endpoint == "http://localhost" || lower_endpoint == "http://127.0.0.1"
+	if secure == false && (local_opt_in == false || local_http == false) { return false }
+	for configured in split(to_string(env("DISPATCH_ALLOWED_CUSTOM_PROVIDER_ORIGINS")), ",") {
+		if normalize_provider_endpoint(configured) == endpoint { return true }
+	}
+	return false
+}
+
+func parse_json_from_output(raw_text) {
+	text := trim(to_string(raw_text))
+	if text == "" {
+		return {
+			"ok": false,
+			"error": "empty output"
+		}
+	}
+
+	try {
+		return {
+			"ok": true,
+			"data": parse_json(text)
+		}
+	} except err {
+		# fall through to line-by-line scan
+	}
+
+	lines := split(text, "\n")
+	i := len(lines) - 1
+	while i >= 0 {
+		candidate := trim(lines[i])
+		if candidate != "" {
+			try {
+				return {
+					"ok": true,
+					"data": parse_json(candidate)
+				}
+			} except err {
+				# continue scanning
+			}
+		}
+		i := i - 1
+	}
+
+	result := {
+		"ok": false,
+		"error": "no json payload found"
+	}
+	return result
+}
+
+func bridge_debug_output_enabled(options) {
+	if has_key(options, "debug_bridge_output") {
+		return to_bool(options["debug_bridge_output"], false)
+	}
+	return to_bool(env_or("DISPATCH_SDK_DEBUG_OUTPUT", "false"), false)
+}
+
+func build_bridge_parse_error_details(process_result, options) {
+	stdout_value := to_string(dict_get_or(process_result, "stdout", ""))
+	stderr_value := to_string(dict_get_or(process_result, "stderr", ""))
+
+	if bridge_debug_output_enabled(options) {
+		return {
+			"debug_bridge_output": true,
+			"stdout": stdout_value,
+			"stderr": stderr_value,
+			"stdout_bytes": len(stdout_value),
+			"stderr_bytes": len(stderr_value)
+		}
+	}
+
+	return {
+		"stdout_redacted": true,
+		"stderr_redacted": true,
+		"stdout_bytes": len(stdout_value),
+		"stderr_bytes": len(stderr_value),
+		"hint": "Set DISPATCH_SDK_DEBUG_OUTPUT=true to include raw bridge output details for local debugging."
+	}
+}
+
+func build_bridge_exec_error_message(process_result, options) {
+	stderr_value := to_string(dict_get_or(process_result, "stderr", ""))
+	if bridge_debug_output_enabled(options) {
+		return "Bridge execution failed: " + trim(stderr_value)
+	}
+	return "Bridge execution failed. Stderr redacted by default (" + to_string(len(stderr_value)) + " bytes). Set DISPATCH_SDK_DEBUG_OUTPUT=true to include raw bridge output details for local debugging."
+}
+
+func resolve_bridge_paths() {
+	dispatch_root := env_or("DISPATCH_ROOT", "")
+	if dispatch_root == "" { dispatch_root = os_getcwd() }
+	default_ai_sdk := "../ai-sdk"
+	default_bridge := "src/bridge/bridge_chat.kujo"
+	if dispatch_root != "" {
+		default_ai_sdk = dispatch_root + "/../ai-sdk"
+		default_bridge = dispatch_root + "/src/bridge/bridge_chat.kujo"
+	}
+	ai_sdk_path := env_or("AI_SDK_PATH", default_ai_sdk)
+	kujo_bin := env_or("KUJO_BIN", "kujo")
+	bridge_script := env_or("DISPATCH_SDK_BRIDGE_SCRIPT", default_bridge)
+	# The 1.2 pinned installer shim exports the former root bridge path. Only
+	# translate that exact, now-absent path; preserve arbitrary operator overrides.
+	if dispatch_root != "" && bridge_script == dispatch_root + "/bridge_chat.kujo" && file_exists(bridge_script) == false {
+		bridge_script = default_bridge
+	}
+
+	return {
+		"ai_sdk_path": ai_sdk_path,
+		"kujo_bin": kujo_bin,
+		"bridge_script": bridge_script
+	}
+}
+
+func build_bridge_spawn_command(paths) {
+	return [
+		dict_get_or(paths, "kujo_bin", "kujo"),
+		"run",
+		dict_get_or(paths, "bridge_script", "src/bridge/bridge_chat.kujo"),
+		"--interpreter"
+	]
+}
+
+func build_bridge_payload(agent, user_prompt, options) {
+	model_config := dict_get_or(agent, "model", {})
+	provider_id := to_lower(to_string(dict_get_or(model_config, "provider", "openai")))
+	model_name := dict_get_or(model_config, "model", "")
+	base_url := dict_get_or(model_config, "base_url", "https://api.openai.com/v1")
+	api_key_env := dict_get_or(model_config, "api_key_env", "OPENAI_API_KEY")
+	if model_name == "" {
+		model_name := "gpt-4.1-mini"
+	}
+
+	payload := {
+		"provider_id": provider_id,
+		"model": model_name,
+		"base_url": base_url,
+		"api_key_env": api_key_env,
+		"messages": [
+			{
+				"role": "system",
+				"content": dict_get_or(agent, "instructions", "")
+			},
+			{
+				"role": "user",
+				"content": user_prompt
+			}
+		],
+		"temperature": dict_get_or(options, "temperature", 0.2),
+		"max_tokens": dict_get_or(options, "max_tokens", 300),
+		"max_retries": dict_get_or(options, "max_retries", 1),
+		"retry_delay_ms": dict_get_or(options, "retry_delay_ms", 100),
+		"offline_fixture": model_fixture_enabled(options)
+	}
+	if has_key(options, "messages") && type(options["messages"]) == "array" {
+		payload["messages"] := options["messages"]
+	}
+	if has_key(options, "tools") && type(options["tools"]) == "array" {
+		payload["tools"] := options["tools"]
+	}
+	if dict_get_or(options, "stream", false) {
+		payload["stream"] := true
+		stream_events_path := trim(to_string(dict_get_or(options, "stream_events_path", "")))
+		if stream_events_path != "" {
+			if starts_with(stream_events_path, "/") == false {
+				stream_events_path = os_getcwd() + "/" + stream_events_path
+			}
+			payload["stream_events_path"] := stream_events_path
+		}
+	}
+	for structured_key in ["response_format", "structured_output_schema", "structured_output_retryable"] {
+		if has_key(options, structured_key) {
+			payload[structured_key] := options[structured_key]
+		}
+	}
+	route_decision := dict_get_or(agent, "__route_decision", {})
+	if type(route_decision) == "dict" && len(keys(route_decision)) > 0 {
+		payload["route"] := {
+			"decision_id": dict_get_or(route_decision, "decision_id", ""),
+			"policy_version": dict_get_or(route_decision, "policy_version", ""),
+			"catalog_id": dict_get_or(route_decision, "catalog_id", ""),
+			"catalog_version": dict_get_or(route_decision, "catalog_version", ""),
+			"catalog_hash": dict_get_or(route_decision, "catalog_hash", "")
+		}
+		constraints := dict_get_or(route_decision, "constraints", {})
+		if dict_get_or(constraints, "requires_structured_output", false) {
+			if has_key(payload, "response_format") == 0 {
+				payload["response_format"] := {"type": "json_object"}
+			}
+			output_schema := dict_get_or(agent, "output_schema", null)
+			if type(output_schema) == "dict" && has_key(payload, "structured_output_schema") == 0 {
+				payload["structured_output_schema"] := output_schema
+			}
+			if has_key(payload, "structured_output_retryable") == 0 {
+				payload["structured_output_retryable"] := false
+			}
+		}
+	}
+
+	return payload
+}
+
+func resolve_bridge_timeout_ms(options) {
+	default_ms := 240000
+	raw := dict_get_or(options, "timeout_ms", env_or("DISPATCH_SDK_TIMEOUT_MS", to_string(default_ms)))
+	parsed := default_ms
+	try {
+		parsed = to_int(trim(to_string(raw)))
+	} except err {
+		return default_ms
+	}
+	if parsed <= 0 {
+		return default_ms
+	}
+	return parsed
+}
+
+func build_offline_fixture_model_result(agent, user_prompt, options) {
+	model_config := dict_get_or(agent, "model", {})
+	model_name := dict_get_or(model_config, "model", "")
+	provider_id := to_lower(to_string(dict_get_or(model_config, "provider", "openai")))
+	if model_name == "" {
+		model_name := "gpt-4.1-mini"
+	}
+	prompt_text := trim(to_string(user_prompt))
+	output_text := "Dispatch offline fixture response."
+	if prompt_text != "" {
+		output_text = "Dispatch offline fixture response for: " + prompt_text
+	}
+
+	result := {
+		"ok": true,
+		"provider": provider_id,
+		"model": model_name,
+		"output_text": output_text,
+		"finish_reason": "stop",
+		"status_code": 200,
+		"normalized_at": current_timestamp(),
+		"usage": {
+			"input_tokens": len(prompt_text),
+			"output_tokens": len(output_text),
+			"total_tokens": len(prompt_text) + len(output_text),
+			"estimated": true
+		},
+		"raw": {
+			"fixture": true,
+			"source": "dispatch-sdk-adapter",
+			"usage_estimated": true
+		}
+	}
+	if type(dict_get_or(agent, "__route_decision", null)) == "dict" {
+		result["route"] := dict_get_or(agent, "__route_decision", {})
+	}
+	if dict_get_or(options, "stream", false) {
+		stream_events_path := trim(to_string(dict_get_or(options, "stream_events_path", "")))
+		if stream_events_path != "" {
+			stream_dir := dirname(stream_events_path)
+			if stream_dir != "" && stream_dir != "." { ensure_dir(stream_dir) }
+			events := [{"type": "delta", "text": output_text, "index": 0}, {"type": "done", "finish_reason": "stop", "usage": result["usage"]}]
+			write_file(stream_events_path, "", true)
+			for event in events { append_file(stream_events_path, to_json(event) + "\n") }
+			result["emitted_events"] := events
+			result["stream_events_path"] := stream_events_path
+		}
+	}
+	return result
+}
+
+func call_agent_model(agent, user_prompt, options) {
+	if model_fixture_enabled(options) {
+		return build_offline_fixture_model_result(agent, user_prompt, options)
+	}
+	if trim(to_string(dict_get_or(options, "api_key", ""))) != "" {
+		return {"ok": false, "error": {"code": "inline_credential_not_allowed", "message": "Inline model credentials are not allowed; configure the provider credential environment variable.", "retryable": false}}
+	}
+	model_config := dict_get_or(agent, "model", {})
+	if to_lower(trim(to_string(dict_get_or(model_config, "provider", "")))) == "custom" {
+		custom_key_env := dict_get_or(model_config, "api_key_env", "CUSTOM_API_KEY")
+		if custom_provider_api_key_env_allowed(custom_key_env) == false {
+			return {
+				"ok": false,
+				"error": {
+					"code": "credential_env_not_allowed",
+					"message": "Custom provider credential environment variable is not allowed. Use CUSTOM_API_KEY or explicitly allow the variable with DISPATCH_ALLOWED_CUSTOM_API_KEY_ENVS.",
+					"retryable": false
+				}
+			}
+		}
+		custom_base_url := dict_get_or(model_config, "base_url", "")
+		if custom_provider_endpoint_allowed(custom_base_url) == false {
+			return {"ok": false, "error": {"code": "provider_endpoint_not_allowed", "message": "Custom provider base_url must be an exact HTTPS entry in DISPATCH_ALLOWED_CUSTOM_PROVIDER_ORIGINS.", "retryable": false}}
+		}
+	}
+
+	paths := resolve_bridge_paths()
+	payload := build_bridge_payload(agent, user_prompt, options)
+	payload_json := to_json(payload)
+	command := build_bridge_spawn_command(paths)
+
+	process_result := spawn_process(command, {
+		"cwd": dict_get_or(paths, "ai_sdk_path", "../ai-sdk"),
+		"inherit_env": true,
+		"env": {
+			"DISPATCH_BRIDGE_PAYLOAD": payload_json,
+			"KUJO_NET_DESTINATION_POLICY": "deny_private"
+		},
+		"timeout_ms": resolve_bridge_timeout_ms(options),
+		"max_output_bytes": 1024 * 1024 * 8
+	})
+
+	parsed := parse_json_from_output(process_result.stdout)
+	if parsed["ok"] {
+		parsed_data := parsed["data"]
+		if type(parsed_data) == "dict" && type(dict_get_or(agent, "__route_decision", null)) == "dict" {
+			parsed_data["route"] := dict_get_or(agent, "__route_decision", {})
+		}
+		return parsed_data
+	}
+
+	if process_result.success == false {
+		return {
+			"ok": false,
+			"error": {
+				"code": "sdk_bridge_exec_error",
+				"message": build_bridge_exec_error_message(process_result, options),
+				"retryable": true
+			}
+		}
+	}
+
+	return {
+		"ok": false,
+		"error": {
+			"code": "sdk_bridge_parse_error",
+			"message": "Bridge output was not parseable JSON.",
+			"retryable": false,
+			"details": build_bridge_parse_error_details(process_result, options)
+		}
+	}
+}
+
+export call_agent_model := call_agent_model
+export build_bridge_payload := build_bridge_payload
+export parse_json_from_output := parse_json_from_output
+export build_bridge_parse_error_details := build_bridge_parse_error_details
+export build_bridge_exec_error_message := build_bridge_exec_error_message
+export build_bridge_spawn_command := build_bridge_spawn_command
+export resolve_bridge_paths := resolve_bridge_paths
+export resolve_bridge_timeout_ms := resolve_bridge_timeout_ms
+export build_offline_fixture_model_result := build_offline_fixture_model_result
+export custom_provider_api_key_env_allowed := custom_provider_api_key_env_allowed
+export custom_provider_endpoint_allowed := custom_provider_endpoint_allowed

@@ -1,0 +1,244 @@
+func dict_get_or(obj, key, default_value) {
+	if type(obj) != "dict" {
+		return default_value
+	}
+	if has_key(obj, key) {
+		return obj[key]
+	}
+	return default_value
+}
+
+func clone_array(values) {
+	if type(values) != "array" {
+		return []
+	}
+	cloned := []
+	for value in values {
+		cloned := push(cloned, value)
+	}
+	return cloned
+}
+
+func clone_dict(values) {
+	if type(values) != "dict" {
+		return {}
+	}
+	cloned := {}
+	for key in keys(values) {
+		cloned[key] := values[key]
+	}
+	return cloned
+}
+
+func to_bool(value, default_value) {
+	if type(value) == "bool" {
+		return value
+	}
+	if type(value) == "string" {
+		normalized := to_lower(trim(value))
+		if normalized == "true" || normalized == "1" || normalized == "yes" || normalized == "y" {
+			return true
+		}
+		if normalized == "false" || normalized == "0" || normalized == "no" || normalized == "n" {
+			return false
+		}
+	}
+	return default_value
+}
+
+func now_human() {
+	return format_date(now(), "YYYY-MM-DD HH:mm:ss")
+}
+
+func sanitize_slug(text) {
+	if type(text) != "string" {
+		return "item"
+	}
+	lower_text := to_lower(text)
+	letters := "abcdefghijklmnopqrstuvwxyz0123456789"
+	result := ""
+	i := 0
+	while i < len(lower_text) {
+		ch := substring(lower_text, i, i + 1)
+		if contains(letters, ch) {
+			result := result + ch
+		} else {
+			if len(result) > 0 {
+				if substring(result, len(result) - 1, len(result)) != "-" {
+					result := result + "-"
+				}
+			}
+		}
+		i := i + 1
+	}
+	result := trim(result)
+	if starts_with(result, "-") {
+		result := substring(result, 1, len(result))
+	}
+	if ends_with(result, "-") {
+		result := substring(result, 0, len(result) - 1)
+	}
+	if result == "" {
+		return "item"
+	}
+	return result
+}
+
+func ensure_dir(path) {
+	try {
+		create_dir(path)
+	} except err {
+		# Directory already exists.
+	}
+}
+
+func safe_read_file(path, default_value) {
+	if !file_exists(path) {
+		return default_value
+	}
+	try {
+		return read_file(path)
+	} except err {
+		return default_value
+	}
+}
+
+func read_json_or(path, default_value) {
+	body := safe_read_file(path, "")
+	if trim(body) == "" {
+		return default_value
+	}
+	try {
+		parsed := parse_json(body)
+		return parsed
+	} except err {
+		return default_value
+	}
+}
+
+func is_sensitive_key_name(key_name) {
+	name := to_lower(trim(to_string(key_name)))
+	if name == "" {
+		return false
+	}
+	# Environment-variable names are routing metadata, not credential values.
+	# Persisting the name is required for restart-safe provider execution; the
+	# environment remains the only source of the actual secret.
+	if name == "api_key_env" {
+		return false
+	}
+	safe_token_metrics := [
+		"input_tokens",
+		"output_tokens",
+		"total_tokens",
+		"prompt_tokens",
+		"completion_tokens",
+		"required_context_tokens",
+		"max_tokens",
+		"max_total_tokens",
+		"token_efficiency"
+	]
+	for safe_metric in safe_token_metrics {
+		if name == safe_metric {
+			return false
+		}
+	}
+	sensitive_tokens := [
+		"api_key",
+		"apikey",
+		"authorization",
+		"auth_token",
+		"token",
+		"secret",
+		"password",
+		"passphrase",
+		"access_key",
+		"private_key"
+	]
+	for token in sensitive_tokens {
+		if contains(name, token) == 1 {
+			return true
+		}
+	}
+	return false
+}
+
+func redact_sensitive_data(value) {
+	root_type := type(value)
+	if root_type != "dict" && root_type != "array" {
+		return value
+	}
+	# Queue only containers. Primitive leaves are copied directly into their
+	# parent instead of allocating a traversal record for every scalar.
+	# Resolve children backwards to avoid recursion on deeply nested input.
+	nodes := [{"source": value}]
+	queue_index := 0
+	while queue_index < len(nodes) {
+		source := nodes[queue_index]["source"]
+		built := {}
+		entry_keys := []
+		if type(source) == "dict" {
+			entry_keys = keys(source)
+		} else {
+			built = []
+			i := 0
+			while i < len(source) {
+				entry_keys = push(entry_keys, i)
+				built = push(built, null)
+				i = i + 1
+			}
+		}
+		child_keys := []
+		child_ids := []
+		for key in entry_keys {
+			if type(source) == "dict" && is_sensitive_key_name(key) {
+				built[key] := "[REDACTED]"
+				continue
+			}
+			child := source[key]
+			if type(child) == "dict" || type(child) == "array" {
+				child_keys = push(child_keys, key)
+				child_ids = push(child_ids, len(nodes))
+				nodes = push(nodes, {"source": child})
+				built[key] := null
+			} else {
+				built[key] := child
+			}
+		}
+		nodes[queue_index] := {"value": built, "child_keys": child_keys, "child_ids": child_ids}
+		queue_index = queue_index + 1
+	}
+	i := len(nodes) - 1
+	while i >= 0 {
+		node := nodes[i]
+		built := node["value"]
+		child_index := 0
+		while child_index < len(node["child_ids"]) {
+			built[node["child_keys"][child_index]] := nodes[node["child_ids"][child_index]]["value"]
+			child_index = child_index + 1
+		}
+		nodes[i] := {"value": built}
+		i = i - 1
+	}
+	return nodes[0]["value"]
+}
+
+func summarize_value(value, max_chars) {
+	as_text := to_json(redact_sensitive_data(value))
+	if len(as_text) <= max_chars {
+		return as_text
+	}
+	return substring(as_text, 0, max_chars) + "..."
+}
+
+export dict_get_or := dict_get_or
+export clone_array := clone_array
+export clone_dict := clone_dict
+export to_bool := to_bool
+export now_human := now_human
+export sanitize_slug := sanitize_slug
+export ensure_dir := ensure_dir
+export safe_read_file := safe_read_file
+export read_json_or := read_json_or
+export redact_sensitive_data := redact_sensitive_data
+export summarize_value := summarize_value

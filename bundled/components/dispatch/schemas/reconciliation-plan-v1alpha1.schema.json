@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "dispatch.reconciliation-plan/v1alpha1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "run_id", "assessment_id", "repairs", "prohibited"],
+  "properties": {
+    "schema": {"const": "dispatch.reconciliation-plan/v1alpha1"},
+    "run_id": {"type": "string", "maxLength": 200},
+    "assessment_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "repairs": {"type": "array", "maxItems": 2, "uniqueItems": true, "items": {"enum": ["rebuild_journal_index", "reconstruct_lifecycle_checkpoint"]}},
+    "prohibited": {"const": ["replay", "resume", "select", "unconsume", "change_policy", "extend_preservation", "infer_completion"]}
+  }
+}

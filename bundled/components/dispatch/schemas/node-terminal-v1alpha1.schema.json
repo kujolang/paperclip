@@ -1,0 +1,63 @@
+{
+  "$id": "dispatch.node-terminal/v1alpha1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "node_id",
+    "contract",
+    "subject",
+    "facts_ref",
+    "finalized_revision",
+    "outcome",
+    "authority_ref"
+  ],
+  "properties": {
+    "schema": {
+      "const": "dispatch.node-terminal/v1alpha1"
+    },
+    "node_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "contract": {
+      "enum": [
+        "parent-finalization/v1alpha1",
+        "evaluation-result/v1",
+        "intervention-decision/v2"
+      ]
+    },
+    "subject": {
+      "type": "object",
+      "required": [
+        "run_id"
+      ],
+      "properties": {
+        "run_id": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "facts_ref": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "finalized_revision": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "outcome": {
+      "enum": [
+        "completed",
+        "failed",
+        "rejected",
+        "cancelled"
+      ]
+    },
+    "authority_ref": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    }
+  }
+}

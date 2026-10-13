@@ -1,0 +1,78 @@
+# Experimental, read-only multi-effect assessment. Never a replay ticket.
+from src.core.control import validate_execution_result
+from src.core.portable_commitments import portable_json
+
+func closed(value, fields) {
+    if type(value) != "dict"||len(keys(value)) != len(fields) {return false}
+    for field in fields {if has_key(value, field) == false {return false}}
+    return true
+}
+func id(value) {return type(value) == "string"&&byte_length(value) <= 128&&regex_match(value, "^[A-Za-z0-9][A-Za-z0-9_.:-]*$")&&contains(value, "\n") == 0}
+func ref(value) {return type(value) == "string"&&byte_length(value) == 71&&regex_match(value, "^sha256:[0-9a-f]{64}$")}
+func denied(code) {return {"ok": false, "code": code, "parent_replay": "prohibited", "continuation": "review_required"}}
+
+# trusted_plan and live_verify are installed host arguments, never participant JSON.
+# read_artifact resolves a ref from confined host storage and must not fetch URLs.
+export func assess_effect_set(result_raw, set_raw, trusted_plan, read_artifact, live_verify, at_seconds) {
+    try {
+        if type(result_raw) != "string"||byte_length(result_raw) > 1048576||type(set_raw) != "string"||byte_length(set_raw) > 8192 {return denied("effect_set_invalid")}
+        if type(at_seconds) != "int"||at_seconds < 0||at_seconds > 253402300799 {return denied("clock_invalid")}
+        result := parse_json(result_raw)
+        if validate_execution_result(result)["ok"] == false {return denied("result_invalid")}
+        doc := parse_json(set_raw)
+        if portable_json(doc) != set_raw||closed(doc, ["schema", "result_ref", "plan_ref", "observations"]) == false||doc["schema"] != "dispatch.effect-set/v1alpha1" {return denied("effect_set_invalid")}
+        if doc["result_ref"] != "sha256:" + sha256(result_raw)||doc["plan_ref"] != "sha256:" + sha256(portable_json(trusted_plan)) {return denied("binding_mismatch")}
+        if closed(trusted_plan, ["schema", "subject", "config_ref", "registration_ref", "preserve_until", "effects"]) == false||trusted_plan["schema"] != "dispatch.effect-plan/v1alpha1" {return denied("plan_invalid")}
+        if to_json(trusted_plan["subject"]) != to_json(result["subject"])||to_string(result["attempt"]) != result["subject"]["attempt_id"] {return denied("binding_mismatch")}
+        if ref(trusted_plan["config_ref"]) == false||ref(trusted_plan["registration_ref"]) == false||type(trusted_plan["preserve_until"]) != "int" {return denied("plan_invalid")}
+        if trusted_plan["preserve_until"] < 0||trusted_plan["preserve_until"] > 253402300799 {return denied("plan_invalid")}
+        entries := trusted_plan["effects"]
+        if type(entries) != "array"||len(entries) < 1||len(entries) > 8||len(entries) != len(result["effects"])||type(doc["observations"]) != "array"||len(doc["observations"]) != len(entries) {return denied("plan_invalid")}
+        rows := []; seen := []; sink_keys := []; all_complete := true; prefix_complete := true; blocking_effect := null
+        fresh_environment := at_seconds < trusted_plan["preserve_until"]
+        for index in range(0, len(entries)) {
+            entry := entries[index]; effect := result["effects"][index]
+            if closed(entry, ["effect_id", "operation", "target_ref", "scope_ref", "request_ref", "key_ref", "profile", "profile_revision", "authority"]) == false {return denied("plan_invalid")}
+            for name in ["effect_id", "operation", "profile", "profile_revision", "authority"] {if id(entry[name]) == false {return denied("plan_invalid")}}
+            for name in ["target_ref", "scope_ref", "request_ref", "key_ref"] {if ref(entry[name]) == false {return denied("plan_invalid")}}
+            if contains(seen, entry["effect_id"])||effect["effect_id"] != entry["effect_id"] {return denied("effect_identity_mismatch")}
+            seen = push(seen, entry["effect_id"])
+            sink_key := portable_json([entry["authority"], entry["target_ref"], entry["scope_ref"], entry["key_ref"]])
+            if contains(sink_keys, sink_key) {return denied("logical_effect_ambiguous")}
+            sink_keys = push(sink_keys, sink_key)
+            observed := "unknown"; freshness := "missing"; historical := "unknown"; evidence := null
+            observation_ref := doc["observations"][index]
+            if observation_ref != null {
+                if ref(observation_ref) == false {return denied("observation_invalid")}
+                raw := read_artifact(observation_ref)
+                if type(raw) != "string"||byte_length(raw) > 8192||"sha256:" + sha256(raw) != observation_ref {return denied("observation_invalid")}
+                item := parse_json(raw)
+                if portable_json(item) != raw||closed(item, ["schema", "plan_ref", "result_ref", "effect_id", "state", "observed_at", "valid_until", "evidence_ref"]) == false||item["schema"] != "dispatch.effect-observation/v1alpha1" {return denied("observation_invalid")}
+                if item["plan_ref"] != doc["plan_ref"]||item["result_ref"] != doc["result_ref"]||item["effect_id"] != entry["effect_id"] {return denied("binding_mismatch")}
+                if contains(["committed", "not_started", "unknown"], item["state"]) == false||ref(item["evidence_ref"]) == false {return denied("observation_invalid")}
+                start := item["observed_at"]; end := item["valid_until"]
+                if type(start) != "int"||type(end) != "int"||start < 0||end > 253402300799||end <= start||end - start > 3600 {return denied("observation_invalid")}
+                historical = item["state"]; evidence = item["evidence_ref"]
+                freshness = "stale"
+                if start <= at_seconds&&at_seconds < end&&fresh_environment {
+                    # Exact live reconstruction is required, not a serialized verified flag.
+                    freshness = "unconfirmed"
+                    try {
+                        live := live_verify(entry, item)
+                        if portable_json(live) == raw {observed = item["state"]; freshness = "current"}
+                    } except unavailable {freshness = "unconfirmed"}
+                }
+            }
+            next_action := "inspect_or_revalidate"
+            if observed == "committed" {next_action = "retain_completion"}
+            else {all_complete = false}
+            if observed == "not_started"&&effect["state"] == "not_started"&&prefix_complete {next_action = "candidate_for_locked_admission"}
+            rows = push(rows, {"effect_id": entry["effect_id"], "reported_state": effect["state"], "historical_observation": historical, "observed_state": observed, "freshness": freshness, "evidence_ref": evidence, "next_action": next_action, "blocked_by": blocking_effect})
+            if observed != "committed" {prefix_complete = false; if blocking_effect == null {blocking_effect = entry["effect_id"]}}
+        }
+        condition := "partial_or_uncertain"
+        if all_complete {condition = "all_observed_complete"}
+        if fresh_environment == false {condition = "preservation_expired"}
+        return {"ok": true, "condition": condition, "effects": rows, "parent_replay": "prohibited", "continuation": "review_required"}
+    } except ignored {return denied("effect_set_invalid")}
+}

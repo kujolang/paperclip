@@ -1,0 +1,128 @@
+# Pure resource history. Existing Dispatch journal and graph lock own transitions.
+from src.core.utils import dict_get_or, ensure_dir
+from src.core.resource_facts import resource_source_facts
+func need(ok, reason) {if ok != true {throw(reason)}}
+export func resources_policy(state) {return dict_get_or(dict_get_or(dict_get_or(state, "workflow_definition", {}), "metadata", {}), "graph_resources", null)}
+export func resources_enabled(state) {return resources_policy(state) != null}
+export func resource_step(state, id) {for step in state["workflow_definition"]["steps"] {if step["id"] == id {return step}};throw("resource_node_missing")}
+export func eval_limit(state, id) {return dict_get_or(resource_step(state, id)["config"], "max_eval_attempts", 1)}
+export func eval_current(state, id) {rows := dict_get_or(dict_get_or(state, "eval_attempts", {}), id, []);if len(rows) == 0 {return null};return rows[len(rows) - 1]}
+export func validate_resources(state) {
+    if resources_enabled(state) == false {return true}
+    p := resources_policy(state)
+    need(p["schema"] == "dispatch.graph-resources/v1alpha1"&&state["workflow_definition"]["metadata"]["graph_accounting"] == "dispatch.graph-attempt-accounting/v1alpha1", "resource_policy_unsupported")
+    need(type(p["max_eval_attempts"]) == "int"&&p["max_eval_attempts"] >= 0&&p["max_eval_attempts"] <= 8&&type(p["require_provider_usage"]) == "bool"&&len(keys(p)) == 3, "resource_policy_invalid")
+    for step in state["workflow_definition"]["steps"] {if dict_get_or(step["config"], "terminal_contract", "") == "evaluation-result/v1" {n := eval_limit(state, step["id"]);need(type(n) == "int"&&n >= 1&&n <= 2, "eval_attempt_limit_invalid")}}
+    return true
+}
+export func eval_budget(state) {
+    consumed := 0;reserved := 0;released := 0
+    for id in keys(dict_get_or(state, "eval_attempts", {})) {for row in state["eval_attempts"][id] {
+        if row["dispatch"] != null {consumed = consumed + 1} else if row["release"] != null {released = released + 1} else {reserved = reserved + 1}
+    }}
+    limit := resources_policy(state)["max_eval_attempts"];need(consumed + reserved <= limit, "eval_budget_oversubscribed")
+    return {"unit":"eval_dispatches", "limit":limit, "consumed":consumed, "reserved":reserved, "released":released, "available":limit - consumed - reserved}
+}
+export func resource_event(kind) {return contains(["graph_resources_reserved", "graph_eval_released", "graph_eval_dispatched", "graph_eval_resolved", "graph_resource_observed"], kind)}
+export func resource_raw(state, ref) {
+    need(type(ref) == "string"&&regex_match(ref, "^sha256:[0-9a-f]{64}$"), "resource_ref_invalid")
+    raw := read_file_beneath(state["run_dir"], "node-input/" + substring(ref, 7, 71) + ".raw", 1048576)
+    need("sha256:" + sha256(raw) == ref, "resource_artifact_corrupt");return raw
+}
+export func resource_key(subject, kind) {return sha256(to_json({"subject":subject, "kind":kind}))}
+export func resource_subjects(state) {
+    subjects := []
+    for id in keys(dict_get_or(state, "graph_attempts", {})) {for row in state["graph_attempts"][id] {if row["dispatch"] != null {subjects = push(subjects, {"kind":"program", "node_id":id, "attempt_id":row["run_id"]})}}}
+    for id in keys(dict_get_or(state, "eval_attempts", {})) {for row in state["eval_attempts"][id] {if row["dispatch"] != null {subjects = push(subjects, {"kind":"eval", "node_id":id, "attempt_id":row["attempt_id"]})}}}
+    return subjects
+}
+export func resource_readings(state) {
+    readings := [];sources := dict_get_or(state, "resource_sources", {})
+    for subject in resource_subjects(state) {for kind in ["runtime", "model"] {
+        entry := dict_get_or(sources, resource_key(subject, kind), null);fact := {"class":"unknown"};ref := null
+        if entry != null {ref = entry["candidate"]["source_ref"];fact = resource_source_facts(kind, resource_raw(state, ref))}
+        readings = push(readings, {"subject":subject, "source_kind":kind, "source_ref":ref, "facts":fact})
+    }}
+    return readings
+}
+export func resource_guard(state) {
+    if resources_enabled(state) == false {return true}
+    readings := resource_readings(state)
+    if resources_policy(state)["require_provider_usage"] {for reading in readings {if reading["source_kind"] == "model" {
+        fact := reading["facts"];need(fact["class"] == "provider_reported"&&fact["reported"]["input_tokens"] != null&&fact["reported"]["output_tokens"] != null, "required_provider_usage_unknown")
+    }}}
+    return true
+}
+export func fold_resource(state, kind, data) {
+    need(resources_enabled(state), "resource_policy_required");c := data["candidate"]
+    refs := dict_get_or(state, "resource_artifacts", []);for ref in dict_get_or(data, "artifacts", []) {resource_raw(state, ref);if contains(refs, ref) == false {refs = push(refs, ref)}};state["resource_artifacts"] := refs
+    if kind == "graph_resource_observed" {
+        sources := dict_get_or(state, "resource_sources", {});key := resource_key(c["subject"], c["source_kind"])
+        need(has_key(sources, key) == 0, "resource_source_already_recorded")
+        resource_source_facts(c["source_kind"], resource_raw(state, c["source_ref"]));sources[key] := data;state["resource_sources"] := sources;return state
+    }
+    history := dict_get_or(state, "eval_attempts", {})
+    if kind == "graph_resources_reserved" {
+        for item in c["evaluations"] {
+            id := item["node_id"];rows := dict_get_or(history, id, []);row := eval_current(state, id);ordinal := 1
+            if row != null {
+                ordinal = row["ordinal"]
+                if row["release"] == null {need(row["resolution"] != null&&row["resolution"]["candidate"]["outcome"] == "infrastructure_failed", "eval_retry_unsafe");ordinal = ordinal + 1}
+                need(item["binding_ref"] == row["binding_ref"], "eval_retry_input_changed")
+            }
+            need(ordinal <= eval_limit(state, id)&&item["ordinal"] == ordinal&&len(rows) < 16, "eval_attempt_limit")
+            need(eval_budget(state)["available"] > 0, "eval_budget_exhausted")
+            row = {"attempt_id":sha256(c["candidate_id"] + ":" + id), "ordinal":ordinal, "binding_ref":item["binding_ref"], "reservation":data, "dispatch":null, "release":null, "resolution":null}
+            rows = push(rows, row);history[id] := rows;state["eval_attempts"] := history
+        }
+        return state
+    }
+    id := c["node_id"];rows := history[id];row := rows[len(rows) - 1]
+    need(row["attempt_id"] == c["attempt_id"]&&row["release"] == null, "eval_attempt_stale")
+    if kind == "graph_eval_released" {need(row["dispatch"] == null&&row["resolution"] == null, "eval_release_unsafe");row["release"] := data}
+    else if kind == "graph_eval_dispatched" {need(row["dispatch"] == null&&row["resolution"] == null, "eval_already_consumed");row["dispatch"] := data}
+    else {
+        need(kind == "graph_eval_resolved"&&row["dispatch"] != null&&row["resolution"] == null&&contains(["completed", "infrastructure_failed"], c["outcome"]), "eval_resolution_conflict")
+        resource_raw(state, c["response_ref"]);row["resolution"] := data
+    }
+    rows[len(rows) - 1] := row;history[id] := rows;state["eval_attempts"] := history;eval_budget(state);return state
+}
+export func resource_history(state, events) {
+    view := {"workflow_definition":dict_get_or(state, "workflow_definition", {}), "run_dir":dict_get_or(state, "run_dir", "")}
+    for event in events {if resource_event(event["kind"]) {view = fold_resource(view, event["kind"], event["details"]["data"])}}
+    for key in ["eval_attempts", "resource_sources"] {need(to_json(dict_get_or(view, key, {})) == to_json(dict_get_or(state, key, {})), "resource_history_mismatch")}
+    for id in keys(dict_get_or(view, "eval_attempts", {})) {for row in view["eval_attempts"][id] {path := "eval-admissions/" + row["attempt_id"] + ".claim";exists := file_exists(state["run_dir"] + "/" + path);if exists {need(row["dispatch"] != null&&row["release"] == null&&resource_claim_bytes(id, row) == read_file_beneath(state["run_dir"], path, 8192), "eval_claim_corrupt")};if row["resolution"] != null&&row["resolution"]["candidate"]["outcome"] == "completed" {need(exists, "eval_claim_missing")}}}
+    need(to_json(dict_get_or(view, "resource_artifacts", [])) == to_json(dict_get_or(state, "resource_artifacts", [])), "resource_artifacts_history_mismatch")
+    return true
+}
+
+export func resource_totals(state) {
+    input := 0;output := 0;estimated := 0;unknown_input := 0;unknown_output := 0;unknown_estimate := 0;wall := 0;unknown_wall := 0
+    for reading in resource_readings(state) {
+        fact := reading["facts"]
+        if reading["source_kind"] == "runtime" {if fact["class"] == "unknown" {unknown_wall = unknown_wall + 1} else {wall = wall + fact["wall_ns"]}}
+        else {
+            usage := dict_get_or(fact, "reported", {});a := dict_get_or(usage, "input_tokens", null);b := dict_get_or(usage, "output_tokens", null);e := dict_get_or(dict_get_or(fact, "estimated", {}), "component_tokens", null)
+            if a == null {unknown_input = unknown_input + 1} else {input = input + a}
+            if b == null {unknown_output = unknown_output + 1} else {output = output + b}
+            if e == null {unknown_estimate = unknown_estimate + 1} else {estimated = estimated + e}
+        }
+    }
+    for n in [input, output, estimated, wall] {need(n >= 0&&n <= 9007199254740991, "resource_sum_overflow")}
+    input_total := null;output_total := null;estimate_total := null;wall_total := null
+    if unknown_input == 0 {input_total = input};if unknown_output == 0 {output_total = output};if unknown_estimate == 0 {estimate_total = estimated};if unknown_wall == 0 {wall_total = wall}
+    return {"reported_input_tokens":{"class":"provider_reported", "total":input_total, "known_sum":input, "unknown_attempts":unknown_input, "complete":unknown_input == 0}, "reported_output_tokens":{"class":"provider_reported", "total":output_total, "known_sum":output, "unknown_attempts":unknown_output, "complete":unknown_output == 0}, "estimated_component_tokens":{"class":"estimated", "total":estimate_total, "known_sum":estimated, "unknown_attempts":unknown_estimate}, "process_wall_ns":{"class":"observed", "total":wall_total, "known_sum":wall, "unknown_attempts":unknown_wall, "scope":"sum_of_process_intervals_not_graph_elapsed_or_cpu"}}
+}
+
+# Installed evaluator workers call once after reloading the consumed dispatch.
+# Exclusive retained claim closes accidental duplicate worker invocation too.
+export func claim_evaluation(graph, id, attempt_id) {
+    row := eval_current(graph, id)
+    need(row != null&&row["attempt_id"] == attempt_id&&row["dispatch"] != null&&row["release"] == null&&row["resolution"] == null, "eval_dispatch_required")
+    path := "eval-admissions/" + attempt_id + ".claim"
+    ensure_dir(graph["run_dir"] + "/eval-admissions")
+    write_file_atomic_beneath(graph["run_dir"], path, resource_claim_bytes(id, row), false)
+    sync_directory_beneath(graph["run_dir"], "eval-admissions");return true
+}
+
+func resource_claim_bytes(id, row) {return to_json({"node_id":id, "attempt_id":row["attempt_id"], "binding_ref":row["binding_ref"]})}
