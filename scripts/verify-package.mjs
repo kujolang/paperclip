@@ -11,6 +11,10 @@ const allowedRoots = ["dist/", "bundled/", "docs/", "examples/", "schemas/", "sk
 const allowedFiles = new Set(["CHANGELOG.md", "LICENSE", "README.md", "SECURITY.md", "VERSION", "package.json", "migrations/001_evidence.sql"]);
 for (const required of [
   "dist/manifest.js",
+  "bundled/ability-sources.lock.json",
+  "bundled/ability-contract/index.ts",
+  "bundled/ability-catalog/abilities.json",
+  "bundled/ability-catalog/profiles.json",
   "dist/worker.js",
   "dist/ui/index.js",
   "migrations/001_evidence.sql",

@@ -1,0 +1,853 @@
+[
+  {
+    "exportName": "catalogTool",
+    "id": "kujo.paperclip.catalog.list",
+    "feature": null,
+    "canonicalIds": [
+      "kujo.ability.catalog.list"
+    ],
+    "components": [],
+    "alwaysAvailable": true,
+    "tool": {
+      "name": "list-capabilities",
+      "displayName": "Discover Kujo Capabilities",
+      "description": "List installed Paperclip projections and canonical Kujo ecosystem capabilities with profile, feature, runtime and authorization states. Catalog availability is not permission to execute.",
+      "parametersSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "includeUnavailable": {
+            "type": "boolean",
+            "default": false
+          }
+        }
+      }
+    },
+    "definition": {
+      "schema": "kujo.ability/v1",
+      "id": "kujo.paperclip.catalog.list",
+      "version": "1.0.0",
+      "title": "Discover Kujo Capabilities",
+      "description": "List installed Paperclip projections and canonical Kujo ecosystem capabilities with profile, feature, runtime and authorization states. Catalog availability is not permission to execute.",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "includeUnavailable": {
+            "type": "boolean",
+            "default": false
+          }
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "additionalProperties": true
+      },
+      "effects": [
+        {
+          "kind": "read",
+          "resource": "kujo.paperclip.catalog"
+        }
+      ],
+      "idempotency": {
+        "mode": "intrinsic"
+      },
+      "semantics": {
+        "open_world": false,
+        "destructive": false,
+        "executes_code": false
+      }
+    }
+  },
+  {
+    "exportName": "listEvidenceTool",
+    "id": "kujo.paperclip.evidence.list",
+    "feature": null,
+    "canonicalIds": [
+      "kujo.ability.receipts.list"
+    ],
+    "components": [],
+    "alwaysAvailable": true,
+    "tool": {
+      "name": "list-evidence",
+      "displayName": "List Kujo Evidence",
+      "description": "List retained Kujo receipts for the current project or run. Results distinguish observed, supplied and legacy evidence; they do not imply project tests passed.",
+      "parametersSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "scope": {
+            "type": "string",
+            "enum": [
+              "project",
+              "run"
+            ],
+            "default": "project"
+          }
+        }
+      }
+    },
+    "definition": {
+      "schema": "kujo.ability/v1",
+      "id": "kujo.paperclip.evidence.list",
+      "version": "1.0.0",
+      "title": "List Kujo Evidence",
+      "description": "List retained Kujo receipts for the current project or run. Results distinguish observed, supplied and legacy evidence; they do not imply project tests passed.",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "scope": {
+            "type": "string",
+            "enum": [
+              "project",
+              "run"
+            ],
+            "default": "project"
+          }
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "additionalProperties": true
+      },
+      "effects": [
+        {
+          "kind": "read",
+          "resource": "kujo.paperclip.evidence"
+        },
+        {
+          "kind": "write",
+          "resource": "kujo.paperclip.evidence"
+        }
+      ],
+      "idempotency": {
+        "mode": "none"
+      },
+      "semantics": {
+        "open_world": false,
+        "destructive": false,
+        "executes_code": false
+      }
+    }
+  },
+  {
+    "exportName": "readEvidenceTool",
+    "id": "kujo.paperclip.evidence.read",
+    "feature": null,
+    "canonicalIds": [],
+    "components": [],
+    "alwaysAvailable": true,
+    "tool": {
+      "name": "get-evidence",
+      "displayName": "Read Kujo Evidence",
+      "description": "Read one integrity-checked, redacted evidence export in the current project or run, limited to 64 KiB. Does not attach or mutate host documents.",
+      "parametersSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "evidenceId"
+        ],
+        "properties": {
+          "scope": {
+            "type": "string",
+            "enum": [
+              "project",
+              "run"
+            ],
+            "default": "project"
+          },
+          "evidenceId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          }
+        }
+      }
+    },
+    "definition": {
+      "schema": "kujo.ability/v1",
+      "id": "kujo.paperclip.evidence.read",
+      "version": "1.0.0",
+      "title": "Read Kujo Evidence",
+      "description": "Read one integrity-checked, redacted evidence export in the current project or run, limited to 64 KiB. Does not attach or mutate host documents.",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "evidenceId"
+        ],
+        "properties": {
+          "scope": {
+            "type": "string",
+            "enum": [
+              "project",
+              "run"
+            ],
+            "default": "project"
+          },
+          "evidenceId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          }
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "additionalProperties": true
+      },
+      "effects": [
+        {
+          "kind": "read",
+          "resource": "kujo.paperclip.evidence"
+        },
+        {
+          "kind": "write",
+          "resource": "kujo.paperclip.evidence"
+        }
+      ],
+      "idempotency": {
+        "mode": "none"
+      },
+      "semantics": {
+        "open_world": false,
+        "destructive": false,
+        "executes_code": false
+      }
+    }
+  },
+  {
+    "exportName": "languageTool",
+    "id": "kujo.paperclip.source.check",
+    "feature": "language",
+    "canonicalIds": [],
+    "components": [],
+    "profiles": [
+      "installed",
+      "build",
+      "full"
+    ],
+    "tool": {
+      "name": "check-kujo-source",
+      "displayName": "Check Kujo Source",
+      "description": "Check and lint one Git-visible .kujo file in the current project. Does not execute source or modify files; results do not verify imports, project tests or runtime behavior.",
+      "parametersSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "path"
+        ],
+        "properties": {
+          "path": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1000,
+            "description": "Relative .kujo path from this project's source catalog"
+          }
+        }
+      }
+    },
+    "definition": {
+      "schema": "kujo.ability/v1",
+      "id": "kujo.paperclip.source.check",
+      "version": "1.0.0",
+      "title": "Check Kujo Source",
+      "description": "Check and lint one Git-visible .kujo file in the current project. Does not execute source or modify files; results do not verify imports, project tests or runtime behavior.",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "path"
+        ],
+        "properties": {
+          "path": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1000,
+            "description": "Relative .kujo path from this project's source catalog"
+          }
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "additionalProperties": true
+      },
+      "effects": [
+        {
+          "kind": "read",
+          "resource": "kujo.paperclip.workspace"
+        },
+        {
+          "kind": "write",
+          "resource": "kujo.paperclip.evidence"
+        },
+        {
+          "kind": "write",
+          "resource": "kujo.paperclip.activity"
+        }
+      ],
+      "idempotency": {
+        "mode": "none"
+      },
+      "semantics": {
+        "open_world": false,
+        "destructive": false,
+        "executes_code": false
+      }
+    }
+  },
+  {
+    "exportName": "formatTool",
+    "id": "kujo.paperclip.source.format-preview",
+    "feature": "language",
+    "canonicalIds": [],
+    "components": [],
+    "profiles": [
+      "installed",
+      "build",
+      "full"
+    ],
+    "tool": {
+      "name": "preview-kujo-format",
+      "displayName": "Preview Kujo Formatting",
+      "description": "Explicitly read one Git-visible .kujo source file and return a bounded, redacted original/formatted preview. Does not write files or apply fixes.",
+      "parametersSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "path"
+        ],
+        "properties": {
+          "path": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1000,
+            "description": "Relative .kujo path from this project's source catalog"
+          }
+        }
+      }
+    },
+    "definition": {
+      "schema": "kujo.ability/v1",
+      "id": "kujo.paperclip.source.format-preview",
+      "version": "1.0.0",
+      "title": "Preview Kujo Formatting",
+      "description": "Explicitly read one Git-visible .kujo source file and return a bounded, redacted original/formatted preview. Does not write files or apply fixes.",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "path"
+        ],
+        "properties": {
+          "path": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1000,
+            "description": "Relative .kujo path from this project's source catalog"
+          }
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "additionalProperties": true
+      },
+      "effects": [
+        {
+          "kind": "read",
+          "resource": "kujo.paperclip.workspace"
+        },
+        {
+          "kind": "write",
+          "resource": "kujo.paperclip.activity"
+        }
+      ],
+      "idempotency": {
+        "mode": "none"
+      },
+      "semantics": {
+        "open_world": false,
+        "destructive": false,
+        "executes_code": false
+      }
+    }
+  },
+  {
+    "exportName": "understandTool",
+    "id": "kujo.paperclip.repository.understand",
+    "feature": "understand",
+    "canonicalIds": [
+      "kujo.scout.repository.inspect"
+    ],
+    "components": [
+      "scout"
+    ],
+    "tool": {
+      "name": "understand-repository",
+      "displayName": "Understand Repository",
+      "description": "Map the current project with bounded Scout analysis: structure, languages, dependencies, routes and heuristic observations. Does not modify project files or execute project code. Source content requires a separate Context Pack read.",
+      "parametersSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {}
+      }
+    },
+    "definition": {
+      "schema": "kujo.ability/v1",
+      "id": "kujo.paperclip.repository.understand",
+      "version": "1.0.0",
+      "title": "Understand Repository",
+      "description": "Map the current project with bounded Scout analysis: structure, languages, dependencies, routes and heuristic observations. Does not modify project files or execute project code. Source content requires a separate Context Pack read.",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {}
+      },
+      "output_schema": {
+        "type": "object",
+        "additionalProperties": true
+      },
+      "effects": [
+        {
+          "kind": "read",
+          "resource": "kujo.paperclip.workspace"
+        },
+        {
+          "kind": "write",
+          "resource": "kujo.paperclip.evidence"
+        },
+        {
+          "kind": "write",
+          "resource": "kujo.paperclip.activity"
+        }
+      ],
+      "idempotency": {
+        "mode": "none"
+      },
+      "semantics": {
+        "open_world": false,
+        "destructive": false,
+        "executes_code": false
+      }
+    }
+  },
+  {
+    "exportName": "reviewTool",
+    "id": "kujo.paperclip.changes.review",
+    "feature": "review",
+    "canonicalIds": [
+      "kujo.patchbrief.changes.summarize",
+      "kujo.changebucket.changes.measure"
+    ],
+    "components": [
+      "patchbrief",
+      "changebucket"
+    ],
+    "tool": {
+      "name": "review-changes",
+      "displayName": "Generate Review Pack",
+      "description": "Measure and summarize the current project changes without modifying the workspace.",
+      "parametersSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "mode": {
+            "type": "string",
+            "enum": [
+              "working_tree",
+              "range"
+            ],
+            "default": "working_tree"
+          },
+          "base": {
+            "type": "string",
+            "maxLength": 255
+          },
+          "head": {
+            "type": "string",
+            "maxLength": 255
+          }
+        }
+      }
+    },
+    "definition": {
+      "schema": "kujo.ability/v1",
+      "id": "kujo.paperclip.changes.review",
+      "version": "1.0.0",
+      "title": "Generate Review Pack",
+      "description": "Measure and summarize the current project changes without modifying the workspace.",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "mode": {
+            "type": "string",
+            "enum": [
+              "working_tree",
+              "range"
+            ],
+            "default": "working_tree"
+          },
+          "base": {
+            "type": "string",
+            "maxLength": 255
+          },
+          "head": {
+            "type": "string",
+            "maxLength": 255
+          }
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "additionalProperties": true
+      },
+      "effects": [
+        {
+          "kind": "read",
+          "resource": "kujo.paperclip.workspace"
+        },
+        {
+          "kind": "write",
+          "resource": "kujo.paperclip.evidence"
+        },
+        {
+          "kind": "write",
+          "resource": "kujo.paperclip.activity"
+        }
+      ],
+      "idempotency": {
+        "mode": "none"
+      },
+      "semantics": {
+        "open_world": false,
+        "destructive": false,
+        "executes_code": false
+      }
+    }
+  },
+  {
+    "exportName": "failureTool",
+    "id": "kujo.paperclip.failure.capture",
+    "feature": "failureEvidence",
+    "canonicalIds": [
+      "kujo.casefile.failure.capture"
+    ],
+    "components": [
+      "failure-evidence"
+    ],
+    "tool": {
+      "name": "capture-failure",
+      "displayName": "Capture Failure Evidence",
+      "description": "Turn bounded failure text into a redacted, persistent evidence record. This does not execute commands.",
+      "parametersSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "title"
+        ],
+        "properties": {
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "command": {
+            "type": "string",
+            "maxLength": 4000
+          },
+          "exitCode": {
+            "type": "integer"
+          },
+          "durationMs": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "log": {
+            "type": "string",
+            "maxLength": 200000
+          },
+          "notes": {
+            "type": "string",
+            "maxLength": 10000
+          }
+        }
+      }
+    },
+    "definition": {
+      "schema": "kujo.ability/v1",
+      "id": "kujo.paperclip.failure.capture",
+      "version": "1.0.0",
+      "title": "Capture Failure Evidence",
+      "description": "Turn bounded failure text into a redacted, persistent evidence record. This does not execute commands.",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "title"
+        ],
+        "properties": {
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "command": {
+            "type": "string",
+            "maxLength": 4000
+          },
+          "exitCode": {
+            "type": "integer"
+          },
+          "durationMs": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "log": {
+            "type": "string",
+            "maxLength": 200000
+          },
+          "notes": {
+            "type": "string",
+            "maxLength": 10000
+          }
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "additionalProperties": true
+      },
+      "effects": [
+        {
+          "kind": "read",
+          "resource": "kujo.paperclip.workspace"
+        },
+        {
+          "kind": "write",
+          "resource": "kujo.paperclip.evidence"
+        },
+        {
+          "kind": "write",
+          "resource": "kujo.paperclip.activity"
+        }
+      ],
+      "idempotency": {
+        "mode": "none"
+      },
+      "semantics": {
+        "open_world": false,
+        "destructive": false,
+        "executes_code": false
+      }
+    }
+  },
+  {
+    "exportName": "contextTool",
+    "id": "kujo.paperclip.context.select",
+    "feature": "context",
+    "canonicalIds": [
+      "kujo.scent.context.pack"
+    ],
+    "components": [
+      "context"
+    ],
+    "tool": {
+      "name": "get-context",
+      "displayName": "Get Context Pack",
+      "description": "Select bounded, task-relevant files from the current Paperclip project workspace.",
+      "parametersSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "task"
+        ],
+        "properties": {
+          "task": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 10000
+          },
+          "depth": {
+            "type": "string",
+            "enum": [
+              "minimal",
+              "focused",
+              "broad"
+            ],
+            "default": "focused"
+          },
+          "includeContent": {
+            "type": "boolean",
+            "default": false
+          }
+        }
+      }
+    },
+    "definition": {
+      "schema": "kujo.ability/v1",
+      "id": "kujo.paperclip.context.select",
+      "version": "1.0.0",
+      "title": "Get Context Pack",
+      "description": "Select bounded, task-relevant files from the current Paperclip project workspace.",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "task"
+        ],
+        "properties": {
+          "task": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 10000
+          },
+          "depth": {
+            "type": "string",
+            "enum": [
+              "minimal",
+              "focused",
+              "broad"
+            ],
+            "default": "focused"
+          },
+          "includeContent": {
+            "type": "boolean",
+            "default": false
+          }
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "additionalProperties": true
+      },
+      "effects": [
+        {
+          "kind": "read",
+          "resource": "kujo.paperclip.workspace"
+        },
+        {
+          "kind": "write",
+          "resource": "kujo.paperclip.evidence"
+        },
+        {
+          "kind": "write",
+          "resource": "kujo.paperclip.activity"
+        }
+      ],
+      "idempotency": {
+        "mode": "none"
+      },
+      "semantics": {
+        "open_world": false,
+        "destructive": false,
+        "executes_code": false
+      }
+    }
+  },
+  {
+    "exportName": "contextContentTool",
+    "id": "kujo.paperclip.context.read",
+    "feature": "context",
+    "canonicalIds": [
+      "kujo.scent.context.pack"
+    ],
+    "components": [
+      "context"
+    ],
+    "tool": {
+      "name": "get-context-content",
+      "displayName": "Read Context Pack Content",
+      "description": "Read safe, redacted content for files already selected by a Context Pack.",
+      "parametersSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "contextPackId"
+        ],
+        "properties": {
+          "contextPackId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          },
+          "paths": {
+            "type": "array",
+            "maxItems": 100,
+            "items": {
+              "type": "string",
+              "maxLength": 1000
+            }
+          },
+          "maxTokens": {
+            "type": "integer",
+            "minimum": 256,
+            "maximum": 40000,
+            "default": 16000
+          }
+        }
+      }
+    },
+    "definition": {
+      "schema": "kujo.ability/v1",
+      "id": "kujo.paperclip.context.read",
+      "version": "1.0.0",
+      "title": "Read Context Pack Content",
+      "description": "Read safe, redacted content for files already selected by a Context Pack.",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "contextPackId"
+        ],
+        "properties": {
+          "contextPackId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          },
+          "paths": {
+            "type": "array",
+            "maxItems": 100,
+            "items": {
+              "type": "string",
+              "maxLength": 1000
+            }
+          },
+          "maxTokens": {
+            "type": "integer",
+            "minimum": 256,
+            "maximum": 40000,
+            "default": 16000
+          }
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "additionalProperties": true
+      },
+      "effects": [
+        {
+          "kind": "read",
+          "resource": "kujo.paperclip.workspace"
+        },
+        {
+          "kind": "write",
+          "resource": "kujo.paperclip.evidence"
+        },
+        {
+          "kind": "write",
+          "resource": "kujo.paperclip.activity"
+        }
+      ],
+      "idempotency": {
+        "mode": "none"
+      },
+      "semantics": {
+        "open_world": false,
+        "destructive": false,
+        "executes_code": false
+      }
+    }
+  }
+]

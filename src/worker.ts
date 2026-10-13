@@ -1,7 +1,7 @@
 import { definePlugin, runWorker, type PluginContext, type ToolRunContext } from "@paperclipai/plugin-sdk";
 import { z } from "zod";
 import { parsePluginConfig } from "./config/schema.js";
-import { listEvidenceTool, readEvidenceTool, languageTool, formatTool, understandTool, contextContentTool, contextTool, failureTool, reviewTool } from "./manifest.js";
+import { catalogTool, listEvidenceTool, readEvidenceTool, languageTool, formatTool, understandTool, contextContentTool, contextTool, failureTool, reviewTool } from "./manifest.js";
 import { generateReviewPack } from "./features/review/generate.js";
 import { reviewPackSchema, type ReviewPack } from "./features/review/schema.js";
 import { captureFailure } from "./features/failure/capture.js";
@@ -12,6 +12,7 @@ import { getContextContent } from "./features/context/content.js";
 import { inspectWorkspace, resolveProjectWorkspace, resolveWorkspace } from "./paperclip/workspace.js";
 import { clearArtifacts, ensureHistory, loadArtifact, saveArtifact, type StateTarget } from "./storage/state.js";
 import { listEvidence, getEvidence, exportEvidence, compareEvidence, type ArtifactKind } from "./storage/history.js";
+import { applyCapabilityProfile, capabilityCatalog, projectionReceipt } from "./abilities/catalog.js";
 import { doctor } from "./health/doctor.js";
 import { normalizeError } from "./runtime/errors.js";
 import { terminateActiveKujoProcesses } from "./runtime/execute-kujo.js";
@@ -64,7 +65,7 @@ function actionParams(params: Record<string, unknown>): Record<string, unknown> 
 }
 
 async function configFor(ctx: PluginContext, companyId: string) {
-  return parsePluginConfig(await ctx.config.get(companyId));
+  return applyCapabilityProfile(parsePluginConfig(await ctx.config.get(companyId)));
 }
 
 const historyTarget = z.object({ entityType: z.enum(["project", "issue", "run"]), entityId: z.string().min(1), evidenceId: z.string().min(1).max(100), otherId: z.string().min(1).max(100).optional() }).strict();
@@ -130,12 +131,21 @@ async function reviewForProject(ctx: PluginContext, runCtx: ToolRunContext, para
     ...(params.head ? { head: params.head } : {}),
     config,
   });
-  await saveArtifact(ctx, { entityType: "project", entityId: runCtx.projectId, companyId: runCtx.companyId }, "review-latest", pack, { inputs: { params, config, snapshot: pack.source }, definition: reviewTool });
+  await saveArtifact(ctx, { entityType: "project", entityId: runCtx.projectId, companyId: runCtx.companyId }, "review-latest", pack, { inputs: { params, config, snapshot: pack.source }, definition: reviewTool, projection: projectionReceipt(reviewTool) });
   await audit(ctx, { companyId: runCtx.companyId, operation: "review.generated", entityType: "project", entityId: runCtx.projectId, artifactId: pack.id });
   return pack;
 }
 
 function registerTools(ctx: PluginContext) {
+  ctx.tools.register(catalogTool.name, catalogTool, async (raw, runCtx) => {
+    try {
+      const params = z.object({ includeUnavailable: z.boolean().default(false) }).strict().parse(raw);
+      if (!runCtx.companyId) throw new Error("Company context is required");
+      const config = await configFor(ctx, runCtx.companyId);
+      const data = capabilityCatalog(config, await doctor(config), params.includeUnavailable);
+      return { content: JSON.stringify(data), data };
+    } catch (error) { return { error: normalizeError(error).message }; }
+  });
   for (const tool of [listEvidenceTool, readEvidenceTool]) ctx.tools.register(tool.name, tool, async (params, runCtx) => {
     try {
       const input = z.object({ scope: z.enum(["project", "run"]).default("project"), ...(tool.name === "get-evidence" ? { evidenceId: z.string().min(1).max(100) } : {}) }).strict().parse(params);
@@ -164,7 +174,7 @@ function registerTools(ctx: PluginContext) {
       const target = { entityType: "project" as const, entityId: runCtx.projectId, companyId: runCtx.companyId };
       if (tool.name === languageTool.name) {
         const report = await analyzeSource(input);
-        await saveArtifact(ctx, target, "language-latest", report, { inputs: { params, config, sourceDigest: report.sourceDigest }, definition: languageTool });
+        await saveArtifact(ctx, target, "language-latest", report, { inputs: { params, config, sourceDigest: report.sourceDigest }, definition: languageTool, projection: projectionReceipt(languageTool) });
         await audit(ctx, { ...target, operation: "language.checked", artifactId: report.id });
         const { snapshot: _snapshot, ...data } = report;
         return { content: JSON.stringify(data), data };
@@ -183,7 +193,7 @@ function registerTools(ctx: PluginContext) {
       const config = await configFor(ctx, runCtx.companyId);
       const workspace = await resolveProjectWorkspace(ctx, runCtx.projectId, runCtx.companyId);
       const pack = await understandRepository({ cwd: workspace.path, projectId: workspace.projectId, workspaceId: workspace.id, config });
-      await saveArtifact(ctx, { entityType: "project", entityId: runCtx.projectId, companyId: runCtx.companyId }, "understand-latest", pack, { inputs: { config, workspaceId: workspace.id, snapshot: pack.snapshot }, definition: understandTool });
+      await saveArtifact(ctx, { entityType: "project", entityId: runCtx.projectId, companyId: runCtx.companyId }, "understand-latest", pack, { inputs: { config, workspaceId: workspace.id, snapshot: pack.snapshot }, definition: understandTool, projection: projectionReceipt(understandTool) });
       await audit(ctx, { companyId: runCtx.companyId, operation: "repository.understood", entityType: "project", entityId: runCtx.projectId, artifactId: pack.id });
       // The snapshot is private host evidence; do not expose its absolute Git root.
       const { snapshot: _snapshot, ...data } = pack;
@@ -223,7 +233,7 @@ function registerTools(ctx: PluginContext) {
         ...(params.notes === undefined ? {} : { notes: params.notes }),
         config,
       });
-      await saveArtifact(ctx, { entityType: "run", entityId: runCtx.runId, companyId: runCtx.companyId }, "failure-latest", evidence, { inputs: { params, config }, definition: failureTool });
+      await saveArtifact(ctx, { entityType: "run", entityId: runCtx.runId, companyId: runCtx.companyId }, "failure-latest", evidence, { inputs: { params, config }, definition: failureTool, projection: projectionReceipt(failureTool) });
       await audit(ctx, { companyId: runCtx.companyId, operation: "failure.generated", entityType: "run", entityId: runCtx.runId, artifactId: evidence.id });
       const data = { status: "ok", failureEvidenceId: evidence.id, redactedCount: evidence.redaction.redactedCount };
       return { content: JSON.stringify(data), data };
@@ -247,7 +257,7 @@ function registerTools(ctx: PluginContext) {
         depth: params.depth,
         config,
       });
-      await saveArtifact(ctx, { entityType: "project", entityId: runCtx.projectId, companyId: runCtx.companyId }, "context-latest", pack, { inputs: { task: params.task, depth: params.depth, config, snapshot: pack.snapshot }, definition: contextTool });
+      await saveArtifact(ctx, { entityType: "project", entityId: runCtx.projectId, companyId: runCtx.companyId }, "context-latest", pack, { inputs: { task: params.task, depth: params.depth, config, snapshot: pack.snapshot }, definition: contextTool, projection: projectionReceipt(contextTool) });
       await audit(ctx, { companyId: runCtx.companyId, operation: "context.generated", entityType: "project", entityId: runCtx.projectId, artifactId: pack.id });
       const data = compactContext(pack);
       if (params.includeContent) {
@@ -333,7 +343,8 @@ function registerUiBridge(ctx: PluginContext) {
     const sources = config.features.language && workspace ? await discoverSources(workspace.path).catch(() => ({ files: [], truncated: false })) : { files: [], truncated: false };
     await ensureHistory(ctx, target);
     const history = (await listEvidence(ctx, target)).filter((record) => evidenceEnabled(config, record.kind));
-    return { history, language: ownedLanguage, sources, understanding: ownedUnderstanding, review: ownedReview, failure: ownedFailure, context: ownedContext, readiness: await doctor(config), workspace: inspection?.readiness, suggestedTask };
+    const readiness = await doctor(config);
+    return { catalog: capabilityCatalog(config, readiness, true), history, language: ownedLanguage, sources, understanding: ownedUnderstanding, review: ownedReview, failure: ownedFailure, context: ownedContext, readiness, workspace: inspection?.readiness, suggestedTask };
   });
 
   for (const operation of ["check-kujo-source", "preview-kujo-format"]) ctx.actions.register(operation, async (params, actionCtx) => {
@@ -345,7 +356,7 @@ function registerUiBridge(ctx: PluginContext) {
     const input = { cwd: workspace.path, projectId: workspace.projectId, workspaceId: workspace.id, path: value.path, config };
     if (operation === "check-kujo-source") {
       const report = await analyzeSource(input);
-      await saveArtifact(ctx, target, "language-latest", report, { inputs: { params: value, config, sourceDigest: report.sourceDigest }, definition: languageTool });
+      await saveArtifact(ctx, target, "language-latest", report, { inputs: { params: value, config, sourceDigest: report.sourceDigest }, definition: languageTool, projection: projectionReceipt(languageTool) });
       await audit(ctx, { ...target, operation: "language.checked", artifactId: report.id });
       return { check: report.check, lint: report.lint, reportId: report.id };
     }
@@ -361,7 +372,7 @@ function registerUiBridge(ctx: PluginContext) {
     const workspace = await resolveWorkspace(ctx, { ...target, companyId: actionCtx.companyId });
     const pack = await understandRepository({ cwd: workspace.path, projectId: workspace.projectId, workspaceId: workspace.id,
       ...(target.entityType === "issue" ? { issueId: target.entityId } : {}), config });
-    await saveArtifact(ctx, { ...target, companyId: actionCtx.companyId }, "understand-latest", pack, { inputs: { config, workspaceId: workspace.id, snapshot: pack.snapshot }, definition: understandTool });
+    await saveArtifact(ctx, { ...target, companyId: actionCtx.companyId }, "understand-latest", pack, { inputs: { config, workspaceId: workspace.id, snapshot: pack.snapshot }, definition: understandTool, projection: projectionReceipt(understandTool) });
     await audit(ctx, { companyId: actionCtx.companyId, operation: "repository.understood", ...target, artifactId: pack.id });
     return { status: pack.status, understandingId: pack.id };
   });
@@ -387,7 +398,7 @@ function registerUiBridge(ctx: PluginContext) {
       ...(target.entityType === "issue" ? { issueId: target.entityId } : {}),
       config,
     });
-    await saveArtifact(ctx, { ...target, companyId: actionCtx.companyId }, "review-latest", pack, { inputs: { params: target, config, snapshot: pack.source }, definition: reviewTool });
+    await saveArtifact(ctx, { ...target, companyId: actionCtx.companyId }, "review-latest", pack, { inputs: { params: target, config, snapshot: pack.source }, definition: reviewTool, projection: projectionReceipt(reviewTool) });
     await audit(ctx, { companyId: actionCtx.companyId, operation: "review.generated", entityType: target.entityType, entityId: target.entityId, artifactId: pack.id });
     return compactReview(pack);
   });
@@ -399,7 +410,7 @@ function registerUiBridge(ctx: PluginContext) {
     if (!config.features.context) throw new Error("Context Pack is disabled by configuration");
     const workspace = await resolveWorkspace(ctx, { entityType: value.entityType, entityId: value.entityId, companyId: actionCtx.companyId });
     const pack = await generateContextPack({ cwd: workspace.path, workspaceId: workspace.id, projectId: workspace.projectId, task: value.task, depth: value.depth, config });
-    await saveArtifact(ctx, { ...value, companyId: actionCtx.companyId }, "context-latest", pack, { inputs: { task: value.task, depth: value.depth, config, snapshot: pack.snapshot }, definition: contextTool });
+    await saveArtifact(ctx, { ...value, companyId: actionCtx.companyId }, "context-latest", pack, { inputs: { task: value.task, depth: value.depth, config, snapshot: pack.snapshot }, definition: contextTool, projection: projectionReceipt(contextTool) });
     await audit(ctx, { companyId: actionCtx.companyId, operation: "context.generated", entityType: value.entityType, entityId: value.entityId, artifactId: pack.id });
     return compactContext(pack);
   });
@@ -428,7 +439,7 @@ function registerUiBridge(ctx: PluginContext) {
       ...(value.notes === undefined ? {} : { notes: value.notes }),
       config,
     });
-    await saveArtifact(ctx, { ...value, companyId: actionCtx.companyId }, "failure-latest", evidence, { inputs: { params: value, config }, definition: failureTool });
+    await saveArtifact(ctx, { ...value, companyId: actionCtx.companyId }, "failure-latest", evidence, { inputs: { params: value, config }, definition: failureTool, projection: projectionReceipt(failureTool) });
     await audit(ctx, { companyId: actionCtx.companyId, operation: "failure.generated", entityType: value.entityType, entityId: value.entityId, artifactId: evidence.id });
     return { status: "ok", failureEvidenceId: evidence.id, redactedCount: evidence.redaction.redactedCount };
   });
