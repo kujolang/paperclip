@@ -58,6 +58,7 @@ Kujo retains up to 20 results per company/entity for 30 days in its Paperclip da
 
 | Workflow | What it does | Kujo component |
 | --- | --- | --- |
+| **Artifact drift** | Compares documentation, metadata, examples and contracts; reports experimental drift leads and coverage. | Concord |
 | **Architecture boundaries** | Checks import boundaries against Fence policy and reports findings, coverage and the configured failure threshold. | Fence |
 | **Task contracts** | Validates a declared task contract and shows acceptance criteria and checks as not-run. | Spec |
 | **Kujo source tools** | Checks and lints a selected source file; previews formatting without applying changes. | Kujo runtime |
@@ -66,7 +67,7 @@ Kujo retains up to 20 results per company/entity for 30 days in its Paperclip da
 | **Review Pack** | Measures change size, explains risk signals, and prepares a review handoff. | ChangeBucket and PatchBrief |
 | **Failure Evidence** | Turns supplied command details and logs into a bounded, redacted record. | CaseFile |
 
-The seven component snapshots are pinned, checksummed, and shipped with the plugin. The
+The eight component snapshots are pinned, checksummed, and shipped with the plugin. The
 plugin does not download component code while installing or running.
 
 ## Build with Kujo
@@ -80,6 +81,8 @@ The upcoming release requires Paperclip database namespace migrations and authen
 ## Verification evidence
 
 Enable **Verification** in company settings to review a Git-visible `.spec.json`, `.spec.yml`, `.spec.yaml` or `.spec.toml` task contract. The native Spec validator reports contract errors and warnings; strict mode treats warnings as failures. Acceptance criteria and declared checks remain **not-run**, and declared approval points do not grant approval. No workspace files or check commands are executed or changed.
+
+Select **Inspect artifact drift** to compare README, manifests, changelog, task contracts, evaluation declarations, docs and examples with native Concord. Findings retain severity, confidence, source/target, expected/observed differences and suggested fixes. Omitted files and native discovery bounds produce partial results; these experimental leads require review.
 
 Select **Inspect architecture** to evaluate the workspace root `fence.toml` or `fence.json` with native Fence. Findings show files, lines, zones and ownership. Partial coverage, policy exceptions and stale evidence remain visible; meeting `fail_on` does not mean the project or its tests passed. Configured parser commands are blocked.
 
@@ -95,10 +98,11 @@ The plugin ships pinned, checksummed Ability contracts/catalogs and generates it
 
 ## Agent tools
 
-Paperclip agents can call thirteen tools:
+Paperclip agents can call fourteen tools:
 
 | Tool | Use |
 | --- | --- |
+| `kujolang.paperclip:inspect-artifact-drift` | Inspect artifact alignment with native Concord; no project commands, examples or tests run. |
 | `kujolang.paperclip:inspect-architecture` | Inspect a bounded snapshot against the workspace Fence policy; no project commands or tests run. |
 | `kujolang.paperclip:inspect-task-contract` | Validate one Git-visible Spec contract; inspect declared outcomes without executing checks. |
 | `kujolang.paperclip:import-verification` | Retain a redacted, explicitly imported evaluation summary; never runs checks. |

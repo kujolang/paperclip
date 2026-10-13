@@ -3717,6 +3717,109 @@ export const projections = [
         "source": "fence"
       }
     ]
+  },
+  {
+    "exportName": "concordTool",
+    "id": "kujo.paperclip.concord.inspect",
+    "feature": "verification",
+    "canonicalIds": [
+      "kujo.concord.artifacts.scan"
+    ],
+    "components": [
+      "concord"
+    ],
+    "profiles": [
+      "installed",
+      "review",
+      "ship",
+      "full"
+    ],
+    "tool": {
+      "name": "inspect-artifact-drift",
+      "displayName": "Inspect Artifact Drift",
+      "description": "Inspect documentation, examples, task contracts and metadata with canonical Concord in a bounded private snapshot. Reports experimental drift leads and coverage; never executes project code.",
+      "parametersSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {}
+      }
+    },
+    "definition": {
+      "schema": "kujo.ability/v1",
+      "id": "kujo.paperclip.concord.inspect",
+      "version": "1.0.0",
+      "title": "Inspect Artifact Drift",
+      "description": "Inspect documentation, examples, task contracts and metadata with canonical Concord in a bounded private snapshot. Reports experimental drift leads and coverage; never executes project code.",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {}
+      },
+      "output_schema": {
+        "type": "object",
+        "additionalProperties": true
+      },
+      "effects": [
+        {
+          "kind": "read",
+          "resource": "kujo.paperclip.workspace"
+        },
+        {
+          "kind": "write",
+          "resource": "kujo.paperclip.evidence"
+        },
+        {
+          "kind": "write",
+          "resource": "kujo.paperclip.activity"
+        }
+      ],
+      "idempotency": {
+        "mode": "none"
+      },
+      "semantics": {
+        "open_world": false,
+        "destructive": false,
+        "executes_code": false
+      }
+    },
+    "definitionDigest": "a456afd326393baebb7b7b9c554b5bafadacbeae850d87fa0b91d7b45760e397",
+    "canonicalDefinitions": [
+      {
+        "definition": {
+          "schema": "kujo.ability/v1",
+          "id": "kujo.concord.artifacts.scan",
+          "version": "1.0.0",
+          "title": "Scan artifact drift",
+          "description": "Scan repository documentation, examples, evaluations, and metadata for drift with Concord.",
+          "input_schema": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string",
+                "maxLength": 4096,
+                "default": "."
+              }
+            },
+            "additionalProperties": false
+          },
+          "output_schema": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "effects": [
+            {
+              "kind": "read",
+              "resource": "kujo.repository.artifacts"
+            }
+          ],
+          "idempotency": {
+            "mode": "intrinsic"
+          }
+        },
+        "definitionDigest": "6768a3ac2f2c12b558b92963eed001a6651714a7fdc2a6477c16c2786d7f8f6e",
+        "source": "concord"
+      }
+    ]
   }
 ] as const;
 export const catalogTool = projections[0].tool;
@@ -3732,4 +3835,5 @@ export const contextContentTool = projections[9].tool;
 export const importVerificationTool = projections[10].tool;
 export const specTool = projections[11].tool;
 export const fenceTool = projections[12].tool;
+export const concordTool = projections[13].tool;
 export const projectedTools = projections.map((entry) => entry.tool);

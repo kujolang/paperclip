@@ -20,11 +20,23 @@ The adapter copies at most 1,000 Git-visible paths, 64 KiB per file and 16 MiB t
 
 Copying considers the bounded inventory before native selection, so excluded files can consume the copy budget; use the coverage record to judge completeness. A second bounded snapshot detects changes during inspection. Later workspace observations mark retained results stale without rewriting immutable receipts. Common-secret redaction applies to retained native output. Source bytes are removed with temporary storage; their snapshot digest and component provenance remain in scoped history. The panel displays the first 100 items in each result list; exports retain all admitted items.
 
+## Native artifact drift
+
+Select **Inspect artifact drift**, or call `kujolang.paperclip:inspect-artifact-drift` with `{}`. Paperclip resolves the company and project workspace. Verification must be enabled and the company profile must include the adapter (`installed`, `review`, `ship` or `full`). The feature defaults off. Run views do not execute this action.
+
+Concord 1.0.0 is pinned at `767b28dec5532639c01259eb47d1b19af995e552`. All six canonical checks run on a private snapshot: CLI/docs, Spec/Eval declarations, manifests/docs, versions, examples and source-of-truth cues. Commands are read from source, never executed. Results remain experimental drift leads, with native severity, confidence, artifact references, expected/observed text and suggested fixes. They do not establish that evaluations or example commands passed.
+
+The shared snapshot reader admits at most 1,000 Git-visible paths, 64 KiB per file and 16 MiB aggregate. Root artifacts are copied before docs/tests/eval_results/examples and other files. This is admission priority, not a replacement for canonical discovery. Nonportable paths, sensitive filenames, symlinks, unreadable, oversized and non-text files are omitted. Every omission conservatively makes coverage partial, even if the artifact may not have been relevant to a canonical check. Copied-file counts are not inspected-artifact counts. Native discovery limits also make results partial.
+
+Canonical reference preflight runs before native checks and blocks manifest entry/name fallbacks or README example inputs that escape the snapshot. It is not a sandbox for arbitrary directories. Source copies and fixed isolated bridge code are removed after inspection. No cache, project imports or workspace writes occur. A second bounded snapshot detects changes; later workspace observations mark retained evidence stale without rewriting receipts.
+
+`failed` means high/critical drift; `warnings` means low/medium leads; `passed` means no leads in the admitted scope. `not-run` means no recognizable artifacts were admitted, `blocked` means unsafe references, and `partial` takes precedence over findings when coverage is incomplete. Runtime or malformed-output failures return an error, never a pass. Common-secret redaction applies before company/entity-scoped history is saved. Exports retain the complete bounded result; the panel shows the first100 items per list.
+
 ## Imported evaluation claims
 
 Enable `features.verification` in company settings. The installed/full/review/ship profiles expose **Import evaluation result** and the `import-verification` agent tool. Build and essentials profiles do not. The feature defaults off. Imports work without a local workspace or native Kujo runtime.
 
-Paste `kujo.evaluation-result/v1` JSON into the project or issue panel. Eval 2.0.0 emits this format as `evaluation-result.json`; other producers must supply the same contract. The import adapter does not convert legacy tool reports or invoke native tools. Native Spec validation and Fence inspection are described above; Eval, Concord and ShipCheck execution integrations remain separate work.
+Paste `kujo.evaluation-result/v1` JSON into the project or issue panel. Eval 2.0.0 emits this format as `evaluation-result.json`; other producers must supply the same contract. The import adapter does not convert legacy tool reports or invoke native tools. Native Spec, Fence and Concord inspection are described above; Eval and ShipCheck execution integrations remain separate work.
 
 The plugin validates the exact canonical JSON Schema pinned at Kujo commit `6695bd9beac4787c9d2db768e9f61dfdb26a95a5`, including date formats and evidence-reference shapes. Build checks verify the bundled schema and example bytes against `bundled/verification-sources.lock.json`. Schema validation establishes structure, not authenticity or applicability.
 

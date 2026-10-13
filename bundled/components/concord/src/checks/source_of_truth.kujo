@@ -1,0 +1,143 @@
+# Concord — Source-of-truth mapping
+
+from src.common import is_truthy
+from src.scanner import find_readme, find_manifest_files, find_spec_files, find_changelog, find_cli_entry
+from src.checks.shared import assess_artifacts
+
+export func check_source_of_truth(dir_path) {
+	mut findings := []
+	mut sources := {}
+
+	mut readme_path := find_readme(dir_path)
+	mut manifest_files := find_manifest_files(dir_path)
+	mut spec_files := find_spec_files(dir_path)
+	mut changelog_path := find_changelog(dir_path)
+	mut entry_script := find_cli_entry(dir_path)
+	mut candidates := manifest_files
+	mut a := 0
+	while a < len(spec_files) { candidates = push(candidates, spec_files[a]); a = a + 1 }
+	if readme_path != "" { candidates = push(candidates, readme_path) }
+	if changelog_path != "" { candidates = push(candidates, changelog_path) }
+	if entry_script != "" { candidates = push(candidates, entry_script) }
+	assessment := assess_artifacts(candidates, "source-of-truth")
+	a = 0
+	while a < len(assessment["findings"]) {
+		findings = push(findings, assessment["findings"][a])
+		a = a + 1
+	}
+	mut safe_lookup := {}
+	a = 0
+	while a < len(assessment["paths"]) {
+		safe_lookup[assessment["paths"][a]] = 1
+		a = a + 1
+	}
+	mut safe_manifests := []
+	a = 0
+	while a < len(manifest_files) {
+		if has_key(safe_lookup, manifest_files[a]) == 1 { safe_manifests = push(safe_manifests, manifest_files[a]) }
+		a = a + 1
+	}
+	manifest_files = safe_manifests
+	mut safe_specs := []
+	a = 0
+	while a < len(spec_files) {
+		if has_key(safe_lookup, spec_files[a]) == 1 { safe_specs = push(safe_specs, spec_files[a]) }
+		a = a + 1
+	}
+	spec_files = safe_specs
+	if readme_path != "" && has_key(safe_lookup, readme_path) == 0 { readme_path = "" }
+	if changelog_path != "" && has_key(safe_lookup, changelog_path) == 0 { changelog_path = "" }
+	if entry_script != "" && has_key(safe_lookup, entry_script) == 0 { entry_script = "" }
+
+	# Determine likely source of truth for key facts
+	# Command names: CLI entry or README?
+	if entry_script != "" {
+		sources["command_names"] = entry_script
+	} else if readme_path != "" {
+		sources["command_names"] = readme_path
+	}
+
+	# Version: manifest or changelog?
+	mut has_manifest := len(manifest_files) > 0
+	mut has_changelog := changelog_path != ""
+	if has_manifest {
+		sources["version"] = manifest_files[0]
+	} else if has_changelog {
+		sources["version"] = changelog_path
+	}
+
+	# Package metadata: kennel.toml specifically
+	mut m := 0
+	while m < len(manifest_files) {
+		if is_truthy(contains(manifest_files[m], "kennel.toml")) == 1 {
+			sources["package_metadata"] = manifest_files[m]
+			break
+		}
+		m = m + 1
+	}
+	mut pkg_meta_missing := has_key(sources, "package_metadata") == 0
+	if pkg_meta_missing == 1 {
+		if has_manifest {
+			sources["package_metadata"] = manifest_files[0]
+		}
+	}
+
+	# Acceptance criteria: Spec files
+	if len(spec_files) > 0 {
+		sources["acceptance_criteria"] = spec_files[0]
+	}
+
+	# Check for ambiguous sources
+	if has_key(sources, "command_names") == 0 {
+		findings = push(findings, {
+			"id": "sot-no-command-source",
+			"severity": "medium",
+			"confidence": "high",
+			"category": "source-of-truth",
+			"title": "No clear source of truth for command names",
+			"summary": "Could not determine which artifact is authoritative for command names.",
+			"source_artifact": "(none)",
+			"target_artifact": "(none)",
+			"expected": "A clear source of truth should exist for command names.",
+			"actual": "No CLI entry or README found.",
+			"suggested_fix": "Create a CLI entry point and document commands in README.",
+			"human_review_required": false
+		})
+	}
+
+	if has_key(sources, "version") == 0 {
+		findings = push(findings, {
+			"id": "sot-no-version-source",
+			"severity": "medium",
+			"confidence": "high",
+			"category": "source-of-truth",
+			"title": "No clear source of truth for version",
+			"summary": "Could not determine which artifact is authoritative for version.",
+			"source_artifact": "(none)",
+			"target_artifact": "(none)",
+			"expected": "A clear source of truth should exist for version.",
+			"actual": "No manifest or changelog found.",
+			"suggested_fix": "Add a manifest file with version or a changelog.",
+			"human_review_required": false
+		})
+	}
+
+	if has_key(sources, "acceptance_criteria") == 0 {
+		findings = push(findings, {
+			"id": "sot-no-acceptance-source",
+			"severity": "low",
+			"confidence": "high",
+			"category": "source-of-truth",
+			"title": "No clear source of truth for acceptance criteria",
+			"summary": "No Spec files found. Acceptance criteria have no canonical home.",
+			"source_artifact": "(none)",
+			"target_artifact": "(none)",
+			"expected": "Acceptance criteria should be defined in Spec files.",
+			"actual": "No spec files found.",
+			"suggested_fix": "Create a Spec file with acceptance criteria.",
+			"human_review_required": false
+		})
+	}
+
+	return findings
+}

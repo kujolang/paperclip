@@ -1,5 +1,6 @@
 import { capabilityCatalog, applyCapabilityProfile, type CapabilityCatalog } from "../../src/abilities/catalog.js";
 import { parsePluginConfig } from "../../src/config/schema.js";
+import { CONCORD_SCOPE } from "../../src/features/concord/schema.js";
 import { FENCE_SCOPE } from "../../src/features/fence/schema.js";
 import type { DoctorReport } from "../../src/health/doctor.js";
 import { StrictMode } from "react";
@@ -60,6 +61,14 @@ window.__KUJO_FIXTURE_DATA__ = {
       nonGoals: ["Deploying the release"], approvalPoints: ["Maintainer reviews release evidence"] },
     scope: "Contract validation only. Acceptance criteria and declared checks have not been executed or proved; approval points are declarations, not granted approvals.",
   } : null,
+  concord: parameters.get("concord") ? {
+    id: "fixture-concord", status: parameters.get("concord") === "blocked" ? "blocked" : "partial", stale: true,
+    message: "Review coverage before accepting drift leads.", provenance: { version: "1.0.0" },
+    issues: parameters.get("concord") === "blocked" ? [{ artifact: "kennel.toml", field: "entry", reason: "Snapshot entry must stay relative." }] : [],
+    coverage: { copied: 3, gitVisible: 4, truncated: false, rejectedNames: 0, omitted: [{ path: "docs/large.md", reason: "oversize" }] },
+    report: parameters.get("concord") === "blocked" ? null : { summary: { total_findings: 1, highest_severity: "high" }, findings: [{ id: "version-inconsistency", severity: "high", confidence: "high", category: "versions", title: "Version metadata disagrees", summary: "README and package version differ.", source_artifact: "package.json", target_artifact: "README.md", expected: "1.0.0", actual: "9.0.0", suggested_fix: "Align the documented version with the release.", human_review_required: true }] },
+    scope: CONCORD_SCOPE,
+  } : null,
   fence: parameters.get("fence") ? {
     id: "fixture-fence", status: parameters.get("fence") === "passed" ? "passed" : "partial", stale: true,
     message: "Canonical Fence analysis completed.", threshold: "none", thresholdStatus: "passed", provenance: { version: "1.0.0" },
@@ -108,11 +117,12 @@ window.__KUJO_FIXTURE_DATA__ = {
 const fixture = window.__KUJO_FIXTURE_DATA__ as { readiness: DoctorReport; catalog?: CapabilityCatalog; verificationEnabled: boolean };
 fixture.readiness.runtime.platform = "linux";
 fixture.readiness.runtime.arch = "x64";
-fixture.readiness.components = ["scout", "context", "failure-evidence", "changebucket", "patchbrief", "spec", "fence"].map((id) => ({ id: id as DoctorReport["components"][number]["id"], version: "1.0.0", integrity: "ok" }));
+fixture.readiness.components = ["scout", "context", "failure-evidence", "changebucket", "patchbrief", "spec", "fence", "concord"].map((id) => ({ id: id as DoctorReport["components"][number]["id"], version: "1.0.0", integrity: "ok" }));
 const fixtureConfig = applyCapabilityProfile(parsePluginConfig({ capabilityProfile: parameters.get("profile") ?? "installed", features: { verification: parameters.get("verification") === "1" } }));
-for (const feature of Object.keys(fixture.readiness.capabilities) as Array<keyof DoctorReport["capabilities"]>) if (!fixtureConfig.features[(feature === "spec" || feature === "fence") ? "verification" : feature]) fixture.readiness.capabilities[feature] = "disabled";
+for (const feature of Object.keys(fixture.readiness.capabilities) as Array<keyof DoctorReport["capabilities"]>) if (!fixtureConfig.features[(feature === "spec" || feature === "fence" || feature === "concord") ? "verification" : feature]) fixture.readiness.capabilities[feature] = "disabled";
 fixture.readiness.capabilities.spec = !fixtureConfig.features.verification ? "disabled" : fixture.readiness.runtime.status === "ok" ? "ready" : "blocked";
 fixture.readiness.capabilities.fence = fixture.readiness.capabilities.spec;
+fixture.readiness.capabilities.concord = fixture.readiness.capabilities.spec;
 fixture.verificationEnabled = fixtureConfig.features.verification;
 fixture.catalog = capabilityCatalog(fixtureConfig, fixture.readiness, true);
 window.__KUJO_ACTIONS__ = [];

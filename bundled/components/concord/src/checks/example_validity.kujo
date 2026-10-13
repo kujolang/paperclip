@@ -1,0 +1,158 @@
+# Concord — Example validity checks
+
+from src.common import read_file_safe, is_truthy
+from src.scanner import find_readme, discover_example_files, extract_fenced_commands
+from src.scanner import option_reference_value
+from src.checks.shared import assess_artifacts, discovery_limit_finding
+
+export func check_example_validity(dir_path, kujo_bin) {
+	mut findings := []
+
+	mut readme_path := find_readme(dir_path)
+	discovery := discover_example_files(dir_path)
+	mut example_candidates := discovery["files"]
+	mut i := 0
+	while i < len(discovery["oversized"]) {
+		example_candidates = push(example_candidates, discovery["oversized"][i])
+		i = i + 1
+	}
+	example_assessment := assess_artifacts(example_candidates, "example-validity")
+	mut example_files := example_assessment["paths"]
+	i = 0
+	while i < len(example_assessment["findings"]) {
+		findings = push(findings, example_assessment["findings"][i])
+		i = i + 1
+	}
+	if discovery["truncated"] == 1 {
+		findings = push(findings, discovery_limit_finding("example-validity", join_path(dir_path, "examples"), discovery["max_depth"], discovery["max_files"]))
+	}
+	mut readme_candidates := []
+	if readme_path != "" { readme_candidates = push(readme_candidates, readme_path) }
+	readme_assessment := assess_artifacts(readme_candidates, "example-validity")
+	i = 0
+	while i < len(readme_assessment["findings"]) {
+		findings = push(findings, readme_assessment["findings"][i])
+		i = i + 1
+	}
+	if len(readme_assessment["paths"]) == 0 { readme_path = "" }
+	# Check 1: Example files exist
+	if len(example_files) == 0 {
+		findings = push(findings, {
+			"id": "examples-no-examples-dir",
+			"severity": "low",
+			"confidence": "high",
+			"category": "example-validity",
+			"title": "No examples directory found",
+			"summary": "No examples/ directory found in the project.",
+			"source_artifact": "(none)",
+			"target_artifact": "(none)",
+			"expected": "An examples/ directory with example files should exist.",
+			"actual": "No examples directory.",
+			"suggested_fix": "Add an examples/ directory with usage examples.",
+			"human_review_required": false
+		})
+	}
+
+	# Check 2: Example commands reference real files
+	if readme_path != "" {
+		readme_content := read_file_safe(readme_path)
+		readme_commands := extract_fenced_commands(readme_content)
+
+		mut i := 0
+		while i < len(readme_commands) {
+			cmd := readme_commands[i]
+			# Check for file references in commands (paths after flags like --dir, --output, -o, etc.)
+			mut file_refs := regex_find_all(cmd, "(?:--dir|--output|-o|--file|-f|--config|-c)\\s+(\"[^\"]+\"|'[^']+'|\\S+)")
+			mut j := 0
+			while j < len(file_refs) {
+				ref := option_reference_value(file_refs[j])
+				# Output paths are destinations and are expected not to exist yet.
+				mut output_ref := is_truthy(starts_with(file_refs[j], "--output "))
+				if is_truthy(starts_with(file_refs[j], "-o ")) == 1 { output_ref = 1 }
+				if output_ref == 1 {
+					j = j + 1
+					continue
+				}
+				if is_truthy(starts_with(ref, "/path/to/")) == 1 {
+					j = j + 1
+					continue
+				}
+				# Skip if it looks like a flag value rather than a path
+				mut is_flag := 0
+				if is_truthy(starts_with(ref, "-")) == 1 { is_flag = 1 }
+				if is_truthy(starts_with(ref, "--")) == 1 { is_flag = 1 }
+				if is_flag == 1 {
+					j = j + 1
+					continue
+				}
+				# Check if the referenced file/dir exists (relative to project root)
+				full_ref := join_path(dir_path, ref)
+				mut file_missing := 0
+				if is_truthy(file_exists(full_ref)) == 0 {
+					if is_truthy(path_is_dir(full_ref)) == 0 {
+						file_missing = 1
+					}
+				}
+				if file_missing == 1 {
+					findings = push(findings, {
+						"id": "examples-missing-file-" + to_string(i) + "-" + to_string(j),
+						"severity": "medium",
+						"confidence": "medium",
+						"category": "example-validity",
+						"title": "Example references non-existent path",
+						"summary": "Command example references '" + ref + "' which does not exist.",
+						"source_artifact": readme_path,
+						"target_artifact": ref,
+						"expected": "Example commands should reference files that exist.",
+						"actual": "'" + ref + "' not found.",
+						"suggested_fix": "Update the example to use correct paths or create the referenced file.",
+						"human_review_required": true
+					})
+				}
+				j = j + 1
+			}
+			i = i + 1
+		}
+	}
+
+	# Check 3: Verify example files are referenced in README
+	mut has_examples := len(example_files) > 0
+	if has_examples {
+		if readme_path != "" {
+			readme_content := read_file_safe(readme_path)
+			mut e := 0
+			while e < len(example_files) {
+				example_name := example_files[e]
+				# Extract just the filename for comparison
+				mut parts := split(replace(example_name, "\\", "/"), "/")
+				mut base_name := parts[len(parts) - 1]
+				if contains(readme_content, base_name) == 0 {
+					# Only flag if it's a significant example file
+					mut is_important := 0
+					if is_truthy(ends_with(base_name, ".kujo")) == 1 { is_important = 1 }
+					if is_truthy(ends_with(base_name, ".yml")) == 1 { is_important = 1 }
+					if is_truthy(ends_with(base_name, ".json")) == 1 { is_important = 1 }
+					if is_important == 1 {
+						findings = push(findings, {
+							"id": "examples-orphan-" + to_string(e),
+							"severity": "low",
+							"confidence": "low",
+							"category": "example-validity",
+							"title": "Example file not referenced in README",
+							"summary": "Example file '" + base_name + "' exists but is not mentioned in README.",
+							"source_artifact": example_name,
+							"target_artifact": readme_path,
+							"expected": "Example files should be referenced in documentation.",
+							"actual": "No reference to '" + base_name + "' found in README.",
+							"suggested_fix": "Add a reference to the example in README or remove unused example.",
+							"human_review_required": false
+						})
+					}
+				}
+				e = e + 1
+			}
+		}
+	}
+
+	return findings
+}

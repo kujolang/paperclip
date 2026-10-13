@@ -1,0 +1,116 @@
+# Concord — Fix task card generation
+
+from src.common import severity_weight, concord_version, markdown_code, markdown_text, append_lines, severity_emoji, markdown_field_row
+
+export func generate_fix_tasks(findings) {
+	version := concord_version()
+	mut report := ""
+	report = append_lines(report, [
+		"# Concord Fix Tasks",
+		"",
+		"**Concord v" + version + "**",
+		"",
+		"---",
+		""
+	])
+
+	if len(findings) == 0 {
+		report = append_lines(report, [
+			"✅ No fix tasks needed. No drift findings detected."
+		])
+		return report
+	}
+
+	# Sort findings by severity (high to low)
+	mut ordered := []
+	mut remaining := []
+	mut i := 0
+	while i < len(findings) {
+		remaining = push(remaining, findings[i])
+		i = i + 1
+	}
+
+	# Simple insertion sort by severity weight
+	mut j := 0
+	while j < len(remaining) {
+		f := remaining[j]
+		mut inserted := 0
+		mut k := 0
+		while k < len(ordered) {
+			if severity_weight(f["severity"]) > severity_weight(ordered[k]["severity"]) {
+				# Insert before k
+				mut new_ordered := []
+				mut x := 0
+				while x < k {
+					new_ordered = push(new_ordered, ordered[x])
+					x = x + 1
+				}
+				new_ordered = push(new_ordered, f)
+				mut y := k
+				while y < len(ordered) {
+					new_ordered = push(new_ordered, ordered[y])
+					y = y + 1
+				}
+				ordered = new_ordered
+				inserted = 1
+				break
+			}
+			k = k + 1
+		}
+		if inserted == 0 {
+			ordered = push(ordered, f)
+		}
+		j = j + 1
+	}
+
+	report = append_lines(report, [
+		"## Action Required",
+		"",
+		"The following tasks address drift detected by Concord. Review each task and apply fixes as appropriate.",
+		""
+	])
+
+	mut task_num := 1
+	mut idx := 0
+	while idx < len(ordered) {
+		f := ordered[idx]
+
+		report = append_lines(report, [
+			"### Task " + to_string(task_num) + ": " + severity_emoji(f["severity"]) + " " + markdown_text(f["title"]),
+			"",
+			"| Field | Value |",
+			"|-------|-------|",
+			markdown_field_row("Finding ID", f["id"]),
+			markdown_field_row("Severity", f["severity"]),
+			markdown_field_row("Confidence", f["confidence"]),
+			markdown_field_row("Category", f["category"]),
+			markdown_field_row("Human Review", to_string(f["human_review_required"])),
+			"",
+			"**Problem:** " + markdown_text(f["summary"]),
+			"",
+			"**Affected Files:**",
+			"- " + markdown_code(f["source_artifact"])
+		])
+		if f["target_artifact"] != "(none)" {
+			if f["target_artifact"] != "(multiple)" {
+				report = append_lines(report, [
+					"- " + markdown_code(f["target_artifact"])
+				])
+			}
+		}
+		report = append_lines(report, [
+			"",
+			"**Suggested Fix:** " + markdown_text(f["suggested_fix"]),
+			"",
+			"**Validation:** Run `concord scan` after applying the fix to verify drift is resolved.",
+			"",
+			"---",
+			""
+		])
+
+		task_num = task_num + 1
+		idx = idx + 1
+	}
+
+	return report
+}

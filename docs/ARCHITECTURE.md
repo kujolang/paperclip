@@ -72,3 +72,11 @@ and runs without caching or project writes. Omitted policy files block fallback;
 selected source omissions prevent a full-coverage pass. Snapshot hashes and
 canonical provenance accompany redacted `fence-latest` records. See
 [Verification workflows](VERIFICATION.md) for exact bounds and result semantics.
+
+Concord is the eighth pinned component. Fence and Concord share the bounded
+whole-file snapshot reader; their canonical discovery and analysis remain separate.
+Concord's fixed bridge runs canonical reference admission before its six checks,
+uses isolated imports, and removes duplicate report grouping before host validation.
+Root artifacts receive copy priority; copy coverage never claims that every copied
+file was inspected. Native discovery bounds or any host omission yield partial
+coverage. The `concord-latest` kind uses the existing scoped receipt/retention store.

@@ -1,7 +1,7 @@
 import { definePlugin, runWorker, type PluginContext, type ToolRunContext } from "@paperclipai/plugin-sdk";
 import { z } from "zod";
 import { parsePluginConfig } from "./config/schema.js";
-import { fenceTool, specTool, importVerificationTool, catalogTool, listEvidenceTool, readEvidenceTool, languageTool, formatTool, understandTool, contextContentTool, contextTool, failureTool, reviewTool } from "./manifest.js";
+import { concordTool, fenceTool, specTool, importVerificationTool, catalogTool, listEvidenceTool, readEvidenceTool, languageTool, formatTool, understandTool, contextContentTool, contextTool, failureTool, reviewTool } from "./manifest.js";
 import { generateReviewPack } from "./features/review/generate.js";
 import { reviewPackSchema, type ReviewPack } from "./features/review/schema.js";
 import { captureFailure } from "./features/failure/capture.js";
@@ -29,6 +29,8 @@ import { languageReportSchema } from "./features/language/schema.js";
 import { importVerification, verificationInput, verificationReportSchema } from "./features/verification/import.js";
 import { discoverSpecs, inspectSpec, specInputSchema, specReportSchema } from "./features/spec/inspect.js";
 
+import { inspectConcord } from "./features/concord/inspect.js";
+import { concordReportSchema } from "./features/concord/schema.js";
 import { inspectFence } from "./features/fence/inspect.js";
 import { fenceReportSchema } from "./features/fence/schema.js";
 
@@ -76,7 +78,7 @@ async function configFor(ctx: PluginContext, companyId: string) {
 
 const historyTarget = z.object({ entityType: z.enum(["project", "issue", "run"]), entityId: z.string().min(1), evidenceId: z.string().min(1).max(100), otherId: z.string().min(1).max(100).optional() }).strict();
 function evidenceEnabled(config: ReturnType<typeof parsePluginConfig>, kind: ArtifactKind) {
-  const feature = { "review-latest": "review", "context-latest": "context", "failure-latest": "failureEvidence", "understand-latest": "understand", "language-latest": "language", "verification-latest": "verification", "spec-latest": "verification", "fence-latest": "verification" } as const;
+  const feature = { "review-latest": "review", "context-latest": "context", "failure-latest": "failureEvidence", "understand-latest": "understand", "language-latest": "language", "verification-latest": "verification", "spec-latest": "verification", "fence-latest": "verification", "concord-latest": "verification" } as const;
   return config.features[feature[kind]];
 }
 
@@ -174,7 +176,28 @@ async function inspectArchitectureFor(ctx: PluginContext, target: StateTarget) {
   return report;
 }
 
+async function inspectArtifactDriftFor(ctx: PluginContext, target: StateTarget) {
+  if (target.entityType === "run") throw new Error("Choose a project or issue workspace");
+  const config = await configFor(ctx, target.companyId);
+  const workspace = await resolveWorkspace(ctx, { ...target, entityType: target.entityType });
+  const report = await inspectConcord({ config, cwd: workspace.path, projectId: workspace.projectId, workspaceId: workspace.id });
+  await saveArtifact(ctx, target, "concord-latest", report, { inputs: { config, inputDigest: report.inputDigest }, definition: concordTool, projection: projectionReceipt(concordTool) });
+  await audit(ctx, { ...target, operation: "concord.inspected", artifactId: report.id });
+  return report;
+}
+
 function registerTools(ctx: PluginContext) {
+  ctx.tools.register(concordTool.name, concordTool, async (raw, runCtx) => {
+    try {
+      z.object({}).strict().parse(raw);
+      const report = await inspectArtifactDriftFor(ctx, { entityType: "project", entityId: runCtx.projectId, companyId: runCtx.companyId });
+      const { snapshot: _snapshot, ...data } = report;
+      return { content: JSON.stringify(data), data };
+    } catch (error) {
+      const normalized = normalizeError(error);
+      return { error: normalized.message, data: { code: normalized.code } };
+    }
+  });
   ctx.tools.register(fenceTool.name, fenceTool, async (raw, runCtx) => {
     try {
       z.object({}).strict().parse(raw);
@@ -385,7 +408,7 @@ function registerUiBridge(ctx: PluginContext) {
     const suggestedTask = issue
       ? `${issue.title}\n\n${issue.description ?? ""}`.trim().slice(0, 10_000)
       : "Understand this repository and identify the best starting points for the next change.";
-    const [review, failure, context, understanding, language, verification, spec, fence] = await Promise.all([
+    const [review, failure, context, understanding, language, verification, spec, fence, concord] = await Promise.all([
       config.features.review ? loadArtifact(ctx, target, "review-latest", reviewPackSchema) : null,
       config.features.failureEvidence ? loadArtifact(ctx, target, "failure-latest", failureEvidenceSchema) : null,
       config.features.context ? loadArtifact(ctx, target, "context-latest", contextPackSchema) : null,
@@ -394,6 +417,7 @@ function registerUiBridge(ctx: PluginContext) {
       config.features.verification ? loadArtifact(ctx, target, "verification-latest", verificationReportSchema) : null,
       config.features.verification ? loadArtifact(ctx, target, "spec-latest", specReportSchema) : null,
       config.features.verification ? loadArtifact(ctx, target, "fence-latest", fenceReportSchema) : null,
+      config.features.verification ? loadArtifact(ctx, target, "concord-latest", concordReportSchema) : null,
     ]);
     const ownedReview = review && (
       (target.entityType === "project" && review.projectId === target.entityId) ||
@@ -416,11 +440,20 @@ function registerUiBridge(ctx: PluginContext) {
       ? { ...spec, stale: spec.stale || !(await isSnapshotCurrent(workspace.path, spec.snapshot)) } : null;
     const ownedFence = fence && workspace && fence.projectId === workspace.projectId && fence.workspaceId === workspace.id
       ? { ...fence, stale: fence.stale || !(await isSnapshotCurrent(workspace.path, fence.snapshot)) } : null;
+    const ownedConcord = concord && workspace && concord.projectId === workspace.projectId && concord.workspaceId === workspace.id
+      ? { ...concord, stale: concord.stale || !(await isSnapshotCurrent(workspace.path, concord.snapshot)) } : null;
     const specs = config.features.verification && workspace ? await discoverSpecs(workspace.path).catch(() => ({ files: [], truncated: false })) : { files: [], truncated: false };
     await ensureHistory(ctx, target);
     const history = (await listEvidence(ctx, target)).filter((record) => evidenceEnabled(config, record.kind));
     const readiness = await doctor(config);
-    return { catalog: capabilityCatalog(config, readiness, true), fence: ownedFence, spec: ownedSpec, specs, verification, verificationEnabled: config.features.verification, history, language: ownedLanguage, sources, understanding: ownedUnderstanding, review: ownedReview, failure: ownedFailure, context: ownedContext, readiness, workspace: inspection?.readiness, suggestedTask };
+    return { catalog: capabilityCatalog(config, readiness, true), concord: ownedConcord, fence: ownedFence, spec: ownedSpec, specs, verification, verificationEnabled: config.features.verification, history, language: ownedLanguage, sources, understanding: ownedUnderstanding, review: ownedReview, failure: ownedFailure, context: ownedContext, readiness, workspace: inspection?.readiness, suggestedTask };
+  });
+
+  ctx.actions.register("inspect-artifact-drift", async (params, actionCtx) => {
+    if (!actionCtx.companyId) throw new Error("Company context is required");
+    const value = actionTarget.parse(actionParams(params));
+    const report = await inspectArtifactDriftFor(ctx, { ...value, companyId: actionCtx.companyId });
+    return { status: report.status, reportId: report.id };
   });
 
   ctx.actions.register("inspect-architecture", async (params, actionCtx) => {

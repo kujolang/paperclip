@@ -293,3 +293,42 @@ test("pending architecture errors cannot cross company navigation", async ({ pag
   await expect(page.getByText("private delayed architecture error")).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Inspect architecture", exact: true })).toBeEnabled();
 });
+
+
+test("artifact drift shows honest partial scope, native leads and scoped action on narrow screens", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 1200 });
+  await page.goto("/?surface=task&entity=issue&verification=1&concord=partial&theme=dark");
+  const section = page.getByRole("region", { name: "Artifact drift", exact: true });
+  await expect(section.getByText("Artifact drift: partial · STALE — inspect again", { exact: true })).toBeVisible();
+  await expect(section.getByText("docs/large.md: oversize", { exact: true })).toBeVisible();
+  await expect(section.getByText("high: Version metadata disagrees", { exact: true })).toBeVisible();
+  await expect(section.getByText("versions · Confidence: high · Human review: required", { exact: true })).toBeVisible();
+  await expect(section.getByText("Experimental convention-based", { exact: false })).toContainText("does not verify project correctness");
+  await section.screenshot({ path: "test-results/artifact-drift-panel.png" });
+  await section.getByRole("button", { name: "Inspect artifact drift" }).click();
+  await expect.poll(() => page.evaluate(() => window.__KUJO_ACTIONS__?.at(-1))).toMatchObject({ action: "inspect-artifact-drift", input: { entityType: "issue", entityId: "issue-fixture" } });
+  await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+});
+
+test("artifact drift admission honors runtime, profiles, blocked references and read-only run views", async ({ page }) => {
+  await page.goto("/?surface=detail&entity=project&verification=1&runtime=broken");
+  await expect(page.getByRole("button", { name: "Inspect artifact drift", exact: true })).toBeDisabled();
+  await page.goto("/?surface=detail&entity=project&verification=1&profile=build");
+  await expect(page.getByRole("region", { name: "Artifact drift", exact: true })).toHaveCount(0);
+  await page.goto("/?surface=detail&entity=run&verification=1");
+  await expect(page.getByRole("button", { name: "Inspect artifact drift", exact: true })).toHaveCount(0);
+  await page.goto("/?surface=detail&entity=project&verification=1&concord=blocked");
+  await expect(page.getByText("kennel.toml · entry: Snapshot entry must stay relative.", { exact: true })).toBeVisible();
+  await expect(page.getByText("Version metadata disagrees", { exact: false })).toHaveCount(0);
+});
+
+test("pending artifact drift errors cannot cross company navigation", async ({ page }) => {
+  await page.goto("/?surface=detail&entity=project&verification=1");
+  await page.evaluate(() => { window.__KUJO_DELAY_CONCORD__ = true; });
+  await page.getByRole("button", { name: "Inspect artifact drift", exact: true }).click();
+  await expect.poll(() => page.evaluate(() => Boolean(window.__KUJO_RESOLVE_CONCORD__))).toBe(true);
+  await page.evaluate(() => window.__KUJO_NAVIGATE__?.("other-company"));
+  await page.evaluate(() => window.__KUJO_RESOLVE_CONCORD__?.());
+  await expect(page.getByText("private delayed artifact drift error")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Inspect artifact drift", exact: true })).toBeEnabled();
+});

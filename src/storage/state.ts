@@ -10,6 +10,7 @@ import { languageReportSchema } from "../features/language/schema.js";
 import { verificationReportSchema } from "../features/verification/import.js";
 import { specReportSchema } from "../features/spec/inspect.js";
 
+import { concordReportSchema } from "../features/concord/schema.js";
 import { fenceReportSchema } from "../features/fence/schema.js";
 
 export type StateTarget = { entityType: "project" | "issue" | "run"; entityId: string; companyId: string };
@@ -17,7 +18,7 @@ function scope(target: StateTarget, namespace: string, stateKey: string) {
   return { scopeKind: target.entityType as PluginStateScopeKind, scopeId: target.entityId, namespace: `${namespace}:${target.companyId}`, stateKey };
 }
 const schemas = { "review-latest": reviewPackSchema, "context-latest": contextPackSchema, "failure-latest": failureEvidenceSchema,
-  "understand-latest": understandingSchema, "language-latest": languageReportSchema, "verification-latest": verificationReportSchema, "spec-latest": specReportSchema, "fence-latest": fenceReportSchema };
+  "understand-latest": understandingSchema, "language-latest": languageReportSchema, "verification-latest": verificationReportSchema, "spec-latest": specReportSchema, "concord-latest": concordReportSchema, "fence-latest": fenceReportSchema };
 function isArtifactKind(kind: string): kind is ArtifactKind { return (ARTIFACT_KINDS as readonly string[]).includes(kind); }
 const migrations = new WeakMap<PluginContext, Map<string, Promise<void>>>();
 
