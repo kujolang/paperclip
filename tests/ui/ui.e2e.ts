@@ -552,7 +552,7 @@ test("native run/test requires separate preview, approval request and explicit s
   await expect(section.getByText(/Exit zero alone/)).toBeVisible();
   await page.setViewportSize({ width: 390, height: 1200 });
   await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
-  await expect(section).toHaveScreenshot("source-execution.png", { animations: "disabled" });
+  await expect(section).toHaveScreenshot(`source-execution-${process.platform}.png`, { animations: "disabled" });
 });
 
 test("fixture-test selection omits caller paths and clears stale previews", async ({ page }) => {
