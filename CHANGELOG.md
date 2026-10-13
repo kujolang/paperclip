@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add frozen canonical Ability identity and portable terminal Eval receipts, preserving native classifications, uncertainty, approval-wait timing and immutable legacy history.
+
 - Retain terminal Eval requests as linked observed plan/outcome evidence, with bounded publication recovery, clear/prune protection, parent-aware exports and assigned-issue agent reads.
 
 - Expose human-approved Eval on issues through a review/prepare/start/inspect/cancel panel and a strict agent tool bound to the assigned host issue/run. Preserve disabled cancellation, scoped metadata recovery, native receipts and cross-company navigation isolation.

@@ -71,6 +71,7 @@ export function EvaluationPanel({ issueId, enabled, ready, refreshEvidence }: Pr
         {selected.state === "pending" && <button disabled={!enabled || !ready || !!busy} onClick={() => void act("start", selected.id)}>Start approved evaluation</button>}
         {!terminal.has(selected.state) && <button disabled={busy !== null && busy !== "start"} onClick={() => void act("cancel", selected.id)}>Cancel evaluation</button>}
       </div>
+      {selected.abilityReceipt && <p style={{ margin: 0 }}>Portable receipt: {selected.abilityReceipt.status}. Timing includes approval wait. Native check results and coverage remain separate.</p>}
       {selected.history && <p style={{ margin: 0 }}>{selected.history.notice}</p>}
       <details><summary>Execution receipt and approved inputs</summary><pre style={pre}>{JSON.stringify(selected, null, 2)}</pre></details>
       {selected.state === "uncertain" && <p>Execution may have produced effects. Inspect the receipt and external resources before requesting a new run.</p>}

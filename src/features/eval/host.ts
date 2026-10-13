@@ -76,7 +76,11 @@ export function createEvalHostService(ctx: PluginContext) {
         definition: canonicalDefinitions.find(item => item.definition.id === abilityId)?.definitionDigest,
       }) });
       if (signal?.aborted) throw new Error("Eval preparation cancelled");
+      const ability = canonicalDefinitions.find(item => item.definition.id === abilityId);
+      if (!ability) throw new Error("Canonical Eval Ability definition is unavailable");
       const plan: ExecutionPlan = {
+        abilityReceipt: { serializerVersion: 1, abilityId, abilityVersion: ability.definition.version,
+          definitionDigest: ability.definitionDigest, handlerVersion: "1.0.0" },
         operation: "eval.run", projectId: workspace.projectId, workspaceId: workspace.id, suite,
         summary: `${admitted.summary} Input coverage: ${coverage.complete ? "all admitted Git-visible text files" : "partial; review exclusions"}. Sensitive values in the suite preview may be redacted.`,
         preview, effects: admitted.effects, ...admitted.binding,

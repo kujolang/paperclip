@@ -56,6 +56,8 @@ describe("public Eval workflow", () => {
     expect(finished).toMatchObject({ state: "succeeded", result: { classification: "passed" }, history: { status: "retained" } });
     const exported = await f.h.performAction<{ parent: { status: string }; payload: { executionState: string } }>("export-evidence", { entityType: "issue", entityId: "issue", evidenceId: finished.history!.outcomeId }, human);
     expect(exported).toMatchObject({ parent: { status: "retained" }, payload: { executionState: "succeeded" } });
+    expect(finished.abilityReceipt).toMatchObject({ schema: "kujo.ability.receipt/v1", status: "succeeded", principal: { tenant_id: "company", id: "board" } });
+    expect(exported).toMatchObject({ payload: { schemaVersion: 2, abilityReceipt: finished.abilityReceipt } });
     expect(await f.action({ operation: "start", id: prepared.id })).toEqual(finished);
     expect((await f.action({ operation: "list" }) as unknown as { requests: unknown[] }).requests).toHaveLength(1);
     await expect(f.h.performAction("manage-evaluation", { operation: "status", issueId: "issue", id: prepared.id }, { companyId: "other", actor: { type: "user", userId: "board", companyId: "other" } })).rejects.toThrow(/not found/);

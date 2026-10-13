@@ -393,6 +393,7 @@ test("Eval requires explicit preview, approval request and start, with retained 
   expect(await page.evaluate(() => window.__KUJO_ACTIONS__?.filter(item => (item.input as { operation?: string }).operation === "start"))).toHaveLength(0);
   await section.getByRole("button", { name: "Start approved evaluation", exact: true }).click();
   await expect(section.getByText("Evaluation: partial (native checks: passed)", { exact: true })).toBeVisible();
+  await expect(section.getByText("Portable receipt: succeeded. Timing includes approval wait. Native check results and coverage remain separate.", { exact: true })).toBeVisible();
   await section.getByText("Execution receipt and approved inputs", { exact: true }).click();
   await expect(section.getByText(/"classification": "partial"/)).toBeVisible();
   await section.screenshot({ path: test.info().outputPath("approved-evaluation.png") });

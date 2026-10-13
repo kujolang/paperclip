@@ -85,7 +85,8 @@ Select a Git-visible `.kujo` file in **Build with Kujo**, then choose **Check an
 Terminal Eval requests retain linked request-plan and outcome records here. You
 can select the related plan, compare outcomes, export both records, or explicitly
 attach them to the issue. Pending history saves can be retried without rerunning
-the suite. These observed records are not canonical Ability invocation receipts;
+the suite. New requests include a portable Ability receipt with explicit native
+classification and request-lifecycle timing; legacy records remain observed history;
 see [execution history](docs/EXECUTION.md#retained-execution-history) for retention
 and clear behavior.
 

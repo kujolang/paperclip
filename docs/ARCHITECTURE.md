@@ -100,5 +100,7 @@ acknowledgment makes lost responses recoverable; clear marks terminal rows under
 the same lock before deleting artifacts. Publication never starts execution.
 The additive004 migration stores that acknowledgment. Bounded reconciliation
 processes four terminal rows per issue refresh, and independently retained parent
-references carry their digest even after pruning. These are ledger observations,
-not canonical Ability invocation receipts. See [execution history](EXECUTION.md#retained-execution-history).
+references carry their digest even after pruning. These are ledger observations;
+legacy outcomes have no canonical receipt. Newly admitted requests freeze Ability
+identity and embed canonical-contract host receipts on terminal outcomes, using
+request-lifecycle timing and explicit uncertain-failure metadata. See [execution history](EXECUTION.md#retained-execution-history).
