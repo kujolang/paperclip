@@ -9,7 +9,7 @@
       "requirement": "Runtime health, feature states, repair guidance, clean/empty/missing workspace onboarding",
       "status": "in_progress",
       "evidence": [
-        "Runtime probe and capability-driven UI implemented; tests/doctor.spec.ts and broken-runtime Playwright case. Full package verify: 47 tests passed. Missing/empty workspace and guided first-result onboarding remain pending."
+        "Runtime probe and company feature states merged in PR38. Workspace guidance, issue task defaults, and checked/runnable shipped example implemented; 53 tests and nine browser scenarios pass locally. A fresh local npm tarball install executed the example without a workspace. Full platform CI and real-host/newcomer acceptance remain to be verified."
       ]
     },
     {
@@ -17,14 +17,16 @@
       "requirement": "Refresh reviewed component cohort and public docs/catalog release state",
       "status": "in_progress",
       "evidence": [
-        "Four component pins refreshed from clean canonical repositories. Full local verify passed with 47 tests; integration now requires successful canonical outputs instead of silently accepting fallbacks. Cross-platform CI and ecosystem public-catalog reconciliation remain pending."
+        "Four refreshed canonical components and Windows repairs merged in PR39; all five platforms, SDK matrix, browser and security checks passed with 48 tests. Public ecosystem docs/catalog reconciliation remains pending."
       ]
     },
     {
       "id": "understand",
       "requirement": "Scout/Scent repository understanding, issue-aware defaults, bounded contextual reads",
-      "status": "pending",
-      "evidence": []
+      "status": "in_progress",
+      "evidence": [
+        "Scent metadata-only dry-run selection is integrated with separate bounded content access. Issue titles/descriptions now seed the editable UI task. Scout and broader repository understanding remain pending."
+      ]
     },
     {
       "id": "language",

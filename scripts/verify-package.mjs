@@ -18,6 +18,7 @@ for (const required of [
   "bundled/components/patchbrief/patchbrief.kujo",
   "bundled/components/failure-evidence/casefile.kujo",
   "bundled/components/context/scent.kujo",
+  "examples/first-run.kujo",
   "docs/INSTALLATION.md",
   "docs/USAGE.md",
   "docs/CONFIGURATION.md",

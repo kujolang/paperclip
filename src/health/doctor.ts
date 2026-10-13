@@ -55,6 +55,7 @@ export async function doctor(config: PluginConfig = parsePluginConfig({})) {
     runtime,
     components: statuses,
     capabilities: {
+      examples: capability(config.features.examples, []),
       review: capability(config.features.review, ["changebucket", "patchbrief"]),
       context: capability(config.features.context, ["context"]),
       failureEvidence: capability(config.features.failureEvidence, ["failure-evidence"]),

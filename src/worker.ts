@@ -9,12 +9,13 @@ import { failureEvidenceSchema, type FailureEvidence } from "./features/failure/
 import { generateContextPack } from "./features/context/generate.js";
 import { contextPackSchema, type ContextPack } from "./features/context/schema.js";
 import { getContextContent } from "./features/context/content.js";
-import { resolveProjectWorkspace, resolveWorkspace } from "./paperclip/workspace.js";
+import { inspectWorkspace, resolveProjectWorkspace, resolveWorkspace } from "./paperclip/workspace.js";
 import { clearArtifacts, loadArtifact, saveArtifact, type StateTarget } from "./storage/state.js";
 import { doctor } from "./health/doctor.js";
 import { normalizeError } from "./runtime/errors.js";
 import { terminateActiveKujoProcesses } from "./runtime/execute-kujo.js";
 import { isSnapshotCurrent } from "./paperclip/git.js";
+import { runBundledExample } from "./features/onboarding/example.js";
 
 const reviewInput = z.object({
   mode: z.enum(["working_tree", "range"]).default("working_tree"),
@@ -226,9 +227,14 @@ function registerUiBridge(ctx: PluginContext) {
       companyId: z.string().min(1),
     }).parse(params) as StateTarget;
     const config = await configFor(ctx, target.companyId);
-    const workspace = target.entityType === "run"
+    const inspection = target.entityType === "run"
       ? null
-      : await resolveWorkspace(ctx, { entityType: target.entityType, entityId: target.entityId, companyId: target.companyId });
+      : await inspectWorkspace(ctx, { entityType: target.entityType, entityId: target.entityId, companyId: target.companyId });
+    const workspace = inspection?.workspace;
+    const issue = target.entityType === "issue" ? await ctx.issues.get(target.entityId, target.companyId) : null;
+    const suggestedTask = issue
+      ? `${issue.title}\n\n${issue.description ?? ""}`.trim().slice(0, 10_000)
+      : "Understand this repository and identify the best starting points for the next change.";
     const [review, failure, context] = await Promise.all([
       config.features.review ? loadArtifact(ctx, target, "review-latest", reviewPackSchema) : null,
       config.features.failureEvidence ? loadArtifact(ctx, target, "failure-latest", failureEvidenceSchema) : null,
@@ -246,7 +252,15 @@ function registerUiBridge(ctx: PluginContext) {
     const ownedContext = context && workspace && context.projectId === workspace.projectId && context.workspaceId === workspace.id
       ? context
       : null;
-    return { review: ownedReview, failure: ownedFailure, context: ownedContext, readiness: await doctor(config) };
+    return { review: ownedReview, failure: ownedFailure, context: ownedContext, readiness: await doctor(config), workspace: inspection?.readiness, suggestedTask };
+  });
+
+  ctx.actions.register("run-example", async (params, actionCtx) => {
+    if (!actionCtx.companyId) throw new Error("Company context is required");
+    z.object({}).strict().parse(actionParams(params));
+    const result = await runBundledExample(await configFor(ctx, actionCtx.companyId));
+    await ctx.activity.log({ companyId: actionCtx.companyId, message: "Kujo bundled example checked and executed", metadata: { operation: "example.executed", runtimeVersion: result.runtimeVersion } });
+    return result;
   });
 
   ctx.actions.register("generate-review", async (params, actionCtx) => {

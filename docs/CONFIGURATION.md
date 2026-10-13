@@ -31,3 +31,7 @@ Bundled runtime resolution is the normal choice. Use an override only for contro
 Raising a limit increases the resources available to a local component and the amount of data the host may retain. Change limits only for a known repository need.
 
 Other fixed bounds include a 200 KB Failure Evidence log input, 100 KB Context Pack selection limit per file, and 1 MB hard refusal for content reads.
+
+`features.examples` (default true) controls the fixed bundled first-run example.
+Disable it to hide execution availability for that example. It does not enable
+arbitrary source execution or change the Verification setting.

@@ -80,6 +80,7 @@ const manifest: PaperclipPluginManifestV1 = {
   capabilities: [
     "agent.tools.register",
     "projects.read",
+    "issues.read",
     "project.workspaces.read",
     "plugin.state.read",
     "plugin.state.write",
