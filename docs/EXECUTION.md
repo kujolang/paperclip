@@ -255,12 +255,30 @@ terminator. Local cancellation waits for termination; another coordinator report
 `cancel_requested` until the owner confirms it. Shutdown prevents new starts and
 cancels owned work. A pre-aborted process request never spawns a child.
 
-An expired owner lease produces `uncertain`, not a retryable failure. It does not
-prove an orphaned process stopped. This prototype does not kill a process using a
-stale PID after a worker restart, automatically repeat effects, or infer rollback
-from cancellation. Cross-worker recovery needs an owned external runner or
-verified process identity before long-running Dispatch/Workcell workflows can
-make stronger promises.
+### Independent process supervisor
+
+Approved Eval, source/test and starter creation run through the packaged
+`dist/runtime-supervisor.js` process. The supervisor owns the native timeout,
+bounded output and ordinary process-tree termination outside the plugin worker.
+Its private IPC channel accepts one reviewed invocation, cancellation and a
+250-millisecond heartbeat. Channel closure or five seconds without a heartbeat
+aborts the native command. On POSIX the supervisor is outside the worker's process
+group, so an abrupt worker-group kill does not prevent this cleanup. This is a
+per-invocation child, with no daemon, port, runtime download or new host capability.
+
+The worker accepts a terminal response only after the supervisor exits cleanly.
+Missing, malformed or lost supervisor responses remain unconfirmed. Public
+execution limits and human approval remain unchanged. The private supervisor's
+larger bound is not a public long-running workflow API.
+
+An expired database owner lease still produces `uncertain`, not a retryable
+failure. It does not prove process termination. A worker crash can lose the
+terminal response even when the supervisor stops the native process. Recovery
+never kills a stale PID, repeats effects automatically or infers rollback. A
+crash/kill of the supervisor itself, whole-host failure, deliberate process-group
+escape and background processes that outlive a completed native command remain
+outside this guarantee. Dispatch replay and durable external job reconciliation
+still require their own integration and evidence.
 
 Preparation is bounded to five seconds and receives an abort signal; late private
 snapshots are disposed without being executed. The process runs shell-free with

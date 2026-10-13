@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { build } from "esbuild";
 import { randomUUID } from "node:crypto";
-import { access, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { access, copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
@@ -287,7 +287,9 @@ describe("human-bound persistent execution foundation", () => {
 
   it("preserves approval and terminal receipts across separate process restarts", async () => {
     const f = await fixture();
-    const bundle = join(f.cwd, "coordinator.mjs");
+    await mkdir(join(f.cwd, "dist"));
+    await copyFile(join(process.cwd(), "dist/runtime-supervisor.js"), join(f.cwd, "dist/runtime-supervisor.js"));
+    const bundle = join(f.cwd, "dist/coordinator.mjs");
     await build({ entryPoints: [fileURLToPath(new URL("../src/execution/coordinator.ts", import.meta.url))], outfile: bundle, bundle: true, platform: "node", format: "esm", logLevel: "silent" });
     await writeFile(join(f.cwd, "request.json"), JSON.stringify(request));
     await writeFile(join(f.cwd, "migration.sql"), (await readFile(new URL("../migrations/002_execution.sql", import.meta.url), "utf8")) + "\n" + (await readFile(new URL("../migrations/003_execution_limits.sql", import.meta.url), "utf8")));

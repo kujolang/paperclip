@@ -1,6 +1,7 @@
 import { build } from "esbuild";
 import { rm } from "node:fs/promises";
 import { createPluginBundlerPresets } from "@paperclipai/plugin-sdk/bundlers";
+import { buildRuntimeSupervisor } from "./scripts/build-runtime-supervisor.mjs";
 
 const presets = createPluginBundlerPresets({
   pluginRoot: import.meta.dirname,
@@ -14,6 +15,7 @@ const worker = {
 
 await rm(new URL("./dist", import.meta.url), { recursive: true, force: true });
 await Promise.all([
+  buildRuntimeSupervisor(),
   build(worker),
   build(presets.esbuild.manifest),
   ...(presets.esbuild.ui ? [build(presets.esbuild.ui)] : []),

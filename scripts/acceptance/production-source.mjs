@@ -21,6 +21,7 @@ export async function qualifyProductionSource({ call, companyId, projectId, issu
   assert.match((await action("start", { id: prepared.id }, { status: 502 })).message, /human approval/);
   await accept(prepared);
   const receipt = (await action("start", { id: prepared.id })).data;
+  if (receipt.state !== "succeeded") await json("source-first-outcome.json", { state: receipt.state, diagnostic: receipt.diagnostic, result: receipt.result });
   assert.equal(receipt.state, "succeeded"); assert.equal(receipt.result.stdout, "host-approved source\n");
   assert.equal(receipt.history.status, "retained"); assert.equal(receipt.abilityReceipt.ability_id, "kujo.paperclip.source.execute");
   assert.equal(receipt.ownerId, undefined); assert.equal(receipt.claimId, undefined);

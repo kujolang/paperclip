@@ -264,6 +264,12 @@ a canonical Paperclip workspace, a timeout, and output caps. Review and Context 
 commands are read-only. Failure Evidence records supplied text and never exposes a
 command runner.
 
+Approved executions use a separate, bundled process supervisor. It retains the
+native timeout and stops ordinary owned processes if the plugin worker dies or
+misses its heartbeat. Lost results remain uncertain and never authorize a retry.
+This is a prerequisite for durable workflows; public runs still have their
+27-second limit. See [ownership and recovery](docs/EXECUTION.md#ownership-and-recovery).
+
 ## Develop
 
 ```bash

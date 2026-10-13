@@ -18,6 +18,7 @@ for (const required of [
   "bundled/ability-catalog/abilities.json",
   "bundled/ability-catalog/profiles.json",
   "dist/worker.js",
+  "dist/runtime-supervisor.js",
   "dist/ui/index.js",
   "migrations/001_evidence.sql",
   "migrations/002_execution.sql",

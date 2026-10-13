@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { z } from "zod";
 import { canonicalJson, evidenceDigest } from "../storage/history.js";
-import { executeKujo } from "../runtime/execute-kujo.js";
+import { executeSupervisedKujo } from "../runtime/supervised-kujo.js";
 import { KujoPluginError } from "../runtime/errors.js";
 import { redactText } from "../features/failure/redact.js";
 import { executionLedger } from "./ledger.js";
@@ -226,7 +226,7 @@ export function createExecutionCoordinator(ctx: PluginContext, adapter: Executio
             return await current(scope, id);
           }
           enteredProcess = true;
-          const output = await executeKujo({ ...materialized.invocation, signal: controller.signal, timeoutMs: record.request.plan.timeoutMs, maxStdoutBytes: record.request.plan.maxStdoutBytes ?? 500_000, maxStderrBytes: record.request.plan.maxStderrBytes ?? 64_000 });
+          const output = await executeSupervisedKujo({ ...materialized.invocation, signal: controller.signal, timeoutMs: record.request.plan.timeoutMs, maxStdoutBytes: record.request.plan.maxStdoutBytes ?? 500_000, maxStderrBytes: record.request.plan.maxStderrBytes ?? 64_000 });
           const result = redactedResult(await materialized.collect(output));
           await ledger.finish(scope, id, ownerId, claimId, output.exitCode === 0 ? "succeeded" : "failed", result, null);
         }
