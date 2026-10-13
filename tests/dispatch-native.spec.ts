@@ -27,13 +27,13 @@ async function fixture() {
 }
 const posix = process.platform === "darwin" || process.platform === "linux";
 describe.skipIf(!posix)("bundled canonical Dispatch", () => {
-  it("lists templates and recovers an offline paused run without loading workspace modules", async () => {
+  it.each(["research-report", "crud-reliability", "approval-handoff"] as const)("recovers a %s offline paused run without loading workspace modules", async (template) => {
     const f = await fixture();
     await mkdir(join(f.nativeRoot, "src/cli"), { recursive: true });
     await writeFile(join(f.nativeRoot, "src/cli/cli_args.kujo"), 'write_file("shadow-executed", "bad")\nthrow("workspace import selected")\n');
     const templates = await f.invoke({ operation: "templates" }); expect(templates.exitCode).toBe(0);
     expect(JSON.parse(templates.stdout).templates.map((t: { template_id: string }) => t.template_id)).toEqual(["research-report", "crud-reliability", "approval-handoff"]);
-    const started = await f.invoke({ operation: "start-fixture", template: "approval-handoff", topic: "Bundled Paperclip workflow" }); expect(started.exitCode, started.stderr).toBe(0);
+    const started = await f.invoke({ operation: "start-fixture", template, topic: "Bundled Paperclip workflow" }); expect(started.exitCode, started.stderr).toBe(0);
     const runs = await f.invoke({ operation: "runs" }); expect(runs.exitCode, runs.stderr).toBe(0);
     const listed = JSON.parse(runs.stdout);
     const run = listed.runs[0]; expect(run.status).toBe("paused");

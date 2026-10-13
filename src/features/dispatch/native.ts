@@ -51,7 +51,7 @@ export async function prepareDispatchInvocation(input: {
   const store = await openWorkflowStorage(input.storageRoot);
   const { nativeRoot } = await store.recover(storageBinding);
   const component = await resolveComponent("dispatch");
-  const binding = Object.freeze({ commandDigest: evidenceDigest(command), componentDigest: evidenceDigest({ commit: component.gitCommit, checksums: component.checksums }), runtimeDigest: sha(await readFile(runtime.executable)), policyDigest: evidenceDigest(policy) });
+  const binding = Object.freeze({ commandDigest: evidenceDigest(command), componentDigest: evidenceDigest({ id: component.id, version: component.version, entrypoint: component.entrypoint, commit: component.gitCommit, files: component.files, checksums: component.checksums }), runtimeDigest: sha(await readFile(runtime.executable)), policyDigest: evidenceDigest(policy) });
   const directory = await realpath(await mkdtemp(join(tmpdir(), "kujo-dispatch-code-")));
   try {
     for (const path of component.files) {
