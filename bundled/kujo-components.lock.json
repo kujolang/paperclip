@@ -129,6 +129,39 @@
           "schema": "schemas/context-pack.schema.json"
         }
       ]
+    },
+    {
+      "id": "scout",
+      "repository": "https://github.com/kujolang/scout",
+      "gitCommit": "f3a874fa0e95e26c52ef9ec4d23b0f52d8372089",
+      "version": "1.1.0",
+      "license": "MIT",
+      "entrypoint": "scout.kujo",
+      "files": [
+        "LICENSE",
+        "scout.kujo",
+        "lib/scout_runtime.kujo",
+        "lib/path_filters.kujo",
+        "lib/sorting.kujo",
+        "lib/security_exports.kujo",
+        "lib/text_scan.kujo"
+      ],
+      "checksums": {
+        "LICENSE": "4b6449939f8dce26dc5fb87756740a5977da9085517af127d9e634e6a6492506",
+        "scout.kujo": "1e0f4aa15b80fc5689132783261d00bb551ef79d5eed56aaa9cffef97c9e3e87",
+        "lib/scout_runtime.kujo": "9dcfc45d1ea60c0c25f255beb702144cb10995de99019ef23ea5f59f327f81d0",
+        "lib/path_filters.kujo": "815df4d7531c3b1b325ffea2daf28a304341268fed4865be3ee3e08a971d1826",
+        "lib/sorting.kujo": "e0a0fbfbc9befa6564870f84d580cde65d95804e18f8aebf809ea15ab9e68465",
+        "lib/security_exports.kujo": "5f4efe409ac422d2c5529d516570832cc42c40a9e9576ddb4c97545832f6209a",
+        "lib/text_scan.kujo": "b0af04255e3fd1e3f4eca227450ed6a61f9cd59736bbcbd380889d5a1479bc90"
+      },
+      "outputContracts": [
+        {
+          "name": "intelligence",
+          "format": "json",
+          "schema": "schemas/repository-understanding.schema.json"
+        }
+      ]
     }
   ]
 }

@@ -99,6 +99,30 @@
           "schema": "schemas/context-pack.schema.json"
         }
       ]
+    },
+    {
+      "id": "scout",
+      "repository": "https://github.com/kujolang/scout",
+      "sourceDirectory": "scout",
+      "gitCommit": "f3a874fa0e95e26c52ef9ec4d23b0f52d8372089",
+      "version": "1.1.0",
+      "entrypoint": "scout.kujo",
+      "files": [
+        "LICENSE",
+        "scout.kujo",
+        "lib/scout_runtime.kujo",
+        "lib/path_filters.kujo",
+        "lib/sorting.kujo",
+        "lib/security_exports.kujo",
+        "lib/text_scan.kujo"
+      ],
+      "outputContracts": [
+        {
+          "name": "intelligence",
+          "format": "json",
+          "schema": "schemas/repository-understanding.schema.json"
+        }
+      ]
     }
   ]
 }
