@@ -11,6 +11,8 @@ import { evidenceDigest } from "../../src/storage/history.js";
 import { resolveWorkspace } from "../../src/paperclip/workspace.js";
 import { resolveKujo } from "../../src/runtime/resolve-kujo.js";
 import { parsePluginConfig } from "../../src/config/schema.js";
+import { prepareNativeEval } from "../../src/features/eval/native.js";
+import type { ResolvedRuntime } from "../../src/runtime/types.js";
 import { removeTree } from "../../src/runtime/files.js";
 
 const programs = {
@@ -19,13 +21,24 @@ const programs = {
 } as const;
 const fixtureDigest = (mode: keyof typeof programs) => evidenceDigest({ fixture: programs[mode], version: 1 });
 const runtimeDigest = async (executable: string) => createHash("sha256").update(await readFile(executable)).digest("hex");
+const evalFixture = (runtime: ResolvedRuntime, fail: boolean) => prepareNativeEval({ runtime, suite: fail ? "eval-fail.json" : "eval.json", files: [
+  { path: "answer.json", content: '{"answer":42}' },
+  { path: fail ? "eval-fail.json" : "eval.json", content: JSON.stringify({ name: "Authenticated canonical Eval fixture", tests: [
+    { name: "answer", check: "json_value_equals", params: { path: "answer.json", json_path: "answer", expected: fail ? 41 : 42 } },
+  ] }) },
+] });
 let shutdown: (() => Promise<void>) | undefined;
 const plugin = definePlugin({
   async setup(ctx) {
     const config = parsePluginConfig({});
     const service = createExecutionCoordinator(ctx, {
-      async materialize(scope, plan) {
+      async materialize(scope, plan, signal) {
         const workspace = await resolveWorkspace(ctx, { entityType: "issue", entityId: scope.issueId, companyId: scope.companyId });
+        if (workspace.id !== plan.workspaceId || workspace.projectId !== plan.projectId || plan.workspaceDigest !== evidenceDigest({ id: workspace.id, path: workspace.path })) return null;
+        if (plan.suite === "eval.json" || plan.suite === "eval-fail.json") {
+          const runtime = await resolveKujo(config, workspace.path);
+          return await (await evalFixture(runtime, plan.suite === "eval-fail.json")).materialize(plan, signal);
+        }
         const mode = plan.suite === "slow" ? "slow" : "complete";
         if (workspace.id !== plan.workspaceId || workspace.projectId !== plan.projectId || plan.inputDigest !== fixtureDigest(mode) || plan.workspaceDigest !== evidenceDigest({ id: workspace.id, path: workspace.path })) return null;
         const directory = await mkdtemp(join(tmpdir(), "kujo-live-approval-"));
@@ -42,15 +55,16 @@ const plugin = definePlugin({
     ctx.actions.register("prepare-fixture", async (raw, actor) => {
       if (!actor.companyId || actor.actor.type !== "user" || !actor.actor.userId || actor.actor.companyId !== actor.companyId) throw new Error("Authenticated board user required for acceptance setup");
       const { companyId: _companyId, renderEnvironment: _renderEnvironment, ...input } = raw;
-      const value = z.object({ issueId: z.string(), submissionId: z.string(), mode: z.enum(["complete", "slow"]).default("complete") }).strict().parse(input);
+      const value = z.object({ issueId: z.string(), submissionId: z.string(), mode: z.enum(["complete", "slow", "eval", "eval-fail"]).default("complete") }).strict().parse(input);
       const workspace = await resolveWorkspace(ctx, { entityType: "issue", entityId: value.issueId, companyId: actor.companyId });
-      const planDigest = fixtureDigest(value.mode);
+      const planDigest = fixtureDigest(value.mode === "slow" ? "slow" : "complete");
       const runtime = await resolveKujo(config, workspace.path);
+      const evaluation = value.mode === "eval" || value.mode === "eval-fail" ? await evalFixture(runtime, value.mode === "eval-fail") : null;
       return await service.prepare({ companyId: actor.companyId, issueId: value.issueId }, value.submissionId, {
         requester: { kind: "human", id: actor.actor.userId },
-        plan: { operation: "eval.run", suite: value.mode, summary: "Acceptance fixture only: execute a fixed bundled Kujo program and retain its output. No project code is executed.",
-          projectId: workspace.projectId, workspaceId: workspace.id, effects: ["write_reports"], inputDigest: planDigest,
-          workspaceDigest: evidenceDigest({ id: workspace.id, path: workspace.path }), definitionDigest: planDigest, componentDigest: planDigest, runtimeDigest: await runtimeDigest(runtime.executable), policyDigest: planDigest, timeoutMs: value.mode === "slow" ? 15000 : 5000 },
+        plan: { operation: "eval.run", suite: evaluation?.suite ?? value.mode, summary: evaluation?.summary ?? "Acceptance fixture only: execute a fixed bundled Kujo program and retain its output. No project code is executed.",
+          projectId: workspace.projectId, workspaceId: workspace.id, effects: evaluation?.effects ?? ["write_reports"], inputDigest: planDigest,
+          workspaceDigest: evidenceDigest({ id: workspace.id, path: workspace.path }), definitionDigest: planDigest, componentDigest: planDigest, runtimeDigest: await runtimeDigest(runtime.executable), policyDigest: planDigest, timeoutMs: value.mode === "slow" ? 15000 : 5000, ...(evaluation?.binding ?? {}) },
       });
     });
     for (const operation of ["status", "start", "cancel"] as const) ctx.actions.register(`${operation}-fixture`, async (raw, actor) => {
