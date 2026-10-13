@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "bundleVersion": "0.7.0",
+  "bundleVersion": "0.8.0",
   "runtime": {
     "minimumVersion": "1.8.1"
   },
@@ -285,6 +285,25 @@
           "schema": "schema/evaluation-result.schema.json"
         }
       ]
+    },
+    {
+      "id": "kennel",
+      "repository": "https://github.com/kujolang/kennel",
+      "sourceDirectory": "kennel",
+      "gitCommit": "ebe7094c32b58f6a92f7ce127ac5cb5ba4c1acc6",
+      "version": "1.1.1",
+      "entrypoint": "src/validator.kujo",
+      "files": [
+        "LICENSE",
+        "src/validator.kujo",
+        "src/manifest.kujo",
+        "src/lockfile.kujo",
+        "src/dependency_spec.kujo",
+        "src/utils.kujo",
+        "dependency_spec.kujo",
+        "manifest.kujo"
+      ],
+      "outputContracts": []
     }
   ]
 }

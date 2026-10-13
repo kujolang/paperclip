@@ -1,0 +1,329 @@
+func dict_get_or(obj, lookup_key, default_value) {
+	if type(obj) != "dict" {
+		return default_value
+	}
+	if has_key(obj, lookup_key) {
+		return obj[lookup_key]
+	}
+	return default_value
+}
+
+func clone_dict(values) {
+	if type(values) != "dict" {
+		return {}
+	}
+	cloned := {}
+	for key in keys(values) {
+		cloned[key] := values[key]
+	}
+	return cloned
+}
+
+func clone_array(values) {
+	if type(values) != "array" {
+		return []
+	}
+	cloned := []
+	for value in values {
+		cloned := push(cloned, value)
+	}
+	return cloned
+}
+
+func ensure_dir(path) {
+	if trim(path) == "" {
+		return
+	}
+	if path_exists(path) {
+		return
+	}
+	try {
+		create_dir(path)
+	} except err {
+		# Directory may be created concurrently.
+	}
+}
+
+func write_text_atomic(path, content) {
+	write_file_atomic(path, to_string(content), true)
+	return path
+}
+
+func path_basename(path) {
+	base := basename(path)
+	if ends_with(base, "/") {
+		base := substring(base, 0, len(base) - 1)
+	}
+	return base
+}
+
+func shell_quote(value) {
+	text := to_string(value)
+	return "'" + replace(text, "'", "'\"'\"'") + "'"
+}
+
+func run_shell(command) {
+	result := execute_status(command, {
+		"timeout_ms": 240000,
+		"max_output_bytes": 1024 * 1024 * 8
+	})
+	return result
+}
+
+func command_ok(result) {
+	return result.success && result.exitcode == 0
+}
+
+func trim_or(value, fallback) {
+	if type(value) == "null" {
+		return fallback
+	}
+	text := trim(to_string(value))
+	if text == "" {
+		return fallback
+	}
+	return text
+}
+
+func starts_with_any(value, needles) {
+	for needle in needles {
+		if starts_with(value, needle) {
+			return true
+		}
+	}
+	return false
+}
+
+func is_hex_lower(text) {
+	if trim(text) == "" {
+		return false
+	}
+	allowed := "0123456789abcdef"
+	i := 0
+	while i < len(text) {
+		ch := to_lower(substring(text, i, i + 1))
+		if index_of(allowed, ch) < 0 {
+			return false
+		}
+		i := i + 1
+	}
+	return true
+}
+
+func is_valid_identifier(value) {
+	text := trim(to_string(value))
+	if text == "" {
+		return false
+	}
+	allowed := "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.-"
+	i := 0
+	while i < len(text) {
+		ch := substring(text, i, i + 1)
+		if index_of(allowed, ch) < 0 {
+			return false
+		}
+		i := i + 1
+	}
+	return true
+}
+
+func validate_identifier(value, label) {
+	text := trim(to_string(value))
+	if is_valid_identifier(text) {
+		return {
+			"ok": true,
+			"value": text
+		}
+	}
+	return {
+		"ok": false,
+		"error": label + " must contain only letters, numbers, hyphen, or underscore.",
+		"value": text
+	}
+}
+
+func is_base64_text(value) {
+	text := trim(to_string(value))
+	if text == "" {
+		return false
+	}
+	allowed := "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789+/="
+	i := 0
+	while i < len(text) {
+		ch := substring(text, i, i + 1)
+		if index_of(allowed, ch) < 0 {
+			return false
+		}
+		i := i + 1
+	}
+	if len(text) % 4 != 0 {
+		return false
+	}
+	return true
+}
+
+func is_safe_signing_key(value) {
+	text := trim(to_string(value))
+	if text == "" {
+		return false
+	}
+	allowed := "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._:-/"
+	i := 0
+	while i < len(text) {
+		ch := substring(text, i, i + 1)
+		if index_of(allowed, ch) < 0 {
+			return false
+		}
+		i := i + 1
+	}
+	return true
+}
+
+func parse_checksum(value) {
+	text := trim(to_string(value))
+	parts := split(text, ":")
+	if len(parts) != 2 {
+		return {
+			"ok": false,
+			"error": "Checksum must use canonical algorithm:digest format."
+		}
+	}
+	algorithm := to_lower(trim(parts[0]))
+	digest := to_lower(trim(parts[1]))
+	if algorithm != "sha256" && algorithm != "sha512" {
+		return {
+			"ok": false,
+			"error": "Checksum algorithm must be sha256 or sha512."
+		}
+	}
+	if is_hex_lower(digest) == false {
+		return {
+			"ok": false,
+			"error": "Checksum digest must be lowercase hexadecimal."
+		}
+	}
+	if algorithm == "sha256" && len(digest) != 64 {
+		return {
+			"ok": false,
+			"error": "sha256 checksum digest must be 64 hex characters."
+		}
+	}
+	if algorithm == "sha512" && len(digest) != 128 {
+		return {
+			"ok": false,
+			"error": "sha512 checksum digest must be 128 hex characters."
+		}
+	}
+	return {
+		"ok": true,
+		"algorithm": algorithm,
+		"digest": digest,
+		"normalized": algorithm + ":" + digest
+	}
+}
+
+func is_semver_core(value) {
+	semver_text := trim(to_string(value))
+	if starts_with(semver_text, "v") || starts_with(semver_text, "V") {
+		semver_text = substring(semver_text, 1, len(semver_text))
+	}
+	parts := split(semver_text, ".")
+	if len(parts) != 3 {
+		return false
+	}
+	for part in parts {
+		if part == "" {
+			return false
+		}
+		i := 0
+		while i < len(part) {
+			ch := substring(part, i, i + 1)
+			if ch < "0" || ch > "9" {
+				return false
+			}
+			i = i + 1
+		}
+	}
+	return true
+}
+
+func parse_ref_kind(value) {
+	text := trim(to_string(value))
+	if text == "" {
+		return {
+			"kind": "none",
+			"value": ""
+		}
+	}
+	if starts_with(text, "^") || starts_with(text, "~") || starts_with(text, ">") || starts_with(text, "<") || starts_with(text, "=") || index_of(text, " ") >= 0 || index_of(text, ",") >= 0 || index_of(text, "*") >= 0 {
+		return {
+			"kind": "range",
+			"value": text
+		}
+	}
+	if len(text) >= 7 && is_hex_lower(text) {
+		return {
+			"kind": "commit",
+			"value": text
+		}
+	}
+	if is_semver_core(text) {
+		return {
+			"kind": "version",
+			"value": text
+		}
+	}
+	return {
+		"kind": "ref",
+		"value": text
+	}
+}
+
+func to_pretty_json(value) {
+	return to_json(value)
+}
+
+func is_truthy_string(value) {
+	text := to_lower(trim(to_string(value)))
+	return text == "1" || text == "true" || text == "yes" || text == "y"
+}
+
+func insert_sorted_by_name(items, item) {
+	inserted := false
+	result := []
+	item_name := to_lower(to_string(dict_get_or(item, "name", "")))
+	for existing in items {
+		existing_name := to_lower(to_string(dict_get_or(existing, "name", "")))
+		if inserted == false && item_name < existing_name {
+			result := push(result, item)
+			inserted := true
+		}
+		result := push(result, existing)
+	}
+	if inserted == false {
+		result := push(result, item)
+	}
+	return result
+}
+
+export dict_get_or := dict_get_or
+export clone_dict := clone_dict
+export clone_array := clone_array
+export ensure_dir := ensure_dir
+export write_text_atomic := write_text_atomic
+export path_basename := path_basename
+export shell_quote := shell_quote
+export run_shell := run_shell
+export command_ok := command_ok
+export trim_or := trim_or
+export starts_with_any := starts_with_any
+export is_hex_lower := is_hex_lower
+export is_valid_identifier := is_valid_identifier
+export validate_identifier := validate_identifier
+export is_base64_text := is_base64_text
+export is_safe_signing_key := is_safe_signing_key
+export parse_checksum := parse_checksum
+export parse_ref_kind := parse_ref_kind
+export to_pretty_json := to_pretty_json
+export is_truthy_string := is_truthy_string
+export insert_sorted_by_name := insert_sorted_by_name

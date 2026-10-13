@@ -438,3 +438,38 @@ test("Pending publication offers refresh without starting an evaluation", async 
   await page.getByRole("button", { name: "Refresh requests", exact: true }).click();
   expect(await page.evaluate(() => window.__KUJO_ACTIONS__?.filter(item => (item.input as { operation?: string }).operation === "start"))).toHaveLength(0);
 });
+
+test("package inspection explains declaration-only scope and records on narrow screens", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 1000 });
+  await page.goto("/?surface=task&entity=issue&packages=report");
+  const panel = page.getByRole("region", { name: "Kujo packages", exact: true });
+  await expect(panel.getByText(/STALE — inspect again/)).toBeVisible();
+  await expect(panel.getByText(/file:\.\.\/local/)).toBeVisible();
+  await expect(panel.getByText(/not verification that packages are installed or trustworthy/)).toBeVisible();
+  await panel.getByRole("button", { name: "Inspect packages", exact: true }).click();
+  expect(await page.evaluate(() => window.__KUJO_ACTIONS__?.find(item => item.action === "inspect-kujo-packages")?.input)).toEqual({ entityType: "issue", entityId: "issue-fixture", path: "kennel.toml" });
+  await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  await panel.screenshot({ path: test.info().outputPath("package-inspection.png") });
+});
+
+test("package inspector handles empty projects, runtime failures and profile/run restrictions", async ({ page }) => {
+  await page.goto("/?packages=empty");
+  await expect(page.getByText(/Add a kennel.toml package manifest/)).toBeVisible();
+  await expect(page.getByRole("button", { name: "Inspect packages", exact: true })).toBeDisabled();
+  await page.goto("/?packages=report&runtime=broken");
+  await expect(page.getByRole("button", { name: "Inspect packages", exact: true })).toBeDisabled();
+  for (const query of ["entity=run", "profile=review"]) {
+    await page.goto(`/?packages=report&${query}`);
+    await expect(page.getByRole("region", { name: "Kujo packages", exact: true })).toHaveCount(0);
+  }
+});
+
+test("delayed package errors cannot cross company navigation", async ({ page }) => {
+  await page.goto("/?packages=report");
+  await page.evaluate(() => { window.__KUJO_DELAY_PACKAGES__ = true; });
+  await page.getByRole("button", { name: "Inspect packages", exact: true }).click();
+  await expect.poll(() => page.evaluate(() => Boolean(window.__KUJO_RESOLVE_PACKAGES__))).toBe(true);
+  await page.evaluate(() => window.__KUJO_NAVIGATE__?.("other-company"));
+  await page.evaluate(() => window.__KUJO_RESOLVE_PACKAGES__?.());
+  await expect(page.getByText("private delayed package result")).toHaveCount(0);
+});

@@ -1,0 +1,7 @@
+from src.dependency_spec import source_ref_from_dependency_declaration, parse_source_reference, source_ref_from_dependency_entry, dependency_entry_from_source
+
+export parse_source_reference := parse_source_reference
+export source_ref_from_dependency_entry := source_ref_from_dependency_entry
+export dependency_entry_from_source := dependency_entry_from_source
+
+export source_ref_from_dependency_declaration := source_ref_from_dependency_declaration

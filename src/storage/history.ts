@@ -9,7 +9,7 @@ export const EVIDENCE_NAMESPACE = "plugin_kujo_evidence_c15d42de56";
 export const HISTORY_LIMIT = 20;
 export const HISTORY_DAYS = 30;
 export const LEGACY_ARTIFACT_KINDS = ["review-latest", "context-latest", "failure-latest", "understand-latest", "language-latest", "verification-latest", "spec-latest", "fence-latest", "concord-latest", "shipcheck-latest"] as const;
-export const ARTIFACT_KINDS = [...LEGACY_ARTIFACT_KINDS, "evaluation-plan", "evaluation-result"] as const;
+export const ARTIFACT_KINDS = [...LEGACY_ARTIFACT_KINDS, "packages-latest", "evaluation-plan", "evaluation-result"] as const;
 export type ArtifactKind = typeof ARTIFACT_KINDS[number];
 export type ReceiptOptions = { inputs?: unknown; definition?: unknown; parentId?: string; legacy?: boolean; projection?: ProjectionReceipt };
 export const evidenceMetadataSchema = z.object({
@@ -35,6 +35,7 @@ export function canonicalJson(value: unknown): string {
 }
 export function evidenceDigest(value: unknown) { return createHash("sha256").update(canonicalJson(value)).digest("hex"); }
 function resultLabel(kind: ArtifactKind, payload: Record<string, unknown>) {
+  if (kind === "packages-latest") return `package inspection ${payload.status}`;
   if (kind === "shipcheck-latest") return `release signals ${payload.status}`;
   if (kind === "concord-latest") return `artifact drift ${payload.status}`;
   if (kind === "fence-latest") return `architecture ${payload.status}`;
@@ -134,6 +135,8 @@ export function compareEvidence(left: Awaited<ReturnType<typeof getEvidence>>, r
     const intelligence = payload.intelligence as Record<string, unknown> | undefined;
     const contract = payload.contract as Record<string, unknown> | null | undefined;
     return { executionState: payload.executionState, nativeChecks: ((payload.evaluation as Record<string, unknown> | null)?.result as Record<string, unknown> | undefined)?.checks, classification: payload.classification, sourceKind: payload.sourceKind, claimedChecks: (payload.result as Record<string, unknown> | undefined)?.checks, check: payload.check, lint: payload.lint, status: payload.status, staleAtCreation: payload.stale,
+      declaredDependencies: payload.dependencyCount, lockStatus: (payload.lock as Record<string, unknown> | undefined)?.status,
+      lockRecords: (payload.lock as Record<string, unknown> | undefined)?.count, truncated: payload.truncated,
       contractValidation: (payload.validation as Record<string, unknown> | undefined)?.status,
       acceptanceCriteria: Array.isArray(contract?.criteria) ? contract.criteria.length : undefined,
       declaredChecks: Array.isArray(contract?.checks) ? contract.checks.length : undefined,

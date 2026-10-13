@@ -1601,5 +1601,83 @@
         "executes_code": true
       }
     }
+  },
+  {
+    "exportName": "packageTool",
+    "id": "kujo.paperclip.packages.inspect",
+    "feature": "language",
+    "canonicalIds": [
+      "kujo.kennel.project.validate"
+    ],
+    "components": [
+      "kennel"
+    ],
+    "profiles": [
+      "build"
+    ],
+    "tool": {
+      "name": "inspect-kujo-packages",
+      "displayName": "Inspect Kujo Packages",
+      "description": "Inspect a Git-visible Kennel manifest and adjacent lockfile using canonical offline parsing and manifest validation. Does not resolve, install, verify installed bytes, access the network or run project code.",
+      "parametersSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "path": {
+            "type": "string",
+            "default": "kennel.toml",
+            "minLength": 1,
+            "maxLength": 1000,
+            "description": "Git-visible kennel.toml path relative to the host workspace."
+          }
+        }
+      }
+    },
+    "definition": {
+      "schema": "kujo.ability/v1",
+      "id": "kujo.paperclip.packages.inspect",
+      "version": "1.0.0",
+      "title": "Inspect Kujo Packages",
+      "description": "Inspect a Git-visible Kennel manifest and adjacent lockfile using canonical offline parsing and manifest validation. Does not resolve, install, verify installed bytes, access the network or run project code.",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "path": {
+            "type": "string",
+            "default": "kennel.toml",
+            "minLength": 1,
+            "maxLength": 1000,
+            "description": "Git-visible kennel.toml path relative to the host workspace."
+          }
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "additionalProperties": true
+      },
+      "effects": [
+        {
+          "kind": "read",
+          "resource": "paperclip.workspace.package-manifests"
+        },
+        {
+          "kind": "write",
+          "resource": "kujo.paperclip.evidence"
+        },
+        {
+          "kind": "write",
+          "resource": "kujo.paperclip.activity"
+        }
+      ],
+      "idempotency": {
+        "mode": "intrinsic"
+      },
+      "semantics": {
+        "open_world": false,
+        "destructive": false,
+        "executes_code": false
+      }
+    }
   }
 ]

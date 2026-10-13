@@ -66,19 +66,27 @@ Kujo retains up to 20 results per company/entity for 30 days in its Paperclip da
 | **Artifact drift** | Compares documentation, metadata, examples and contracts; reports experimental drift leads and coverage. | Concord |
 | **Architecture boundaries** | Checks import boundaries against Fence policy and reports findings, coverage and the configured failure threshold. | Fence |
 | **Task contracts** | Validates a declared task contract and shows acceptance criteria and checks as not-run. | Spec |
+| **Package inspection** | Validates Kennel declarations and parses adjacent lock records without resolving or installing dependencies. | Kennel |
 | **Kujo source tools** | Checks and lints a selected source file; previews formatting without applying changes. | Kujo runtime |
 | **Repository understanding** | Maps project structure, languages, dependencies, routes and heuristic observations; shows partial scans explicitly. | Scout |
 | **Context Pack** | Selects a small, task-specific set of files before an agent reads broadly. | Scent |
 | **Review Pack** | Measures change size, explains risk signals, and prepares a review handoff. | ChangeBucket and PatchBrief |
 | **Failure Evidence** | Turns supplied command details and logs into a bounded, redacted record. | CaseFile |
 
-The ten component snapshots are pinned, checksummed, and shipped with the plugin. The
+The eleven component snapshots are pinned, checksummed, and shipped with the plugin. The
 plugin does not download component code while installing or running. The Eval snapshot
 provides human-approved execution on issue workspaces.
 
 ## Build with Kujo
 
 Select a Git-visible `.kujo` file in **Build with Kujo**, then choose **Check and lint source** or **Preview formatting**. Diagnostics identify the file and location. Formatting shows the redacted original and proposed output without applying changes. These are single-file source checks; they do not execute project code or establish that imports, project tests, or runtime behavior work. Files are limited to 64 KiB, and each source operation has a bounded runtime window.
+
+Select a Git-visible `kennel.toml` in **Kujo packages**, then choose **Inspect packages**.
+The panel shows canonical validation errors and warnings, declared sources and
+selectors, and adjacent lockfile records. It does not install dependencies or
+verify installed bytes, lock digests, source availability or dependency compatibility.
+Local dependency paths remain declarations and are never followed. Missing,
+unreadable, malformed or unsupported lockfiles are explicit. See [package inspection](docs/USAGE.md#inspect-kujo-packages) for bounds and retained evidence.
 
 ## Evidence history
 
@@ -129,13 +137,13 @@ The same setting lets you import `kujo.evaluation-result/v1` JSON, including Eva
 
 **Explore Kujo** shows the installed Paperclip adapters, feature/profile selection, platform support, runtime readiness and call-time authorization boundary. Expand the canonical catalog to discover 38 reviewed Kujo Ability definitions. Entries marked **Not integrated yet** are discovery references; their presence does not install a tool or make it executable.
 
-The default `installed` profile preserves all existing tools. Optional `essentials`, `review`, `ship` and `full` selections use the pinned canonical profile memberships; `build` selects Paperclip's source, context and repository-understanding tools. Feature switches still apply. Change the company profile in plugin settings. No profile grants execution approval.
+The default `installed` profile preserves all existing tools. Optional `essentials`, `review`, `ship` and `full` selections use the pinned canonical profile memberships; `build` selects Paperclip's source, package inspection, context and repository-understanding tools. Feature switches still apply. Change the company profile in plugin settings. No profile grants execution approval.
 
 The plugin ships pinned, checksummed Ability contracts/catalogs and generates its manifest tool declarations from reviewed Paperclip projections. Canonical local path/output parameters are not passed through: Paperclip resolves company/workspace identity and retains its own evidence. See [Ability integration](docs/ABILITIES.md).
 
 ## Agent tools
 
-Paperclip agents can call sixteen tools:
+Paperclip agents can call seventeen tools:
 
 | Tool | Use |
 | --- | --- |
@@ -148,6 +156,7 @@ Paperclip agents can call sixteen tools:
 | `kujolang.paperclip:list-capabilities` | Discover scoped tool readiness, profiles and optional ecosystem integrations. |
 | `kujolang.paperclip:list-evidence` | List retained receipts in the current project or run. |
 | `kujolang.paperclip:get-evidence` | Read one redacted export, bounded to 64 KiB. |
+| `kujolang.paperclip:inspect-kujo-packages` | Inspect a Git-visible Kennel manifest and adjacent lockfile without resolution, installation or project execution. |
 | `kujolang.paperclip:check-kujo-source` | Check and lint one eligible project-relative `.kujo` source. |
 | `kujolang.paperclip:preview-kujo-format` | Explicitly read and preview redacted formatting without writing files. |
 | `kujolang.paperclip:understand-repository` | Inspect the host-resolved repository without accepting a caller path or changing project files. |

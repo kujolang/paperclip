@@ -1,0 +1,235 @@
+from src.utils import dict_get_or, path_basename, write_text_atomic
+
+MANIFEST_FILENAME := "kennel.toml"
+
+func default_manifest(project_name) {
+	return {
+		"package": {
+			"name": project_name,
+			"version": "0.1.0",
+			"description": "",
+			"license": "",
+			"authors": [],
+			"homepage": "",
+			"repository": "",
+			"documentation": "",
+			"keywords": [],
+			"categories": [],
+			"readme": "README.md",
+			"status": {
+				"stage": "production",
+				"stability": "stable",
+				"public_api": true,
+				"notes": "This package follows production support expectations."
+			},
+			"exports": {},
+			"metadata": {}
+		},
+		"kujo": {
+			"minimum_version": "0.1.0",
+			"entry": "",
+			"sources": ["."],
+			"includes": ["README.md"],
+			"excludes": [".git", "kennel_packages", "dist", "build", "node_modules"]
+		},
+		"build": {
+			"command": "",
+			"output": "dist",
+			"artifacts": []
+		},
+		"dependencies": {},
+		"dev-dependencies": {},
+		"scripts": {},
+		"registry": {
+			"index": "",
+			"publish": "",
+			"mirrors": []
+		},
+		"policy": {
+			"source": {
+				"strict_mutable_refs": false,
+				"allow_mutable_refs": false
+			},
+			"resolution": {
+				"semver_ranges": false
+			}
+		},
+		"trust": {
+			"checksum": "",
+			"signature": "",
+			"signing_key": ""
+		}
+	}
+}
+
+func infer_project_name(cwd) {
+	base := path_basename(cwd)
+	if trim(base) == "" {
+		return "kujo-package"
+	}
+	return replace(to_lower(base), " ", "-")
+}
+
+func manifest_path(cwd) {
+	return cwd + "/" + MANIFEST_FILENAME
+}
+
+func load_manifest(cwd) {
+	path := manifest_path(cwd)
+	if file_exists(path) == false {
+		return {
+			"ok": false,
+			"error": "Could not find kennel.toml in the current directory. Run `kennel init` first."
+		}
+	}
+	raw := read_file(path)
+	try {
+		parsed := parse_toml(raw)
+		return {
+			"ok": true,
+			"manifest": parsed,
+			"path": path
+		}
+	} except err {
+		return {
+			"ok": false,
+			"error": "Invalid kennel.toml: " + to_string(err)
+		}
+	}
+}
+
+func save_manifest(cwd, manifest_obj) {
+	path := manifest_path(cwd)
+	raw := to_toml(manifest_obj)
+	write_text_atomic(path, raw)
+	return path
+}
+
+func ensure_manifest_shape(manifest_obj) {
+	manifest := manifest_obj
+	if has_key(manifest, "package") == false {
+		manifest["package"] := {}
+	}
+	if has_key(manifest, "dependencies") == false {
+		manifest["dependencies"] := {}
+	}
+	if has_key(manifest, "dev-dependencies") == false {
+		manifest["dev-dependencies"] := {}
+	}
+	if has_key(manifest, "scripts") == false {
+		manifest["scripts"] := {}
+	}
+	if has_key(manifest, "kujo") == false {
+		manifest["kujo"] := {}
+	}
+	registry_section := dict_get_or(manifest, "registry", {})
+	if type(registry_section) != "dict" {
+		registry_section := {}
+	}
+	mirrors_section := dict_get_or(registry_section, "mirrors", [])
+	if type(mirrors_section) != "array" {
+		mirrors_section := []
+	}
+	registry_section["mirrors"] := mirrors_section
+	manifest["registry"] := registry_section
+	policy_section := {}
+	if has_key(manifest, "policy") {
+		existing_policy := manifest["policy"]
+		if type(existing_policy) == "dict" {
+			policy_section = existing_policy
+		}
+	}
+	source_policy := {}
+	if has_key(policy_section, "source") {
+		existing_source_policy := policy_section["source"]
+		if type(existing_source_policy) == "dict" {
+			source_policy = existing_source_policy
+		}
+	}
+	if has_key(source_policy, "strict_mutable_refs") == false {
+		source_policy["strict_mutable_refs"] := false
+	}
+	if has_key(source_policy, "allow_mutable_refs") == false {
+		source_policy["allow_mutable_refs"] := false
+	}
+	policy_section["source"] := source_policy
+	resolution_policy := {}
+	if has_key(policy_section, "resolution") {
+		existing_resolution_policy := policy_section["resolution"]
+		if type(existing_resolution_policy) == "dict" {
+			resolution_policy = existing_resolution_policy
+		}
+	}
+	if has_key(resolution_policy, "semver_ranges") == false {
+		resolution_policy["semver_ranges"] := false
+	}
+	policy_section["resolution"] := resolution_policy
+	manifest["policy"] := policy_section
+	if has_key(manifest, "trust") == false {
+		manifest["trust"] := {}
+	}
+	if has_key(manifest["package"], "status") == false {
+		manifest["package"]["status"] := {
+			"stage": "production",
+			"stability": "stable",
+			"public_api": true,
+			"notes": "This package follows production support expectations."
+		}
+	}
+	return manifest
+}
+
+func dependency_map(manifest_obj) {
+	deps := dict_get_or(manifest_obj, "dependencies", {})
+	if type(deps) != "dict" {
+		return {}
+	}
+	return deps
+}
+
+func set_dependency(manifest_obj, dependency_name, dependency_entry) {
+	manifest := ensure_manifest_shape(manifest_obj)
+	deps := dependency_map(manifest)
+	deps[dependency_name] := dependency_entry
+	manifest["dependencies"] := deps
+	return manifest
+}
+
+func remove_dependency(manifest_obj, dependency_name) {
+	manifest := ensure_manifest_shape(manifest_obj)
+	deps := dependency_map(manifest)
+	if has_key(deps, dependency_name) {
+		deps := remove(deps, dependency_name)
+	}
+	manifest["dependencies"] := deps
+	return manifest
+}
+
+func dependency_exists(manifest_obj, dependency_name) {
+	deps := dependency_map(manifest_obj)
+	return has_key(deps, dependency_name)
+}
+
+func manifest_package_name(manifest_obj) {
+	package_section := dict_get_or(manifest_obj, "package", {})
+	return dict_get_or(package_section, "name", "")
+}
+
+func manifest_package_version(manifest_obj) {
+	package_section := dict_get_or(manifest_obj, "package", {})
+	return dict_get_or(package_section, "version", "")
+}
+
+export MANIFEST_FILENAME := MANIFEST_FILENAME
+export default_manifest := default_manifest
+export infer_project_name := infer_project_name
+export manifest_path := manifest_path
+export load_manifest := load_manifest
+export save_manifest := save_manifest
+export ensure_manifest_shape := ensure_manifest_shape
+export dependency_map := dependency_map
+export set_dependency := set_dependency
+export remove_dependency := remove_dependency
+export dependency_exists := dependency_exists
+export manifest_package_name := manifest_package_name
+export manifest_package_version := manifest_package_version

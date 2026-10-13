@@ -4,6 +4,8 @@ export type PluginDetailTabProps = {
 
 declare global {
   interface Window {
+    __KUJO_DELAY_PACKAGES__?: boolean;
+    __KUJO_RESOLVE_PACKAGES__?: () => void;
     __KUJO_DELAY_EVAL__?: boolean;
     __KUJO_RESOLVE_EVAL__?: () => void;
     __KUJO_EVAL_REQUESTS__?: Array<Record<string, unknown>>;
@@ -48,6 +50,10 @@ export function usePluginAction(action: string) {
   return async (input: unknown) => {
     window.__KUJO_ACTIONS__ ??= [];
     window.__KUJO_ACTIONS__.push({ action, input });
+    if (action === "inspect-kujo-packages") {
+      if (window.__KUJO_DELAY_PACKAGES__) { await new Promise<void>(resolve => { window.__KUJO_RESOLVE_PACKAGES__ = resolve; }); throw new Error("private delayed package result"); }
+      return { status: "warnings", reportId: "package-fixture" };
+    }
     if (action === "manage-evaluation") {
       const params = input as { operation: string; suite?: string; id?: string };
       if (window.__KUJO_DELAY_EVAL__) { await new Promise<void>(resolve => { window.__KUJO_RESOLVE_EVAL__ = resolve; }); throw new Error("private delayed Eval result"); }

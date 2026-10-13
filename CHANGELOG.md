@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add offline canonical Kennel package declaration inspection, scoped project/issue UI and agent tool, explicit unverified lock records, and retained redacted evidence. Local dependency paths are never followed; no install or project execution occurs.
+
 - Add frozen canonical Ability identity and portable terminal Eval receipts, preserving native classifications, uncertainty, approval-wait timing and immutable legacy history.
 
 - Retain terminal Eval requests as linked observed plan/outcome evidence, with bounded publication recovery, clear/prune protection, parent-aware exports and assigned-issue agent reads.

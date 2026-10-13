@@ -1,0 +1,110 @@
+from src.utils import dict_get_or, insert_sorted_by_name, write_text_atomic
+
+LOCKFILE_FILENAME := "kennel.lock"
+LOCKFILE_VERSION := 1
+
+func lockfile_path(cwd) {
+	return cwd + "/" + LOCKFILE_FILENAME
+}
+
+func empty_lockfile() {
+	return {
+		"version": LOCKFILE_VERSION,
+		"generated_by": "kennel",
+		"generated_at": format_date(now(), "YYYY-MM-DD HH:mm:ss"),
+		"package": []
+	}
+}
+
+func load_lockfile(cwd) {
+	path := lockfile_path(cwd)
+	if file_exists(path) == false {
+		return {
+			"ok": false,
+			"error": "missing",
+			"lockfile": empty_lockfile(),
+			"path": path
+		}
+	}
+	raw := read_file(path)
+	try {
+		parsed := parse_toml(raw)
+		parsed["package"] = dict_get_or(parsed, "package", [])
+		parsed["version"] = dict_get_or(parsed, "version", LOCKFILE_VERSION)
+		return {
+			"ok": true,
+			"lockfile": parsed,
+			"path": path
+		}
+	} except err {
+		return {
+			"ok": false,
+			"error": "Invalid kennel.lock: " + to_string(err),
+			"lockfile": empty_lockfile(),
+			"path": path
+		}
+	}
+}
+
+func save_lockfile(cwd, lockfile_obj) {
+	lockfile := lockfile_obj
+	lockfile["version"] := LOCKFILE_VERSION
+	lockfile["generated_by"] := "kennel"
+	lockfile["generated_at"] := format_date(now(), "YYYY-MM-DD HH:mm:ss")
+	path := lockfile_path(cwd)
+	write_text_atomic(path, to_toml(lockfile))
+	return path
+}
+
+func set_packages(lockfile_obj, packages) {
+	sorted := []
+	for pkg in packages {
+		sorted := insert_sorted_by_name(sorted, pkg)
+	}
+	lockfile := lockfile_obj
+	lockfile["package"] := sorted
+	return lockfile
+}
+
+func packages(lockfile_obj) {
+	entries := dict_get_or(lockfile_obj, "package", [])
+	if type(entries) != "array" { return [] }
+	return entries
+}
+
+func find_package(lockfile_obj, package_name) {
+	entries := packages(lockfile_obj)
+	for entry in entries {
+		if to_string(entry["name"]) == package_name {
+			return {
+				"ok": true,
+				"package": entry
+			}
+		}
+	}
+	return {
+		"ok": false,
+		"package": {}
+	}
+}
+
+func remove_package(lockfile_obj, package_name) {
+	entries := packages(lockfile_obj)
+	updated := []
+	for entry in entries {
+		if to_string(entry["name"]) != package_name {
+			updated := push(updated, entry)
+		}
+	}
+	return set_packages(lockfile_obj, updated)
+}
+
+export LOCKFILE_FILENAME := LOCKFILE_FILENAME
+export lockfile_path := lockfile_path
+export empty_lockfile := empty_lockfile
+export load_lockfile := load_lockfile
+export save_lockfile := save_lockfile
+export set_packages := set_packages
+export packages := packages
+export find_package := find_package
+export remove_package := remove_package

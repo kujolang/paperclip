@@ -1,3 +1,4 @@
+import type { PackageReport } from "../features/packages/inspect.js";
 import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import {
   StatusBadge,
@@ -28,7 +29,7 @@ import type { ShipcheckReport } from "../features/shipcheck/schema.js";
 import type { ConcordReport } from "../features/concord/schema.js";
 import type { FenceReport } from "../features/fence/schema.js";
 
-type Detail = { executionHistory?: { pending: boolean }; executionActive?: boolean; shipcheck?: ShipcheckReport | null; concord?: ConcordReport | null; fence?: FenceReport | null; spec?: SpecReport | null; specs?: { files: string[]; truncated: boolean }; verification?: VerificationReport | null; verificationEnabled?: boolean; catalog?: CapabilityCatalog; history?: EvidenceMetadata[]; language?: LanguageReport | null; sources?: { files: string[]; truncated: boolean }; understanding?: Understanding | null; review: ReviewPack | null; failure: FailureEvidence | null; context: ContextPack | null; readiness?: DoctorReport; workspace?: WorkspaceReadiness; suggestedTask?: string };
+type Detail = { packages?: PackageReport | null; packageFiles?: { files: string[]; truncated: boolean }; executionHistory?: { pending: boolean }; executionActive?: boolean; shipcheck?: ShipcheckReport | null; concord?: ConcordReport | null; fence?: FenceReport | null; spec?: SpecReport | null; specs?: { files: string[]; truncated: boolean }; verification?: VerificationReport | null; verificationEnabled?: boolean; catalog?: CapabilityCatalog; history?: EvidenceMetadata[]; language?: LanguageReport | null; sources?: { files: string[]; truncated: boolean }; understanding?: Understanding | null; review: ReviewPack | null; failure: FailureEvidence | null; context: ContextPack | null; readiness?: DoctorReport; workspace?: WorkspaceReadiness; suggestedTask?: string };
 type PanelProps = PluginDetailTabProps & { compact?: boolean };
 
 const colors = {
@@ -544,6 +545,48 @@ function FenceSection({ context, report, ready, refresh }: { context: PanelProps
   </section>;
 }
 
+function PackageSection({ context, report, files, ready, refresh }: { context: PanelProps["context"]; report: PackageReport | null; files: { files: string[]; truncated: boolean }; ready: boolean; refresh: () => void }) {
+  const inspect = usePluginAction("inspect-kujo-packages");
+  const [path, setPath] = useState(report?.path ?? files.files[0] ?? "");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const active = useRef(true);
+  useEffect(() => { active.current = true; return () => { active.current = false; }; }, []);
+  async function submit() {
+    setBusy(true); setError(null);
+    try { await inspect({ entityType: context.entityType, entityId: context.entityId, path }); if (active.current) await refresh(); }
+    catch (value) { if (active.current) setError(value instanceof Error ? value.message : String(value)); }
+    finally { if (active.current) setBusy(false); }
+  }
+  return <section aria-label="Kujo packages" style={{ ...card, overflowWrap: "anywhere" }}>
+    <SectionTitle title="Kujo packages" detail="Understand package declarations before installing dependencies." />
+    <div style={muted}>Validate a Kennel manifest and inspect its adjacent lockfile. This does not install or download packages, verify installed bytes, or run project code.</div>
+    <label>Package manifest<select aria-label="Package manifest" style={input} value={path} disabled={busy || !files.files.length} onChange={event => setPath(event.target.value)}>
+      <option value="">{files.files.length ? "Choose a package" : "No Git-visible kennel.toml found"}</option>
+      {files.files.map(file => <option key={file} value={file}>{file}</option>)}
+    </select></label>
+    {!files.files.length && <p style={muted}>Add a kennel.toml package manifest to the project to inspect its name, entry point and dependencies here.</p>}
+    {files.truncated && <p style={muted}>Showing the first 1,000 manifest paths.</p>}
+    <ActionButton disabled={busy || !ready || !path} onClick={() => void submit()}>{busy ? "Inspecting packages…" : "Inspect packages"}</ActionButton>
+    {!ready && <p style={muted}>A working Kujo runtime and intact Kennel component are required. Check readiness above.</p>}
+    {error && <div role="alert" style={{ color: colors.danger }}>{error}</div>}
+    {report && <div aria-label="Package inspection result">
+      <strong>Package inspection: {report.status}{report.stale ? " · STALE — inspect again" : ""}</strong>
+      <p style={muted}>{report.path} · Kennel {report.provenance.version}</p>
+      {report.manifest && <p>{report.manifest.name} · {report.manifest.version}{report.manifest.entry ? ` · Entry: ${report.manifest.entry}` : ""}</p>}
+      {report.validation.errors.map((message, index) => <p key={`error-${index}`} style={{ color: colors.danger }}>{message}</p>)}
+      {report.validation.warnings.map((message, index) => <p key={`warning-${index}`}>{message}</p>)}
+      <h4>Declared dependencies ({report.dependencyCount})</h4>
+      {report.dependencies.length ? <ul>{report.dependencies.map((dep, index) => <li key={index}>{dep.name} · {dep.kind} · {dep.source} {dep.requested}{!dep.valid ? ` · Invalid: ${dep.diagnostic}` : ""}</li>)}</ul> : <p>No dependencies declared.</p>}
+      <h4>Lockfile: {report.lock.status}</h4>
+      <p style={muted}>{report.lockAdmission === "copied" ? "Lockfile copied for parsing." : report.lockAdmission === "unreadable" ? "Lockfile could not be safely read." : "No adjacent Git-visible lockfile was included."} Parsed entries are declarations, not verification that packages are installed or trustworthy.</p>
+      {report.lock.entries.length > 0 && <ul>{report.lock.entries.map((entry, index) => <li key={index}>{entry.name} · {entry.resolvedRef || entry.version || "No version/ref"} · {entry.resolvedCommit || "No commit"}</li>)}</ul>}
+      {report.truncated && <p>Showing at most 200 dependencies and 200 lock entries; inspect the original files for the rest.</p>}
+      <p style={muted}>{report.scope} Use Evidence history to compare or export this record.</p>
+    </div>}
+  </section>;
+}
+
 function SpecSection({ context, report, files, ready, refresh }: { context: PanelProps["context"]; report: SpecReport | null; files: { files: string[]; truncated: boolean }; ready: boolean; refresh: () => void }) {
   const inspect = usePluginAction("inspect-task-contract");
   const [path, setPath] = useState(report?.path ?? "");
@@ -648,7 +691,7 @@ function KujoPanel({ context, compact = false }: PanelProps) {
   if (loading) return <Spinner label="Loading Kujo workspace intelligence" />;
   if (error) return <div role="alert" style={{ ...card, color: colors.danger }}>Unable to load Kujo: {error.message}</div>;
 
-  const hasArtifacts = (data?.history?.length ?? 0) > 0 || data?.verification || data?.shipcheck || data?.concord || data?.fence || data?.spec || data?.language || data?.understanding || Boolean(data?.review || data?.failure || data?.context);
+  const hasArtifacts = data?.packages || (data?.history?.length ?? 0) > 0 || data?.verification || data?.shipcheck || data?.concord || data?.fence || data?.spec || data?.language || data?.understanding || Boolean(data?.review || data?.failure || data?.context);
 
   return (
     <div style={{ ...panel, ...(compact ? { marginTop: 12 } : {}) }}>
@@ -756,6 +799,7 @@ function KujoPanel({ context, compact = false }: PanelProps) {
 
       {data?.catalog && <CapabilityExplorer key={`catalog:${targetKey}`} catalog={data.catalog} />}
 
+      {data?.packageFiles && data.catalog?.capabilities.some(entry => entry.tool === "inspect-kujo-packages" && entry.enabled) && canGenerate && <PackageSection key={`packages:${targetKey}:${data.packages?.id ?? "none"}`} context={context} report={data.packages ?? null} files={data.packageFiles} ready={data.readiness?.capabilities.packages === "ready"} refresh={refresh} />}
       {data?.verificationEnabled && data.catalog?.capabilities.some((entry) => entry.tool === "inspect-release-readiness" && entry.selectedByProfile) && canGenerate && <ShipcheckSection key={`shipcheck:${targetKey}:${data.shipcheck?.id ?? "none"}`} context={context} report={data.shipcheck ?? null} ready={data.readiness?.capabilities.shipcheck === "ready"} refresh={refresh} />}
       {data?.verificationEnabled && data.catalog?.capabilities.some((entry) => entry.tool === "inspect-artifact-drift" && entry.selectedByProfile) && canGenerate && <ConcordSection key={`concord:${targetKey}:${data.concord?.id ?? "none"}`} context={context} report={data.concord ?? null} ready={data.readiness?.capabilities.concord === "ready"} refresh={refresh} />}
       {data?.verificationEnabled && data.catalog?.capabilities.some((entry) => entry.tool === "inspect-architecture" && entry.selectedByProfile) && canGenerate && <FenceSection key={`fence:${targetKey}:${data.fence?.id ?? "none"}`} context={context} report={data.fence ?? null} ready={data.readiness?.capabilities.fence === "ready"} refresh={refresh} />}
