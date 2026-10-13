@@ -1,0 +1,78 @@
+from src.core.resource_ledger import resource_event, fold_resource, resource_history, resource_raw
+from src.core.graph_attempts import attempt_event, fold_attempt, attempt_history
+from src.core.graph_policy import policy_event, apply_policy_transition, policy_history
+# Pure graph-local projections. No participant callback, execution or scheduler.
+from src.core.utils import dict_get_or
+from src.core.portable_commitments import portable_json
+func demand(ok, reason) {if ok != true {throw(reason)}}
+export func heterogeneous_graph(state) {return dict_get_or(dict_get_or(dict_get_or(state, "workflow_definition", {}), "metadata", {}), "graph_outcome", "") == "dispatch.graph-outcome/v1alpha1"}
+export func graph_contract(step) {return dict_get_or(step["config"], "terminal_contract", "parent-finalization/v1alpha1")}
+export func graph_event(kind) {return resource_event(kind)||attempt_event(kind)||policy_event(kind)||contains(["graph_node_bound", "graph_review_requested", "graph_finalized"], kind)}
+export func graph_refs(state, refs) {
+    for ref in refs {
+        demand(type(ref) == "string"&&regex_match(ref, "^sha256:[0-9a-f]{64}$"), "graph_reference_invalid")
+        raw := read_file_beneath(state["run_dir"], "node-input/" + substring(ref, 7, 71) + ".raw", 1048576)
+        demand("sha256:" + sha256(raw) == ref, "graph_artifact_corrupt")
+    }
+    return true
+}
+export func apply_graph_transition(state, kind, data) {
+    demand(heterogeneous_graph(state)&&has_key(state, "graph_finalization") == 0, "graph_terminal_or_unsupported")
+    if resource_event(kind) {
+        graph_refs(state, data["artifacts"]);c := data["candidate"];unsigned := {};for key in keys(c) {if key != "candidate_id" {unsigned[key] := c[key]}}
+        demand(c["candidate_id"] == sha256(portable_json(unsigned))&&c["revision"] == state["revision"]&&data["resulting_revision"] == state["revision"] + 1, "resource_candidate_stale")
+        if kind == "graph_resources_reserved" {for item in c["programs"] {record := parse_json(resource_raw(state, item["record_ref"]));state = fold_attempt(state, "graph_attempt_reserved", record)}}
+        if kind == "graph_resources_reserved" {bindings := dict_get_or(state, "graph_node_bindings", {});for item in c["evaluations"] {id := item["node_id"];binding := parse_json(resource_raw(state, item["binding_ref"]));demand(binding["node_id"] == id&&binding["graph"]["run_id"] == state["run_id"], "resource_binding_subject_mismatch");if has_key(bindings, id) {demand(to_json(bindings[id]) == to_json(binding), "resource_binding_changed")};bindings[id] := binding};state["graph_node_bindings"] := bindings}
+        state = fold_resource(state, kind, data);state["status"] := "paused";return state
+    }
+    if attempt_event(kind) {
+        graph_refs(state, data["artifacts"]);c := data["candidate"];unsigned := {};for key in keys(c) {if key != "candidate_id" {unsigned[key] := c[key]}}
+        demand(c["candidate_id"] == sha256(portable_json(unsigned))&&c["revision"] == state["revision"]&&data["resulting_revision"] == state["revision"] + 1, "attempt_candidate_stale")
+        state = fold_attempt(state, kind, data)
+        if kind == "graph_attempt_retried" {
+            id := c["node_id"];for field in ["node_dispatches", "node_completions"] {next := {};for key in keys(dict_get_or(state, field, {})) {if key != id {next[key] := state[field][key]}};state[field] := next}
+            steps := state["steps"];for i in range(0, len(steps)) {if steps[i]["id"] == id {step := steps[i];step["status"] := "pending";step["output"] := null;steps[i] := step}};state["steps"] := steps;state["current_step_index"] := 0
+        };state["status"] := "paused";return state
+    }
+    if policy_event(kind) {graph_refs(state, data["artifacts"]);return apply_policy_transition(state, kind, data)}
+    id := dict_get_or(data, "node_id", "")
+    if kind == "graph_node_bound" {
+        bindings := dict_get_or(state, "graph_node_bindings", {})
+        demand(has_key(bindings, id) == 0&&data["graph"]["run_id"] == state["run_id"]&&data["graph"]["workflow_ref"] == "sha256:" + sha256(to_json(state["workflow_definition"])), "graph_binding_conflict")
+        matched := false
+        for step in state["steps"] {if step["id"] == id {demand(graph_contract(step) != "parent-finalization/v1alpha1"&&step["status"] == "pending", "graph_binding_invalid");matched = true}}
+        demand(matched, "node_missing");graph_refs(state, data["artifacts"])
+        bindings[id] := data;state["graph_node_bindings"] := bindings;state["status"] := "paused"
+    } else if kind == "graph_review_requested" {
+        demand(has_key(state["graph_node_bindings"], id)&&has_key(dict_get_or(state, "node_completions", {}), id) == 0, "graph_review_invalid")
+        demand(data["binding_ref"] == "sha256:" + sha256(portable_json(state["graph_node_bindings"][id]))&&data["request"]["state_revision"] == state["revision"] + 1, "graph_review_binding_mismatch")
+        reviews := dict_get_or(state, "graph_reviews", {});reviews[id] := data;state["graph_reviews"] := reviews;state["status"] := "paused"
+    } else if kind == "graph_finalized" {
+        candidate := data["candidate"];unsigned := {};for key in keys(candidate) {if key != "candidate_id" {unsigned[key] := candidate[key]}}
+        demand(candidate["candidate_id"] == sha256(portable_json(unsigned))&&candidate["graph"]["run_id"] == state["run_id"]&&candidate["graph"]["workflow_ref"] == "sha256:" + sha256(to_json(state["workflow_definition"])), "graph_candidate_invalid")
+        demand(candidate["revision"] == state["revision"]&&data["resulting_revision"] == state["revision"] + 1&&contains(["completed", "failed", "cancelled"], candidate["outcome"]), "graph_candidate_stale")
+        graph_refs(state, data["artifacts"]);state["graph_finalization"] := data;state["status"] := candidate["outcome"];state["finished_at"] := data["decided_at"]
+    } else {throw("graph_transition_unsupported")}
+    return state
+}
+export func graph_history_projection(state, events) {
+    policy_history(state, events);attempt_history(state, events);resource_history(state, events)
+    bindings := {};reviews := {};finalized := null
+    for event in events {
+        kind := event["kind"]
+        if graph_event(kind) {
+            demand(finalized == null, "graph_event_after_terminal")
+            data := event["details"]["data"]
+            if policy_event(kind)||attempt_event(kind) {graph_refs(state, data["artifacts"])}
+            if kind == "graph_resources_reserved" {for item in data["candidate"]["evaluations"] {id := item["node_id"];binding := parse_json(resource_raw(state, item["binding_ref"]));if has_key(bindings, id) {demand(to_json(bindings[id]) == to_json(binding), "resource_binding_changed")};bindings[id] := binding}}
+            if kind == "graph_node_bound" {demand(has_key(bindings, data["node_id"]) == 0, "duplicate_graph_binding");bindings[data["node_id"]] := data;graph_refs(state, data["artifacts"])}
+            if kind == "graph_review_requested" {reviews[data["node_id"]] := data}
+            if kind == "graph_finalized" {finalized = data;graph_refs(state, data["artifacts"])}
+        }
+        if finalized != null&&contains(["node_terminal_observed", "node_start_requested"], kind) {throw("node_event_after_graph_terminal")}
+    }
+    demand(to_json(bindings) == to_json(dict_get_or(state, "graph_node_bindings", {}))&&to_json(reviews) == to_json(dict_get_or(state, "graph_reviews", {}))&&to_json(finalized) == to_json(dict_get_or(state, "graph_finalization", null)), "graph_journal_state_mismatch")
+    if finalized != null {demand(state["status"] == finalized["candidate"]["outcome"], "graph_terminal_state_mismatch")}
+    else if heterogeneous_graph(state) {demand(contains(["running", "paused", "interrupted", "needs_changes"], state["status"]), "graph_terminal_authority_missing")}
+    return true
+}

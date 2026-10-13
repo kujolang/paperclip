@@ -1,0 +1,126 @@
+from src.core.portable_commitments import portable_digest
+from src.core.effect_assurance_beta import resolve_beta_assurance, beta_mechanism
+from src.core.utils import dict_get_or
+from src.core.assurance_state import beta_assurance_policy, assurance_policy, assurance_protected
+from src.core.assurance_compatibility import evaluate_assurance_compatibility
+
+func denial(code) {return {"ok": false, "code": code, "error": {"code": code, "message": "Persisted assurance authority could not admit this operation.", "retryable": false}}}
+export func configuration_revision(descriptor) {
+    fields := ["schema", "mode", "fallback", "profile", "profile_version", "issuer", "mechanism", "verifier_id", "verifier_version", "verifier_sha256", "authority_sha256"]
+    if type(descriptor) != "dict"||len(keys(descriptor)) != len(fields) {throw("assurance_configuration_invalid")}
+    for field in fields {if type(dict_get_or(descriptor, field, null)) != "string"||len(descriptor[field]) > 128 {throw("assurance_configuration_invalid")}}
+    if contains(["dispatch.assurance-configuration/v1alpha1", "dispatch.assurance-configuration/v1beta1"], descriptor["schema"]) == false {throw("assurance_configuration_unsupported")}
+    for field in ["verifier_sha256", "authority_sha256"] {if regex_match(descriptor[field], "^[0-9a-f]{64}$") == false {throw("assurance_configuration_invalid")}}
+    for field in ["profile", "profile_version", "issuer", "mechanism", "verifier_id", "verifier_version"] {if regex_match(descriptor[field], "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$") == false {throw("assurance_configuration_invalid")}}
+    if contains(["optional", "required"], descriptor["mode"]) == false||contains(["deny", "legacy_unavailable"], descriptor["fallback"]) == false||(descriptor["mode"] == "required"&&descriptor["fallback"] != "deny") {throw("assurance_policy_invalid")}
+    if descriptor["schema"] == "dispatch.assurance-configuration/v1beta1" {
+        if descriptor["mode"] != "required"||descriptor["fallback"] != "deny"||beta_mechanism(descriptor["profile"], descriptor["profile_version"]) != descriptor["mechanism"]||descriptor["mechanism"] == "" {throw("assurance_configuration_invalid")}
+        return portable_digest(descriptor)
+    }
+    if descriptor["profile_version"] == "1beta1" {throw("assurance_configuration_unsupported")}
+    return sha256(to_json(descriptor))
+}
+# Host-owned bounded source manifest; paths never come from a producer or sidecar.
+export func implementation_digest(files) {
+    if type(files) != "array"||len(files) < 1||len(files) > 32 {throw("assurance_verifier_invalid")}
+    hashes := []
+    for file in files {hashes = push(hashes, sha256(read_file_beneath(file["root"], file["path"], 1048576)))}
+    return sha256(to_json(hashes))
+}
+export func negotiation_selection(descriptor) {
+    revision := configuration_revision(descriptor)
+    if descriptor["schema"] == "dispatch.assurance-configuration/v1beta1" {return beta_assurance_policy(descriptor["mode"], descriptor["fallback"], descriptor["profile"], descriptor["profile_version"], revision)}
+    return assurance_policy(descriptor["mode"], descriptor["fallback"], descriptor["profile"], descriptor["profile_version"], revision)
+}
+# Called under the run lock, again at execution. The host resolves the persisted
+# revision, not process defaults. Status is live and deliberately outside the hash.
+export func resolve_run_authority(state, options) {
+    if assurance_protected(state) == false {return {"ok": true, "legacy": true}}
+    try {
+        host := dict_get_or(options, "assurance_host", null)
+        if type(host) != "function" {return denial("assurance_controller_incompatible")}
+        policy := state["assurance_negotiation"]
+        installed := host(policy["config_revision"], state)
+        if type(installed) != "dict"||dict_get_or(installed, "status", "missing") == "missing" {return denial("assurance_policy_revision_missing")}
+        if installed["status"] == "revoked" {return denial("assurance_policy_revision_revoked")}
+        if installed["status"] != "active" {return denial("assurance_profile_unavailable")}
+        descriptor := installed["descriptor"]
+        if configuration_revision(descriptor) != policy["config_revision"]||to_json(negotiation_selection(descriptor)) != to_json(policy) {return denial("assurance_configuration_mismatch")}
+        if dict_get_or(installed, "authority_sha256", "") != descriptor["authority_sha256"] {return denial("assurance_authority_mismatch")}
+        if implementation_digest(installed["implementation"]) != descriptor["verifier_sha256"]||type(installed["verify"]) != "function" {return denial("assurance_verifier_revision_mismatch")}
+        return {"ok": true, "installed": installed}
+    } except err {return denial("assurance_configuration_invalid")}
+}
+# Authority inspection alone is not admission. Execution always uses the full
+# configuration resolver, including the installed exact-input validator.
+export func resolve_run_configuration(state, options) {
+    resolved := resolve_run_authority(state, options)
+    if resolved["ok"] == false||dict_get_or(resolved, "legacy", false) {return resolved}
+    try {
+        installed := resolved["installed"]
+        metadata := dict_get_or(dict_get_or(state, "workflow_definition", {}), "metadata", {})
+        if dict_get_or(metadata, "node_input_required", "") == "dispatch.node-input/v1alpha1"&&has_key(state, "node_input_binding") {
+            validate := dict_get_or(installed, "validate_node_inputs", null)
+            if type(validate) != "function"||validate(state) != true {return denial("node_input_invalid")}
+        }
+        return resolved
+    } except err {return denial("assurance_configuration_invalid")}
+}
+export func evaluate_run_assurance(state, options) {
+    resolved := resolve_run_configuration(state, options)
+    if resolved["ok"] == false||dict_get_or(resolved, "legacy", false) {return resolved}
+    try {
+        installed := resolved["installed"]
+        descriptor := installed["descriptor"]
+        policy := state["assurance_negotiation"]
+        expected := installed["expected"]
+        raw := installed["result_raw"]
+        if expected["run_id"] != state["run_id"]||expected["issuer"] != descriptor["issuer"] {return denial("assurance_current_state_mismatch")}
+        selection := dict_get_or(state, "assurance_selection", null)
+        document := null
+        if selection != null {
+            if selection["step_id"] != expected["step_id"]||selection["attempt_id"] != expected["attempt_id"]||selection["result_sha256"] != expected["result_sha256"] {return denial("assurance_selection_mismatch")}
+            # Selected read failure is a denial, never null/absence fallback.
+            document = read_file_beneath(state["run_dir"], selection["sidecar_ref"], 8192)
+            if sha256(document) != selection["sidecar_sha256"] {return denial("assurance_digest_mismatch")}
+        }
+        if policy["schema"] == "dispatch.assurance-negotiation/v1beta1" {
+            beta := resolve_beta_assurance(raw, document, expected, descriptor, installed["verify"], parse_int(to_string(floor(now_utc_seconds()))))
+            if beta["ok"] == false {answer := denial(beta["code"]); answer["reason_category"] := beta["reason_category"]; return answer}
+            return {"ok": true, "resolution": beta, "expected": expected, "result_raw": raw}
+        }
+        entry := {"profile": descriptor["profile"], "version": descriptor["profile_version"], "issuer": descriptor["issuer"], "envelope": "dispatch.effect-assurance/v1alpha1", "status": "active", "assurance": expected["assurance"], "verify": installed["verify"]}
+        # Unknown host profiles may use explicit optional fallback; known mechanism
+        # substitution remains a configuration error before any fallback.
+        mechanisms := {"dispatch.sqlite-unique": "sqlite_unique_transaction", "workcell.git-cas": "git_ref_cas_transaction", "ability.application-gateway": "ability_application_gateway"}
+        if has_key(mechanisms, descriptor["profile"])&&descriptor["profile_version"] == "1alpha1"&&descriptor["mechanism"] != mechanisms[descriptor["profile"]] {return denial("assurance_configuration_mismatch")}
+        answer := evaluate_assurance_compatibility(raw, document, expected, {"mode": policy["mode"], "fallback": policy["fallback"]}, {"profile": policy["profile"], "version": policy["profile_version"]}, [entry], parse_int(to_string(floor(now_utc_seconds()))))
+        if answer["ok"] == false {return denial(answer["code"])}
+        return {"ok": true, "resolution": answer, "expected": expected, "result_raw": raw}
+    } except err {return denial("assurance_selected_evidence_unavailable")}
+}
+# Recheck before execution. A persisted admission record is not cached permission.
+export func check_negotiated_execution(state, options) {
+    if (has_key(state,"effect_continuation")||has_key(state,"effect_lifecycle")) {return denial("effect_parent_replay_prohibited")}
+    resolved := resolve_run_configuration(state, options)
+    if resolved["ok"] == false||dict_get_or(resolved, "legacy", false) {return resolved}
+    metadata := dict_get_or(state["workflow_definition"], "metadata", {})
+    if dict_get_or(metadata, "node_input_required", "") == "dispatch.node-input/v1alpha1" {
+        ticket := dict_get_or(options, "node_execution_ticket", null)
+        if has_key(state, "node_input_binding") == 0||has_key(state, "node_execution_admission") == 0||type(ticket) != "function"||ticket(state) != true {return denial("node_execution_admission_required")}
+    }
+    answer := {"ok": true}
+    for step in state["steps"] {
+        active := contains(["pending", "running"], dict_get_or(step, "status", ""))
+        if active&&dict_get_or(step, "control_attempt", 1) > 1&&answer["ok"] {
+            pending := dict_get_or(state, "assurance_replay", null)
+            if type(pending) != "dict"||pending["step_id"] != step["id"]||pending["next_attempt"] != step["control_attempt"] {answer = denial("assurance_replay_authority_missing")}
+            else {
+                checked := evaluate_run_assurance(state, options)
+                if checked["ok"] == false {answer = checked}
+                else if checked["expected"]["result_sha256"] != pending["result_sha256"]||checked["expected"]["attempt_id"] != pending["source_attempt"] {answer = denial("assurance_current_state_mismatch")}
+            }
+        }
+    }
+    return answer
+}

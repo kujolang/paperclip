@@ -1,0 +1,121 @@
+# Installed local API. Planning, reservation, dispatch and terminal authority differ.
+from src.core.resource_ledger import resources_enabled, eval_budget, eval_current, eval_limit, resource_guard, resource_readings, resource_subjects, resource_key, resource_raw, resource_totals
+from src.core.resource_facts import resource_source_facts
+from src.core.graph_attempts import program_contract, accounting_budget
+from src.core.graph_policy import policy_ready
+from src.core.graph_outcome import candidate, authorize
+from src.core.node_composition import runtime, spec, assess_attempt, endpoint, local_node_inputs, retain, persist_node_transition
+from src.core.node_transition import node_reference
+from src.core.state import load_run_state, acquire_run_lock, release_run_lock
+from src.core.control import validate_evaluation_result
+from src.core.portable_commitments import portable_json
+from src.core.utils import dict_get_or
+func need(ok, reason) {if ok != true {throw(reason)}}
+func same(a, b) {return to_json(a) == to_json(b)}
+func eval_binding(graph, id, host) {
+    need(spec(graph, id)["config"]["terminal_contract"] == "evaluation-result/v1"&&policy_ready(graph, spec(graph, id))&&has_key(dict_get_or(graph, "node_completions", {}), id) == 0, "eval_not_eligible")
+    need(type(dict_get_or(host, "evaluation_identity", null)) == "function"&&same(host["evaluation_identity"](id), spec(graph, id)["config"]["evaluator"]), "eval_configuration_stale")
+    current := local_node_inputs(graph, id, host);binding := dict_get_or(dict_get_or(graph, "graph_node_bindings", {}), id, current["binding"])
+    need(same(current["binding"], binding), "eval_input_stale");return binding
+}
+func plan(graph, request, host) {
+    resource_guard(graph);ids := request["nodes"];need(type(ids) == "array"&&len(ids) > 0&&len(ids) <= 8, "reservation_plan_limit")
+    programs := [];evaluations := [];raws := [];seen := [];program_count := 0;eval_count := 0
+    for id in ids {
+        need(contains(seen, id) == false, "reservation_plan_duplicate");seen = push(seen, id)
+        step := spec(graph, id);need(policy_ready(graph, step), "reservation_path_not_ready")
+        if program_contract(step) {
+            checked := assess_attempt(graph, id, "reserve", host);record := {"candidate":candidate(graph, checked["data"]), "artifacts":[]}
+            for raw in checked["artifacts"] {raws = push(raws, raw);record["artifacts"] := push(record["artifacts"], "sha256:" + sha256(raw))}
+            raw := to_json(record);raws = push(raws, raw);programs = push(programs, {"node_id":id, "record_ref":"sha256:" + sha256(raw)});program_count = program_count + 1
+        } else {
+            binding := eval_binding(graph, id, host);ref := node_reference(binding);row := eval_current(graph, id);ordinal := 1
+            if row != null {
+                ordinal = row["ordinal"];need(row["binding_ref"] == ref, "eval_retry_input_changed")
+                if row["release"] == null {need(row["resolution"] != null&&row["resolution"]["candidate"]["outcome"] == "infrastructure_failed", "eval_retry_unsafe");ordinal = ordinal + 1}
+            }
+            need(ordinal <= eval_limit(graph, id), "eval_attempt_limit")
+            for raw in local_node_inputs(graph, id, host)["artifacts"] {raws = push(raws, raw)}
+            evaluations = push(evaluations, {"node_id":id, "ordinal":ordinal, "binding_ref":ref});raws = push(raws, portable_json(binding));eval_count = eval_count + 1
+        }
+    }
+    budget := accounting_budget(graph);evals := eval_budget(graph)
+    need(program_count <= budget["available"], "program_plan_capacity");need(eval_count <= evals["available"], "eval_plan_capacity")
+    data := {"schema":"dispatch.resource-plan/v1alpha1", "programs":programs, "evaluations":evaluations, "program_units":program_count, "eval_units":eval_count}
+    return {"candidate":candidate(graph, data), "artifacts":raws}
+}
+func inspect_action(graph, request, host) {
+    action := request["action"]
+    if action == "reserve" {return plan(graph, request, host)}
+    if action == "observe" {
+        subject := request["subject"];found := false;for existing in resource_subjects(graph) {if same(existing, subject) {found = true}};need(found, "resource_subject_not_consumed")
+        kind := request["source_kind"];need(contains(["runtime", "model"], kind), "resource_kind_invalid")
+        need(has_key(dict_get_or(graph, "resource_sources", {}), resource_key(subject, kind)) == 0, "resource_source_already_recorded")
+        need(type(dict_get_or(host, "read_resource_source", null)) == "function", "resource_source_unavailable")
+        source := host["read_resource_source"](subject, kind)
+        need(source != null, "resource_source_unknown");need(same(source["subject"], subject)&&source["source_kind"] == kind, "resource_source_subject_mismatch")
+        raw := source["raw"];resource_source_facts(kind, raw)
+        return {"candidate":candidate(graph, {"schema":"dispatch.resource-observation/v1alpha1", "subject":subject, "source_kind":kind, "source_ref":"sha256:" + sha256(raw)}), "artifacts":[raw]}
+    }
+    id := request["node_id"];binding := eval_binding(graph, id, host);row := eval_current(graph, id)
+    need(row != null&&row["binding_ref"] == node_reference(binding)&&row["release"] == null, "eval_reservation_required")
+    if action == "resolve" {need(type(dict_get_or(host, "read_evaluation_attempt", null)) == "function", "eval_readback_unavailable");return resolution_facts(graph, id, host["read_evaluation_attempt"](id, binding, row["attempt_id"]), host)}
+    if action == "dispatch" {resource_guard(graph);need(row["dispatch"] == null&&row["resolution"] == null&&type(dict_get_or(host, "start_evaluation", null)) == "function", "eval_already_consumed_or_unavailable")}
+    else {need(action == "release"&&row["dispatch"] == null&&row["resolution"] == null, "eval_release_unsafe")}
+    return {"candidate":candidate(graph, {"schema":"dispatch.eval-action/v1alpha1", "node_id":id, "attempt_id":row["attempt_id"], "action":action, "binding_ref":row["binding_ref"]}), "artifacts":[]}
+}
+func persist(graph, kind, checked, actor) {
+    actor_raw := to_json(actor);raws := push(checked["artifacts"], actor_raw);retain(graph, raws);refs := []
+    for raw in raws {refs = push(refs, "sha256:" + sha256(raw))}
+    return persist_node_transition(graph, kind, {"candidate":checked["candidate"], "actor_ref":"sha256:" + sha256(actor_raw), "artifacts":refs, "resulting_revision":graph["revision"] + 1})
+}
+func resolution_facts(graph, id, response, host) {
+    row := eval_current(graph, id);binding := eval_binding(graph, id, host)
+    need(row["dispatch"] != null&&row["resolution"] == null&&row["binding_ref"] == node_reference(binding), "eval_resolution_not_pending")
+    need(response["attempt_id"] == row["attempt_id"]&&response["binding_ref"] == row["binding_ref"]&&contains(["completed", "infrastructure_failed"], response["status"]), "eval_response_identity_mismatch")
+    raws := [];result_ref := null
+    if response["status"] == "completed" {
+        claim := read_file_beneath(graph["run_dir"], "eval-admissions/" + row["attempt_id"] + ".claim", 8192);need(claim == to_json({"node_id":id, "attempt_id":row["attempt_id"], "binding_ref":row["binding_ref"]}), "eval_claim_missing_or_corrupt")
+        raw := response["evaluation_raw"];need(type(raw) == "string"&&byte_length(raw) <= 1048576, "evaluation_limit");evaluation := parse_json(raw);input := binding["inputs"][0]
+        need(validate_evaluation_result(evaluation)["ok"]&&same(evaluation["subject"], input["producer_subject"])&&same(evaluation["input_evidence_ids"], [input["result_ref"], input["content_ref"]])&&same(evaluation["evaluator"], spec(graph, id)["config"]["evaluator"]), "eval_result_identity_mismatch")
+        result_ref = "sha256:" + sha256(raw);raws = push(raws, raw)
+    } else {need(type(response["reason"]) == "string"&&len(response["reason"]) > 0&&len(response["reason"]) <= 256, "eval_infrastructure_evidence_required")}
+    # Only the installed invocation/readback adapter can produce this exact response.
+    response_raw := to_json(response);need(byte_length(response_raw) <= 1048576, "eval_response_limit");raws = push(raws, response_raw)
+    checked := {"candidate":candidate(graph, {"schema":"dispatch.eval-resolution/v1alpha1", "node_id":id, "attempt_id":row["attempt_id"], "binding_ref":row["binding_ref"], "outcome":response["status"], "result_ref":result_ref, "response_ref":"sha256:" + sha256(response_raw)}), "artifacts":raws}
+    return checked
+}
+export func resource_operation(root, run_id, request, options) {
+    loaded := load_run_state(root, run_id);if loaded["ok"] == false {return loaded}
+    lock := null;children := [];answer := {"ok":false};apply := request["operation"] == "apply"
+    if apply {lock = acquire_run_lock(loaded["run_state"]);if lock["ok"] == false {return lock}}
+    try {
+        graph := load_run_state(root, run_id)["run_state"];need(resources_enabled(graph), "resource_policy_required");host := runtime(graph, options)
+        if request["operation"] == "report" {
+            answer = {"ok":true, "report":{"schema":"dispatch.resource-report/v1alpha1", "run_id":run_id, "revision":graph["revision"], "journal":graph["control_journal"]["last_sha256"], "programs":accounting_budget(graph), "evaluations":eval_budget(graph), "eval_attempts":dict_get_or(graph, "eval_attempts", {}), "readings":resource_readings(graph), "totals":resource_totals(graph), "monetary_cost":{"class":"unknown", "value":null}, "authority":"informational"}}
+        } else {
+            need(has_key(graph, "graph_finalization") == 0, "resource_graph_terminal")
+            if apply&&request["action"] == "reserve" {for id in request["nodes"] {if program_contract(spec(graph, id)) {child := acquire_run_lock(endpoint(graph, id, host)["state"]);need(child["ok"], "resource_child_locked");children = push(children, child)}}}
+            checked := inspect_action(graph, request, host)
+            if apply {
+                need(same(checked["candidate"], request["candidate"]), "stale_resource_plan");authorize(host, request["actor"], graph, checked["candidate"])
+                hook := dict_get_or(options, "graph_boundary", null);if type(hook) == "function" {hook("before_resource")}
+                retain(graph, checked["artifacts"]);graph = load_run_state(root, run_id)["run_state"];host = runtime(graph, options);latest := inspect_action(graph, request, host)
+                need(same(latest["candidate"], request["candidate"]), "stale_resource_plan");authorize(host, request["actor"], graph, latest["candidate"])
+                action := request["action"];kind := "graph_resources_reserved";if action == "release" {kind = "graph_eval_released"};if action == "dispatch" {kind = "graph_eval_dispatched"};if action == "observe" {kind = "graph_resource_observed"};if action == "resolve" {kind = "graph_eval_resolved"}
+                graph = persist(graph, kind, latest, request["actor"])
+                if type(hook) == "function" {hook("after_" + kind)}
+                if action == "dispatch" {
+                    id := request["node_id"];host = runtime(graph, options);binding := eval_binding(graph, id, host);row := eval_current(graph, id)
+                    response := host["start_evaluation"](id, binding, row["attempt_id"])
+                    if type(hook) == "function" {hook("after_eval_work")}
+                    graph = load_run_state(root, run_id)["run_state"];host = runtime(graph, options)
+                    graph = persist(graph, "graph_eval_resolved", resolution_facts(graph, id, response, host), request["actor"])
+                    if type(hook) == "function" {hook("after_eval_resolution")}
+                }
+                answer = {"ok":true, "revision":graph["revision"], "continuation":"not_authorized"}
+            } else {need(request["operation"] == "assess", "resource_operation_invalid");answer = {"ok":true, "candidate":checked["candidate"], "authority":"informational"}}
+        }
+    } except err {answer = {"ok":false, "reason":to_string(err), "authority":"informational"}}
+    for child in children {release_run_lock(child)};if lock != null {release_run_lock(lock)};return answer
+}

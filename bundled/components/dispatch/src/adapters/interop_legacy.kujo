@@ -1,0 +1,29 @@
+# Migration-only adapters. Owner semantics live outside the generic core.
+# Called only after legacy shape, participant, receipt and result-extension validation.
+from src.core.interop_handoff import correlate_interop_handoff
+func domain(kind) {
+    if kind == "sdk" {return {"namespace": "agents-sdk.tool", "schema": "agents-sdk.tool-correlation/v1alpha1", "invocation": "sdk_invocation_id", "fields": ["sdk_run_id", "tool_call_id", "tool_name", "outcome"]}}
+    if kind == "mcp" {return {"namespace": "mcp.stdio-tool", "schema": "mcp.stdio-tool-correlation/v1alpha1", "invocation": "mcp_invocation_id", "fields": ["mcp_server_id", "mcp_session_id", "rpc_request_id", "mcp_request_id", "tool_name", "outcome"]}}
+    if kind == "http" {return {"namespace": "http.operation", "schema": "http.operation-correlation/v1alpha1", "invocation": "http_request_id", "fields": ["client_request_id", "method", "route_id", "operation_id", "outcome"]}}
+    if kind == "git" {return {"namespace": "workcell.process", "schema": "workcell.process-correlation/v1alpha1", "invocation": "participant_invocation_id", "fields": ["participant_id", "participant_call_id", "outcome"]}}
+    throw("unsupported participant")
+}
+export func normalize_legacy_handoff(kind, legacy) {
+    info := domain(kind); values := {}; effect := {}
+    for field in info["fields"] {values[field] := legacy[field]}
+    effect_schema := "ability.effect-correlation/v1alpha1"
+    fields := ["ability_id", "ability_version", "definition_digest", "ability_invocation_id", "receipt_id", "receipt_ref", "transaction_sha256"]
+    if kind == "git" {effect_schema = "workcell.git-correlation/v1alpha1"; fields = ["workcell_effect_id", "transaction_sha256"]}
+    for field in fields {effect[field] := legacy[field]}
+    knowledge := "unknown"
+    if contains(["receipt_succeeded", "receipt_failed", "application_error", "completed"], legacy["outcome"]) {knowledge = "reported"}
+    return {"schema": "kujo.interop-handoff/v1alpha1", "subject": {"run_id": legacy["dispatch_run_id"], "step_id": legacy["dispatch_step_id"], "attempt_id": legacy["dispatch_attempt_id"], "effect_id": legacy["dispatch_effect_id"]}, "participant": {"namespace": info["namespace"], "invocation_id": legacy[info["invocation"]]}, "completion_knowledge": knowledge, "execution_result_ref": legacy["execution_result_ref"], "assurance_ref": legacy["assurance_ref"], "participant_extension": {"schema": info["schema"], "values": values}, "effect_extension": {"schema": effect_schema, "values": effect}}
+}
+# A normalized object alone is NOT validated evidence. Binding snapshot comes from
+# the legacy adapter's closed validation against host context and authoritative result.
+export func correlate_validated_legacy(kind, root, legacy, expected, result_raw, assurance_raw) {
+    doc := normalize_legacy_handoff(kind, legacy)
+    subject := {}; for key in ["run_id", "step_id", "attempt_id", "effect_id"] {subject[key] := expected["dispatch_" + key]}
+    registration := {"namespace": doc["participant"]["namespace"], "participant_schema": doc["participant_extension"]["schema"], "effect_schema": doc["effect_extension"]["schema"], "validate": func(candidate, result) {return candidate["completion_knowledge"] == doc["completion_knowledge"]&&to_json(candidate["participant_extension"]) == to_json(doc["participant_extension"])&&to_json(candidate["effect_extension"]) == to_json(doc["effect_extension"])}}
+    return correlate_interop_handoff(root, to_json(doc), {"subject": subject, "participant": doc["participant"]}, result_raw, assurance_raw, registration)
+}

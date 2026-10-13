@@ -1,0 +1,19 @@
+func create_handoff(source_agent, target_agent, reason, payload, prior_context_summary, expected_next_action) {
+	return {
+		"id": "handoff-" + to_string(current_timestamp()),
+		"source_agent": source_agent,
+		"target_agent": target_agent,
+		"reason": reason,
+		"payload": payload,
+		"prior_context_summary": prior_context_summary,
+		"expected_next_action": expected_next_action,
+		"timestamp": format_date(now(), "YYYY-MM-DD HH:mm:ss")
+	}
+}
+
+func summarize_handoff(handoff) {
+	return handoff["source_agent"] + " -> " + handoff["target_agent"] + ": " + handoff["reason"]
+}
+
+export create_handoff := create_handoff
+export summarize_handoff := summarize_handoff

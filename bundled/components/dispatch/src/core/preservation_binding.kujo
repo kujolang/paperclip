@@ -1,0 +1,31 @@
+# Additive exact-byte preservation binding. The installed host supplies a bounded
+# resolver; producer references never choose a transport, path, or executable.
+from src.core.portable_commitments import portable_json
+from src.core.utils import dict_get_or
+func demand(ok) {if ok != true {throw("preservation_binding_denied")}}
+export func bind_preservation(preservation, subject, environment_ref, source) {
+    if source == null {return {"reference":"sha256:" + sha256(portable_json(preservation)), "artifacts":[]}}
+    demand(type(source) == "dict"&&source["environment_ref"] == environment_ref)
+    raw := source["document_raw"]
+    demand(type(raw) == "string"&&byte_length(raw) <= 65536&&to_json(parse_json(raw)) == to_json(preservation))
+    demand(to_json(preservation["subject"]) == to_json(subject))
+    entries := preservation["evidence"];demand(type(entries) == "array"&&len(entries) <= 16)
+    artifacts := [raw];references := [];total := byte_length(raw)
+    for entry in entries {
+        demand(type(entry) == "dict"&&len(keys(entry)) == 1&&has_key(entry, "$ref"))
+        selector := entry["$ref"];demand(type(selector) == "string"&&byte_length(selector) > 0&&byte_length(selector) <= 4096)
+        demand(type(source["resolve"]) == "function")
+        resolved := source["resolve"](selector)
+        metadata_raw := resolved["metadata_raw"];content_raw := resolved["content_raw"]
+        demand(type(metadata_raw) == "string"&&byte_length(metadata_raw) <= 16384&&type(content_raw) == "string"&&byte_length(content_raw) <= 1048576)
+        total = total + byte_length(metadata_raw) + byte_length(content_raw);demand(total <= 4194304)
+        metadata := parse_json(metadata_raw)
+        demand(metadata["schema"] == "kujo.evidence-ref/v1"&&to_json(metadata["subject"]) == to_json(subject))
+        demand(metadata["integrity"]["status"] == "sha256"&&metadata["integrity"]["sha256"] == sha256(content_raw))
+        demand(resolved["environment_ref"] == environment_ref)
+        references = push(references, {"selector_ref":"sha256:" + sha256(selector), "metadata_ref":"sha256:" + sha256(metadata_raw), "content_ref":"sha256:" + sha256(content_raw)})
+        artifacts = push(push(artifacts, metadata_raw), content_raw)
+    }
+    preimage := {"schema":"dispatch.preservation-binding/v1alpha1", "document_ref":"sha256:" + sha256(raw), "subject":subject, "environment_ref":environment_ref, "references":references}
+    return {"reference":"sha256:" + sha256(portable_json(preimage)), "preimage":preimage, "artifacts":artifacts}
+}

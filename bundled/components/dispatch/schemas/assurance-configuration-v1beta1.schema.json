@@ -1,0 +1,72 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Public operator configuration commitment (not executable authority)",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "mode",
+    "fallback",
+    "profile",
+    "profile_version",
+    "issuer",
+    "mechanism",
+    "verifier_id",
+    "verifier_version",
+    "verifier_sha256",
+    "authority_sha256"
+  ],
+  "properties": {
+    "schema": {
+      "const": "dispatch.assurance-configuration/v1beta1"
+    },
+    "mode": {
+      "const": "required"
+    },
+    "fallback": {
+      "const": "deny"
+    },
+    "profile": {
+      "enum": [
+        "dispatch.sqlite-unique",
+        "workcell.git-cas",
+        "ability.application-gateway"
+      ]
+    },
+    "profile_version": {
+      "const": "1beta1"
+    },
+    "issuer": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}(?![\\s\\S])"
+    },
+    "mechanism": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}(?![\\s\\S])"
+    },
+    "verifier_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}(?![\\s\\S])"
+    },
+    "verifier_version": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}(?![\\s\\S])"
+    },
+    "verifier_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}(?![\\s\\S])"
+    },
+    "authority_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}(?![\\s\\S])"
+    }
+  }
+}

@@ -1,0 +1,22 @@
+from src.core.utils import dict_get_or
+
+func normalize_preferences(value) {
+ if type(value) != "dict" { return {} }
+ language := dict_get_or(value, "programming_language", "")
+ if type(language) != "string" { return {} }
+ language = to_lower(trim(language))
+ if language == "c++" { language = "cpp" }
+ if language == "c#" { language = "csharp" }
+ if len(language) > 64 || regex_match(language, "^[a-z][a-z0-9_-]*$") == false { return {} }
+ return {"programming_language": language}
+}
+
+export resolve_dispatch_retrieval_preferences := func(workflow, input, step) {
+ # Narrow explicit step selection wins, followed by run input, then workflow.
+ # Presence of an empty/invalid namespace clears the less-specific default.
+ step_meta := dict_get_or(dict_get_or(step, "config", {}), "metadata", {})
+ for source in [step_meta, dict_get_or(input, "metadata", {}), dict_get_or(workflow, "metadata", {})] {
+  if type(source) == "dict" && has_key(source, "retrieval_preferences") { return normalize_preferences(source["retrieval_preferences"]) }
+ }
+ return {}
+}

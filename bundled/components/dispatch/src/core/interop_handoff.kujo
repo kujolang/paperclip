@@ -1,0 +1,59 @@
+# Experimental evidence correlation only. No profile, effect truth or replay policy.
+from src.core.control import validate_execution_result
+func denied() {return {"ok": false, "code": "interop_correlation_mismatch"}}
+func closed(value, fields) {
+    if type(value) != "dict"||len(keys(value)) != len(fields) {return false}
+    valid := true
+    for field in fields {if has_key(value, field) == false {valid = false}}
+    return valid
+}
+func identifier(value) {return type(value) == "string"&&byte_length(value) <= 128&&regex_match(value, "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")&&contains(value, "\n") == 0}
+func reference(value) {return type(value) == "string"&&byte_length(value) == 71&&regex_match(value, "^sha256:[0-9a-f]{64}$")}
+func artifact(root, ref, limit) {
+    if reference(ref) == false {throw("reference")}
+    raw := read_file_beneath(root, "artifacts/" + substring(ref, 7, 71) + ".json", limit)
+    if "sha256:" + sha256(raw) != ref {throw("digest")}
+    return raw
+}
+func extension(value, schema) {
+    if schema == null {return value == null}
+    if closed(value, ["schema", "values"]) == false||value["schema"] != schema||type(schema) != "string"||byte_length(schema) > 128||byte_length(to_json(value)) > 2048 {return false}
+    values := value["values"]
+    if type(values) != "dict"||len(keys(values)) > 16 {return false}
+    valid := true
+    for key in keys(values) {
+        item := values[key]
+        if identifier(key) == false {valid = false}
+        if item != null {if type(item) != "string"||byte_length(item) > 128 {valid = false}}
+    }
+    return valid
+}
+# registration is installed executable policy, NEVER a producer object or serialized ok flag.
+# validate(doc, result) must close/check extension vocabularies and bind their evidence.
+export func correlate_interop_handoff(root, raw, expected, result_raw, assurance_raw, registration) {
+    try {
+        if type(raw) != "string"||byte_length(raw) > 6144 {return denied()}
+        doc := parse_json(raw)
+        if closed(doc, ["schema", "subject", "participant", "completion_knowledge", "execution_result_ref", "assurance_ref", "participant_extension", "effect_extension"]) == false||to_json(doc) != raw||doc["schema"] != "kujo.interop-handoff/v1alpha1" {return denied()}
+        subject := doc["subject"]; participant := doc["participant"]
+        if closed(subject, ["run_id", "step_id", "attempt_id", "effect_id"]) == false||closed(participant, ["namespace", "invocation_id"]) == false {return denied()}
+        valid := true
+        for key in keys(subject) {if identifier(subject[key]) == false {valid = false}}
+        if identifier(participant["invocation_id"]) == false||participant["namespace"] != registration["namespace"]||identifier(participant["namespace"]) == false {return denied()}
+        if to_json(subject) != to_json(expected["subject"])||to_json(participant) != to_json(expected["participant"]) {return denied()}
+        if contains(["reported", "unknown"], doc["completion_knowledge"]) == false {return denied()}
+        core := {"schema": doc["schema"], "subject": subject, "participant": participant, "completion_knowledge": doc["completion_knowledge"], "execution_result_ref": doc["execution_result_ref"], "assurance_ref": doc["assurance_ref"]}
+        if byte_length(to_json(core)) > 2048||valid == false {return denied()}
+        if extension(doc["participant_extension"], registration["participant_schema"]) == false||registration["participant_schema"] == null||extension(doc["effect_extension"], registration["effect_schema"]) == false {return denied()}
+        if artifact(root, doc["execution_result_ref"], 1048576) != result_raw {return denied()}
+        result := parse_json(result_raw)
+        if validate_execution_result(result)["ok"] == false||len(result["effects"]) != 1 {return denied()}
+        for key in ["run_id", "step_id", "attempt_id"] {if result["subject"][key] != subject[key] {valid = false}}
+        if valid == false||to_string(result["attempt"]) != subject["attempt_id"]||result["effects"][0]["effect_id"] != subject["effect_id"] {return denied()}
+        if assurance_raw == "" {if doc["assurance_ref"] != null {return denied()}}
+        else {if artifact(root, doc["assurance_ref"], 8192) != assurance_raw {return denied()}}
+        validator := registration["validate"]
+        if validator(doc, result) != true {return denied()}
+        return {"ok": true, "handoff": doc, "result_raw": result_raw}
+    } except ignored {return denied()}
+}

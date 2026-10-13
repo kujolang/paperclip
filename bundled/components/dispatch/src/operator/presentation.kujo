@@ -1,0 +1,40 @@
+from src.core.utils import dict_get_or
+func value_or_unknown(value) {if value == null {return "unknown"};return to_string(value)}
+export func print_operator_report(report) {
+    print("Run: " + report["run_id"] + " (revision " + to_string(report["revision"]) + ")")
+    print("Control status: " + report["status"])
+    outcome := report["outcome"]
+    if outcome["ok"] {
+        facts := dict_get_or(outcome, "candidate", {})
+        if has_key(outcome, "receipt") {facts = outcome["receipt"]["candidate"];print("Graph terminal decision: " + facts["outcome"])}
+        else {print("Graph assessment: " + facts["outcome"] + " (informational)")}
+        for node in facts["nodes"] {
+            terminal := "not terminal";if node["terminal"] != null {terminal = node["terminal"]["outcome"]}
+            print("  " + node["node_id"] + ": " + terminal + "; " + node["reason"])
+        }
+    } else {print("Graph facts unavailable: " + to_json(outcome))}
+    for node in report["nodes"] {
+        if has_key(node, "execution_state") {print("Execution " + node["node_id"] + ": " + node["execution_state"] + " (durable facts, not process liveness)")}
+        if has_key(node, "output_sha256") {print("Output " + node["node_id"] + ": sha256:" + node["output_sha256"]);print("  Sources: " + to_json(node["output"]["sources"]));print("  Source input: " + node["output"]["source_ref"])}
+    }
+    resource := report["resources"]
+    if resource["ok"] {
+        data := resource["report"]
+        for field in ["programs", "evaluations"] {budget := data[field];print(field + ": " + to_string(budget["consumed"]) + " consumed, " + to_string(budget["reserved"]) + " reserved, " + to_string(budget["available"]) + " available");if budget["available"] == 0 {print("  No new " + field + " capacity. Already consumed work may still resolve/finalize.")}}
+        for field in keys(data["totals"]) {fact := data["totals"][field];print(field + " [" + fact["class"] + "]: " + value_or_unknown(fact["total"]) + "; known partial sum " + to_string(fact["known_sum"]) + "; unknown attempts " + to_string(fact["unknown_attempts"]))}
+        print("Monetary cost [unknown]: unknown")
+    } else {print("Resource facts unavailable: " + to_json(resource))}
+    for id in keys(report["reviews"]) {review := report["reviews"][id];print("Retained review " + id + ": " + review["request"]["request_id"] + "; input " + review["binding_ref"])}
+    for id in keys(report["branches"]) {branch := report["branches"][id]["candidate"];print("Branch " + id + ": " + branch["selected"] + "; active " + to_json(branch["active_nodes"]) + "; not selected " + to_json(branch["inactive_nodes"]));print("  Decision evidence: " + branch["source_fact_ref"])}
+    recovery := report["recovery"]
+    if recovery["ok"] {assessment := recovery["assessment"];print("Recovery: " + assessment["classification"] + "; safe repairs " + to_string(len(assessment["safe_repairs"])));print("Unresolved: " + to_json(assessment["unresolved"]))} else {print("Recovery unavailable: " + to_json(recovery))}
+    print("Inspection grants no admission. Consumed attempts cannot replay. Use --json for exact bindings and attempt history.")
+}
+export func corrective_action(answer) {
+    description := to_json(answer)
+    if contains(description, "eval_plan_capacity")||contains(description, "eval_attempt_limit") {return "Eval capacity is exhausted. Do not edit the ceiling. Resolve already-consumed Eval attempts if evidence exists; a new run needs a separately chosen policy."}
+    if contains(description, "program_plan_capacity")||contains(description, "attempt_budget_exhausted") {return "Program capacity is exhausted or reserved. Inspect reservations; release only a proven never-dispatched reservation. Consumed attempts cannot be refunded."}
+    if contains(description, "stale") {return "The plan/decision no longer matches current authority. Inspect and generate a new plan; do not reuse or edit the old decision."}
+    if contains(description, "reservation_path_not_ready") {return "This node is not on an eligible active path. Inspect upstream finalization, review and branch selection; budget alone grants no eligibility."}
+    return "Inspect the retained workspace. Re-plan after resolving the named condition; never edit state, refund consumed work, or replay an uncertain effect."
+}

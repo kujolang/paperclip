@@ -1,0 +1,127 @@
+from src.core.graph_attempts import accounting_enabled, program_contract, attempt_run, fold_attempt, attempt_terminal_schema
+# Pure additive projections shared by the existing journal and retained recovery.
+from src.core.graph_transition import heterogeneous_graph, graph_contract, graph_event, apply_graph_transition, graph_history_projection
+from src.core.assurance_state import node_controller_features
+from src.core.utils import dict_get_or
+from src.core.portable_commitments import portable_json
+from src.core.parent_transition import parent_state_body
+func require(ok, reason) {if ok != true {throw(reason)}}
+export func composition_graph(state) {return dict_get_or(dict_get_or(dict_get_or(state, "workflow_definition", {}), "metadata", {}), "node_composition", "") == "dispatch.node-composition/v1alpha1"}
+export func composition_node(state) {return dict_get_or(dict_get_or(dict_get_or(state, "workflow_definition", {}), "metadata", {}), "node_input_required", "") == "dispatch.node-input/v1alpha1"}
+export func node_reference(value) {return "sha256:" + sha256(portable_json(value))}
+export func node_raw(state, reference) {
+    require(type(reference) == "string"&&regex_match(reference, "^sha256:[0-9a-f]{64}$"), "node_reference_invalid")
+    raw := read_file_beneath(state["run_dir"], "node-input/" + substring(reference, 7, 71) + ".raw", 1048576)
+    require("sha256:" + sha256(raw) == reference, "node_artifact_corrupt");return raw
+}
+export func node_claim_path(binding) {return "node-input/" + substring(node_reference(binding), 7, 71) + ".claim"}
+export func validate_node_binding_bytes(state, binding) {
+    require(contains(["dispatch.node-input-binding/v1alpha1", "dispatch.node-input-binding/v1alpha2", "dispatch.node-input-binding/v1alpha3", "dispatch.node-input-binding/v1alpha4"], binding["schema"])&&binding["consumer"]["run_id"] == state["run_id"], "node_binding_subject_mismatch")
+    if binding["schema"] == "dispatch.node-input-binding/v1alpha4" {
+        attempt := binding["attempt"];require(type(attempt["ordinal"]) == "int"&&contains([1, 2], attempt["ordinal"]), "node_attempt_ordinal_invalid")
+        if attempt["ordinal"] == 1 {require(attempt["previous_terminal_ref"] == null, "initial_attempt_lineage_invalid")} else {require(type(attempt["previous_terminal_ref"]) == "string"&&regex_match(attempt["previous_terminal_ref"], "^sha256:[0-9a-f]{64}$"), "retry_lineage_missing")}
+    }
+    require(len(binding["inputs"]) <= 8&&len(binding["predecessors"]) <= 8, "node_input_limit")
+    for reference in binding["artifacts"] {node_raw(state, reference)}
+    for input in binding["inputs"] {
+        metadata := parse_json(node_raw(state, input["evidence_ref"]));content := node_raw(state, input["content_ref"])
+        require(metadata["schema"] == "kujo.evidence-ref/v1"&&to_json(metadata["subject"]) == to_json(input["producer_subject"]), "node_input_subject_mismatch")
+        require(metadata["integrity"]["status"] == "sha256"&&metadata["integrity"]["sha256"] == sha256(content), "node_input_digest_mismatch")
+        require("sha256:" + sha256(to_json(metadata["artifact_schema"])) == input["schema_ref"]&&metadata["artifact_schema"]["$id"] == input["type_id"], "node_input_type_mismatch")
+        require(json_schema_validate(parse_json(content), metadata["artifact_schema"])["valid"], "node_input_schema_invalid")
+    }
+    return true
+}
+export func validate_node_claim(state) {
+    admission := dict_get_or(state, "node_execution_admission", null)
+    if admission != null {
+        binding := state["node_input_binding"]
+        require(admission["binding_ref"] == node_reference(binding), "node_admission_binding_mismatch")
+        require(read_file_beneath(state["run_dir"], node_claim_path(binding), 65536) == portable_json(binding), "node_consumption_missing")
+    }
+    return true
+}
+export func node_transition_details(state, data) {
+    return {"source_sha256":sha256(parent_state_body(state)), "prior_revision":state["revision"], "prior_journal":state["control_journal"]["last_sha256"], "data":data}
+}
+export func apply_node_transition(state, kind, details) {
+    require(details["source_sha256"] == sha256(parent_state_body(state))&&details["prior_revision"] == state["revision"]&&details["prior_journal"] == state["control_journal"]["last_sha256"], "node_transition_source_mismatch")
+    data := details["data"]
+    if graph_event(kind) {return apply_graph_transition(state, kind, data)}
+    if heterogeneous_graph(state) {require(has_key(state, "graph_finalization") == 0, "graph_already_finalized")}
+    if kind == "node_inputs_bound" {
+        require(composition_node(state)&&has_key(state, "node_input_binding") == 0&&len(state["steps"]) == 1&&state["steps"][0]["status"] == "pending", "node_binding_not_initial")
+        require(data["consumer"]["step_id"] == state["steps"][0]["id"]&&data["consumer"]["attempt_id"] == "1", "node_binding_subject_mismatch")
+        validate_node_binding_bytes(state, data);state["node_input_binding"] := data
+        state["required_features"] := node_controller_features(state, state["required_features"])
+    } else if kind == "node_execution_refused" {
+        require(composition_node(state)&&has_key(state, "node_execution_refusal") == 0&&has_key(state, "node_execution_admission") == 0&&state["steps"][0]["status"] == "pending", "node_refusal_conflict")
+        binding := state["node_input_binding"];require(binding["schema"] == "dispatch.node-input-binding/v1alpha4"&&data["binding_ref"] == node_reference(binding)&&data["reason"] == "required_resource_unavailable"&&data["resulting_revision"] == state["revision"] + 1, "node_refusal_invalid")
+        require(file_exists(state["run_dir"] + "/" + node_claim_path(binding)) == false, "node_refusal_after_consumption")
+        state["node_execution_refusal"] := data;state["status"] := "paused"
+    } else if kind == "node_execution_admitted" {
+        require(composition_node(state)&&has_key(state, "node_execution_refusal") == 0&&has_key(state, "node_execution_admission") == 0&&state["steps"][0]["status"] == "pending", "node_already_admitted")
+        require(data["binding_ref"] == node_reference(state["node_input_binding"]), "node_admission_binding_mismatch")
+        state["node_execution_admission"] := data;validate_node_claim(state)
+    } else if kind == "node_start_requested" {
+        require(composition_graph(state), "node_graph_required")
+        dispatches := dict_get_or(state, "node_dispatches", {});id := data["node_id"]
+        require(has_key(dispatches, id) == 0, "duplicate_node_dispatch")
+        matched := false
+        for step in state["steps"] {if step["id"] == id {require(attempt_run(state, id) == data["consumer"]["run_id"]&&step["status"] == "pending", "node_dispatch_mismatch");matched = true}}
+        require(matched, "node_missing");dispatches[id] := data;state["node_dispatches"] := dispatches
+    } else if kind == "node_terminal_observed" {
+        require(composition_graph(state), "node_graph_required")
+        observed := dict_get_or(state, "node_completions", {});id := data["node_id"]
+        require(has_key(observed, id) == 0&&(data["terminal"]["outcome"] == "completed"||heterogeneous_graph(state)), "node_terminal_conflict")
+        steps := state["steps"];matched := false
+        for i in range(0, len(steps)) {
+            step := steps[i]
+            if step["id"] == id {
+                expected_run := state["run_id"];if program_contract(step) {expected_run = attempt_run(state, id)}
+                require(contains(["pending", "paused"], step["status"])&&expected_run == data["terminal"]["subject"]["run_id"], "node_terminal_subject_mismatch")
+                if heterogeneous_graph(state) {require(data["terminal"]["schema"] == attempt_terminal_schema(graph_contract(step))&&data["terminal"]["node_id"] == id&&data["terminal"]["contract"] == graph_contract(step)&&contains(["completed", "failed", "rejected", "cancelled"], data["terminal"]["outcome"]), "node_terminal_contract_mismatch")}
+                step["status"] := data["terminal"]["outcome"];step["output"] := data["terminal"];steps[i] := step;state["current_step_index"] := i + 1;matched = true
+            }
+        }
+        require(matched, "node_missing")
+        for reference in data["artifacts"] {node_raw(state, reference)}
+        observed[id] := data;state["node_completions"] := observed;state["steps"] := steps
+        usage := state["budget_usage"];usage["steps"] := usage["steps"] + 1;state["budget_usage"] := usage
+    } else {throw("unsupported_node_transition")}
+    state = fold_attempt(state, kind, data);return state
+}
+export func node_history_projection(state, events) {
+    graph_history_projection(state, events)
+    binding := null;admission := null;refusal := null;completed := {};dispatches := {}
+    for event in events {
+        kind := event["kind"]
+        if kind == "graph_attempt_retried" {id := event["details"]["data"]["candidate"]["node_id"];next := {};for key in keys(completed) {if key != id {next[key] := completed[key]}};completed = next;next = {};for key in keys(dispatches) {if key != id {next[key] := dispatches[key]}};dispatches = next}
+        if kind == "node_execution_refused" {require(refusal == null&&admission == null, "duplicate_node_refusal");refusal = event["details"]["data"]}
+        if kind == "node_inputs_bound" {require(binding == null, "duplicate_node_binding");binding = event["details"]["data"]}
+        if kind == "node_execution_admitted" {require(admission == null&&refusal == null, "duplicate_node_admission");admission = event["details"]["data"]}
+        if kind == "node_start_requested" {data := event["details"]["data"];require(has_key(dispatches, data["node_id"]) == 0, "duplicate_node_dispatch");dispatches[data["node_id"]] := data}
+        if kind == "node_terminal_observed" {data := event["details"]["data"];require(has_key(completed, data["node_id"]) == 0, "duplicate_node_terminal");completed[data["node_id"]] := data}
+    }
+    require(to_json(binding) == to_json(dict_get_or(state, "node_input_binding", null))&&to_json(admission) == to_json(dict_get_or(state, "node_execution_admission", null))&&to_json(completed) == to_json(dict_get_or(state, "node_completions", {})), "node_journal_state_mismatch")
+    require(to_json(dispatches) == to_json(dict_get_or(state, "node_dispatches", {})), "node_dispatch_journal_mismatch")
+    if binding != null {validate_node_binding_bytes(state, binding)}
+    require(to_json(refusal) == to_json(dict_get_or(state, "node_execution_refusal", null)), "node_refusal_history_mismatch")
+    if refusal != null {require(admission == null&&refusal["binding_ref"] == node_reference(binding)&&file_exists(state["run_dir"] + "/" + node_claim_path(binding)) == false, "refusal_consumption_conflict")}
+    validate_node_claim(state)
+    if composition_graph(state) {
+        for step in state["steps"] {if contains(["completed", "skipped", "failed", "cancelled", "rejected"], step["status"]) {require(step["status"] != "skipped"&&has_key(completed, step["id"]), "node_terminal_authority_missing")}}
+    }
+    for id in keys(completed) {
+        for reference in completed[id]["artifacts"] {node_raw(state, reference)}
+        matched := false
+        for step in state["steps"] {if step["id"] == id {require(step["status"] == completed[id]["terminal"]["outcome"]&&to_json(step["output"]) == to_json(completed[id]["terminal"]), "node_terminal_state_mismatch");matched = true}}
+        require(matched, "node_missing")
+    }
+    return true
+}
+export func node_recovery_safe(state) {
+    if composition_graph(state) == false&&composition_node(state) == false {return false}
+    for step in state["steps"] {if step["status"] == "running" {return false}}
+    return true
+}

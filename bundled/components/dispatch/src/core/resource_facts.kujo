@@ -1,0 +1,32 @@
+from src.core.runtime_resource_schema import runtime_resource_schema
+# Host-local projections of existing artifacts, never provider adapters or collectors.
+from src.core.utils import dict_get_or
+func need(ok, reason) {if ok != true {throw(reason)}}
+func number(value) {return (type(value) == "int"||type(value) == "float")&&value >= 0&&value <= 9007199254740991}
+func count(value) {return type(value) == "int"&&number(value)}
+func nullable(value) {need(value == null||count(value), "resource_count_invalid");return value}
+export func resource_source_facts(kind, raw) {
+    need(type(raw) == "string"&&byte_length(raw) <= 65536, "resource_source_limit")
+    source := parse_json(raw)
+    if kind == "runtime" {
+        need(byte_length(raw) <= 8192&&len(keys(source)) <= 32&&json_schema_validate(source, runtime_resource_schema())["valid"], "runtime_source_schema_invalid")
+        need(source["schema"] == "kujo.runtime-measurements/v1"&&source["scope"] == "process"&&source["runtime"] == "vm"&&source["snapshot_consistency"] == "independent_counters"&&source["waited_for_detached"] == false, "runtime_source_invalid")
+        need(count(source["wall_ns"])&&len(keys(source["counters"])) <= 64, "runtime_count_invalid")
+        for key in keys(source["counters"]) {need(count(source["counters"][key]), "runtime_count_invalid")}
+        seen := [];for item in source["unsupported"] {need(contains(seen, item) == false, "runtime_unsupported_duplicate");seen = push(seen, item)}
+        cpu := source["cpu_seconds"];need(cpu == null||number(cpu), "runtime_cpu_invalid")
+        return {"class":"observed", "scope":"process", "wall_ns":source["wall_ns"], "cpu_seconds":cpu, "process_peak_rss_bytes":nullable(source["process_peak_rss_bytes"]), "counters":source["counters"], "hard_policy_eligible":false}
+    }
+    need(kind == "model"&&source["serialization_version"] == "kujo.context-ledger/v1"&&source["content_mode"] == "off"&&source["accounting_scope"] == "adapter_messages_and_tools", "model_source_invalid")
+    reported := {"input_tokens":null, "output_tokens":null};classification := "unknown"
+    if source["usage_source"] == "provider" {
+        classification = "provider_reported";usage := source["provider_usage"]
+        reported = {"input_tokens":nullable(dict_get_or(usage, "input_tokens", null)), "output_tokens":nullable(dict_get_or(usage, "output_tokens", null))}
+    }
+    estimated := null;need(len(source["components"]) <= 256, "resource_component_limit")
+    for component in source["components"] {
+        need(component["estimator"] == "kujo.weighted-characters/v1"&&count(component["estimated_tokens"]), "resource_estimate_invalid")
+        if estimated == null {estimated = 0};estimated = estimated + component["estimated_tokens"];need(count(estimated), "resource_sum_overflow")
+    }
+    return {"class":classification, "reported":reported, "estimated":{"class":"estimated", "component_tokens":estimated, "scope":"adapter_components"}, "monetary_cost":null}
+}

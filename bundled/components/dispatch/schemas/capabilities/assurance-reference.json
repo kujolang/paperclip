@@ -1,0 +1,39 @@
+{
+  "schema": "dispatch.assurance-capabilities/v1alpha1",
+  "advisory": true,
+  "execution_results": [
+    "kujo.execution-result/v1"
+  ],
+  "envelopes": [
+    "dispatch.effect-assurance/v1alpha1"
+  ],
+  "max_document_bytes": 8192,
+  "max_effects": 1,
+  "multi_effect": false,
+  "profiles": [
+    {
+      "id": "dispatch.sqlite-unique",
+      "version": "1alpha1",
+      "mechanism": "sqlite_unique_transaction",
+      "predicate": "exact_unique_transaction",
+      "revocation": "registry",
+      "live_verification": true
+    },
+    {
+      "id": "workcell.git-cas",
+      "version": "1alpha1",
+      "mechanism": "git_ref_cas_transaction",
+      "predicate": "exact_marker_and_cas_postcondition",
+      "revocation": "registry",
+      "live_verification": true
+    },
+    {
+      "id": "ability.application-gateway",
+      "version": "1alpha1",
+      "mechanism": "ability_application_gateway",
+      "predicate": "authenticated_request_business_receipt_binding",
+      "revocation": "registry_and_session",
+      "live_verification": true
+    }
+  ]
+}

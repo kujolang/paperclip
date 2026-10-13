@@ -1,0 +1,362 @@
+from src.core.errors import missing_workflow_error
+from src.core.step import create_step
+from src.core.utils import dict_get_or
+
+func create_workflow(definition) {
+    workflow := {
+        "id": definition["id"],
+        "metadata": dict_get_or(definition, "metadata", {}),
+        "name": definition["name"],
+        "description": definition["description"],
+        "input_schema": definition["input_schema"],
+        "agents": definition["agents"],
+        "tools": definition["tools"],
+        "steps": definition["steps"],
+        "memory_config": definition["memory_config"],
+        "default_retry_policy": definition["default_retry_policy"],
+        "routing": dict_get_or(definition, "routing", {}),
+        "control": dict_get_or(definition, "control", {}),
+        "budgets": dict_get_or(definition, "budgets", {}),
+        "max_parallel_steps": dict_get_or(definition, "max_parallel_steps", 1),
+        "approval_config": definition["approval_config"],
+        "output_schema": definition["output_schema"]
+    }
+    return workflow
+}
+
+func create_research_report_workflow(topic, auto_approve) {
+    agents := {
+        "planner": {
+            "id": "planner",
+            "name": "Planner Agent",
+            "purpose": "Define the research plan and expected report structure.",
+            "instructions": "Create a concise plan with questions, source types, and report sections.",
+            "model": {"provider": "openai", "model": "gpt-4.1-mini"},
+            "model_candidates": [],
+            "handler_id": "planner",
+            "execution_contract": {"id": "research-planner", "version": "1"},
+            "capabilities": {"plan_research": true},
+            "routing": {"risk": "low"},
+            "uses_model": true,
+            "tools": ["timestamp_tool"],
+            "handoff_targets": ["research"],
+            "output_schema": {"type": "dict"},
+            "guardrails": ["Return practical and verifiable sections."]
+        },
+        "research": {
+            "id": "research",
+            "name": "Research Agent",
+            "purpose": "Collect source snippets relevant to the topic.",
+            "instructions": "Use the search tools to gather evidence from local fixtures.",
+            "model": {"provider": "openai", "model": "gpt-4.1-mini"},
+            "model_candidates": [],
+            "handler_id": "research",
+            "execution_contract": {"id": "fixture-research", "version": "1"},
+            "capabilities": {"gather_sources": true},
+            "routing": {"risk": "low"},
+            "uses_model": false,
+            "tools": ["mock_web_search", "local_source_lookup", "timestamp_tool"],
+            "handoff_targets": ["verification"],
+            "output_schema": {"type": "dict"},
+            "guardrails": ["Only include evidence that can be cited."]
+        },
+        "verification": {
+            "id": "verification",
+            "name": "Verification Agent",
+            "purpose": "Score claims based on source evidence quality.",
+            "instructions": "Classify each claim as supported, weakly_supported, conflicting, or unsupported.",
+            "model": {"provider": "openai", "model": "gpt-4.1-mini"},
+            "model_candidates": [],
+            "handler_id": "verification",
+            "execution_contract": {"id": "claim-verification", "version": "1"},
+            "capabilities": {"verify_claims": true},
+            "routing": {"risk": "low"},
+            "uses_model": false,
+            "tools": ["citation_formatter", "timestamp_tool"],
+            "handoff_targets": ["writer"],
+            "output_schema": {"type": "dict"},
+            "guardrails": ["Do not overstate confidence."]
+        },
+        "writer": {
+            "id": "writer",
+            "name": "Writer Agent",
+            "purpose": "Produce the final markdown report and structured payload.",
+            "instructions": "Write a polished report with findings, claims, evidence, citations, and limitations.",
+            "model": {"provider": "openai", "model": "gpt-4.1-mini"},
+            "model_candidates": [],
+            "handler_id": "writer",
+            "execution_contract": {"id": "report-writer", "version": "1"},
+            "capabilities": {"write_report": true},
+            "routing": {"risk": "low"},
+            "uses_model": true,
+            "tools": ["markdown_report_writer", "citation_formatter", "timestamp_tool"],
+            "handoff_targets": [],
+            "output_schema": {"type": "dict"},
+            "guardrails": ["Keep content factual and traceable to evidence."]
+        }
+    }
+
+    steps := [
+    create_step("plan", "Plan Research", "agent", {
+        "agent_id": "planner",
+        "input_from": ["input"],
+        "output_key": "plan"
+    }),
+    create_step("gather_sources", "Gather Sources", "agent", {
+        "agent_id": "research",
+        "input_from": ["input", "plan"],
+        "output_key": "sources"
+    }),
+    create_step("retry_probe", "Reliability Probe", "tool", {
+        "tool_name": "flaky_reliability_tool",
+        "input_from": ["input"],
+        "output_key": "reliability_probe",
+        "optional": true,
+        "retry_policy": {
+            "max_attempts": 3,
+            "base_delay_ms": 10,
+            "max_delay_ms": 50,
+            "strategy": "exponential",
+            "retry_on_codes": ["flaky_failure", "tool_execution_failure"]
+        }
+    }),
+    create_step("extract_claims", "Extract Claims", "tool", {
+        "tool_name": "claim_extraction",
+        "input_from": ["sources"],
+        "output_key": "claims"
+    }),
+    create_step("verify_claims", "Verify Claims", "agent", {
+        "agent_id": "verification",
+        "input_from": ["input", "sources", "claims"],
+        "output_key": "verification"
+    }),
+    create_step("handoff_writer", "Handoff To Writer", "handoff", {
+        "handoff": {
+            "source_agent": "verification",
+            "target_agent": "writer",
+            "reason": "Claims reviewed and ready for report drafting.",
+            "expected_next_action": "Draft markdown and JSON report outputs."
+        },
+        "input_from": ["verification"],
+        "output_key": "writer_handoff"
+    }),
+    create_step("approval_gate", "Human Approval Gate", "approval", {
+        "approval_required": true,
+        "approval_gate": {
+            "reason": "Final report generation can publish conclusions.",
+            "summary": "Review verified claims and confidence before report writing."
+        },
+        "input_from": ["verification"],
+        "output_key": "approval"
+    }),
+    create_step("write_report", "Write Final Report", "agent", {
+        "agent_id": "writer",
+        "input_from": ["input", "plan", "sources", "claims", "verification"],
+        "output_key": "report"
+    }),
+    create_step("finalize", "Finalize Outputs", "report", {
+        "input_from": ["report", "verification", "claims", "sources"],
+        "output_key": "final_output"
+    })
+    ]
+
+    return create_workflow({
+        "id": "research_report_workflow",
+        "name": "Research Report Workflow",
+        "description": "Produces a traceable markdown research report with citations.",
+        "input_schema": {
+            "type": "dict",
+            "required": ["topic"],
+            "properties": {
+                "topic": {"type": "string"}
+            }
+        },
+        "agents": agents,
+        "tools": [
+        "mock_web_search",
+        "local_source_lookup",
+        "claim_extraction",
+        "citation_formatter",
+        "markdown_report_writer",
+        "timestamp_tool",
+        "flaky_reliability_tool"
+        ],
+        "steps": steps,
+        "memory_config": {
+            "workflow_memory": true,
+            "agent_notes": true,
+            "step_output_memory": true,
+            "history_lookup": true
+        },
+        "default_retry_policy": {
+            "max_attempts": 2,
+            "base_delay_ms": 10,
+            "max_delay_ms": 100,
+            "strategy": "linear",
+            "retry_on_codes": ["tool_execution_failure", "agent_execution_failure"]
+        },
+        "routing": {"enabled": false},
+        "approval_config": {
+            "auto_approve": auto_approve
+        },
+        "output_schema": {
+            "type": "dict",
+            "required": ["title", "summary", "key_findings", "claims", "evidence", "citations", "limitations", "generated_at", "run_id"]
+        }
+    })
+}
+
+func create_crud_reliability_workflow(topic, auto_approve) {
+    workflow := create_research_report_workflow(topic, auto_approve)
+    workflow["id"] := "crud_reliability_workflow"
+    workflow["name"] := "CRUD Reliability Workflow"
+    workflow["description"] := "Reviews CRUD APIs for contract stability, migration safety, auth resilience, and error-budget risks."
+    agents := workflow["agents"]
+
+    planner_agent := agents["planner"]
+    planner_agent["purpose"] := "Define a reliability-focused CRUD API review plan."
+    planner_agent["instructions"] := "Plan checks for API contract drift, schema migration risks, authentication/authorization safety, and error-budget expectations."
+    agents["planner"] := planner_agent
+
+    research_agent := agents["research"]
+    research_agent["instructions"] := "Gather evidence related to CRUD contract checks, migration behavior, auth handling, and reliability indicators."
+    agents["research"] := research_agent
+
+    verification_agent := agents["verification"]
+    verification_agent["instructions"] := "Classify evidence across contract, migration, auth, and error-budget categories with confidence scoring."
+    agents["verification"] := verification_agent
+
+    writer_agent := agents["writer"]
+    writer_agent["instructions"] := "Produce a CRUD reliability report covering contract checks, migration safety findings, auth checks, and explicit error-budget notes."
+    writer_agent["guardrails"] := [
+    "Map findings to concrete evidence snippets.",
+    "Call out migration rollback and data integrity risks.",
+    "Include authentication and authorization edge cases.",
+    "Summarize error-budget impact and risk level."
+    ]
+    agents["writer"] := writer_agent
+    workflow["agents"] := agents
+
+    return workflow
+}
+
+func create_approval_handoff_workflow(topic, auto_approve) {
+    workflow := create_research_report_workflow(topic, auto_approve)
+    workflow["id"] := "approval_handoff_workflow"
+    workflow["name"] := "Approval Handoff Workflow"
+    workflow["description"] := "Minimal human-in-the-loop workflow: gather evidence, pause at an approval gate, then finalize."
+    workflow["tools"] := [
+    "mock_web_search",
+    "local_source_lookup",
+    "claim_extraction",
+    "citation_formatter",
+    "markdown_report_writer",
+    "timestamp_tool"
+    ]
+    workflow["steps"] := [
+    create_step("plan", "Plan Research", "agent", {
+        "agent_id": "planner",
+        "input_from": ["input"],
+        "output_key": "plan"
+    }),
+    create_step("gather_sources", "Gather Sources", "agent", {
+        "agent_id": "research",
+        "input_from": ["input", "plan"],
+        "output_key": "sources"
+    }),
+    create_step("extract_claims", "Extract Claims", "tool", {
+        "tool_name": "claim_extraction",
+        "input_from": ["sources"],
+        "output_key": "claims"
+    }),
+    create_step("verify_claims", "Verify Claims", "agent", {
+        "agent_id": "verification",
+        "input_from": ["input", "sources", "claims"],
+        "output_key": "verification"
+    }),
+    create_step("approval_gate", "Human Approval Gate", "approval", {
+        "approval_required": true,
+        "approval_gate": {
+            "reason": "Confirm findings before finalizing.",
+            "summary": "Review verified claims before the report is written."
+        },
+        "input_from": ["verification"],
+        "output_key": "approval"
+    }),
+    create_step("finalize", "Finalize Outputs", "report", {
+        "input_from": ["verification", "claims", "sources"],
+        "output_key": "final_output"
+    })
+    ]
+    return workflow
+}
+
+func create_workflow_templates() {
+    return {
+        "research-report": func(topic, auto_approve) {
+            return create_research_report_workflow(topic, auto_approve)
+        },
+        "crud-reliability": func(topic, auto_approve) {
+            return create_crud_reliability_workflow(topic, auto_approve)
+        },
+        "approval-handoff": func(topic, auto_approve) {
+            return create_approval_handoff_workflow(topic, auto_approve)
+        }
+    }
+}
+
+func create_workflow_by_template(template_id, topic, auto_approve) {
+    workflow_templates := create_workflow_templates()
+    if has_key(workflow_templates, template_id) == 0 {
+        return missing_workflow_error(template_id)
+    }
+    workflow_builder := workflow_templates[template_id]
+    return {
+        "ok": true,
+        "workflow": workflow_builder(topic, auto_approve)
+    }
+}
+
+func count_approval_steps(steps) {
+    count := 0
+    for step in steps {
+        if to_string(dict_get_or(step, "type", "")) == "approval" {
+            count = count + 1
+        }
+    }
+    return count
+}
+
+func list_workflow_templates() {
+    workflow_templates := create_workflow_templates()
+    template_order := ["research-report", "crud-reliability", "approval-handoff"]
+    templates := []
+    for template_id in template_order {
+        if has_key(workflow_templates, template_id) == 0 {
+            continue
+        }
+        builder := workflow_templates[template_id]
+        workflow := builder("Template introspection", true)
+        steps := dict_get_or(workflow, "steps", [])
+        tools := dict_get_or(workflow, "tools", [])
+        templates := push(templates, {
+            "template_id": template_id,
+            "workflow_id": dict_get_or(workflow, "id", ""),
+            "name": dict_get_or(workflow, "name", ""),
+            "description": dict_get_or(workflow, "description", ""),
+            "step_count": len(steps),
+            "approval_step_count": count_approval_steps(steps),
+            "tool_count": len(tools),
+            "tools": tools
+        })
+    }
+    return templates
+}
+
+export create_workflow := create_workflow
+export create_research_report_workflow := create_research_report_workflow
+export create_crud_reliability_workflow := create_crud_reliability_workflow
+export create_approval_handoff_workflow := create_approval_handoff_workflow
+export create_workflow_templates := create_workflow_templates
+export create_workflow_by_template := create_workflow_by_template
+export list_workflow_templates := list_workflow_templates

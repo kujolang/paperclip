@@ -1,0 +1,17 @@
+# Explicit, opt-in operator mapping. Never select executable, root, credential or
+# admitted invocation from a producer document. Application profile stays in Ability.
+export func ability_assurance_verifier(config, runtime, application_root, gateway_root, credential) {
+    return func(subject) {
+        for field in ["operation", "target_sha256", "scope_sha256", "key_sha256", "request_sha256", "precondition_sha256", "transaction_sha256"] {
+            if subject[field] != config[field] {return {"ok": false, "code": "ability_request_mismatch"}}
+        }
+        observation_profile := ""
+        if has_key(config, "portable_commitments")&&config["portable_commitments"] == true {observation_profile = "portable-v1"}
+        response := spawn_process([runtime, "run", "examples/application-assurance/gateway.kujo", gateway_root, "observe", observation_profile], {"cwd": application_root, "inherit_env": false, "env": {"ABILITY_GATEWAY_SESSION": credential}, "max_output_bytes": 8192, "timeout_ms": 5000})
+        if response.success == false||response.stderr != ""||response.stdout_truncated {return {"ok": false, "code": "ability_business_effect_unverified"}}
+        observed := parse_json(response.stdout)
+        if observed["ok"] == false {return observed}
+        if sha256(to_json(observed["profile"])) != config["profile_sha256"] {return {"ok": false, "code": "ability_request_mismatch"}}
+        return observed
+    }
+}

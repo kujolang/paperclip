@@ -1,0 +1,57 @@
+# Proposed beta, explicit opt-in. Alpha documents are never accepted as beta.
+from src.core.portable_commitments import portable_json, portable_digest
+from src.core.effect_assurance import assurance_document, resolve_effect_assurance, validate_effect_assurance_shape
+from src.core.utils import dict_get_or
+
+func category(code) {
+    if code == "beta_unsupported_envelope" {return "unsupported_envelope"}
+    if code == "beta_unsupported_profile" {return "unsupported_profile"}
+    if code == "beta_configuration_mismatch" {return "configuration_unavailable"}
+    if code == "beta_contract_invalid" {return "contract_invalid"}
+    if contains(["assurance_expired_or_future", "assurance_clock_invalid", "ability_assurance_expired"], code) {return "freshness_failed"}
+    if code == "ability_assurance_revoked" {return "authority_revoked"}
+    if code == "assurance_existing_policy_denied" {return "result_policy_denied"}
+    if contains(["beta_binding_mismatch", "assurance_result_digest_mismatch", "assurance_subject_mismatch", "assurance_attempt_mismatch", "assurance_effect_mismatch", "assurance_enforcement_mismatch", "assurance_binding_mismatch", "assurance_reference_mismatch"], code) {return "binding_mismatch"}
+    return "verification_failed"
+}
+func denied(code) {return {"ok": false, "action": "blocked", "code": code, "reason_category": category(code), "assurance_verified": false}}
+export func beta_mechanism(profile, version) {
+    if version != "1beta1" {return ""}
+    if profile == "dispatch.sqlite-unique" {return "sqlite_unique_transaction"}
+    if profile == "workcell.git-cas" {return "git_ref_cas_transaction"}
+    if profile == "ability.application-gateway" {return "ability_application_gateway"}
+    return ""
+}
+export func beta_assurance_document(expected, observed, profile) {
+    bindings := {}
+    for key in ["operation", "target_sha256", "scope_sha256", "key_sha256", "request_sha256", "precondition_sha256", "transaction_sha256", "reported_state", "replay_class"] {bindings[key] := expected[key]}
+    bindings["observed_state"] := observed["observed_state"]
+    return {"schema": "dispatch.effect-assurance/v1beta1", "subject": {"kind": "action", "run_id": expected["run_id"], "step_id": expected["step_id"], "attempt_id": expected["attempt_id"], "effect_id": expected["effect_id"], "result_sha256": expected["result_sha256"]}, "profile": {"id": profile, "version": "1beta1"}, "issuer": expected["issuer"], "verification_method": "live_readback", "validity": {"from": observed["valid_from"], "until": observed["valid_until"]}, "evidence_ref": observed["evidence_ref"], "bindings": bindings, "profile_sha256": portable_digest(bindings)}
+}
+# Existing adapter predicate and v1 policy are reused, not replaced with safe=true.
+# Internal alpha-shaped facts are an implementation adapter, never an accepted
+# alpha sidecar or a relabeling of historical provenance.
+export func resolve_beta_assurance(result_raw, raw, expected, descriptor, verifier, stamp) {
+    try {
+        if type(raw) != "string"||byte_length(raw) > 8192 {return denied("beta_contract_invalid")}
+        doc := parse_json(raw)
+        if dict_get_or(doc, "schema", "") != "dispatch.effect-assurance/v1beta1" {return denied("beta_unsupported_envelope")}
+        if portable_json(doc) != raw {return denied("beta_contract_invalid")}
+        if expected["issuer"] != descriptor["issuer"] {return denied("beta_configuration_mismatch")}
+        mechanism := beta_mechanism(descriptor["profile"], descriptor["profile_version"])
+        if mechanism == "" {return denied("beta_unsupported_profile")}
+        if mechanism != descriptor["mechanism"] {return denied("beta_configuration_mismatch")}
+        # Reconstruction enforces every closed generic and profile field, including
+        # exact profile/version, action namespace and commitment. No extra keys.
+        observed := {"observed_state": doc["bindings"]["observed_state"], "mechanism": mechanism, "valid_from": doc["validity"]["from"], "valid_until": doc["validity"]["until"], "evidence_ref": doc["evidence_ref"]}
+        rebuilt := beta_assurance_document(expected, observed, descriptor["profile"])
+        if portable_json(rebuilt) != raw {return denied("beta_binding_mismatch")}
+        facts := assurance_document(expected, observed)
+        if validate_effect_assurance_shape(facts) == false {return denied("beta_contract_invalid")}
+        if expected["assurance"] != "independently_verified" {return denied("beta_configuration_mismatch")}
+        registry := {}; registry[expected["issuer"]] := {"assurance": "independently_verified", "verify": verifier}
+        checked := resolve_effect_assurance(result_raw, to_json(facts), expected, registry, stamp)
+        if checked["ok"] == false {return denied(checked["code"])}
+        return {"ok": true, "action": "verified", "code": "beta_verified_v1_eligible", "assurance_verified": true, "assurance_sha256": sha256(raw)}
+    } except err {return denied("beta_contract_invalid")}
+}

@@ -1,0 +1,99 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Public operator configuration commitment (not executable authority)",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "mode",
+    "fallback",
+    "profile",
+    "profile_version",
+    "issuer",
+    "mechanism",
+    "verifier_id",
+    "verifier_version",
+    "verifier_sha256",
+    "authority_sha256"
+  ],
+  "properties": {
+    "schema": {
+      "const": "dispatch.assurance-configuration/v1alpha1"
+    },
+    "mode": {
+      "enum": [
+        "optional",
+        "required"
+      ]
+    },
+    "fallback": {
+      "enum": [
+        "deny",
+        "legacy_unavailable"
+      ]
+    },
+    "profile": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$"
+    },
+    "profile_version": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$"
+    },
+    "issuer": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$"
+    },
+    "mechanism": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$"
+    },
+    "verifier_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$"
+    },
+    "verifier_version": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$"
+    },
+    "verifier_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "authority_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    }
+  },
+  "anyOf": [
+    {
+      "properties": {
+        "mode": {
+          "const": "required"
+        },
+        "fallback": {
+          "const": "deny"
+        }
+      }
+    },
+    {
+      "properties": {
+        "mode": {
+          "const": "optional"
+        }
+      }
+    }
+  ]
+}

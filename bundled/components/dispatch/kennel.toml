@@ -1,0 +1,55 @@
+[package]
+name = "dispatch"
+version = "1.3.0"
+description = "Reliable workflow orchestration for multi-step AI agent systems in Kujo."
+license = "MIT"
+authors = ["Kujolang <contact@kujolang.ai>"]
+homepage = ""
+repository = "https://github.com/kujolang/dispatch"
+documentation = ""
+keywords = ["kujo", "agents", "workflow", "orchestration"]
+categories = ["ai", "developer-tools"]
+readme = "README.md"
+
+[package.status]
+stage = "production"
+stability = "stable"
+public_api = true
+notes = "The Dispatch 1.3 CLI and workflow contracts are public; Requires Kujo 1.6.0 for POSIX locks and directory durability. Assurance beta and interoperability alpha remain experimental and opt-in."
+
+[kujo]
+minimum_version = "1.6.0"
+entry = "dispatch.kujo"
+sources = ["."]
+includes = ["README.md", "HOWTO.md", "BLOG_ROUTER.md", "CHANGELOG.md", "docs", "examples", "release", "scripts", "src", "tests", "dispatch.kujo", "kujo.toml"]
+excludes = [".git", "kennel_packages", "dist", "build", "node_modules", "outputs"]
+
+[build]
+command = ""
+output = "dist"
+artifacts = []
+
+[dependencies]
+ai-sdk = { source = "github:kujolang/ai-sdk", commit = "5184a122590dd5698770b50d99b69ed11c7ec84a" }
+
+[dev-dependencies]
+
+[scripts]
+demo = "kujo run dispatch.kujo demo \"Research topic\" --yes --non-interactive"
+test = "kujo test-run tests/dispatch_tests.kujo"
+
+[package.exports]
+engine = "src/core/runner.kujo"
+cli = "dispatch.kujo"
+
+[package.metadata]
+bridge_script = "src/bridge/bridge_chat.kujo"
+
+[registry]
+index = ""
+publish = ""
+
+[trust]
+checksum = ""
+signature = ""
+signing_key = ""

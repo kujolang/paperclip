@@ -1,0 +1,128 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "subject",
+    "profile",
+    "issuer",
+    "verification_method",
+    "validity",
+    "evidence_ref",
+    "bindings",
+    "profile_sha256"
+  ],
+  "properties": {
+    "schema": {
+      "const": "dispatch.effect-assurance/v1beta1"
+    },
+    "subject": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "run_id",
+        "step_id",
+        "attempt_id",
+        "effect_id",
+        "result_sha256"
+      ],
+      "properties": {
+        "kind": {
+          "const": "action"
+        },
+        "run_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}(?![\\s\\S])",
+          "maxLength": 128
+        },
+        "step_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}(?![\\s\\S])",
+          "maxLength": 128
+        },
+        "attempt_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}(?![\\s\\S])",
+          "maxLength": 128
+        },
+        "effect_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}(?![\\s\\S])",
+          "maxLength": 128
+        },
+        "result_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}(?![\\s\\S])",
+          "maxLength": 64
+        }
+      }
+    },
+    "profile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "version"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}(?![\\s\\S])",
+          "maxLength": 128
+        },
+        "version": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}(?![\\s\\S])",
+          "maxLength": 128
+        }
+      }
+    },
+    "issuer": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}(?![\\s\\S])",
+      "maxLength": 128
+    },
+    "verification_method": {
+      "const": "live_readback"
+    },
+    "validity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "from",
+        "until"
+      ],
+      "properties": {
+        "from": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 253402300799
+        },
+        "until": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 253402300799
+        }
+      }
+    },
+    "evidence_ref": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}(?![\\s\\S])",
+      "maxLength": 71
+    },
+    "bindings": {
+      "type": "object",
+      "maxProperties": 16,
+      "description": "MUST additionally validate against the explicitly selected installed profile schema; unknown profiles grant no trust."
+    },
+    "profile_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}(?![\\s\\S])",
+      "maxLength": 64
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Proposed opt-in beta single-effect assurance",
+  "description": "Canonical portable-json/v1 wire bytes, <=8192 UTF-8 bytes; exact result bytes, live predicate, profile commitment and half-open <=3600 second interval additionally verified."
+}

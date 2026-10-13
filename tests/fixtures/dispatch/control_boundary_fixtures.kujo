@@ -1,0 +1,171 @@
+from src.core.step import create_step
+from src.tools.tool import create_tool_registry, create_tool, register_tool
+from src.workflows.workflow import create_workflow
+
+export func evaluation_result(verdict, severity, result_id) {
+    failed := 0
+    passed := 1
+    if verdict == "fail"||verdict == "indeterminate" {
+        failed = 1
+        passed = 0
+    }
+    return {
+        "schema": "kujo.evaluation-result/v1",
+        "result_id": result_id,
+        "evaluator": {"name": "custom-evaluator", "version": "1"},
+        "subject": {"run_id": "external-run", "step_id": "gate", "attempt_id": "a1"},
+        "verdict": verdict,
+        "severity": severity,
+        "checks": {"passed": passed, "failed": failed, "warned": 0, "skipped": 0},
+        "started_at": "2026-09-24T14:32:08Z",
+        "finished_at": "2026-09-24T14:32:15Z",
+        "evidence": [{"$ref": "ev-report"}]
+    }
+}
+
+func failing_gate_handler(input, context) {
+    return {"ok": true, "data": {
+            "schema": "kujo.evaluation-result/v1",
+            "result_id": "er-fail",
+            "evaluator": {"name": "custom-evaluator", "version": "1"},
+            "subject": {"run_id": "external-run", "step_id": "gate", "attempt_id": "a1"},
+            "verdict": "fail",
+            "severity": "error",
+            "checks": {"passed": 0, "failed": 1, "warned": 0, "skipped": 0},
+            "started_at": "2026-09-24T14:32:08Z",
+            "finished_at": "2026-09-24T14:32:15Z",
+            "evidence": [{"$ref": "ev-report"}]
+    }}
+}
+
+func warning_gate_handler(input, context) {
+    return {"ok": true, "data": {
+            "schema": "kujo.evaluation-result/v1",
+            "result_id": "er-warn",
+            "evaluator": {"name": "custom-evaluator", "version": "1"},
+            "subject": {"run_id": "external-run", "step_id": "gate", "attempt_id": "a1"},
+            "verdict": "warn",
+            "severity": "warning",
+            "checks": {"passed": 1, "failed": 0, "warned": 1, "skipped": 0},
+            "started_at": "2026-09-24T14:32:08Z",
+            "finished_at": "2026-09-24T14:32:15Z",
+            "evidence": [{"$ref": "ev-report"}]
+    }}
+}
+
+func downstream_handler(input, context) {
+    return {"ok": true, "data": {"ran": true}}
+}
+
+func independent_handler(input, context) {
+    return {"ok": true, "data": {"independent": true}}
+}
+
+export func control_workflow(gate_tool, policies) {
+    return create_workflow({
+        "id": "control-boundary-test",
+        "name": "Control Boundary Test",
+        "description": "Exercises producer-neutral evaluation policy.",
+        "input_schema": {"type": "dict"},
+        "agents": {},
+        "tools": [gate_tool, "downstream"],
+        "steps": [
+        create_step("gate", "Evaluate", "tool", {"tool_name": gate_tool, "input_from": ["input"], "output_key": "evaluation", "effect_class": "none", "control_role": "evaluator"}),
+        create_step("downstream", "Downstream", "tool", {"tool_name": "downstream", "input_from": ["evaluation"], "depends_on": ["gate"], "output_key": "downstream", "effect_class": "none"})
+        ],
+        "memory_config": {},
+        "default_retry_policy": {"max_attempts": 1, "base_delay_ms": 0, "max_delay_ms": 0, "strategy": "none", "retry_on_codes": []},
+        "routing": {"enabled": false},
+        "control": {"policy_id": "test-policy", "policy_version": "1", "policies": policies, "default": {"disposition": "continue", "reason": "Default continuation"}},
+        "budgets": {},
+        "max_parallel_steps": 1,
+        "approval_config": {"auto_approve": false},
+        "output_schema": {"type": "dict"}
+    })
+}
+
+export func control_registry() {
+    tools := create_tool_registry()
+    tools = register_tool(tools, create_tool("gate_fail", "Failing evaluator", {"type": "dict"}, {"type": "dict"}, failing_gate_handler, null))
+    tools = register_tool(tools, create_tool("gate_warn", "Warning evaluator", {"type": "dict"}, {"type": "dict"}, warning_gate_handler, null))
+    tools = register_tool(tools, create_tool("downstream", "Downstream effect", {"type": "dict"}, {"type": "dict"}, downstream_handler, null))
+    tools = register_tool(tools, create_tool("independent", "Independent branch", {"type": "dict"}, {"type": "dict"}, independent_handler, null))
+    return tools
+}
+
+export func scoped_control_workflow(policies) {
+    workflow := control_workflow("gate_fail", policies)
+    workflow["tools"] := push(workflow["tools"], "independent")
+    workflow["steps"] := push(workflow["steps"], create_step("independent", "Independent", "tool", {"tool_name": "independent", "input_from": ["input"], "output_key": "independent", "effect_class": "none"}))
+    return workflow
+}
+
+export func control_run_options(root) {
+    return {"output_root": root, "auto_approve": false, "interactive": false, "command_name": "control-test"}
+}
+
+export func intervention_state(allowed_actions, effect_class) {
+    boundary := {"schema": "kujo.control-boundary/v1", "boundary_id": "boundary-test", "status": "open", "step_id": "gate", "state_revision": 7, "policy_decision": {"decision_id": "policy-test"}, "evaluation_result": evaluation_result("fail", "error", "er-test")}
+    return {
+        "revision": 7,
+        "status": "paused",
+        "current_step_index": 1,
+        "current_control_boundary": boundary,
+        "control_boundaries": [boundary],
+        "human_intervention": {"schema": "kujo.intervention-request/v2", "request_id": "request-test", "boundary_id": "boundary-test", "state_revision": 7, "allowed_actions": allowed_actions},
+        "steps": [create_step("gate", "Evaluate", "tool", {"tool_name": "gate_fail", "output_key": "evaluation", "effect_class": effect_class, "control_role": "evaluator", "reexecution_modes": ["clean_workspace", "same_workspace"]})],
+        "data": {"evaluation": {"verdict": "fail"}},
+        "memory": {"step_outputs": {"evaluation": {"verdict": "fail"}}}
+    }
+}
+
+export func intervention_decision(action, expected_revision) {
+    source := "existing_evidence"
+    if action == "retry_step" {source = "preserved_workspace"}
+    if action == "retry_clean" {source = "original_source"}
+    if action == "amend_inputs" {source = "amended_inputs"}
+    return {
+        "schema": "kujo.intervention-decision/v2",
+        "decision_id": "decision-test",
+        "request_id": "request-test",
+        "boundary_id": "boundary-test",
+        "expected_state_revision": expected_revision,
+        "action": action,
+        "continuation": {"target_step_id": "gate", "source": source, "reuse_inputs": true, "reuse_effects": false, "new_attempt": true},
+        "actor": {"id": "operator-1", "type": "human", "authenticated_by": "test", "authorization": "workflow:review"},
+        "reason": "Reviewed in test.",
+        "decided_at": "2026-09-24T15:00:00Z"
+    }
+}
+
+func failed_action_handler(input, context) {
+    if has_key(context["input"], "attempt_counter") {
+        counter := context["input"]["attempt_counter"]
+        write_file(counter, to_json(parse_json(read_file(counter)) + 1), true)
+    }
+    return {"ok": false, "error": {"code": "fixture_action_failed", "message": "Fixture failure after a possible effect.", "retryable": true}}
+}
+
+export func failed_action_registry() {
+    tools := control_registry()
+    return register_tool(tools, create_tool("failed_action", "Failure fixture", {"type": "dict"}, {"type": "dict"}, failed_action_handler, null))
+}
+
+func passing_gate_handler(input, context) {
+    return {"ok": true, "data": {
+            "schema": "kujo.evaluation-result/v1",
+            "result_id": "er-pass",
+            "evaluator": {"name": "custom-evaluator", "version": "1"},
+            "subject": {"run_id": "external-run", "step_id": "gate", "attempt_id": "a1"},
+            "verdict": "pass",
+            "severity": "info",
+            "checks": {"passed": 1, "failed": 0, "warned": 0, "skipped": 0},
+            "started_at": "2026-09-24T14:32:08Z",
+            "finished_at": "2026-09-24T14:32:15Z",
+            "evidence": [{"$ref": "ev-report"}]
+    }}
+}
+
+export func passing_gate_registry() {
+    return register_tool(control_registry(), create_tool("gate_pass", "Passing fixture", {"type": "dict"}, {"type": "dict"}, passing_gate_handler, null))
+}

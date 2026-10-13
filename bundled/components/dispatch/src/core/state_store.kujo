@@ -1,0 +1,93 @@
+from src.core.assurance_state import decode_authoritative_state, assurance_protected
+from src.core.utils import ensure_dir, dict_get_or
+
+func state_backend() {
+	backend := to_lower(trim(to_string(env("DISPATCH_STATE_BACKEND"))))
+	if backend == "" {
+		return "filesystem"
+	}
+	if backend != "filesystem" && backend != "sqlite" {
+		return "invalid"
+	}
+	return backend
+}
+
+func sqlite_state_path(output_root) {
+	return output_root + "/.dispatch/state.db"
+}
+
+func open_state_database(output_root) {
+	ensure_dir(output_root + "/.dispatch")
+	db := db_connect("sqlite", sqlite_state_path(output_root))
+	db_query(db, "PRAGMA journal_mode=WAL", [])
+	db_query(db, "PRAGMA synchronous=FULL", [])
+	db_execute(db, "CREATE TABLE IF NOT EXISTS dispatch_run_state (run_id TEXT PRIMARY KEY, revision INTEGER NOT NULL, state_json TEXT NOT NULL, updated_at TEXT NOT NULL)", [])
+	return db
+}
+
+func state_store_write(run_state, state_json) {
+	backend := state_backend()
+	if backend == "filesystem"&&file_exists(sqlite_state_path(run_state["output_root"])) {backend = "sqlite"}
+	if backend != "invalid"&&assurance_protected(run_state) {backend = run_state["assurance_store"]}
+	if backend == "filesystem" {
+		return {"ok": true, "backend": backend, "written": true}
+	}
+	if backend == "invalid" {
+		return {"ok": false, "backend": backend, "error": {"code": "invalid_state_backend", "message": "DISPATCH_STATE_BACKEND must be filesystem or sqlite.", "retryable": false}}
+	}
+	output_root := run_state["output_root"]
+	db := open_state_database(output_root)
+	rows := db_execute(db, "INSERT INTO dispatch_run_state (run_id, revision, state_json, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(run_id) DO UPDATE SET revision=excluded.revision, state_json=excluded.state_json, updated_at=excluded.updated_at WHERE excluded.revision > dispatch_run_state.revision", [run_state["run_id"], run_state["revision"], state_json, run_state["updated_at"]])
+	db_close(db)
+	if rows == 0 {
+		return {"ok": false, "backend": backend, "error": {"code": "state_revision_conflict", "message": "SQLite rejected a stale run-state revision.", "retryable": true, "details": {"run_id": run_state["run_id"], "revision": run_state["revision"]}}}
+	}
+	return {"ok": true, "backend": backend, "written": true}
+}
+
+func state_store_load(output_root, run_id) {
+	backend := state_backend()
+	if backend == "filesystem"&&file_exists(sqlite_state_path(output_root)) {backend = "sqlite"}
+	if backend == "filesystem" {
+		return {"ok": true, "backend": backend, "found": false, "run_state": null}
+	}
+	if backend == "invalid" {
+		return {"ok": false, "backend": backend, "error": {"code": "invalid_state_backend", "message": "DISPATCH_STATE_BACKEND must be filesystem or sqlite.", "retryable": false}}
+	}
+	db_path := sqlite_state_path(output_root)
+	if file_exists(db_path) == false {
+		return {"ok": true, "backend": backend, "found": false, "run_state": null}
+	}
+	db := open_state_database(output_root)
+	rows := db_query(db, "SELECT state_json, revision FROM dispatch_run_state WHERE run_id = ? LIMIT 1", [run_id])
+	db_close(db)
+	if len(rows) == 0 {
+		return {"ok": true, "backend": backend, "found": false, "run_state": null}
+	}
+	parsed := null
+	try {parsed = decode_authoritative_state(rows[0]["state_json"])} except err {return {"ok": false, "error": {"code": "assurance_state_unreadable", "message": "Authoritative state is invalid or unsupported.", "retryable": false}}}
+	return {"ok": true, "backend": backend, "found": true, "run_state": parsed, "revision": rows[0]["revision"]}
+}
+
+func state_store_health(output_root) {
+	backend := state_backend()
+	if backend == "filesystem" {
+		return {"ok": true, "backend": backend, "path": output_root}
+	}
+	if backend == "invalid" {
+		return {"ok": false, "backend": backend, "error": {"code": "invalid_state_backend", "message": "DISPATCH_STATE_BACKEND must be filesystem or sqlite.", "retryable": false}}
+	}
+	db := open_state_database(output_root)
+	rows := db_query(db, "PRAGMA integrity_check", [])
+	db_close(db)
+	health_ok := false
+	if len(rows) > 0 {
+		health_ok = rows[0]["integrity_check"] == "ok"
+	}
+	return {"ok": health_ok, "backend": backend, "path": sqlite_state_path(output_root), "integrity": rows}
+}
+
+export state_backend := state_backend
+export state_store_write := state_store_write
+export state_store_load := state_store_load
+export state_store_health := state_store_health

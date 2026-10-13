@@ -1,0 +1,63 @@
+func make_error(code, message, retryable, details) {
+	return {
+		"ok": false,
+		"error": {
+			"code": code,
+			"message": message,
+			"retryable": retryable,
+			"details": details
+		},
+		"at": current_timestamp()
+	}
+}
+
+func make_success(payload) {
+	return {
+		"ok": true,
+		"data": payload,
+		"at": current_timestamp()
+	}
+}
+
+export missing_workflow_error := func(workflow_id) {
+	return make_error("missing_workflow", "Workflow not found: " + workflow_id, false, null)
+}
+
+export invalid_step_error := func(step_id, message) {
+	return make_error("invalid_step", "Invalid step " + step_id + ": " + message, false, null)
+}
+
+export missing_agent_error := func(agent_id) {
+	return make_error("missing_agent", "Agent not found: " + agent_id, false, null)
+}
+
+export missing_tool_error := func(tool_name) {
+	return make_error("missing_tool", "Tool not found: " + tool_name, false, null)
+}
+
+export tool_execution_error := func(tool_name, message, retryable) {
+	return make_error("tool_execution_failure", "Tool failed [" + tool_name + "]: " + message, retryable, null)
+}
+
+export agent_execution_error := func(agent_id, message, retryable) {
+	return make_error("agent_execution_failure", "Agent failed [" + agent_id + "]: " + message, retryable, null)
+}
+
+export approval_rejected_error := func(message) {
+	return make_error("approval_rejected", message, false, null)
+}
+
+export retry_limit_exceeded_error := func(step_id, attempts) {
+	return make_error("retry_limit_exceeded", "Retry limit exceeded for step " + step_id + " after " + to_string(attempts) + " attempts", false, null)
+}
+
+export state_persistence_error := func(message) {
+	return make_error("state_persistence_failure", message, false, null)
+}
+
+export invalid_resume_state_error := func(run_id, message) {
+	return make_error("invalid_resume_state", "Run " + run_id + " cannot resume: " + message, false, null)
+}
+
+export make_error := make_error
+export make_success := make_success

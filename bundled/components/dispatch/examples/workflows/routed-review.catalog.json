@@ -1,0 +1,12 @@
+{
+  "schema_name": "ai-sdk-model-catalog",
+  "schema_version": "1.0.0",
+  "id": "dispatch-example-fixture",
+  "version": "1",
+  "catalog_hash": "19361cd0c20683477da347fab722fc6437427eb53a3318e6020ebe7fd68636ad",
+  "models": [
+    {"provider":"fixture","model":"dispatch-frontier","quality_tier":"frontier","relative_quality":0.95,"context_window":32000,"supports_tools":false,"supports_structured_output":false,"input_cost_per_million":null,"output_cost_per_million":null,"currency":"USD","typical_latency_ms":900,"latency_percentile":"p50","reliability_score":0.98,"enabled":true,"source":"dispatch-example-fixture","observed_at":"","metadata":{}},
+    {"provider":"fixture","model":"dispatch-standard","quality_tier":"standard","relative_quality":0.8,"context_window":16000,"supports_tools":false,"supports_structured_output":false,"input_cost_per_million":null,"output_cost_per_million":null,"currency":"USD","typical_latency_ms":500,"latency_percentile":"p50","reliability_score":0.99,"enabled":true,"source":"dispatch-example-fixture","observed_at":"","metadata":{}}
+  ],
+  "metadata": {"source": "offline-fixture"}
+}

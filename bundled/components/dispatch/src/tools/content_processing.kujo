@@ -1,0 +1,90 @@
+from src.core.utils import dict_get_or
+
+func claim_extraction_handler(params, context) {
+	sources := dict_get_or(params, "sources", {})
+	evidence := dict_get_or(sources, "evidence", dict_get_or(params, "evidence", []))
+	claims := []
+	index := 1
+	for item in evidence {
+		snippet := dict_get_or(item, "snippet", "")
+		if trim(snippet) == "" {
+			continue
+		}
+		source_id := dict_get_or(item, "source_id", "source")
+		claims := push(claims, {
+			"id": "claim-" + to_string(index),
+			"claim": snippet,
+			"source_id": source_id,
+			"evidence": snippet,
+			"citation": "[" + source_id + "]",
+			"status": "unverified"
+		})
+		index := index + 1
+	}
+	return {
+		"ok": true,
+		"data": {
+			"claims": claims,
+			"count": len(claims)
+		}
+	}
+}
+
+func citation_formatter_handler(params, context) {
+	claims := dict_get_or(params, "claims", [])
+	citations := []
+	for claim in claims {
+		source_id := dict_get_or(claim, "source_id", "source")
+		citation := "[" + source_id + "] " + dict_get_or(claim, "claim", "")
+		citations := push(citations, citation)
+	}
+	return {
+		"ok": true,
+		"data": {
+			"citations": citations,
+			"count": len(citations)
+		}
+	}
+}
+
+func markdown_report_writer_handler(params, context) {
+	topic := dict_get_or(params, "topic", dict_get_or(dict_get_or(context, "input", {}), "topic", "Untitled Topic"))
+	verification := dict_get_or(params, "verification", {})
+	claims := dict_get_or(params, "claims", [])
+	key_findings := dict_get_or(verification, "key_findings", [])
+	if len(key_findings) == 0 {
+		for claim in claims {
+			key_findings := push(key_findings, dict_get_or(claim, "claim", ""))
+		}
+	}
+	summary := "Dispatch completed planning, sourcing, extraction, verification, and reporting for topic: " + topic + "."
+	limitations := [
+		"This demo workflow relies on local fixture sources.",
+		"Verification uses deterministic scoring logic for reproducibility."
+	]
+
+	return {
+		"ok": true,
+		"data": {
+			"title": "Research Report: " + topic,
+			"summary": summary,
+			"key_findings": key_findings,
+			"limitations": limitations
+		}
+	}
+}
+
+func timestamp_tool_handler(params, context) {
+	return {
+		"ok": true,
+		"data": {
+			"timestamp": format_date(now(), "YYYY-MM-DD HH:mm:ss"),
+			"epoch_ms": current_timestamp()
+		}
+	}
+}
+
+export claim_extraction_handler := claim_extraction_handler
+export citation_formatter_handler := citation_formatter_handler
+export markdown_report_writer_handler := markdown_report_writer_handler
+export timestamp_tool_handler := timestamp_tool_handler

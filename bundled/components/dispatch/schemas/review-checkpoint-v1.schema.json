@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "dispatch.review-checkpoint/v1",
+  "title": "Dispatch review checkpoint (existing run store)",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "checkpoint_id", "scope", "run_id", "state_revision", "boundary_id", "state_ref", "state_sha256", "input_sha256", "workflow_sha256", "control_policy_sha256", "journal"],
+  "properties": {
+    "schema": {"const": "dispatch.review-checkpoint/v1"},
+    "checkpoint_id": {"type": "string", "pattern": "^cp_[0-9a-f]{64}$"},
+    "scope": {"const": "existing_run_store"},
+    "run_id": {"type": "string", "minLength": 1},
+    "state_revision": {"type": "integer", "minimum": 1},
+    "boundary_id": {"type": "string", "minLength": 1},
+    "state_ref": {"type": "string", "pattern": "^checkpoints/state-[0-9a-f]{64}\\.json$"},
+    "state_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "input_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "workflow_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "control_policy_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "journal": {
+      "type": "object", "additionalProperties": false,
+      "required": ["schema", "path", "sequence", "last_sha256"],
+      "properties": {
+        "schema": {"const": "kujo.control-journal/v1"},
+        "path": {"type": "string"},
+        "sequence": {"type": "integer", "minimum": 1},
+        "last_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    }
+  }
+}

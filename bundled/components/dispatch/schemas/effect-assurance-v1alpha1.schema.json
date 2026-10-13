@@ -1,0 +1,160 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Experimental Dispatch single-effect assurance",
+  "description": "Maximum 8192 UTF-8 bytes; one effect, one opaque evidence digest. Consumer additionally checks time interval <=3600 seconds, exact identity/scope/result bytes and live trusted adapter. Not self-authenticating.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "compensation",
+    "issuer",
+    "run_id",
+    "step_id",
+    "attempt_id",
+    "effect_id",
+    "result_sha256",
+    "target_sha256",
+    "scope_sha256",
+    "key_sha256",
+    "request_sha256",
+    "precondition_sha256",
+    "transaction_sha256",
+    "assurance",
+    "operation",
+    "replay_class",
+    "reported_state",
+    "observed_state",
+    "mechanism",
+    "evidence_ref",
+    "valid_from",
+    "valid_until"
+  ],
+  "properties": {
+    "schema": {
+      "const": "dispatch.effect-assurance/v1alpha1"
+    },
+    "compensation": {
+      "const": "not_evaluated"
+    },
+    "issuer": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$",
+      "maxLength": 128
+    },
+    "run_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$",
+      "maxLength": 128
+    },
+    "step_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$",
+      "maxLength": 128
+    },
+    "attempt_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$",
+      "maxLength": 128
+    },
+    "effect_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$",
+      "maxLength": 128
+    },
+    "result_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "maxLength": 64
+    },
+    "target_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "maxLength": 64
+    },
+    "scope_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "maxLength": 64
+    },
+    "key_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "maxLength": 64
+    },
+    "request_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "maxLength": 64
+    },
+    "precondition_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "maxLength": 64
+    },
+    "transaction_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "maxLength": 64
+    },
+    "assurance": {
+      "enum": [
+        "claimed",
+        "observed",
+        "adapter_attested",
+        "independently_verified"
+      ]
+    },
+    "operation": {
+      "enum": [
+        "create",
+        "update"
+      ]
+    },
+    "replay_class": {
+      "enum": [
+        "none",
+        "local_reversible",
+        "external_idempotent",
+        "external_non_idempotent",
+        "destructive"
+      ]
+    },
+    "reported_state": {
+      "enum": [
+        "not_started",
+        "started",
+        "committed",
+        "compensated",
+        "failed_before_commit",
+        "unknown"
+      ]
+    },
+    "observed_state": {
+      "enum": [
+        "not_started",
+        "committed"
+      ]
+    },
+    "mechanism": {
+      "enum": [
+        "sqlite_unique_transaction",
+        "git_ref_cas_transaction", "ability_application_gateway"
+      ]
+    },
+    "evidence_ref": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "maxLength": 71
+    },
+    "valid_from": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 253402300799
+    },
+    "valid_until": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 253402300799
+    }
+  }
+}

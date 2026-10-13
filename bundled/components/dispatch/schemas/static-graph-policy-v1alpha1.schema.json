@@ -1,0 +1,146 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "dispatch.static-graph-policy/v1alpha1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "branches",
+    "subgraphs",
+    "budget"
+  ],
+  "properties": {
+    "schema": {
+      "const": "dispatch.static-graph-policy/v1alpha1"
+    },
+    "branches": {
+      "type": "array",
+      "maxItems": 2,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "source",
+          "predicate",
+          "cases"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "source": {
+            "type": "string",
+            "minLength": 1
+          },
+          "predicate": {
+            "enum": [
+              "terminal_outcome",
+              "evaluation_verdict",
+              "human_action"
+            ]
+          },
+          "cases": {
+            "type": "array",
+            "minItems": 2,
+            "maxItems": 4,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "value",
+                "nodes"
+              ],
+              "properties": {
+                "value": {
+                  "enum": [
+                    "completed",
+                    "failed",
+                    "cancelled",
+                    "rejected",
+                    "pass",
+                    "fail",
+                    "warn",
+                    "indeterminate",
+                    "approve_override",
+                    "abort",
+                    "cancel"
+                  ]
+                },
+                "nodes": {
+                  "type": "array",
+                  "minItems": 1,
+                  "maxItems": 8,
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "subgraphs": {
+      "type": "array",
+      "maxItems": 2,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "members",
+          "entry",
+          "policy"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "members": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 8,
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "entry": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 8,
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "policy": {
+            "const": "required-success"
+          }
+        }
+      }
+    },
+    "budget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "max_program_dispatches",
+        "on_exhaustion"
+      ],
+      "properties": {
+        "max_program_dispatches": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 8
+        },
+        "on_exhaustion": {
+          "const": "block"
+        }
+      }
+    }
+  }
+}

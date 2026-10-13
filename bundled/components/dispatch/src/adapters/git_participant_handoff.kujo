@@ -1,0 +1,40 @@
+# Integrity/correlation only. MUST be followed by persisted beta admission and
+# the installed Workcell live verifier; this reader never authorizes replay.
+from src.adapters.interop_legacy import correlate_validated_legacy
+func denied() {return {"ok": false, "code": "git_participant_handoff_mismatch"}}
+func artifact(root, reference, limit) {
+    if type(reference) != "string"||byte_length(reference) != 71||regex_match(reference, "^sha256:[0-9a-f]{64}$") == false {throw("reference")}
+    raw := read_file_beneath(root, "artifacts/" + substring(reference, 7, 71) + ".json", limit)
+    if "sha256:" + sha256(raw) != reference {throw("digest")}
+    return raw
+}
+export func load_git_participant_handoff(root, reference, expected, result_raw, assurance_raw) {
+    try {
+        if type(result_raw) != "string"||byte_length(result_raw) > 1048576||type(assurance_raw) != "string"||byte_length(assurance_raw) > 8192 {return denied()}
+        raw := artifact(root, reference, 4096); doc := parse_json(raw)
+        fields := ["schema", "participant_id", "participant_call_id", "participant_invocation_id", "workcell_effect_id", "dispatch_run_id", "dispatch_step_id", "dispatch_attempt_id", "dispatch_effect_id", "outcome", "execution_result_ref", "assurance_ref", "transaction_sha256"]
+        if type(doc) != "dict"||len(keys(doc)) != len(fields)||to_json(doc) != raw||doc["schema"] != "workcell.git-process-handoff/v1alpha1" {return denied()}
+        valid := true
+        for field in fields {if has_key(doc, field) == false {valid = false}}
+        for field in ["participant_id", "participant_call_id", "participant_invocation_id", "workcell_effect_id", "dispatch_run_id", "dispatch_step_id", "dispatch_attempt_id", "dispatch_effect_id"] {
+            value := doc[field]
+            if type(value) != "string"||byte_length(value) > 128||contains(value, "\n") != 0||regex_match(value, "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$") == false {valid = false}
+        }
+        if type(doc["transaction_sha256"]) != "string"||byte_length(doc["transaction_sha256"]) != 64||regex_match(doc["transaction_sha256"], "^[0-9a-f]{64}$") == false {return denied()}
+        for field in keys(expected) {
+            if contains(["dispatch_run_id", "dispatch_step_id", "dispatch_attempt_id", "dispatch_effect_id"], field) == false {if doc[field] != expected[field] {valid = false}}
+        }
+        if valid == false||contains(["completion_lost", "completed"], doc["outcome"]) == false {return denied()}
+        result := parse_json(result_raw)
+        if result["effects"][0]["class"] != "external_idempotent" {return denied()}
+        for field in ["participant_id", "participant_call_id", "participant_invocation_id", "workcell_effect_id", "transaction_sha256", "outcome"] {if result["process_correlation"][field] != doc[field] {valid = false}}
+        if valid == false {return denied()}
+        if assurance_raw != "" {
+            assurance := parse_json(assurance_raw)
+            if assurance["schema"] != "dispatch.effect-assurance/v1beta1"||assurance["subject"]["result_sha256"] != sha256(result_raw)||assurance["bindings"]["transaction_sha256"] != doc["transaction_sha256"] {return denied()}
+        }
+        generic := correlate_validated_legacy("git", root, doc, expected, result_raw, assurance_raw)
+        if generic["ok"] == false {return denied()}
+        return {"ok": true, "handoff": doc, "generic": generic["handoff"]}
+    } except ignored {return denied()}
+}

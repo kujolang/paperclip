@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Pin Dispatch 1.3.0 as the fourteenth component, with isolated offline native command materialization and bundled pause/decision recovery tests. Public workflow controls remain pending.
+
 - Add an internal POSIX native-workflow storage reservation/recovery primitive with immutable tenant/request ownership and no automatic replay, plus canonical Dispatch v2 decision/restart qualification. Production workflow controls and storage configuration remain pending.
 
 

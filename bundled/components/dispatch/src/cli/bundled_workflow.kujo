@@ -1,0 +1,45 @@
+# Path policy lives outside the large CLI entrypoint to keep interpreter type
+# inference below its recursion ceiling on supported Kujo runtimes.
+func normalize_config_path(raw_config_path) {
+	path := trim(to_string(raw_config_path))
+	if path == "" { return {"ok": true, "config_path": ""} }
+	path = replace(path, "\\", "/")
+	allow_any := to_lower(trim(to_string(env("DISPATCH_ALLOW_ANY_CONFIG_PATH"))))
+	if allow_any == "true" || allow_any == "1" || allow_any == "yes" || allow_any == "on" {
+		return {"ok": true, "config_path": path}
+	}
+	if starts_with(path, "/") || starts_with(path, "~/") {
+		return {"ok": false, "message": "Absolute config paths are blocked by default. Set DISPATCH_ALLOW_ANY_CONFIG_PATH=true for explicit opt-in."}
+	}
+	lower_path := to_lower(path)
+	if contains(lower_path, "..") || contains(lower_path, "%2f") || contains(lower_path, "%5c") {
+		return {"ok": false, "message": "Path traversal patterns are not allowed in --config path."}
+	}
+	segments := split(path, "/")
+	for segment in segments {
+		clean_segment := trim(segment)
+		if clean_segment == "" || clean_segment == "." || clean_segment == ".." {
+			return {"ok": false, "message": "Config path contains invalid path segments."}
+		}
+	}
+	return {"ok": true, "config_path": path}
+}
+
+# Only the installer-owned example directory is eligible for an absolute path
+# without the operator's general DISPATCH_ALLOW_ANY_CONFIG_PATH opt-in.
+func bundled_workflow_path(raw_workflow_file, raw_root) {
+	path := replace(trim(to_string(raw_workflow_file)), "\\", "/")
+	root := replace(trim(to_string(raw_root)), "\\", "/")
+	while ends_with(root, "/") { root = substring(root, 0, len(root) - 1) }
+	if starts_with(root, "/") && starts_with(path, root + "/examples/workflows/") {
+		filename := substring(path, len(root + "/examples/workflows/"), len(path))
+		lower_filename := to_lower(filename)
+		if filename != "" && contains(filename, "/") == 0 && contains(filename, "..") == 0 && contains(lower_filename, "%2f") == 0 && contains(lower_filename, "%5c") == 0 && ends_with(filename, ".json") {
+			return {"ok": true, "config_path": path}
+		}
+	}
+	return null
+}
+
+export bundled_workflow_path := bundled_workflow_path
+export normalize_config_path := normalize_config_path

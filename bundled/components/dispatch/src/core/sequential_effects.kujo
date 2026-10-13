@@ -1,0 +1,250 @@
+# Bounded operator API. Lifecycle facts derive from immutable append-only records;
+# no participant status, callback result or evidence label grants admission.
+from src.core.state import load_run_state, acquire_run_lock, release_run_lock, persist_run_state
+from src.core.assurance_state import node_controller_features, assurance_feature
+from src.core.control_journal import reconcile_control_journal, append_control_event
+from src.core.effect_context import resolve_effect_context
+from src.core.portable_commitments import portable_json
+from src.core.utils import dict_get_or, ensure_dir
+
+func require(value) {if value != true {throw("sequential_effect_denied")}}
+func ref(value) {return "sha256:" + sha256(portable_json(value))}
+func cue(options, point) {hook := dict_get_or(options, "effect_boundary", null);if type(hook) == "function" {hook(point)}}
+func read_state(root, id) {loaded := load_run_state(root, id);require(loaded["ok"]);require(reconcile_control_journal(loaded["run_state"])["ok"]);return loaded["run_state"]}
+func cursor(state) {return {"revision":state["revision"], "journal":state["control_journal"]["last_sha256"]}}
+func put(state, value) {
+    bytes := portable_json(value);require(byte_length(bytes) <= 1048576)
+    path := "effect-lifecycle/" + sha256(bytes) + ".json"
+    ensure_dir(state["run_dir"] + "/effect-lifecycle")
+    if file_exists(state["run_dir"] + "/" + path) {require(read_file_beneath(state["run_dir"], path, 1048576) == bytes)}
+    else {require(write_file_atomic_beneath(state["run_dir"], path, bytes, false))}
+    require(sync_directory_beneath(state["run_dir"], "effect-lifecycle"));require(sync_directory_beneath(state["run_dir"], "."))
+    return "sha256:" + sha256(bytes)
+}
+func read_artifact(state, reference) {
+    require(type(reference) == "string"&&regex_match(reference, "^sha256:[0-9a-f]{64}$"))
+    bytes := read_file_beneath(state["run_dir"], "effect-lifecycle/" + substring(reference, 7, 71) + ".json", 1048576)
+    require("sha256:" + sha256(bytes) == reference)
+    value := parse_json(bytes);require(portable_json(value) == bytes);return value
+}
+func claim_path(attempt) {require(regex_match(attempt, "^[0-9a-f]{64}$"));return "effect-lifecycle/" + attempt + ".claim"}
+func fold(state) {
+    refs := dict_get_or(state, "effect_lifecycle", []);require(type(refs) == "array"&&len(refs) <= 64)
+    view := {"anchor":null, "basis_ref":null, "attempts":{}, "active":null, "assessed_revision":0, "last_terminal_revision":0}
+    for item_ref in refs {
+        event := read_artifact(state, item_ref);require(event["schema"] == "dispatch.effect-lifecycle-event/v1alpha1")
+        data := event["data"];kind := event["kind"]
+        if kind == "assessed" {
+            if view["anchor"] == null {view["anchor"] := data["anchor"]} else {require(to_json(view["anchor"]) == to_json(data["anchor"]))}
+            view["basis_ref"] := data["set_ref"];view["assessed_revision"] := event["prior_revision"] + 1
+        } else if kind == "selected" {
+            selection := data["selection"];attempt := selection["attempt_id"]
+            attempts := view["attempts"];require(has_key(attempts, attempt) == 0)
+            attempts[attempt] := {"selection":selection, "basis_ref":selection["binding"]["set_ref"], "consumed":false, "cancelled":false, "observation":null, "rebindings":[]}
+            view["attempts"] := attempts;view["active"] := attempt
+        } else {
+            attempt := data["attempt_id"];attempts := view["attempts"];require(has_key(attempts, attempt)&&view["active"] == attempt)
+            current := attempts[attempt]
+            if kind == "rebound" {require(current["consumed"] == false&&current["cancelled"] == false&&current["basis_ref"] == data["previous_basis_ref"]);current["basis_ref"] := data["set_ref"];current["rebindings"] := push(current["rebindings"], item_ref)}
+            else if kind == "cancelled" {require(current["consumed"] == false&&current["cancelled"] == false);current["cancelled"] := true;view["last_terminal_revision"] := event["prior_revision"] + 1}
+            else if kind == "admitted" {require(current["consumed"] == false&&current["cancelled"] == false&&current["basis_ref"] == data["set_ref"]);current["consumed"] := true}
+            else if kind == "observed" {require(current["consumed"]);current["observation"] := data["observation"];view["last_terminal_revision"] := event["prior_revision"] + 1}
+            else {throw("unknown_lifecycle_record")}
+            attempts[attempt] := current;view["attempts"] := attempts
+        }
+    }
+    if len(refs) > 0 {
+        last_event := read_artifact(state, refs[len(refs) - 1])
+        last_control := parse_json(read_file_beneath(state["run_dir"], "control-records/" + to_string(state["control_journal"]["sequence"]) + ".json", 1048576))
+        if last_control["kind"] == "parent_finalized" {
+            require(last_control["details"]["resulting_revision"] == state["revision"]&&last_event["prior_revision"] < state["revision"])
+        } else if last_control["kind"] == "retained_host_reconciled" {
+            require(last_control["state_revision"] + 1 == state["revision"])
+            require(last_control["details"]["schema"] == "dispatch.reconciliation-receipt/v1alpha1")
+            require(last_control["details"]["resulting_revision"] == state["revision"])
+            require(last_event["prior_revision"] < state["revision"])
+        } else {
+            require(last_event["prior_revision"] + 1 == state["revision"])
+            require(last_event["prior_revision"] == last_control["state_revision"]&&last_event["prior_journal"] == last_control["previous_sha256"])
+            require(last_control["kind"] == "effect_lifecycle_recorded")
+        }
+    }
+    return view
+}
+func append(state, kind, data) {
+    history := dict_get_or(state, "effect_lifecycle", []);require(len(history) < 64)
+    record := {"schema":"dispatch.effect-lifecycle-event/v1alpha1", "kind":kind, "prior_revision":state["revision"], "prior_journal":state["control_journal"]["last_sha256"], "data":data}
+    record_ref := put(state, record);history = push(history, record_ref)
+    state["effect_lifecycle"] := history
+    state["required_features"] := [assurance_feature(state["assurance_negotiation"]), "sequential-effects/v1alpha1"]
+        if dict_get_or(state, "parent_finalization_required", false) {state["required_features"] := push(state["required_features"], "parent-finalization/v1alpha1")}
+        state["required_features"] := node_controller_features(state, state["required_features"])
+    logged := append_control_event(state, "effect_lifecycle_recorded", state["current_control_boundary"]["step_id"], [record_ref], {"effect_lifecycle":history})
+    state = logged["run_state"];request := state["human_intervention"];request["state_revision"] := state["revision"] + 1;state["human_intervention"] := request
+    state = persist_run_state(state);require(sync_directory_beneath(state["run_dir"], "."));return state
+}
+func stable_binding(binding) {copy := {};for key in keys(binding) {if key != "set_ref" {copy[key] := binding[key]}};return copy}
+func anchor(binding) {copy := {};for key in keys(binding) {if contains(["set_ref", "effect_id", "position"], key) == false {copy[key] := binding[key]}};return copy}
+func context(state, options, effect_id, basis_ref, candidate) {
+    basis_raw := null
+    effective_options := options
+    if basis_ref != null {
+        basis_raw = portable_json(read_artifact(state, basis_ref))
+        # Evidence lookup is Dispatch-owned for retained bases, never a producer
+        # resolver or a mutable host evidence file.
+        original := options["assurance_host"]
+        effective_options["assurance_host"] := func(revision, current) {
+            installed := original(revision, current);host := installed["effect_set"]
+            host["read_artifact"] := func(reference) {return portable_json(read_artifact(state, reference))}
+            installed["effect_set"] := host;return installed
+        }
+    }
+    facts := resolve_effect_context(state, effective_options, effect_id, candidate, basis_raw)
+    if basis_ref != null {
+        require(portable_json(read_artifact(state, facts["binding"]["plan_ref"])) == portable_json(facts["host"]["plan"]))
+        retained_parent := read_file_beneath(state["run_dir"], "effect-lifecycle/" + substring(facts["binding"]["result_ref"], 7, 71) + ".parent", 1048576)
+        require(retained_parent == facts["host"]["result_raw"])
+    }
+    view := fold(state)
+    if view["anchor"] != null {require(to_json(anchor(facts["binding"])) == to_json(view["anchor"]))}
+    return facts
+}
+func unconsumed(state, view, attempt) {
+    require(view["active"] == attempt&&has_key(view["attempts"], attempt))
+    item := view["attempts"][attempt]
+    require(item["consumed"] == false&&item["cancelled"] == false)
+    require(file_exists(state["run_dir"] + "/" + claim_path(attempt)) == false)
+    return item
+}
+func effective_binding(item) {binding := item["selection"]["binding"];binding["set_ref"] := item["basis_ref"];return binding}
+func record_observation(state, options, view, attempt) {
+    item := view["attempts"][attempt];require(item["consumed"]&&view["active"] == attempt)
+    facts := context(state, options, item["selection"]["binding"]["effect_id"], item["basis_ref"], false)
+    require(to_json(stable_binding(facts["binding"])) == to_json(stable_binding(item["selection"]["binding"])))
+    observed := facts["adapter"]["observe"](facts["binding"]["position"]);require(observed["ok"])
+    return append(state, "observed", {"attempt_id":attempt, "observation":observed["observation"]})
+}
+func operate(root, id, request, options, state) {
+    require(has_key(state, "effect_continuation") == 0)
+    op := request["operation"];view := fold(state)
+    fields := ["operation"]
+    if op != "inspect" {fields = push(fields, "expected")}
+    if op == "select"||op == "refresh" {fields = push(fields, "effect_id")}
+    if contains(["rebind", "cancel", "admit", "verify"], op) {fields = push(fields, "attempt_id")}
+    if op == "cancel" {fields = push(fields, "reason")}
+    require(len(keys(request)) == len(fields));for field in fields {require(has_key(request, field) != 0)}
+    if op == "inspect" {return {"ok":true, "cursor":cursor(state), "lifecycle":view, "parent_replay":"prohibited"}}
+    require(to_json(request["expected"]) == to_json(cursor(state)))
+    require(len(dict_get_or(state, "effect_lifecycle", [])) < 63)
+    if op == "refresh" {
+        facts := context(state, options, request["effect_id"], view["basis_ref"], false)
+        refs := [];plan := facts["host"]["plan"];stamp := parse_int(to_string(floor(now_utc_seconds())))
+        ttl := dict_get_or(options, "evidence_seconds", 300);require(type(ttl) == "int"&&ttl > 0&&ttl <= 3600)
+        for index in range(0, len(plan["effects"])) {
+            reference := null
+            try {
+                live := facts["adapter"]["observe"](index);require(live["ok"])
+                until := parse_int(to_string(min(stamp + ttl, min(plan["preserve_until"], live["observation"]["valid_until"]))));require(until > stamp)
+                reference = put(state, {"schema":"dispatch.effect-observation/v1alpha1", "plan_ref":facts["binding"]["plan_ref"], "result_ref":facts["binding"]["result_ref"], "effect_id":plan["effects"][index]["effect_id"], "state":live["observation"]["observed_state"], "observed_at":stamp, "valid_until":until, "evidence_ref":live["observation"]["evidence_ref"]})
+            } except unavailable {reference = null}
+            refs = push(refs, reference)
+        }
+        basis := {"schema":"dispatch.effect-set/v1alpha1", "plan_ref":facts["binding"]["plan_ref"], "result_ref":facts["binding"]["result_ref"], "observations":refs}
+        put(state, plan)
+        preservation := facts["preservation"]
+        if has_key(preservation, "preimage") {put(state, preservation["preimage"])}
+        for raw in preservation["artifacts"] {
+            path := "effect-lifecycle/" + sha256(raw) + ".preservation"
+            if file_exists(state["run_dir"] + "/" + path) {require(read_file_beneath(state["run_dir"], path, 1048576) == raw)}
+            else {require(write_file_atomic_beneath(state["run_dir"], path, raw, false))}
+        }
+        require(sync_directory_beneath(state["run_dir"], "effect-lifecycle"))
+        # Preserve exact original parent bytes, including noncanonical JSON.
+        parent_path := "effect-lifecycle/" + substring(facts["binding"]["result_ref"], 7, 71) + ".parent"
+        if file_exists(state["run_dir"] + "/" + parent_path) == false {require(write_file_atomic_beneath(state["run_dir"], parent_path, facts["host"]["result_raw"], false));require(sync_directory_beneath(state["run_dir"], "effect-lifecycle"))}
+        basis_ref := put(state, basis)
+        cue(options, "before_assessment")
+        fresh := read_state(root, id);require(to_json(cursor(fresh)) == to_json(cursor(state)))
+        latest := context(fresh, options, request["effect_id"], view["basis_ref"], false)
+        require(to_json(latest["binding"]) == to_json(facts["binding"]))
+        state = append(state, "assessed", {"anchor":anchor(facts["binding"]), "set_ref":basis_ref})
+        cue(options, "after_assessment")
+    } else if op == "select" {
+        require(view["basis_ref"] != null&&view["assessed_revision"] > view["last_terminal_revision"])
+        if view["active"] != null {previous := view["attempts"][view["active"]];require(previous["cancelled"]||(previous["consumed"]&&dict_get_or(previous["observation"], "observed_state", "") == "committed"))}
+        for previous_id in keys(view["attempts"]) {previous := view["attempts"][previous_id];if previous["selection"]["binding"]["effect_id"] == request["effect_id"] {require(previous["cancelled"]&&previous["consumed"] == false)}}
+        facts := context(state, options, request["effect_id"], view["basis_ref"], true)
+        selection := {"schema":"dispatch.effect-selection/v1alpha1", "binding":facts["binding"], "prior_revision":state["revision"], "prior_journal":{"sequence":state["control_journal"]["sequence"], "last_sha256":state["control_journal"]["last_sha256"]}}
+        selection["attempt_id"] := sha256(portable_json(selection))
+        cue(options, "before_selection")
+        fresh := read_state(root, id);require(to_json(cursor(fresh)) == to_json(cursor(state)))
+        latest := context(fresh, options, request["effect_id"], view["basis_ref"], true);require(to_json(latest["binding"]) == to_json(facts["binding"]))
+        state = append(state, "selected", {"selection":selection});cue(options, "after_selection")
+    } else if op == "rebind"||op == "cancel" {
+        attempt := request["attempt_id"];item := unconsumed(state, view, attempt)
+        facts := context(state, options, item["selection"]["binding"]["effect_id"], view["basis_ref"], true)
+        require(to_json(stable_binding(facts["binding"])) == to_json(stable_binding(item["selection"]["binding"])))
+        if op == "rebind" {require(view["basis_ref"] != item["basis_ref"])}
+        else {require(contains(["operator_cancelled", "no_longer_required"], request["reason"]))}
+        cue(options, "before_" + op)
+        fresh := read_state(root, id);require(to_json(cursor(fresh)) == to_json(cursor(state)))
+        unconsumed(fresh, fold(fresh), attempt)
+        latest := context(fresh, options, item["selection"]["binding"]["effect_id"], view["basis_ref"], true);require(to_json(latest["binding"]) == to_json(facts["binding"]))
+        data := {"attempt_id":attempt}
+        if op == "rebind" {data["previous_basis_ref"] := item["basis_ref"];data["set_ref"] := view["basis_ref"];state = append(state, "rebound", data)}
+        else {data["reason"] := request["reason"];state = append(state, "cancelled", data)}
+        cue(options, "after_" + op)
+    } else if op == "admit" {
+        attempt := request["attempt_id"];item := unconsumed(state, view, attempt)
+        facts := context(state, options, item["selection"]["binding"]["effect_id"], item["basis_ref"], true)
+        require(to_json(facts["binding"]) == to_json(effective_binding(item)))
+        # Existing durable exclusive claim; never reclaimed by renewal/cancellation.
+        require(write_file_atomic_beneath(state["run_dir"], claim_path(attempt), portable_json(item["selection"]), false));require(sync_directory_beneath(state["run_dir"], "effect-lifecycle"))
+        state = append(state, "admitted", {"attempt_id":attempt, "set_ref":item["basis_ref"]});cue(options, "after_admission")
+        admitted_cursor := cursor(state)
+        verify := func() {
+            fresh := read_state(root, id);require(to_json(cursor(fresh)) == to_json(admitted_cursor))
+            require(read_file_beneath(state["run_dir"], claim_path(attempt), 8192) == portable_json(item["selection"]))
+            latest := context(fresh, options, item["selection"]["binding"]["effect_id"], item["basis_ref"], true)
+            require(to_json(latest["binding"]) == to_json(facts["binding"]));return true
+        }
+        require(verify());applied := facts["adapter"]["apply"](facts["binding"]["position"], verify);require(applied["ok"])
+        cue(options, "after_mutation")
+        state = record_observation(state, options, fold(state), attempt);cue(options, "after_observation")
+    } else if op == "verify" {state = record_observation(state, options, view, request["attempt_id"]);cue(options, "after_observation")}
+    else {throw("unsupported_sequential_operation")}
+    result_view := fold(state)
+    answer := {"ok":true, "cursor":cursor(state), "lifecycle":result_view, "parent_replay":"prohibited"}
+    if op == "refresh" {answer["assessment"] := context(state, options, request["effect_id"], result_view["basis_ref"], false)["assessment"]}
+    return answer
+}
+
+export func sequential_effect_operation(root, id, request, options) {
+    loaded := load_run_state(root, id);if loaded["ok"] == false {return loaded}
+    lock := acquire_run_lock(loaded["run_state"]);if lock["ok"] == false {return lock}
+    answer := {"ok":false, "code":"sequential_effect_denied", "parent_replay":"prohibited"}
+    try {answer = operate(root, id, request, options, read_state(root, id))} except err {answer = {"ok":false, "code":"sequential_effect_denied", "parent_replay":"prohibited"}}
+    released := release_run_lock(lock);if released["ok"] == false {return released};return answer
+}
+
+# Recovery reads retained knowledge only; it never resolves admission context.
+export func recovery_lifecycle_view(state) {return fold(state)}
+
+# Informational prerequisites only. Calling this never selects or admits work.
+export func finalization_effect_facts(state, options) {
+    require(has_key(state, "effect_continuation") == 0)
+    view := fold(state)
+    if view["anchor"] == null||view["assessed_revision"] <= view["last_terminal_revision"] {throw("parent_assessment_required")}
+    for attempt in keys(view["attempts"]) {
+        item := view["attempts"][attempt]
+        if item["cancelled"] {require(item["consumed"] == false&&file_exists(state["run_dir"] + "/" + claim_path(attempt)) == false)}
+        else {
+            require(item["consumed"]&&dict_get_or(item["observation"], "observed_state", "") == "committed")
+            require(read_file_beneath(state["run_dir"], claim_path(attempt), 8192) == portable_json(item["selection"]))
+        }
+    }
+    plan := read_artifact(state, view["anchor"]["plan_ref"])
+    facts := context(state, options, plan["effects"][0]["effect_id"], view["basis_ref"], false)
+    if facts["assessment"]["condition"] != "all_observed_complete" {throw("blocked_by_uncertainty")}
+    return facts
+}

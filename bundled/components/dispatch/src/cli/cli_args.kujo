@@ -1,0 +1,99 @@
+from src.core.utils import dict_get_or
+
+func key_exists(map_obj, key_name) {
+	if type(map_obj) != "dict" {
+		return false
+	}
+	if has_key(map_obj, key_name) {
+		return true
+	}
+	return false
+}
+
+func make_parse_error(code, message) {
+	return {
+		"ok": false,
+		"error": {
+			"code": code,
+			"message": message,
+			"retryable": false
+		}
+	}
+}
+
+func parse_cli_args(raw_args, schema) {
+	flag_schema := dict_get_or(schema, "flags", {})
+	flags := {}
+	present := {}
+	positionals := []
+
+	for key in keys(flag_schema) {
+		definition := flag_schema[key]
+		if dict_get_or(definition, "takes_value", false) {
+			flags[key] := dict_get_or(definition, "default", "")
+		} else {
+			flags[key] := dict_get_or(definition, "default", false)
+		}
+	}
+
+	i := 0
+	while i < len(raw_args) {
+		token := raw_args[i]
+		if starts_with(token, "--") {
+			if key_exists(flag_schema, token) == false {
+				return make_parse_error("unknown_flag", "Unknown flag: " + token)
+			}
+			definition := flag_schema[token]
+			present[token] := true
+			if dict_get_or(definition, "takes_value", false) {
+				if i + 1 >= len(raw_args) {
+					return make_parse_error("missing_flag_value", "Missing value for flag: " + token)
+				}
+				candidate := raw_args[i + 1]
+				if starts_with(candidate, "--") {
+					return make_parse_error("missing_flag_value", "Missing value for flag: " + token)
+				}
+				flags[token] := candidate
+				i := i + 2
+				continue
+			}
+			flags[token] := true
+			i := i + 1
+			continue
+		}
+		positionals := push(positionals, token)
+		i := i + 1
+	}
+
+	for key in keys(flag_schema) {
+		definition := flag_schema[key]
+		if dict_get_or(definition, "required", false) {
+			if key_exists(present, key) == false {
+				return make_parse_error("missing_required_flag", "Missing required flag: " + key)
+			}
+		}
+	}
+
+	return {
+		"ok": true,
+		"flags": flags,
+		"positionals": positionals,
+		"present": present
+	}
+}
+
+func parsed_has_flag(parsed_args, flag_name) {
+	return dict_get_or(dict_get_or(parsed_args, "flags", {}), flag_name, false)
+}
+
+func parsed_flag_value(parsed_args, flag_name, default_value) {
+	value := dict_get_or(dict_get_or(parsed_args, "flags", {}), flag_name, default_value)
+	if type(value) != "string" {
+		return default_value
+	}
+	return value
+}
+
+export parse_cli_args := parse_cli_args
+export parsed_has_flag := parsed_has_flag
+export parsed_flag_value := parsed_flag_value

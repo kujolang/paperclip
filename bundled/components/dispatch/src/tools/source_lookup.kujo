@@ -1,0 +1,349 @@
+from src.core.utils import dict_get_or, safe_read_file, summarize_value, to_bool
+
+func canonicalize_path(raw_path) {
+	value := trim(to_string(raw_path))
+	value := replace(value, "\\", "/")
+	is_absolute := starts_with(value, "/")
+	parts := split(value, "/")
+	stack := []
+	for part in parts {
+		segment := trim(part)
+		if segment == "" || segment == "." {
+			continue
+		}
+		if segment == ".." {
+			if len(stack) > 0 {
+				trimmed := []
+				i := 0
+				while i < len(stack) - 1 {
+					trimmed := push(trimmed, stack[i])
+					i := i + 1
+				}
+				stack := trimmed
+			}
+			continue
+		}
+		stack := push(stack, segment)
+	}
+	joined := join(stack, "/")
+	if is_absolute {
+		if joined == "" {
+			return "/"
+		}
+		return "/" + joined
+	}
+	if joined == "" {
+		return "."
+	}
+	return joined
+}
+
+func path_is_within_root(candidate_path, root_path) {
+	candidate := canonicalize_path(candidate_path)
+	root := canonicalize_path(root_path)
+	if candidate == root {
+		return true
+	}
+	if ends_with(root, "/") {
+		return starts_with(candidate, root)
+	}
+	return starts_with(candidate, root + "/")
+}
+
+func collect_query_tokens(query) {
+	lower_query := to_lower(trim(query))
+	raw_tokens := split(lower_query, " ")
+	tokens := []
+	for token in raw_tokens {
+		clean := trim(token)
+		if len(clean) > 2 {
+			tokens := push(tokens, clean)
+		}
+	}
+	if len(tokens) == 0 {
+		tokens := [lower_query]
+	}
+	return tokens
+}
+
+func is_safe_source_id(source_id) {
+	value := to_lower(trim(to_string(source_id)))
+	if value == "" {
+		return false
+	}
+	if contains(value, "..") {
+		return false
+	}
+	if contains(value, "/") || contains(value, "\\") {
+		return false
+	}
+	if starts_with(value, ".") {
+		return false
+	}
+	if contains(value, "%2f") || contains(value, "%5c") {
+		return false
+	}
+
+	allowed := "abcdefghijklmnopqrstuvwxyz0123456789-_"
+	i := 0
+	while i < len(value) {
+		ch := substring(value, i, i + 1)
+		if contains(allowed, ch) == 0 {
+			return false
+		}
+		i := i + 1
+	}
+
+	return true
+}
+
+func normalize_sources_dir(sources_dir) {
+	raw_value := trim(to_string(sources_dir))
+	raw_value := replace(raw_value, "\\", "/")
+	if raw_value == "" {
+		return {
+			"ok": false,
+			"error": {
+				"code": "invalid_sources_dir",
+				"message": "Sources directory is required.",
+				"retryable": false
+			}
+		}
+	}
+
+	while ends_with(raw_value, "/") {
+		raw_value := substring(raw_value, 0, len(raw_value) - 1)
+	}
+
+	lower_value := to_lower(raw_value)
+	if contains(lower_value, "..") || contains(lower_value, "%2f") || contains(lower_value, "%5c") {
+		return {
+			"ok": false,
+			"error": {
+				"code": "invalid_sources_dir",
+				"message": "Invalid sources directory. Path traversal patterns are not allowed.",
+				"retryable": false
+			}
+		}
+	}
+
+	allow_any := to_bool(env("DISPATCH_ALLOW_ANY_SOURCES_DIR"), false)
+	if allow_any {
+		return {
+			"ok": true,
+			"sources_dir": canonicalize_path(raw_value)
+		}
+	}
+
+	allowed_relative := "examples/research-report/sources"
+	allowed_dot_relative := "./examples/research-report/sources"
+	if raw_value == allowed_relative || raw_value == allowed_dot_relative {
+		return {
+			"ok": true,
+			"sources_dir": canonicalize_path(allowed_relative)
+		}
+	}
+
+	pwd := trim(to_string(env("PWD")))
+	if pwd != "" {
+		allowed_absolute := replace(pwd, "\\", "/") + "/examples/research-report/sources"
+		if raw_value == allowed_absolute {
+			return {
+				"ok": true,
+				"sources_dir": canonicalize_path(allowed_absolute)
+			}
+		}
+	}
+	dispatch_root := trim(to_string(env("DISPATCH_ROOT")))
+	if dispatch_root != "" {
+		allowed_install_absolute := replace(dispatch_root, "\\", "/") + "/examples/research-report/sources"
+		if raw_value == allowed_install_absolute {
+			return {"ok": true, "sources_dir": canonicalize_path(allowed_install_absolute)}
+		}
+	}
+
+	return {
+		"ok": false,
+		"error": {
+			"code": "invalid_sources_dir",
+			"message": "Sources directory is not allowed. Use examples/research-report/sources or set DISPATCH_ALLOW_ANY_SOURCES_DIR=true for explicit opt-in.",
+			"retryable": false
+		}
+	}
+}
+
+func resolve_sources_dir(context) {
+	sources_dir := dict_get_or(context, "sources_dir", "examples/research-report/sources")
+	normalized := normalize_sources_dir(sources_dir)
+	if normalized["ok"] == false {
+		return normalized
+	}
+	return normalized
+}
+
+func select_snippet(content, tokens) {
+	lines := split(content, "\n")
+	best_line := ""
+	best_score := -1
+	for line in lines {
+		candidate := trim(line)
+		if candidate == "" {
+			continue
+		}
+		normalized := to_lower(candidate)
+		score := 0
+		for token in tokens {
+			if contains(normalized, token) {
+				score := score + 1
+			}
+		}
+		if score > best_score {
+			best_line := candidate
+			best_score := score
+		}
+	}
+	if best_line == "" {
+		if len(lines) > 0 {
+			best_line := trim(lines[0])
+		}
+	}
+	return {
+		"snippet": best_line,
+		"score": best_score
+	}
+}
+
+func mock_web_search_handler(params, context) {
+	query := dict_get_or(params, "query", "")
+	if query == "" {
+		query := dict_get_or(dict_get_or(context, "input", {}), "topic", "")
+	}
+	sources_dir_result := resolve_sources_dir(context)
+	if sources_dir_result["ok"] == false {
+		return {
+			"ok": false,
+			"error": sources_dir_result["error"]
+		}
+	}
+	sources_dir := sources_dir_result["sources_dir"]
+	tokens := collect_query_tokens(query)
+
+	files := []
+	try {
+		files := list_dir(sources_dir)
+	} except err {
+		return {
+			"ok": false,
+			"error": {
+				"code": "tool_execution_failure",
+				"message": "Unable to read sources directory: " + sources_dir,
+				"retryable": false
+			}
+		}
+	}
+
+	results := []
+	for entry in files {
+		file_name := replace(entry, "/", "")
+		if !ends_with(file_name, ".md") {
+			continue
+		}
+		full_path := sources_dir + "/" + file_name
+		if path_is_within_root(full_path, sources_dir) == false {
+			continue
+		}
+		content := safe_read_file(full_path, "")
+		if trim(content) == "" {
+			continue
+		}
+		snippet_obj := select_snippet(content, tokens)
+		if snippet_obj["score"] < 0 {
+			continue
+		}
+		results := push(results, {
+			"source_id": replace(file_name, ".md", ""),
+			"path": full_path,
+			"snippet": snippet_obj["snippet"],
+			"score": snippet_obj["score"]
+		})
+	}
+
+	return {
+		"ok": true,
+		"data": {
+			"query": query,
+			"results": results,
+			"evidence": results,
+			"searched_sources": len(results)
+		}
+	}
+}
+
+func local_source_lookup_handler(params, context) {
+	source_id := dict_get_or(params, "source_id", "")
+	sources_dir_result := resolve_sources_dir(context)
+	if sources_dir_result["ok"] == false {
+		return {
+			"ok": false,
+			"error": sources_dir_result["error"]
+		}
+	}
+	sources_dir := sources_dir_result["sources_dir"]
+	if source_id == "" {
+		return {
+			"ok": false,
+			"error": {
+				"code": "tool_execution_failure",
+				"message": "source_id is required",
+				"retryable": false
+			}
+		}
+	}
+	if is_safe_source_id(source_id) == false {
+		return {
+			"ok": false,
+			"error": {
+				"code": "invalid_source_id",
+				"message": "Invalid source_id. Allowed characters: a-z, 0-9, '-' and '_'",
+				"retryable": false
+			}
+		}
+	}
+	path := sources_dir + "/" + source_id + ".md"
+	if path_is_within_root(path, sources_dir) == false {
+		return {
+			"ok": false,
+			"error": {
+				"code": "invalid_source_path",
+				"message": "Resolved source path escapes configured sources root.",
+				"retryable": false
+			}
+		}
+	}
+	content := safe_read_file(path, "")
+	if trim(content) == "" {
+		return {
+			"ok": false,
+			"error": {
+				"code": "tool_execution_failure",
+				"message": "Source not found: " + source_id,
+				"retryable": false
+			}
+		}
+	}
+	return {
+		"ok": true,
+		"data": {
+			"source_id": source_id,
+			"path": path,
+			"content": content,
+			"summary": summarize_value({"content": content}, 220)
+		}
+	}
+}
+
+export normalize_sources_dir := normalize_sources_dir
+export mock_web_search_handler := mock_web_search_handler
+export local_source_lookup_handler := local_source_lookup_handler
+export canonicalize_path := canonicalize_path
+export path_is_within_root := path_is_within_root

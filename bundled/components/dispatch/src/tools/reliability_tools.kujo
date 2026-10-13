@@ -1,0 +1,32 @@
+from src.core.utils import dict_get_or
+
+mut flaky_attempts := {}
+
+func flaky_reliability_handler(params, context) {
+	run_id := dict_get_or(context, "run_id", "global")
+	failures_before_success := dict_get_or(params, "failures_before_success", 1)
+	if has_key(flaky_attempts, run_id) == 0 {
+		flaky_attempts[run_id] := 0
+	}
+	flaky_attempts[run_id] := flaky_attempts[run_id] + 1
+	attempt := flaky_attempts[run_id]
+	if attempt <= failures_before_success {
+		return {
+			"ok": false,
+			"error": {
+				"code": "flaky_failure",
+				"message": "Simulated transient failure on attempt " + to_string(attempt),
+				"retryable": true
+			}
+		}
+	}
+	return {
+		"ok": true,
+		"data": {
+			"message": "Flaky tool succeeded",
+			"attempt": attempt
+		}
+	}
+}
+
+export flaky_reliability_handler := flaky_reliability_handler

@@ -1,0 +1,129 @@
+from src.core.utils import dict_get_or
+
+func print_lines(lines) {
+	for line in lines {
+		print(line)
+	}
+}
+
+func print_kv(label, value) {
+	print(label + ": " + to_string(value))
+}
+
+func print_error(message) {
+	print("Error: " + to_string(message))
+}
+
+func exit_error(message) {
+	print_error(message)
+	exit(1)
+}
+
+func print_item(message) {
+	print("- " + to_string(message))
+}
+
+func print_nested_item(message) {
+	print("  - " + to_string(message))
+}
+
+func print_report_path_if_present(run_state) {
+	if file_exists(run_state["run_dir"] + "/report.md") {
+		print("Report: " + run_state["run_dir"] + "/report.md")
+	}
+}
+
+func read_package_version() {
+	path := "kennel.toml"
+	dispatch_root := trim(to_string(env("DISPATCH_ROOT")))
+	if dispatch_root != "" {
+		path = replace(dispatch_root, "\\", "/") + "/kennel.toml"
+	}
+	if file_exists(path) == false {
+		return "unknown"
+	}
+	content := read_file(path)
+	for line in split(content, "\n") {
+		parts := split(trim(line), "=")
+		if len(parts) >= 2 {
+			key := trim(parts[0])
+			if key == "version" {
+				value := trim(parts[1])
+				value := replace(value, "\"", "")
+				return trim(value)
+			}
+		}
+	}
+	return "unknown"
+}
+
+func run_version() {
+	print("Dispatch " + read_package_version())
+}
+
+func build_contract_metadata(run_state) {
+	return {
+		"artifact_contract_version": dict_get_or(run_state, "artifact_contract_version", 0),
+		"state": {
+			"schema_name": dict_get_or(run_state, "schema_name", ""),
+			"schema_version": dict_get_or(run_state, "schema_version", 0)
+		},
+		"trace": {
+			"schema_name": dict_get_or(dict_get_or(run_state, "trace", {}), "schema_name", ""),
+			"schema_version": dict_get_or(dict_get_or(run_state, "trace", {}), "schema_version", 0)
+		}
+	}
+}
+
+func build_artifact_paths(run_state) {
+	run_dir := run_state["run_dir"]
+	artifacts := {
+		"state": run_dir + "/state.json",
+		"trace_json": run_dir + "/trace.json",
+		"trace_markdown": run_dir + "/trace.md"
+	}
+	if file_exists(run_dir + "/report.md") {
+		artifacts["report_md"] := run_dir + "/report.md"
+	}
+	if file_exists(run_dir + "/report.json") {
+		artifacts["report_json"] := run_dir + "/report.json"
+	}
+	return artifacts
+}
+
+func print_run_completion(final_state) {
+	print_kv("Run ID", final_state["run_id"])
+	print_kv("Status", final_state["status"])
+	print_kv("Run Directory", final_state["run_dir"])
+}
+
+func print_artifact_summary(run_state) {
+	run_dir := run_state["run_dir"]
+	lines := [
+		"Artifacts:",
+		"- state: " + run_dir + "/state.json",
+		"- trace json: " + run_dir + "/trace.json",
+		"- trace md: " + run_dir + "/trace.md"
+	]
+	if file_exists(run_dir + "/report.md") {
+		lines := push(lines, "- report md: " + run_dir + "/report.md")
+	}
+	if file_exists(run_dir + "/report.json") {
+		lines := push(lines, "- report json: " + run_dir + "/report.json")
+	}
+	print_lines(lines)
+}
+
+export print_lines := print_lines
+export print_kv := print_kv
+export print_error := print_error
+export exit_error := exit_error
+export print_item := print_item
+export print_nested_item := print_nested_item
+export print_report_path_if_present := print_report_path_if_present
+export read_package_version := read_package_version
+export run_version := run_version
+export build_contract_metadata := build_contract_metadata
+export build_artifact_paths := build_artifact_paths
+export print_run_completion := print_run_completion
+export print_artifact_summary := print_artifact_summary

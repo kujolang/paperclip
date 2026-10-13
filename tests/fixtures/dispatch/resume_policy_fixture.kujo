@@ -1,0 +1,40 @@
+from src.core.runner import run_workflow
+from src.core.state import create_run_state
+from src.core.step import create_step
+from src.agents.agent import create_agent
+from tests.control_boundary_fixtures import control_workflow, control_registry, control_run_options
+root := args()[0]
+version := args()[1]
+kind := args()[2]
+workflow := control_workflow("gate_fail", [{"when": {"verdict": "fail"}, "decide": {"disposition": "require_intervention", "reason": "Policy review", "allowed_actions": ["approve_override"]}}])
+workflow["tools"] := ["gate_fail", "timestamp_tool"]
+steps := workflow["steps"]
+if version == "v1" {
+    steps[0] := create_step("gate", "Review", "approval", {"approval_gate": {"reason": "review", "summary": "review"}, "output_key": "evaluation"})
+}
+steps[1] := create_step("downstream", "Protected tool", "tool", {"tool_name": "timestamp_tool", "depends_on": ["gate"], "input_from": ["input"], "output_key": "downstream", "effect_class": "none"})
+if kind == "model" {
+    agent := create_agent("reviewer", "Reviewer", "Test", "Request timestamp", {"provider": "fixture", "model": "policy-fixture"}, ["timestamp_tool"], [], {}, {})
+    agent["handler_id"] := "model"
+    agent["model_options"] := {"max_tool_rounds": 2, "max_tool_calls": 1}
+    workflow["agents"] := {"reviewer": agent}
+    steps[1] := create_step("downstream", "Protected model tool", "agent", {"agent_id": "reviewer", "depends_on": ["gate"], "input_from": ["input"], "output_key": "downstream", "effect_class": "none"})
+}
+if kind == "two-gates" {
+    steps = [steps[0], create_step("gate-two", "Second review", "approval", {"depends_on": ["gate"], "approval_gate": {"reason": "second review", "summary": "second review"}, "output_key": "second"}), create_step("downstream", "Protected tool", "tool", {"tool_name": "timestamp_tool", "depends_on": ["gate-two"], "output_key": "downstream"})]
+}
+workflow["steps"] := steps
+options := control_run_options(root)
+state := create_run_state(workflow, {"topic": "policy retention"}, root, options)
+result := run_workflow(workflow, state, control_registry(), options)
+if result["paused"] != true {throw("Expected paused review")}
+state = result["run_state"]
+request := state["human_intervention"]
+decision := {}
+if version == "v2" {
+decision = {"schema": "kujo.intervention-decision/v2", "run_id": state["run_id"], "decision_id": "policy-fixture", "request_id": request["request_id"], "boundary_id": request["boundary_id"], "expected_state_revision": state["revision"], "action": "approve_override", "continuation": {"target_step_id": "gate", "source": "existing_evidence", "reuse_inputs": true, "reuse_effects": false, "new_attempt": false}, "actor": {"id": "fixture", "type": "human", "authenticated_by": "local-cli", "authorization": "review"}, "reason": "Reviewed gate only", "decided_at": format_date(now(), "YYYY-MM-DDTHH:mm:ssZ")}
+}
+if version == "v1" {
+    decision = {"run_id": state["run_id"], "step_id": "gate", "event_id": request["event_id"], "decision_id": request["security"]["decision_id"], "decision": "approve"}
+}
+write_file(root + "/decision.json", to_json(decision))

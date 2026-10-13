@@ -1,0 +1,13 @@
+# Resolve Workcell through an explicitly installed KUJO_MODULE_PATH/package root.
+# Dispatch maps identities; Workcell alone implements Git ref/marker truth and CAS.
+from workcell.src.evidence.git_effect import git_effect_observe, git_effect_apply_checked
+export func git_continuation_adapter(host, policy, descriptor) {
+    if policy["profile"] != "workcell.git-cas"||policy["profile_version"] != "1beta1" {throw("git_profile_required")}
+    for i in range(0, len(host["plan"]["effects"])) {
+        entry := host["plan"]["effects"][i];intent := host["intents"][i]
+        if entry["profile"] != policy["profile"]||entry["profile_revision"] != policy["profile_version"]||entry["authority"] != descriptor["issuer"]||entry["operation"] != intent["operation"] {throw("git_mapping_invalid")}
+        for field in ["target", "scope", "request", "key"] {if entry[field + "_ref"] != "sha256:" + intent[field + "_sha256"] {throw("git_mapping_invalid")}}
+        if intent["target_sha256"] != sha256(host["sink_path"] + ":" + entry["effect_id"]) {throw("git_target_invalid")}
+    }
+    return {"observe":func(index) {return git_effect_observe(host["sink_path"], host["intents"][index], host["old_oid"], host["new_oid"])}, "apply":func(index, verify) {return git_effect_apply_checked(host["sink_path"], host["intents"][index], host["old_oid"], host["new_oid"], verify)}}
+}

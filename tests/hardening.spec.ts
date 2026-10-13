@@ -138,20 +138,24 @@ describe("component integrity and stale-state recovery", () => {
     }
   });
 
+  // Seventeen Git processes across setup and three snapshots exceed the default
+  // five-second harness deadline on cold runners; production limits are unchanged.
   it("detects stale workspace state and recovers after a clean reset", async () => {
     const root = await mkdtemp(join(tmpdir(), "kujo-stale-test-"));
-    await execFileAsync("git", ["init", "--quiet", root]);
-    await execFileAsync("git", ["-C", root, "config", "user.email", "test@example.test"]);
-    await execFileAsync("git", ["-C", root, "config", "user.name", "Kujo Test"]);
-    await writeFile(join(root, "tracked.txt"), "original\n");
-    await execFileAsync("git", ["-C", root, "add", "."]);
-    await execFileAsync("git", ["-C", root, "commit", "--quiet", "-m", "fixture"]);
-    const snapshot = await captureWorkspaceSnapshot(root);
-    await writeFile(join(root, "tracked.txt"), "changed\n");
-    expect(await isSnapshotCurrent(root, snapshot)).toBe(false);
-    await writeFile(join(root, "tracked.txt"), "original\n");
-    expect(await isSnapshotCurrent(root, snapshot)).toBe(true);
-  });
+    try {
+      await execFileAsync("git", ["init", "--quiet", root]);
+      await execFileAsync("git", ["-C", root, "config", "user.email", "test@example.test"]);
+      await execFileAsync("git", ["-C", root, "config", "user.name", "Kujo Test"]);
+      await writeFile(join(root, "tracked.txt"), "original\n");
+      await execFileAsync("git", ["-C", root, "add", "."]);
+      await execFileAsync("git", ["-C", root, "commit", "--quiet", "-m", "fixture"]);
+      const snapshot = await captureWorkspaceSnapshot(root);
+      await writeFile(join(root, "tracked.txt"), "changed\n");
+      expect(await isSnapshotCurrent(root, snapshot)).toBe(false);
+      await writeFile(join(root, "tracked.txt"), "original\n");
+      expect(await isSnapshotCurrent(root, snapshot)).toBe(true);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  }, 20_000);
 });
 
 describe("hostile workspace containment", () => {

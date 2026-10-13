@@ -1,0 +1,138 @@
+from src.core.utils import dict_get_or
+
+func compute_delay(attempt_index, policy) {
+	base_delay_ms := dict_get_or(policy, "base_delay_ms", 0)
+	max_delay_ms := dict_get_or(policy, "max_delay_ms", base_delay_ms)
+	strategy := dict_get_or(policy, "strategy", "none")
+	jitter_mode := dict_get_or(policy, "jitter", "none")
+	jitter_ms := dict_get_or(policy, "jitter_ms", 0)
+	delay := base_delay_ms
+	if strategy == "exponential" {
+		i := 0
+		while i < attempt_index {
+			delay := delay * 2
+			i := i + 1
+		}
+	}
+	if strategy == "linear" {
+		delay := base_delay_ms * (attempt_index + 1)
+	}
+	if jitter_ms > 0 {
+		if jitter_mode == "deterministic" {
+			jitter_seed := dict_get_or(policy, "jitter_seed", 17)
+			jitter_range := jitter_ms + 1
+			if jitter_range < 1 {
+				jitter_range = 1
+			}
+			jitter_value := (jitter_seed + (attempt_index * 31)) % jitter_range
+			delay := delay + jitter_value
+		} else if jitter_mode == "random" {
+			delay := delay + random_int(0, jitter_ms)
+		}
+	}
+	if delay > max_delay_ms {
+		delay := max_delay_ms
+	}
+	if delay < 0 {
+		delay := 0
+	}
+	return delay
+}
+
+func should_retry(result, policy) {
+	if type(result) != "dict" {
+		return false
+	}
+	if dict_get_or(result, "ok", false) {
+		return false
+	}
+	err := dict_get_or(result, "error", {})
+	code := dict_get_or(err, "code", "")
+	retryable := dict_get_or(err, "retryable", false)
+	if retryable {
+		return true
+	}
+	allow_codes := dict_get_or(policy, "retry_on_codes", [])
+	for allow_code in allow_codes {
+		if allow_code == code {
+			return true
+		}
+	}
+	return false
+}
+
+func run_with_retry(operation_name, policy, handler) {
+	max_attempts := dict_get_or(policy, "max_attempts", 1)
+	if max_attempts < 1 {
+		max_attempts := 1
+	}
+
+	attempt := 1
+	attempt_records := []
+	while attempt <= max_attempts {
+		deadline_ms := dict_get_or(policy, "deadline_ms", 0)
+		if (type(deadline_ms) == "int" || type(deadline_ms) == "float") && deadline_ms > 0 && current_timestamp() >= deadline_ms {
+			timeout_result := {"ok": false, "error": {"code": dict_get_or(policy, "deadline_error_code", "workflow_budget_exceeded"), "message": "Execution deadline expired before retry attempt for " + operation_name + ".", "retryable": false}}
+			return {"ok": false, "operation": operation_name, "attempts": attempt - 1, "attempt_records": attempt_records, "result": timeout_result}
+		}
+		result := handler(attempt)
+		attempt_records := push(attempt_records, {
+			"attempt": attempt,
+			"timestamp": format_date(now(), "YYYY-MM-DD HH:mm:ss"),
+			"ok": dict_get_or(result, "ok", false),
+			"error": dict_get_or(result, "error", null)
+		})
+		if dict_get_or(result, "ok", false) {
+			return {
+				"ok": true,
+				"operation": operation_name,
+				"attempts": attempt,
+				"attempt_records": attempt_records,
+				"result": result
+			}
+		}
+		if !should_retry(result, policy) {
+			return {
+				"ok": false,
+				"operation": operation_name,
+				"attempts": attempt,
+				"attempt_records": attempt_records,
+				"result": result
+			}
+		}
+		if attempt < max_attempts {
+			delay_ms := compute_delay(attempt - 1, policy)
+			deadline_ms = dict_get_or(policy, "deadline_ms", 0)
+			if (type(deadline_ms) == "int" || type(deadline_ms) == "float") && deadline_ms > 0 {
+				remaining_ms := deadline_ms - current_timestamp()
+				if remaining_ms <= 0 || delay_ms >= remaining_ms {
+					timeout_result := {"ok": false, "error": {"code": dict_get_or(policy, "deadline_error_code", "workflow_budget_exceeded"), "message": "Execution deadline would expire during retry backoff for " + operation_name + ".", "retryable": false}}
+					return {"ok": false, "operation": operation_name, "attempts": attempt, "attempt_records": attempt_records, "result": timeout_result}
+				}
+			}
+			if delay_ms > 0 {
+				sleep(delay_ms)
+			}
+		}
+		attempt := attempt + 1
+	}
+
+	return {
+		"ok": false,
+		"operation": operation_name,
+		"attempts": max_attempts,
+		"attempt_records": attempt_records,
+		"result": {
+			"ok": false,
+			"error": {
+				"code": "retry_limit_exceeded",
+				"message": "Retry limit reached for " + operation_name,
+				"retryable": false
+			}
+		}
+	}
+}
+
+export compute_delay := compute_delay
+export should_retry := should_retry
+export run_with_retry := run_with_retry

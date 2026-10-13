@@ -1,0 +1,16 @@
+from src.core.state import load_run_state
+from src.core.resource_ledger import claim_evaluation
+from src.core.node_transition import node_raw
+from src.core.utils import dict_get_or
+from eval.src.control_contracts import build_evaluation_result
+arguments := args();base := arguments[0];id := arguments[1];attempt := arguments[2]
+pointer := parse_json(read_file(base + "/pointer.json"));loaded := load_run_state(base + "/runs", pointer["run_id"])
+if loaded["ok"] == false {throw("eval_graph_missing")};graph := loaded["run_state"]
+for step in graph["workflow_definition"]["steps"] {if step["id"] == id {if step["config"]["evaluator"]["configuration_sha256"] != sha256(read_file_beneath(base + "/" + id, "eval-config.json", 65536)) {throw("eval_configuration_stale")}}}
+claim_evaluation(graph, id, attempt)
+binding := graph["graph_node_bindings"][id];input := binding["inputs"][0];root := base + "/" + id
+host := parse_json(read_file(root + "/eval-config.json"));append_file(root + "/eval-executions.log", attempt + "\n")
+value := parse_json(node_raw(graph, input["content_ref"]));failed := 0;if value["value"] != dict_get_or(host, "expected_value", 1) {failed = 1}
+stamp := current_timestamp()
+result := build_evaluation_result({"passed":1 - failed, "failed":failed}, root + "/eval-config.json", {"subject":input["producer_subject"], "input_evidence_ids":[input["result_ref"], input["content_ref"]]}, stamp, current_timestamp(), [])
+print(to_json(result))

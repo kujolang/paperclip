@@ -1,0 +1,107 @@
+from src.core.state import load_run_state, acquire_run_lock, release_run_lock
+from src.core.control_journal import reconcile_control_journal
+from src.core.utils import dict_get_or, ensure_dir
+
+func checkpoint_error(code) {
+    return {"ok": false, "error": {"code": code, "message": "Review checkpoint rejected; no continuation was authorized.", "retryable": false}}
+}
+
+func checkpoint_state_bytes(state) {
+    snapshot := {}
+    for key in keys(state) {if key != "health" {snapshot[key] := state[key]}}
+    body := to_json(snapshot)
+    if byte_length(body) > 8388608 {throw("checkpoint_state_limit")}
+    return body
+}
+
+func checkpoint_ready(state) {
+    boundary := dict_get_or(state, "current_control_boundary", {})
+    request := dict_get_or(state, "human_intervention", {})
+    if type(boundary) != "dict"||type(request) != "dict" {return false}
+    if dict_get_or(boundary, "schema", "") != "kujo.control-boundary/v1"||type(dict_get_or(boundary, "boundary_id", null)) != "string"||trim(dict_get_or(boundary, "boundary_id", "")) == "" {return false}
+    journal := dict_get_or(state, "control_journal", {})
+    if type(journal) != "dict"||type(dict_get_or(journal, "sequence", null)) != "int"||dict_get_or(journal, "sequence", 0) < 1 {return false}
+    if dict_get_or(state, "status", "") != "paused"||dict_get_or(boundary, "status", "") != "open" {return false}
+    if dict_get_or(request, "schema", "") != "kujo.intervention-request/v2"||dict_get_or(request, "state_revision", -1) != state["revision"] {return false}
+    if dict_get_or(request, "boundary_id", "") != dict_get_or(boundary, "boundary_id", "") {return false}
+    for step in dict_get_or(state, "steps", []) {if dict_get_or(step, "status", "") == "running" {return false}}
+    return true
+}
+
+func checkpoint_manifest(state, body) {
+    digest := sha256(body)
+    return {
+        "schema": "dispatch.review-checkpoint/v1",
+        "checkpoint_id": "cp_" + digest,
+        "scope": "existing_run_store",
+        "run_id": state["run_id"], "state_revision": state["revision"],
+        "boundary_id": state["current_control_boundary"]["boundary_id"],
+        "state_ref": "checkpoints/state-" + digest + ".json", "state_sha256": digest,
+        "input_sha256": sha256(to_json(dict_get_or(state, "input", {}))),
+        "workflow_sha256": sha256(to_json(dict_get_or(state, "workflow_definition", {}))),
+        "control_policy_sha256": sha256(to_json(dict_get_or(dict_get_or(state, "workflow_definition", {}), "control", {}))),
+        "journal": dict_get_or(state, "control_journal", {})
+    }
+}
+
+func write_checkpoint_once(root, ref, body) {
+    if file_exists(root + "/" + ref) {
+        if read_file_beneath(root, ref, 8388608) != body {throw("checkpoint_conflict")}
+    } else {write_file_atomic_beneath(root, ref, body, false)}
+}
+
+# Caller owns the run lock and supplies freshly loaded authoritative state.
+func publish_checkpoint_under_lock(state) {
+    if checkpoint_ready(state) == false {return checkpoint_error("checkpoint_boundary_not_ready")}
+    reconciled := reconcile_control_journal(state)
+    if reconciled["ok"] == false {return reconciled}
+    body := checkpoint_state_bytes(state)
+    manifest := checkpoint_manifest(state, body)
+    if byte_length(to_json(manifest)) > 65536 {throw("checkpoint_manifest_limit")}
+    root := state["run_dir"]
+    ensure_dir(root + "/checkpoints")
+    sync_directory_beneath(root, ".")
+    write_checkpoint_once(root, manifest["state_ref"], body)
+    sync_directory_beneath(root, "checkpoints")
+    ref := "checkpoints/" + manifest["checkpoint_id"] + ".json"
+    write_checkpoint_once(root, ref, to_json(manifest))
+    sync_directory_beneath(root, "checkpoints")
+    return {"ok": true, "checkpoint": manifest, "checkpoint_ref": ref}
+}
+
+export func publish_review_checkpoint(output_root, run_id) {
+    loaded := load_run_state(output_root, run_id)
+    if loaded["ok"] == false {return loaded}
+    lock := acquire_run_lock(loaded["run_state"])
+    if lock["ok"] == false {return lock}
+    result := checkpoint_error("checkpoint_io_error")
+    try {
+        loaded = load_run_state(output_root, run_id)
+        if loaded["ok"] == false {result = loaded} else {result = publish_checkpoint_under_lock(loaded["run_state"])}
+    } except err {result = checkpoint_error("checkpoint_io_error")}
+    released := release_run_lock(lock)
+    if released["ok"] == false {return released}
+    return result
+}
+
+# Observation only. Admission must call this under the run lock after reload.
+# Derive every path from the validated ID; never follow a manifest's chosen path.
+export func validate_review_checkpoint(state, checkpoint_id) {
+    if type(checkpoint_id) != "string"||len(checkpoint_id) != 67||starts_with(checkpoint_id, "cp_") == 0 {return checkpoint_error("invalid_checkpoint_id")}
+    for character in split(substring(checkpoint_id, 3, 67), "") {
+        if contains("0123456789abcdef", character) == 0 {return checkpoint_error("invalid_checkpoint_id")}
+    }
+    if checkpoint_ready(state) == false {return checkpoint_error("checkpoint_boundary_not_ready")}
+    reconciled := reconcile_control_journal(state)
+    if reconciled["ok"] == false {return reconciled}
+    try {
+        body := checkpoint_state_bytes(state)
+        expected := checkpoint_manifest(state, body)
+        if expected["checkpoint_id"] != checkpoint_id {return checkpoint_error("stale_checkpoint")}
+        manifest_body := read_file_beneath(state["run_dir"], "checkpoints/" + checkpoint_id + ".json", 65536)
+        if to_json(parse_json(manifest_body)) != to_json(expected) {return checkpoint_error("checkpoint_manifest_mismatch")}
+        snapshot := read_file_beneath(state["run_dir"], expected["state_ref"], 8388608)
+        if snapshot != body {return checkpoint_error("checkpoint_state_mismatch")}
+        return {"ok": true, "checkpoint": expected}
+    } except err {return checkpoint_error("checkpoint_unreadable")}
+}

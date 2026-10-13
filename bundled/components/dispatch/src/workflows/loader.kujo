@@ -1,0 +1,303 @@
+from src.core.step import create_step
+from src.core.utils import dict_get_or, safe_read_file, to_bool
+from src.workflows.workflow import create_workflow, create_research_report_workflow
+
+func loader_error(message) {
+    return {
+        "ok": false,
+        "error": {
+            "code": "invalid_workflow_spec",
+            "message": message,
+            "retryable": false
+        }
+    }
+}
+
+func configured_file_limit(env_name, default_limit) {
+    configured_limit := default_limit
+    try {
+        configured_limit = to_int(trim(to_string(env(env_name))))
+    } except err {
+        configured_limit = default_limit
+    }
+    if configured_limit <= 0 {
+        return default_limit
+    }
+    return configured_limit
+}
+
+func file_within_limit(path, max_bytes) {
+    if file_exists(path) == false {
+        return true
+    }
+    measured_bytes := 0
+    try {
+        measured_bytes = file_size(path)
+    } except err {
+        return false
+    }
+    return measured_bytes <= max_bytes
+}
+
+func resolve_model_catalog_path(workflow_path, catalog_file) {
+    normalized_catalog_file := replace(trim(to_string(catalog_file)), "\\", "/")
+    if normalized_catalog_file == "" {
+        return loader_error("Model catalog file path is empty.")
+    }
+    if to_bool(env("DISPATCH_ALLOW_ANY_CONFIG_PATH"), false) == false {
+        lower_catalog_file := to_lower(normalized_catalog_file)
+        if starts_with(normalized_catalog_file, "/")||starts_with(normalized_catalog_file, "~/") {
+            return loader_error("Absolute model catalog paths are blocked by default. Set DISPATCH_ALLOW_ANY_CONFIG_PATH=true for explicit opt-in.")
+        }
+        if contains(lower_catalog_file, "..")||contains(lower_catalog_file, "%2f")||contains(lower_catalog_file, "%5c") {
+            return loader_error("Path traversal patterns are not allowed in model_catalog_file.")
+        }
+        for catalog_segment in split(normalized_catalog_file, "/") {
+            clean_catalog_segment := trim(catalog_segment)
+            if clean_catalog_segment == ""||clean_catalog_segment == "."||clean_catalog_segment == ".." {
+                return loader_error("model_catalog_file contains invalid path segments.")
+            }
+        }
+    }
+    if starts_with(normalized_catalog_file, "/")||starts_with(normalized_catalog_file, "~/") {
+        return {"ok": true, "path": normalized_catalog_file}
+    }
+    workflow_parts := split(replace(to_string(workflow_path), "\\", "/"), "/")
+    if len(workflow_parts) > 1 {
+        workflow_parts = slice(workflow_parts, 0, len(workflow_parts) - 1)
+        return {"ok": true, "path": join(workflow_parts, "/") + "/" + normalized_catalog_file}
+    }
+    return {"ok": true, "path": normalized_catalog_file}
+}
+
+func valid_step_type(step_type) {
+    allowed := ["agent", "tool", "approval", "handoff", "report"]
+    for candidate in allowed {
+        if candidate == step_type {
+            return true
+        }
+    }
+    return false
+}
+
+func build_steps_from_spec(raw_steps) {
+    steps := []
+    index := 0
+    while index < len(raw_steps) {
+        raw_step := raw_steps[index]
+        if type(raw_step) != "dict" {
+            return loader_error("steps[" + to_string(index) + "] must be an object")
+        }
+        step_id := to_string(dict_get_or(raw_step, "id", ""))
+        step_name := to_string(dict_get_or(raw_step, "name", step_id))
+        step_type := to_string(dict_get_or(raw_step, "type", ""))
+        if step_id == "" {
+            return loader_error("steps[" + to_string(index) + "] is missing a non-empty id")
+        }
+        if valid_step_type(step_type) == false {
+            return loader_error("step \"" + step_id + "\" has unsupported type: " + step_type)
+        }
+        config := {
+            "agent_id": dict_get_or(raw_step, "agent_id", ""),
+            "metadata": dict_get_or(raw_step, "metadata", {}),
+            "tool_name": dict_get_or(raw_step, "tool_name", ""),
+            "input_from": dict_get_or(raw_step, "input_from", []),
+            "depends_on": dict_get_or(raw_step, "depends_on", []),
+            "output_key": dict_get_or(raw_step, "output_key", ""),
+            "input_schema": dict_get_or(raw_step, "input_schema", null),
+            "output_schema": dict_get_or(raw_step, "output_schema", null),
+            "timeout_ms": dict_get_or(raw_step, "timeout_ms", 0),
+            "retry_policy": dict_get_or(raw_step, "retry_policy", null),
+            "routing": dict_get_or(raw_step, "routing", {}),
+            "routing_constraints": dict_get_or(raw_step, "routing_constraints", {}),
+            "evaluation": dict_get_or(raw_step, "evaluation", {}),
+            "evaluation_result_path": dict_get_or(raw_step, "evaluation_result_path", ""),
+            "approval_required": dict_get_or(raw_step, "approval_required", false),
+            "approval_gate": dict_get_or(raw_step, "approval_gate", {}),
+            "optional": dict_get_or(raw_step, "optional", false),
+            "parallel_safe": dict_get_or(raw_step, "parallel_safe", false),
+            "idempotency_key": dict_get_or(raw_step, "idempotency_key", ""),
+            "effect_class": dict_get_or(raw_step, "effect_class", "unknown"),
+            "compensation": dict_get_or(raw_step, "compensation", null),
+            "handoff": dict_get_or(raw_step, "handoff", {})
+        }
+        steps := push(steps, create_step(step_id, step_name, step_type, config))
+        index := index + 1
+    }
+    return {
+        "ok": true,
+        "steps": steps
+    }
+}
+
+func load_workflow_from_spec(spec) {
+    if type(spec) != "dict" {
+        return loader_error("Workflow spec must be a JSON object")
+    }
+    workflow_id := to_string(dict_get_or(spec, "id", ""))
+    workflow_name := to_string(dict_get_or(spec, "name", ""))
+    if workflow_id == "" {
+        return loader_error("Workflow spec is missing a non-empty \"id\"")
+    }
+    if workflow_name == "" {
+        return loader_error("Workflow spec is missing a non-empty \"name\"")
+    }
+    raw_steps := dict_get_or(spec, "steps", [])
+    if type(raw_steps) != "array"||len(raw_steps) == 0 {
+        return loader_error("Workflow spec must include a non-empty \"steps\" array")
+    }
+    budgets := dict_get_or(spec, "budgets", {})
+    if type(budgets) != "dict" {
+        return loader_error("budgets must be an object")
+    }
+    allowed_budget_keys := ["max_steps", "max_total_tokens", "max_cost_usd", "max_wall_time_ms"]
+    for budget_key in keys(budgets) {
+        if contains(to_json(allowed_budget_keys), "\"" + budget_key + "\"") == 0 {
+            return loader_error("budgets contains unsupported field: " + budget_key)
+        }
+        budget_value := budgets[budget_key]
+        if (type(budget_value) != "int"&&type(budget_value) != "float")||budget_value < 0 {
+            return loader_error("budgets." + budget_key + " must be a non-negative number")
+        }
+    }
+    max_parallel_steps := dict_get_or(spec, "max_parallel_steps", 1)
+    if type(max_parallel_steps) != "int"||max_parallel_steps < 1||max_parallel_steps > 32 {
+        return loader_error("max_parallel_steps must be an integer between 1 and 32")
+    }
+    control := dict_get_or(spec, "control", {})
+    if type(control) != "dict" {
+        return loader_error("control must be an object")
+    }
+    policies := dict_get_or(control, "policies", [])
+    if type(policies) != "array" {
+        return loader_error("control.policies must be an array")
+    }
+    for policy_rule in policies {
+        if type(policy_rule) != "dict"||type(dict_get_or(policy_rule, "when", null)) != "dict"||type(dict_get_or(policy_rule, "decide", null)) != "dict" {
+            return loader_error("each control policy requires when and decide objects")
+        }
+        disposition := to_string(dict_get_or(policy_rule["decide"], "disposition", ""))
+        if disposition != "continue"&&disposition != "retry"&&disposition != "require_intervention"&&disposition != "fail"&&disposition != "cancel" {
+            return loader_error("control policy disposition is unsupported: " + disposition)
+        }
+        if disposition == "require_intervention"&&len(dict_get_or(policy_rule["decide"], "allowed_actions", [])) == 0 {
+            return loader_error("require_intervention control policy requires allowed_actions")
+        }
+    }
+    for raw_step in raw_steps {
+        effect_class := dict_get_or(raw_step, "effect_class", "unknown")
+        if effect_class != "unknown"&&effect_class != "none"&&effect_class != "local_reversible"&&effect_class != "external_idempotent"&&effect_class != "external_non_idempotent"&&effect_class != "destructive" {
+            return loader_error("step effect_class is unsupported: " + to_string(effect_class))
+        }
+        if has_key(raw_step, "parallel_safe")&&type(raw_step["parallel_safe"]) != "bool" {
+            return loader_error("step parallel_safe must be a boolean")
+        }
+        if dict_get_or(raw_step, "parallel_safe", false)&&dict_get_or(raw_step, "type", "") != "tool" {
+            return loader_error("parallel_safe is currently supported only for tool steps")
+        }
+        if dict_get_or(raw_step, "parallel_safe", false)&&trim(to_string(dict_get_or(raw_step, "idempotency_key", ""))) == "" {
+            return loader_error("parallel_safe tool steps require a non-empty idempotency_key")
+        }
+    }
+    steps_result := build_steps_from_spec(raw_steps)
+    if dict_get_or(steps_result, "ok", false) == false {
+        return steps_result
+    }
+
+    # Default to the built-in research agent roster so specs can compose the
+    # stock planner/research/verification/writer handlers without redefining them.
+    default_agents := create_research_report_workflow("spec", true)["agents"]
+    agents := dict_get_or(spec, "agents", default_agents)
+    if type(agents) != "dict" {
+        agents = default_agents
+    }
+
+    workflow := create_workflow({
+        "id": workflow_id,
+        "metadata": dict_get_or(spec, "metadata", {}),
+        "name": workflow_name,
+        "description": to_string(dict_get_or(spec, "description", "User-defined Dispatch workflow.")),
+        "input_schema": dict_get_or(spec, "input_schema", {"type": "dict"}),
+        "agents": agents,
+        "tools": dict_get_or(spec, "tools", []),
+        "steps": steps_result["steps"],
+        "memory_config": dict_get_or(spec, "memory_config", {
+            "workflow_memory": true,
+            "agent_notes": true,
+            "step_output_memory": true,
+            "history_lookup": true
+        }),
+        "default_retry_policy": dict_get_or(spec, "default_retry_policy", {
+            "max_attempts": 1,
+            "base_delay_ms": 0,
+            "max_delay_ms": 0,
+            "strategy": "none",
+            "retry_on_codes": []
+        }),
+        "routing": dict_get_or(spec, "routing", {"enabled": false}),
+        "control": control,
+        "budgets": budgets,
+        "max_parallel_steps": max_parallel_steps,
+        "approval_config": dict_get_or(spec, "approval_config", {"auto_approve": false}),
+        "output_schema": dict_get_or(spec, "output_schema", {"type": "dict"})
+    })
+    return {
+        "ok": true,
+        "workflow": workflow
+    }
+}
+
+func load_workflow_from_file(path) {
+    workflow_limit := configured_file_limit("DISPATCH_WORKFLOW_MAX_BYTES", 1048576)
+    if file_within_limit(path, workflow_limit) == false {
+        return loader_error("Workflow file exceeds the configured maximum size of " + to_string(workflow_limit) + " bytes.")
+    }
+    body := safe_read_file(path, "")
+    if trim(body) == "" {
+        return loader_error("Workflow file is empty or unreadable: " + to_string(path))
+    }
+    parsed := null
+    try {
+        parsed = parse_json(body)
+    } except err {
+        return loader_error("Workflow file is not valid JSON: " + to_string(path))
+    }
+    loaded := load_workflow_from_spec(parsed)
+    if dict_get_or(loaded, "ok", false) == false {
+        return loaded
+    }
+    workflow := loaded["workflow"]
+    routing := dict_get_or(workflow, "routing", {})
+    catalog_file := trim(to_string(dict_get_or(routing, "model_catalog_file", "")))
+    if catalog_file != "" {
+        catalog_path_result := resolve_model_catalog_path(path, catalog_file)
+        if catalog_path_result["ok"] == false {
+            return catalog_path_result
+        }
+        resolved_catalog_file := catalog_path_result["path"]
+        catalog_limit := configured_file_limit("DISPATCH_MODEL_CATALOG_MAX_BYTES", 5242880)
+        if file_within_limit(resolved_catalog_file, catalog_limit) == false {
+            return loader_error("Model catalog file exceeds the configured maximum size of " + to_string(catalog_limit) + " bytes.")
+        }
+        catalog_body := safe_read_file(resolved_catalog_file, "")
+        if trim(catalog_body) == "" {
+            return loader_error("Model catalog file is empty or unreadable: " + resolved_catalog_file)
+        }
+        catalog := null
+        try {
+            catalog = parse_json(catalog_body)
+        } except err {
+            return loader_error("Model catalog file is not valid JSON: " + resolved_catalog_file)
+        }
+        if type(catalog) != "dict" {
+            return loader_error("Model catalog file must contain a JSON object: " + resolved_catalog_file)
+        }
+        routing["model_catalog"] := catalog
+        routing["model_catalog_source"] := resolved_catalog_file
+        workflow["routing"] := routing
+    }
+    return {"ok": true, "workflow": workflow}
+}
+
+export load_workflow_from_spec := load_workflow_from_spec
+export load_workflow_from_file := load_workflow_from_file

@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Immutable persisted assurance selection",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "mode",
+    "fallback",
+    "profile",
+    "profile_version",
+    "config_revision",
+    "policy_sha256"
+  ],
+  "properties": {
+    "schema": {
+      "const": "dispatch.assurance-negotiation/v1beta1"
+    },
+    "mode": {
+      "const": "required"
+    },
+    "fallback": {
+      "const": "deny"
+    },
+    "profile": {
+      "enum": [
+        "dispatch.sqlite-unique",
+        "workcell.git-cas",
+        "ability.application-gateway"
+      ]
+    },
+    "profile_version": {
+      "const": "1beta1"
+    },
+    "config_revision": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}(?![\\s\\S])"
+    },
+    "policy_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}(?![\\s\\S])"
+    }
+  }
+}

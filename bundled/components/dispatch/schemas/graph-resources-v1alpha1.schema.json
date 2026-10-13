@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "dispatch.graph-resources/v1alpha1",
+  "title": "Host-owned bounded graph resource policy (experimental)",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "max_eval_attempts", "require_provider_usage"],
+  "properties": {
+    "schema": {"const": "dispatch.graph-resources/v1alpha1"},
+    "max_eval_attempts": {"type": "integer", "minimum": 0, "maximum": 8},
+    "require_provider_usage": {"type": "boolean"}
+  }
+}
