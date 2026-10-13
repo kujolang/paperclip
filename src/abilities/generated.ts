@@ -4356,6 +4356,122 @@ export const projections = [
         "source": "eval"
       }
     ]
+  },
+  {
+    "exportName": "packageTool",
+    "id": "kujo.paperclip.packages.inspect",
+    "feature": "language",
+    "canonicalIds": [
+      "kujo.kennel.project.validate"
+    ],
+    "components": [
+      "kennel"
+    ],
+    "profiles": [
+      "build"
+    ],
+    "tool": {
+      "name": "inspect-kujo-packages",
+      "displayName": "Inspect Kujo Packages",
+      "description": "Inspect a Git-visible Kennel manifest and adjacent lockfile using canonical offline parsing and manifest validation. Does not resolve, install, verify installed bytes, access the network or run project code.",
+      "parametersSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "path": {
+            "type": "string",
+            "default": "kennel.toml",
+            "minLength": 1,
+            "maxLength": 1000,
+            "description": "Git-visible kennel.toml path relative to the host workspace."
+          }
+        }
+      }
+    },
+    "definition": {
+      "schema": "kujo.ability/v1",
+      "id": "kujo.paperclip.packages.inspect",
+      "version": "1.0.0",
+      "title": "Inspect Kujo Packages",
+      "description": "Inspect a Git-visible Kennel manifest and adjacent lockfile using canonical offline parsing and manifest validation. Does not resolve, install, verify installed bytes, access the network or run project code.",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "path": {
+            "type": "string",
+            "default": "kennel.toml",
+            "minLength": 1,
+            "maxLength": 1000,
+            "description": "Git-visible kennel.toml path relative to the host workspace."
+          }
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "additionalProperties": true
+      },
+      "effects": [
+        {
+          "kind": "read",
+          "resource": "paperclip.workspace.package-manifests"
+        },
+        {
+          "kind": "write",
+          "resource": "kujo.paperclip.evidence"
+        },
+        {
+          "kind": "write",
+          "resource": "kujo.paperclip.activity"
+        }
+      ],
+      "idempotency": {
+        "mode": "intrinsic"
+      },
+      "semantics": {
+        "open_world": false,
+        "destructive": false,
+        "executes_code": false
+      }
+    },
+    "definitionDigest": "e168a9caea1ec39a9a1bd4da64882c962425b2706dd270bbe1cb9501190a1a99",
+    "canonicalDefinitions": [
+      {
+        "definition": {
+          "schema": "kujo.ability/v1",
+          "id": "kujo.kennel.project.validate",
+          "version": "1.0.0",
+          "title": "Validate Kennel project",
+          "description": "Validate the local Kennel manifest and dependency declarations without installing packages.",
+          "input_schema": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string",
+                "maxLength": 4096,
+                "default": "."
+              }
+            },
+            "additionalProperties": false
+          },
+          "output_schema": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "effects": [
+            {
+              "kind": "read",
+              "resource": "kujo.kennel.manifest"
+            }
+          ],
+          "idempotency": {
+            "mode": "intrinsic"
+          }
+        },
+        "definitionDigest": "9f30d5cc8114d4901e43036bb0c56d2bb5aaf1250c48a0f273ea8332c24768bd",
+        "source": "kennel"
+      }
+    ]
   }
 ] as const;
 export const catalogTool = projections[0].tool;
@@ -4374,4 +4490,5 @@ export const fenceTool = projections[12].tool;
 export const concordTool = projections[13].tool;
 export const shipcheckTool = projections[14].tool;
 export const evalTool = projections[15].tool;
+export const packageTool = projections[16].tool;
 export const projectedTools = projections.map((entry) => entry.tool);

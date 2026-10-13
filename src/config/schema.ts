@@ -54,7 +54,7 @@ export const instanceConfigJsonSchema = {
         review: { type: "boolean", title: "Review Pack", default: true },
         failureEvidence: { type: "boolean", title: "Failure Evidence", default: true },
         context: { type: "boolean", title: "Context Pack", default: true },
-        language: { type: "boolean", title: "Kujo source diagnostics and formatting preview", default: true },
+        language: { type: "boolean", title: "Kujo source tools and package inspection", default: true },
         understand: { type: "boolean", title: "Repository understanding", default: true },
         examples: { type: "boolean", title: "Bundled Kujo example", default: true },
         execution: { type: "boolean", title: "Human-approved Eval execution", default: false },

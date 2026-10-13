@@ -1,5 +1,5 @@
 import { toolEnabled } from "../abilities/catalog.js";
-import { shipcheckTool, concordTool, fenceTool, specTool } from "../abilities/generated.js";
+import { packageTool, shipcheckTool, concordTool, fenceTool, specTool } from "../abilities/generated.js";
 import { access } from "node:fs/promises";
 import { componentsInfo, resolveComponent } from "../components/registry.js";
 import { PAPERCLIP_API_VERSION, PLUGIN_VERSION } from "../config/defaults.js";
@@ -57,6 +57,7 @@ export async function doctor(config: PluginConfig = parsePluginConfig({})) {
     runtime,
     components: statuses,
     capabilities: {
+      packages: capability(toolEnabled(config, packageTool), ["kennel"]),
       shipcheck: capability(toolEnabled(config, shipcheckTool), ["shipcheck"]),
       concord: capability(toolEnabled(config, concordTool), ["concord"]),
       fence: capability(toolEnabled(config, fenceTool), ["fence"]),

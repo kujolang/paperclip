@@ -40,6 +40,7 @@ for (const required of [
   "bundled/components/concord/src/snapshot.kujo",
   "bundled/components/concord/concord.kujo",
   "schemas/concord-analysis.schema.json",
+  "bundled/components/kennel/src/validator.kujo",
   "bundled/components/eval/main.kujo",
   "bundled/components/eval/src/eval_core.kujo",
   "bundled/components/eval/schema/evaluation-result.schema.json",

@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "bundleVersion": "0.7.0",
+  "bundleVersion": "0.8.0",
   "runtime": {
     "minimumVersion": "1.8.1"
   },
@@ -411,6 +411,35 @@
           "schema": "schema/evaluation-result.schema.json"
         }
       ]
+    },
+    {
+      "id": "kennel",
+      "repository": "https://github.com/kujolang/kennel",
+      "gitCommit": "ebe7094c32b58f6a92f7ce127ac5cb5ba4c1acc6",
+      "version": "1.1.1",
+      "entrypoint": "src/validator.kujo",
+      "files": [
+        "LICENSE",
+        "src/validator.kujo",
+        "src/manifest.kujo",
+        "src/lockfile.kujo",
+        "src/dependency_spec.kujo",
+        "src/utils.kujo",
+        "dependency_spec.kujo",
+        "manifest.kujo"
+      ],
+      "outputContracts": [],
+      "license": "MIT",
+      "checksums": {
+        "LICENSE": "4b6449939f8dce26dc5fb87756740a5977da9085517af127d9e634e6a6492506",
+        "src/validator.kujo": "7866e286f746b7b95bd086c4a6482b25dc5c37d824a16d27cddb825a62465da4",
+        "src/manifest.kujo": "14dc9dee4e21c5169d2b6fec2d2a10439c594a44223001f15c1be8d26c387076",
+        "src/lockfile.kujo": "f8020c736b714f2838204ef5707c61c92655df76920f98b22634525c5b20e389",
+        "src/dependency_spec.kujo": "57e71b1e36b350f40e2d0bfb52406d11c9f1d89864002659605d3773f15caf99",
+        "src/utils.kujo": "9a132cc8a5f7f84ddf5227b6c3104489d0cba82f3db87cab1ccf9f4f0dc6b4a8",
+        "dependency_spec.kujo": "6f6c5156fd15799035772443a925a65375880cfe0e14b059e8fa71024bf7f475",
+        "manifest.kujo": "a807ed6ffb58b1d8ba052d4afb92281bfa1fc8e24ba332579a1a816ca634dba8"
+      }
     }
   ]
 }

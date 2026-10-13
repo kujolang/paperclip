@@ -1,0 +1,15 @@
+from src.manifest import MANIFEST_FILENAME, default_manifest, infer_project_name, manifest_path, load_manifest, save_manifest, ensure_manifest_shape, dependency_map, set_dependency, remove_dependency, dependency_exists, manifest_package_name, manifest_package_version
+
+export MANIFEST_FILENAME := MANIFEST_FILENAME
+export default_manifest := default_manifest
+export infer_project_name := infer_project_name
+export manifest_path := manifest_path
+export load_manifest := load_manifest
+export save_manifest := save_manifest
+export ensure_manifest_shape := ensure_manifest_shape
+export dependency_map := dependency_map
+export set_dependency := set_dependency
+export remove_dependency := remove_dependency
+export dependency_exists := dependency_exists
+export manifest_package_name := manifest_package_name
+export manifest_package_version := manifest_package_version

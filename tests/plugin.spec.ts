@@ -23,7 +23,7 @@ describe("Paperclip plugin contract", () => {
     await plugin.definition.setup(harness.ctx);
     const health = await harness.getData<{ status: string; components: unknown[] }>("doctor");
     expect(health.status).toBe("ok");
-    expect(health.components).toHaveLength(10);
+    expect(health.components).toHaveLength(11);
   });
 
   it("rejects malformed tool parameters without reaching the workspace", async () => {
