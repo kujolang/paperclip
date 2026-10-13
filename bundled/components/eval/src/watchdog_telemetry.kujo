@@ -1,0 +1,66 @@
+from src.common import dict_get_or, normalize_string
+
+func safe_id(value, fallback) {
+	text := trim(to_string(value))
+	if text == "" { return fallback }
+	if len(text) > 160 { return substring(sha256(text), 0, 32) }
+	return text
+}
+
+func evaluation_event(event_id, trace_id, span_id, parent_span_id, name, status, refs, attributes) {
+	error_value := null
+	if status == "error" { error_value = {"category": "evaluation_failed", "message": null} }
+	return {
+		"schema_version": "watchdog.native-event.v1", "event_id": event_id,
+		"event_kind": "evaluation", "instantaneous": true,
+		"trace_id": trace_id, "span_id": span_id, "parent_span_id": parent_span_id,
+		"name": name, "status": status, "started_at_ms": current_timestamp(), "ended_at_ms": null,
+		"references": refs, "attributes": attributes, "usage": null, "costs": [], "error": error_value
+	}
+}
+
+# Eval remains the evaluation engine and report owner. Watchdog receives only
+# bounded score/status observations correlated to an existing trace; check
+# parameters, command output, paths, diffs, snapshots, and failure messages are
+# deliberately excluded.
+export watchdog_evaluation_events := func(results, correlation) {
+	if type(results) != "dict" || type(correlation) != "dict" { return {"ok": false, "error": "results and correlation must be objects"} }
+	trace_id := safe_id(dict_get_or(correlation, "trace_id", ""), "")
+	if trace_id == "" { return {"ok": false, "error": "trace_id is required"} }
+	run_id := safe_id(dict_get_or(correlation, "run_id", "eval-run"), "eval-run")
+	parent := dict_get_or(correlation, "parent_span_id", null)
+	suite := normalize_string(dict_get_or(results, "suite_name", "eval-suite"), "eval-suite")
+	refs := [{"type": "run", "id": run_id, "namespace": "eval", "relation": "evaluates"}]
+	target_run := safe_id(dict_get_or(correlation, "target_run_id", ""), "")
+	if target_run != "" { refs = push(refs, {"type": "run", "id": target_run, "namespace": "source", "relation": "evaluated"}) }
+	passed := dict_get_or(results, "passed", 0)
+	failed := dict_get_or(results, "failed", 0)
+	total := dict_get_or(results, "total", passed + failed)
+	status := "ok"
+	if failed > 0 { status = "error" }
+	events := [evaluation_event(
+		"eval:" + substring(sha256(run_id + ":summary"), 0, 24), trace_id,
+		substring(sha256(run_id + ":summary"), 0, 16), parent, "eval.suite", status, refs,
+		{"evaluation.name": suite, "evaluation.score": passed, "evaluation.score_max": total, "evaluation.passed": failed == 0, "evaluation.failed_count": failed, "evaluation.skipped_count": dict_get_or(results, "skipped", 0)}
+	)]
+	tests := dict_get_or(results, "test_results", [])
+	limit := len(tests)
+	if limit > 99 { limit = 99 }
+	mut i := 0
+	while i < limit {
+		item := tests[i]
+		name := normalize_string(dict_get_or(item, "name", "check-" + to_string(i + 1)), "check")
+		item_passed := dict_get_or(item, "passed", dict_get_or(item, "ok", false)) == true
+		item_skipped := dict_get_or(item, "skipped", false) == true
+		item_status := "ok"
+		if item_skipped { item_status = "unset" } else if item_passed == false { item_status = "error" }
+		events = push(events, evaluation_event(
+			"eval:" + substring(sha256(run_id + ":" + to_string(i) + ":" + name), 0, 24), trace_id,
+			substring(sha256(run_id + ":" + to_string(i) + ":" + name), 0, 16), parent,
+			"eval.check", item_status, refs,
+			{"evaluation.name": name, "evaluation.check_type": normalize_string(dict_get_or(item, "check", "unknown"), "unknown"), "evaluation.score": item_passed, "evaluation.skipped": item_skipped}
+		))
+		i = i + 1
+	}
+	return {"ok": true, "events": events, "truncated_count": len(tests) - limit}
+}

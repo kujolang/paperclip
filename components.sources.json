@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "bundleVersion": "0.6.0",
+  "bundleVersion": "0.7.0",
   "runtime": {
     "minimumVersion": "1.8.1"
   },
@@ -253,6 +253,36 @@
           "name": "analysis",
           "format": "json",
           "schema": "schemas/shipcheck-report.schema.json"
+        }
+      ]
+    },
+    {
+      "id": "eval",
+      "repository": "https://github.com/kujolang/eval",
+      "sourceDirectory": "eval",
+      "gitCommit": "b4a104f3d5e6464b0335fb07f533e24c8164965b",
+      "version": "1.0.0",
+      "entrypoint": "main.kujo",
+      "files": [
+        "LICENSE",
+        "main.kujo",
+        "src/checks.kujo",
+        "src/cli.kujo",
+        "src/common.kujo",
+        "src/config.kujo",
+        "src/control_contracts.kujo",
+        "src/eval_core.kujo",
+        "src/report.kujo",
+        "src/snapshot.kujo",
+        "src/watchdog_telemetry.kujo",
+        "schema/eval-suite.schema.json",
+        "schema/evaluation-result.schema.json"
+      ],
+      "outputContracts": [
+        {
+          "name": "evaluation",
+          "format": "json",
+          "schema": "schema/evaluation-result.schema.json"
         }
       ]
     }

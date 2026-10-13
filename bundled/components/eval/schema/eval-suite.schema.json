@@ -1,0 +1,285 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/kujolang/eval/raw/main/schema/eval-suite.schema.json",
+  "title": "Eval Suite",
+  "description": "Configuration schema for Eval evaluation suites (contract v2.0.0).",
+  "type": "object",
+  "required": ["name", "tests"],
+  "properties": {
+    "name": {
+      "type": "string",
+      "description": "Suite name, used in report titles."
+    },
+    "description": {
+      "type": "string",
+      "description": "Human-readable suite description."
+    },
+    "version": {
+      "type": "string",
+      "description": "Suite version for tracking."
+    },
+    "output_dir": {
+      "type": "string",
+      "default": "./eval_results",
+      "description": "Directory for report output."
+    },
+    "snapshot_dir": {
+      "type": "string",
+      "default": "./snapshots",
+      "description": "Directory for snapshot files."
+    },
+    "timeout_seconds": {
+      "type": "integer",
+      "description": "Suite-level timeout budget (seconds) propagated to command checks. Timed-out commands are terminated."
+    },
+    "parallel_workers": {
+      "type": "integer",
+      "default": 1,
+      "minimum": 1,
+      "maximum": 32,
+      "description": "Opt-in parallel worker count for independent file checks. Value 1 keeps serial execution."
+    },
+    "stop_on_failure": {
+      "type": "boolean",
+      "default": false,
+      "description": "Halt suite on first failure."
+    },
+    "setup": {
+      "type": "string",
+      "description": "Shell command to run once before all tests."
+    },
+    "teardown": {
+      "type": "string",
+      "description": "Shell command to run once after all tests."
+    },
+    "before_each": {
+      "type": "string",
+      "description": "Shell command to run before each test."
+    },
+    "after_each": {
+      "type": "string",
+      "description": "Shell command to run after each test."
+    },
+    "policy_profile": {
+      "type": "string",
+      "enum": ["strict-ci", "local-dev", "release-gate"],
+      "description": "Optional policy preset for enterprise onboarding. Explicit command/path/env policy fields override preset defaults."
+    },
+    "path_policy_mode": {
+      "type": "string",
+      "enum": ["open", "allowlist-required"],
+      "default": "open",
+      "description": "Path policy behavior. allowlist-required enforces explicit allowed_paths for path-backed checks in guarded stages."
+    },
+    "path_policy_profile": {
+      "type": "string",
+      "enum": ["open", "ci-restricted", "release-deny-default"],
+      "description": "Optional named path-policy preset. Explicit path_policy_mode and allowed_paths fields override preset defaults."
+    },
+    "policy_stage_overlays": {
+      "type": "object",
+      "description": "Optional stage-specific policy overlays applied when --policy-stage or KUJO_EVAL_POLICY_STAGE is set.",
+      "properties": {
+        "local": {"$ref": "#/definitions/policyOverlay"},
+        "ci": {"$ref": "#/definitions/policyOverlay"},
+        "release": {"$ref": "#/definitions/policyOverlay"}
+      }
+    },
+    "history_retention_runs": {
+      "type": "integer",
+      "default": 200,
+      "minimum": 1,
+      "description": "Maximum number of run entries retained in history.json."
+    },
+    "aux_artifact_retention_files": {
+      "type": "integer",
+      "default": 25,
+      "minimum": 0,
+      "description": "Maximum number of auxiliary backup artifacts (*.bak) retained per output directory."
+    },
+    "artifact_checksums": {
+      "type": "boolean",
+      "default": false,
+      "description": "When true, artifact-manifest.json includes SHA-256 checksums for generated artifacts."
+    },
+    "allowed_commands": {
+      "type": "array",
+      "items": {"type": "string"},
+      "description": "Optional allowlist of executable names."
+    },
+    "allowed_command_patterns": {
+      "type": "array",
+      "items": {"type": "string"},
+      "description": "Optional allowlist of command substrings. A command must match at least one when configured."
+    },
+    "command_pattern_match_mode": {
+      "type": "string",
+      "enum": ["substring", "token"],
+      "default": "substring",
+      "description": "How allowed/blocked command patterns are matched: substring (legacy) or token-aware sequence matching."
+    },
+    "require_command_policy": {
+      "type": "boolean",
+      "default": false,
+      "description": "When true, CI/release policy stages fail closed for command-backed checks unless an explicit command allowlist policy is configured."
+    },
+    "blocked_arg_patterns": {
+      "type": "array",
+      "items": {"type": "string"},
+      "description": "Optional denylist of command argument substrings that are always rejected."
+    },
+    "redaction_audit_mode": {
+      "type": "boolean",
+      "default": false,
+      "description": "When true, command check details include redaction audit metadata (redaction_hits, redaction_patterns)."
+    },
+    "redact_output_patterns": {
+      "type": "array",
+      "items": {"type": "string"},
+      "description": "Optional additional organization-specific redaction patterns applied to command stdout/stderr."
+    },
+    "allowed_paths": {
+      "type": "array",
+      "items": {"type": "string"},
+      "description": "Optional allowlist of directory paths for file checks."
+    },
+    "allowed_http_hosts": {
+      "type": "array",
+      "items": {"type": "string"},
+      "description": "Optional allowlist of outbound HTTP hostnames (or host:port values) for http_status and http_body_contains checks."
+    },
+    "blocked_http_hosts": {
+      "type": "array",
+      "items": {"type": "string"},
+      "description": "Optional denylist of outbound HTTP hostnames. If a host matches both allow and block lists, blocked_http_hosts takes precedence."
+    },
+    "allowed_env_vars": {
+      "type": "array",
+      "items": {"type": "string"},
+      "description": "Optional allowlist of environment variable names."
+    },
+    "tests": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 1000,
+      "items": {
+        "type": "object",
+        "required": ["name", "check", "params"],
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 10000,
+            "description": "Test name for reporting."
+          },
+          "description": {
+            "type": "string",
+            "description": "Optional test description."
+          },
+          "check": {
+            "type": "string",
+            "enum": [
+              "command_succeeds", "command_fails", "exit_code_equals",
+              "file_exists", "file_does_not_exist", "file_contains", "file_does_not_contain",
+              "file_matches_glob", "file_matches_regex", "file_size_greater_than", "file_size_less_than",
+              "file_line_count", "two_files_equal",
+              "output_contains", "output_does_not_contain", "output_matches_glob",
+              "json_matches_shape", "json_value_equals", "stdout_json_matches_shape",
+              "command_stdout_json_path_equals",
+              "snapshot_matches", "directory_diff", "directory_contains",
+              "env_var_equals", "http_status", "http_body_contains",
+              "command_timing_less_than"
+            ],
+            "description": "Check type — one of 27 supported assertion types."
+          },
+          "params": {
+            "type": "object",
+            "description": "Check-specific parameters. See docs/eval-suite-reference.md for per-check param details."
+          },
+          "skip": {
+            "type": "boolean",
+            "default": false,
+            "description": "Set true to skip this test."
+          },
+          "retry": {
+            "type": "integer",
+            "default": 0,
+            "minimum": 0,
+            "maximum": 10,
+            "description": "Number of retries on failure."
+          },
+          "timeout_seconds": {
+            "type": "integer",
+            "description": "Per-test timeout budget (seconds) for command checks. Timed-out commands are terminated."
+          },
+          "tags": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "String tags for filtering (--tags, --skip-tags)."
+          },
+          "depends_on": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "Test names this test depends on. If any dependency fails, this test is skipped."
+          }
+        }
+      }
+    }
+  },
+  "definitions": {
+    "policyOverlay": {
+      "type": "object",
+      "properties": {
+        "allowed_commands": {
+          "type": "array",
+          "items": {"type": "string"}
+        },
+        "allowed_command_patterns": {
+          "type": "array",
+          "items": {"type": "string"}
+        },
+        "blocked_arg_patterns": {
+          "type": "array",
+          "items": {"type": "string"}
+        },
+        "command_pattern_match_mode": {
+          "type": "string",
+          "enum": ["substring", "token"]
+        },
+        "require_command_policy": {
+          "type": "boolean"
+        },
+        "path_policy_mode": {
+          "type": "string",
+          "enum": ["open", "allowlist-required"]
+        },
+        "path_policy_profile": {
+          "type": "string",
+          "enum": ["open", "ci-restricted", "release-deny-default"]
+        },
+        "redaction_audit_mode": {
+          "type": "boolean"
+        },
+        "redact_output_patterns": {
+          "type": "array",
+          "items": {"type": "string"}
+        },
+        "allowed_paths": {
+          "type": "array",
+          "items": {"type": "string"}
+        },
+        "allowed_http_hosts": {
+          "type": "array",
+          "items": {"type": "string"}
+        },
+        "blocked_http_hosts": {
+          "type": "array",
+          "items": {"type": "string"}
+        },
+        "allowed_env_vars": {
+          "type": "array",
+          "items": {"type": "string"}
+        }
+      }
+    }
+  }
+}

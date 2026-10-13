@@ -1,0 +1,145 @@
+# Producer-neutral workflow-control result helpers for Eval.
+
+from src.common import dict_get_or, normalize_string, make_result
+
+func iso_at_ms(timestamp_ms) {
+    seconds := timestamp_ms / 1000
+    return format_date(seconds, "YYYY-MM-DDTHH:mm:ss") + "Z"
+}
+
+func normalized_subject(subject_context, default_run_id) {
+    subject := {"run_id": default_run_id}
+    if type(subject_context) != "dict" {
+        return subject
+    }
+
+    run_id := normalize_string(dict_get_or(subject_context, "run_id", ""), "")
+    if run_id != "" {subject["run_id"] := run_id}
+    step_id := normalize_string(dict_get_or(subject_context, "step_id", ""), "")
+    if step_id != "" {subject["step_id"] := step_id}
+    attempt_id := normalize_string(dict_get_or(subject_context, "attempt_id", ""), "")
+    if attempt_id != "" {subject["attempt_id"] := attempt_id}
+    return subject
+}
+
+export func load_subject_context(path, default_run_id) {
+    requested_path := normalize_string(path, "")
+    if requested_path == "" {
+        return make_result(true, "", {
+            "subject": {"run_id": default_run_id},
+            "input_evidence_ids": []
+        })
+    }
+    if path_exists(requested_path) == false {
+        return make_result(false, "Subject context file not found: " + requested_path, {"path": requested_path})
+    }
+
+    payload := null
+    try {
+        payload = parse_json(read_file(requested_path))
+    } except err {
+        return make_result(false, "Subject context is not valid JSON: " + requested_path, {"path": requested_path})
+    }
+    if type(payload) != "dict" {
+        return make_result(false, "Subject context must be a JSON object: " + requested_path, {"path": requested_path})
+    }
+
+    subject := normalized_subject(payload, default_run_id)
+    input_evidence_ids := dict_get_or(payload, "input_evidence_ids", [])
+    if type(input_evidence_ids) != "array" {
+        return make_result(false, "Subject context input_evidence_ids must be an array", {"path": requested_path})
+    }
+    clean_ids := []
+    i := 0
+    while i < len(input_evidence_ids) {
+        entry := input_evidence_ids[i]
+        if type(entry) != "string"||trim(entry) == "" {
+            return make_result(false, "Subject context input_evidence_ids must contain non-empty strings", {"path": requested_path})
+        }
+        clean_ids = push(clean_ids, trim(entry))
+        i = i + 1
+    }
+
+    return make_result(true, "", {
+        "subject": subject,
+        "input_evidence_ids": clean_ids
+    })
+}
+
+export func make_evidence_ref(id, kind, path, media_type, subject, created_at) {
+    integrity := {"status": "unverified"}
+    if path_exists(path) == true {
+        try {
+            integrity = {"status": "sha256", "sha256": sha256(read_file(path))}
+        } except err {}
+    }
+    return {
+        "schema": "kujo.evidence-ref/v1",
+        "id": id,
+        "producer": {"name": "eval", "version": "2.0.0"},
+        "subject": subject,
+        "kind": kind,
+        "uri": "file:" + path,
+        "media_type": media_type,
+        "created_at": created_at,
+        "integrity": integrity
+    }
+}
+
+export func build_evaluation_result(results_data, config_path, subject_data, started_ms, finished_ms, evidence_refs) {
+    failed := dict_get_or(results_data, "failed", 0)
+    verdict := "pass"
+    severity := "info"
+    if failed > 0 {
+        verdict = "fail"
+        severity = "error"
+    }
+
+    config_sha256 := ""
+    try {
+        config_sha256 = sha256(read_file(config_path))
+    } except err {
+        config_sha256 = sha256(config_path)
+    }
+
+    subject := dict_get_or(subject_data, "subject", {})
+    run_id := normalize_string(dict_get_or(subject, "run_id", ""), "")
+    step_id := normalize_string(dict_get_or(subject, "step_id", ""), "")
+    attempt_id := normalize_string(dict_get_or(subject, "attempt_id", ""), "")
+    result_id := "er_" + substring(sha256(run_id + "::" + step_id + "::" + attempt_id + "::" + config_sha256 + "::" + to_string(finished_ms)), 0, 24)
+
+    evidence := []
+    i := 0
+    while i < len(evidence_refs) {
+        entry := evidence_refs[i]
+        if type(entry) == "dict" {
+            evidence = push(evidence, {"$ref": dict_get_or(entry, "id", "")})
+        }
+        i = i + 1
+    }
+
+    return {
+        "schema": "kujo.evaluation-result/v1",
+        "result_id": result_id,
+        "evaluator": {
+            "name": "eval",
+            "version": "2.0.0",
+            "configuration_sha256": config_sha256
+        },
+        "subject": subject,
+        "verdict": verdict,
+        "severity": severity,
+        "checks": {
+            "passed": dict_get_or(results_data, "passed", 0),
+            "failed": failed,
+            "warned": 0,
+            "skipped": dict_get_or(results_data, "skipped", 0)
+        },
+        "started_at": iso_at_ms(started_ms),
+        "finished_at": iso_at_ms(finished_ms),
+        "input_evidence_ids": dict_get_or(subject_data, "input_evidence_ids", []),
+        "evidence": evidence,
+        "evidence_refs": evidence_refs,
+        "annotations": []
+    }
+}

@@ -1,0 +1,1692 @@
+# Eval core engine.
+#
+# Orchestrates test execution: loads config, runs each check,
+# collects results, and returns a structured results dict for reporting.
+#
+# Export surface:
+#   run_suite(config_path)     - Run all tests in a suite
+#   run_single_test(test, config) - Run a single test
+#   compare_runs(results_a, results_b) - Compare two run results
+
+from src.config import load_config, KNOWN_CHECKS
+from src.checks import run_check, run_shell_with_command_policy
+from src.common import make_result, normalize_int, dict_get_or, normalize_string, contains_text
+
+# ---------------------------------------------------------------------------
+# Core engine functions
+# ---------------------------------------------------------------------------
+
+#
+# Fisher-Yates shuffle with LCG PRNG for deterministic test ordering.
+# Same seed always produces same order. No seed = config order.
+#
+func shuffle_tests(arr, seed) {
+	n := len(arr)
+	if n <= 1 { return arr }
+	result := []
+	i := 0
+	while i < n { result := push(result, arr[i]); i := i + 1 }
+	state := seed
+	si := n - 1
+	while si > 0 {
+		state = (state * 1103515245) + 12345
+		j := state % (si + 1)
+		if j < 0 { j = -j }
+		temp := result[si]
+		result[si] = result[j]
+		result[j] = temp
+		si := si - 1
+	}
+	return result
+}
+
+#
+# Returns true if any tag in test_tags matches any tag in filter_tags.
+# Both params should be arrays of strings. O(n*m) comparison.
+#
+func has_matching_tag(test_tags, filter_tags) {
+	if type(test_tags) != "array" || type(filter_tags) != "array" { return false }
+	ti := 0
+	while ti < len(filter_tags) {
+		tj := 0
+		while tj < len(test_tags) {
+			if test_tags[tj] == filter_tags[ti] { return true }
+			tj := tj + 1
+		}
+		ti := ti + 1
+	}
+	return false
+}
+
+func normalize_filter_values(values) {
+	normalized := []
+	if type(values) != "array" {
+		return normalized
+	}
+
+	i := 0
+	while i < len(values) {
+		entry := values[i]
+		if type(entry) == "string" {
+			trimmed := trim(entry)
+			if trimmed != "" {
+				normalized = push(normalized, trimmed)
+			}
+		}
+		i := i + 1
+	}
+
+	return normalized
+}
+
+func print_kv(label, value) {
+	print("  " + label + ": " + value)
+}
+
+func print_bullet_items(items) {
+	i := 0
+	while i < len(items) {
+		print("  - " + items[i])
+		i := i + 1
+	}
+}
+
+func print_test_status(test_passed, test_name, check_msg, no_color) {
+	pass_label := "[PASS]"
+	fail_label := "[FAIL]"
+	if no_color {
+		pass_label = "PASS"
+		fail_label = "FAIL"
+	}
+	if test_passed {
+		print(pass_label + " " + test_name)
+	} else {
+		print(fail_label + " " + test_name + " — " + check_msg)
+	}
+}
+
+func print_verbose_check_details(check_details) {
+	for key in keys(check_details) {
+		print_kv(key, to_json(check_details[key]))
+	}
+}
+
+func push_unique_string(values, value) {
+	if type(values) != "array" {
+		values = []
+	}
+
+	needle := normalize_string(value, "")
+	if needle == "" {
+		return values
+	}
+
+	i := 0
+	while i < len(values) {
+		if normalize_string(values[i], "") == needle {
+			return values
+		}
+		i := i + 1
+	}
+
+	return push(values, needle)
+}
+
+#
+# Builds a dependency map: {test_name: [dep_name, ...]} from test definitions.
+# Used by run_suite to skip tests whose dependencies failed.
+#
+func build_dep_graph(tests) {
+	graph := {}
+	i := 0
+	while i < len(tests) {
+		tdef := tests[i]
+		if type(tdef) == "dict" {
+			name := normalize_string(dict_get_or(tdef, "name", ""), "")
+			deps_raw := dict_get_or(tdef, "depends_on", [])
+			deps := []
+			if type(deps_raw) == "array" { deps = deps_raw }
+			graph[name] = deps
+		}
+		i := i + 1
+	}
+	return graph
+}
+
+func normalize_parallel_workers(opts, config) {
+	workers := normalize_int(dict_get_or(opts, "parallel_workers", 0), 0)
+	if workers <= 0 {
+		workers = normalize_int(dict_get_or(opts, "parallel-workers", 0), 0)
+	}
+	if workers <= 0 {
+		workers = normalize_int(dict_get_or(config, "parallel_workers", 1), 1)
+	}
+	if workers < 1 {
+		workers = 1
+	}
+	if workers > 32 {
+		workers = 32
+	}
+	return workers
+}
+
+func is_parallel_file_check_supported(check_type) {
+	if check_type == "file_exists" || check_type == "file_does_not_exist" || check_type == "file_contains" || check_type == "file_does_not_contain" || check_type == "file_line_count" || check_type == "file_matches_glob" || check_type == "file_matches_regex" {
+		return true
+	}
+	return false
+}
+
+func is_command_backed_check(check_type) {
+	if check_type == "command_succeeds" || check_type == "command_fails" || check_type == "exit_code_equals" || check_type == "output_contains" || check_type == "output_does_not_contain" || check_type == "output_matches_glob" || check_type == "stdout_json_matches_shape" || check_type == "command_stdout_json_path_equals" || check_type == "command_timing_less_than" {
+		return true
+	}
+	return false
+}
+
+func suite_has_command_backed_checks(tests) {
+	if type(tests) != "array" {
+		return false
+	}
+
+	i := 0
+	while i < len(tests) {
+		tdef := tests[i]
+		if type(tdef) == "dict" {
+			check_type := normalize_string(dict_get_or(tdef, "check", ""), "")
+			if is_command_backed_check(check_type) {
+				return true
+			}
+		}
+		i := i + 1
+	}
+
+	return false
+}
+
+func has_effective_command_policy(config) {
+	allowed_commands := dict_get_or(config, "allowed_commands", [])
+	if type(allowed_commands) == "array" && len(allowed_commands) > 0 {
+		return true
+	}
+
+	allowed_command_patterns := dict_get_or(config, "allowed_command_patterns", [])
+	if type(allowed_command_patterns) == "array" && len(allowed_command_patterns) > 0 {
+		return true
+	}
+
+	return false
+}
+
+func copy_params_dict(params_raw) {
+	params := {}
+	if type(params_raw) == "dict" {
+		for pkey in keys(params_raw) {
+			params[pkey] := params_raw[pkey]
+		}
+	}
+	return params
+}
+
+func is_stage_policy_enforced(stage_name) {
+	if stage_name == "ci" || stage_name == "release" {
+		return true
+	}
+	return false
+}
+
+func check_uses_command_execution(check_type, params) {
+	if check_type == "command_succeeds" || check_type == "command_fails" || check_type == "exit_code_equals" || check_type == "output_contains" || check_type == "output_does_not_contain" || check_type == "output_matches_glob" || check_type == "stdout_json_matches_shape" || check_type == "command_stdout_json_path_equals" || check_type == "command_timing_less_than" {
+		return true
+	}
+
+	if check_type == "snapshot_matches" {
+		cmd := normalize_string(dict_get_or(params, "command", ""), "")
+		if cmd != "" {
+			return true
+		}
+	}
+
+	return false
+}
+
+func check_uses_path_guardrails(check_type, params) {
+	if check_type == "file_exists" || check_type == "file_does_not_exist" || check_type == "file_contains" || check_type == "file_does_not_contain" || check_type == "json_matches_shape" || check_type == "json_value_equals" || check_type == "file_matches_glob" || check_type == "file_matches_regex" || check_type == "file_size_greater_than" || check_type == "file_size_less_than" || check_type == "file_line_count" || check_type == "directory_diff" || check_type == "directory_contains" || check_type == "two_files_equal" {
+		return true
+	}
+
+	if check_type == "snapshot_matches" {
+		path := normalize_string(dict_get_or(params, "path", ""), "")
+		if path != "" {
+			return true
+		}
+	}
+
+	return false
+}
+
+func has_command_policy_allowlist(params) {
+	allowed_commands := dict_get_or(params, "allowed_commands", [])
+	if type(allowed_commands) == "array" && len(allowed_commands) > 0 {
+		return true
+	}
+
+	allowed_patterns := dict_get_or(params, "allowed_command_patterns", [])
+	if type(allowed_patterns) == "array" && len(allowed_patterns) > 0 {
+		return true
+	}
+
+	return false
+}
+
+func has_path_allowlist(params) {
+	allowed_paths := dict_get_or(params, "allowed_paths", [])
+	if type(allowed_paths) == "array" && len(allowed_paths) > 0 {
+		return true
+	}
+	return false
+}
+
+func check_uses_cached_file_content(check_type) {
+	if check_type == "file_contains" || check_type == "file_does_not_contain" || check_type == "file_matches_glob" || check_type == "file_matches_regex" || check_type == "file_line_count" || check_type == "json_matches_shape" || check_type == "json_value_equals" {
+		return true
+	}
+	return false
+}
+
+func enforce_strict_command_policy(config, tests, active_stage) {
+	require_command_policy := dict_get_or(config, "require_command_policy", false) == true
+	if require_command_policy == false || is_stage_policy_enforced(active_stage) == false {
+		return {"ok": true, "error": "", "missing": []}
+	}
+
+	suite_has_allowlist := has_command_policy_allowlist(config)
+	missing := []
+	i := 0
+	while i < len(tests) {
+		test_def := tests[i]
+		if type(test_def) == "dict" {
+			if dict_get_or(test_def, "skip", false) == true {
+				i := i + 1
+				continue
+			}
+
+			check_type := normalize_string(dict_get_or(test_def, "check", ""), "")
+			params := copy_params_dict(dict_get_or(test_def, "params", {}))
+			if check_uses_command_execution(check_type, params) {
+				if suite_has_allowlist == false && has_command_policy_allowlist(params) == false {
+					test_name := normalize_string(dict_get_or(test_def, "name", ""), "test_" + to_string(i))
+					missing = push(missing, test_name)
+				}
+			}
+		}
+		i := i + 1
+	}
+
+	if len(missing) > 0 {
+		return {
+			"ok": false,
+			"error": "Strict command policy requires allowlist/profile in " + active_stage + " stage",
+			"missing": missing
+		}
+	}
+
+	return {"ok": true, "error": "", "missing": []}
+}
+
+func enforce_path_policy_mode(config, tests, active_stage) {
+	path_policy_mode := normalize_string(dict_get_or(config, "path_policy_mode", "open"), "open")
+	if path_policy_mode != "allowlist-required" || is_stage_policy_enforced(active_stage) == false {
+		return {"ok": true, "error": "", "missing": []}
+	}
+
+	suite_has_paths := has_path_allowlist(config)
+	missing := []
+	i := 0
+	while i < len(tests) {
+		test_def := tests[i]
+		if type(test_def) == "dict" {
+			if dict_get_or(test_def, "skip", false) == true {
+				i := i + 1
+				continue
+			}
+
+			check_type := normalize_string(dict_get_or(test_def, "check", ""), "")
+			params := copy_params_dict(dict_get_or(test_def, "params", {}))
+			if check_uses_path_guardrails(check_type, params) {
+				if suite_has_paths == false && has_path_allowlist(params) == false {
+					test_name := normalize_string(dict_get_or(test_def, "name", ""), "test_" + to_string(i))
+					missing = push(missing, test_name)
+				}
+			}
+		}
+		i := i + 1
+	}
+
+	if len(missing) > 0 {
+		return {
+			"ok": false,
+			"error": "Path policy mode 'allowlist-required' requires explicit allowed_paths in " + active_stage + " stage",
+			"missing": missing
+		}
+	}
+
+	return {"ok": true, "error": "", "missing": []}
+}
+
+func mixed_check_priority(check_type) {
+	if check_type == "command_succeeds" || check_type == "command_fails" || check_type == "exit_code_equals" || check_type == "output_contains" || check_type == "output_does_not_contain" || check_type == "output_matches_glob" || check_type == "command_stdout_json_path_equals" || check_type == "command_timing_less_than" || check_type == "http_status" || check_type == "http_body_contains" {
+		return 0
+	}
+
+	if check_type == "file_contains" || check_type == "file_does_not_contain" || check_type == "json_matches_shape" || check_type == "json_value_equals" || check_type == "stdout_json_matches_shape" || check_type == "snapshot_matches" || check_type == "directory_diff" || check_type == "directory_contains" || check_type == "two_files_equal" || check_type == "file_matches_regex" {
+		return 1
+	}
+
+	return 2
+}
+
+func build_mixed_parallel_schedule(tests) {
+	high := []
+	medium := []
+	low := []
+
+	i := 0
+	while i < len(tests) {
+		test_def := tests[i]
+		if type(test_def) == "dict" {
+			deps := dict_get_or(test_def, "depends_on", [])
+			if type(deps) == "array" && len(deps) > 0 {
+				return {"reordered": false, "tests": tests, "reason": "mixed priority scheduling skipped: dependency constraints present"}
+			}
+
+			retry_count := normalize_int(dict_get_or(test_def, "retry", 0), 0)
+			if retry_count > 0 {
+				return {"reordered": false, "tests": tests, "reason": "mixed priority scheduling skipped: retry directives present"}
+			}
+
+			check_type := normalize_string(dict_get_or(test_def, "check", ""), "")
+			priority := mixed_check_priority(check_type)
+			if priority == 0 {
+				high = push(high, test_def)
+			} else if priority == 1 {
+				medium = push(medium, test_def)
+			} else {
+				low = push(low, test_def)
+			}
+		} else {
+			low = push(low, test_def)
+		}
+		i := i + 1
+	}
+
+	if len(high) == 0 || (len(medium) == 0 && len(low) == 0) {
+		return {"reordered": false, "tests": tests, "reason": "mixed priority scheduling skipped: insufficient mixed check types"}
+	}
+
+	reordered := []
+	hi := 0
+	while hi < len(high) {
+		reordered = push(reordered, high[hi])
+		hi := hi + 1
+	}
+	mi := 0
+	while mi < len(medium) {
+		reordered = push(reordered, medium[mi])
+		mi := mi + 1
+	}
+	li := 0
+	while li < len(low) {
+		reordered = push(reordered, low[li])
+		li := li + 1
+	}
+
+	original_names := []
+	ordered_names := []
+	oi := 0
+	while oi < len(tests) {
+		if type(tests[oi]) == "dict" {
+			original_names = push(original_names, normalize_string(dict_get_or(tests[oi], "name", ""), "test_" + to_string(oi)))
+		}
+		oi := oi + 1
+	}
+	ri := 0
+	while ri < len(reordered) {
+		if type(reordered[ri]) == "dict" {
+			ordered_names = push(ordered_names, normalize_string(dict_get_or(reordered[ri], "name", ""), "test_" + to_string(ri)))
+		}
+		ri := ri + 1
+	}
+
+	changed := false
+	ni := 0
+	while ni < len(original_names) {
+		if original_names[ni] != ordered_names[ni] {
+			changed = true
+		}
+		ni := ni + 1
+	}
+
+	if changed == false {
+		return {"reordered": false, "tests": tests, "reason": "mixed priority scheduling skipped: already optimal"}
+	}
+
+	return {
+		"reordered": true,
+		"tests": reordered,
+		"reason": "mixed priority scheduling applied",
+		"high_priority_count": len(high),
+		"medium_priority_count": len(medium),
+		"low_priority_count": len(low)
+	}
+}
+
+func build_mixed_prefetch_cache(tests, parallel_workers) {
+	paths := []
+	i := 0
+	while i < len(tests) {
+		test_def := tests[i]
+		if type(test_def) == "dict" {
+			if dict_get_or(test_def, "skip", false) == false {
+				check_type := normalize_string(dict_get_or(test_def, "check", ""), "")
+				if check_uses_cached_file_content(check_type) {
+					params := copy_params_dict(dict_get_or(test_def, "params", {}))
+					path := normalize_string(dict_get_or(params, "path", ""), "")
+					if path != "" && path_exists(path) == true {
+						already_added := false
+						pi := 0
+						while pi < len(paths) {
+							if paths[pi] == path {
+								already_added = true
+							}
+							pi := pi + 1
+						}
+						if already_added == false {
+							paths = push(paths, path)
+						}
+					}
+				}
+			}
+		}
+		i := i + 1
+	}
+
+	if len(paths) == 0 {
+		return {
+			"ok": true,
+			"cache": {},
+			"prefetched_files": 0,
+			"prefetch_duration_ms": 0
+		}
+	}
+
+	prefetch_start := time()
+	contents := []
+	try {
+		contents = await parallel_map(paths, async_read_file, parallel_workers)
+	} except err {
+		return {
+			"ok": false,
+			"error": "mixed prefetch failed"
+		}
+	}
+
+	cache := {}
+	ci := 0
+	while ci < len(paths) {
+		cache[paths[ci]] = contents[ci]
+		ci := ci + 1
+	}
+
+	return {
+		"ok": true,
+		"cache": cache,
+		"prefetched_files": len(paths),
+		"prefetch_duration_ms": time() - prefetch_start
+	}
+}
+
+func try_run_parallel_file_fastpath(tests, config, runtime_opts) {
+	if dict_get_or(runtime_opts, "stop_on_failure", false) == true {
+		return {"used": false, "reason": "stop_on_failure enabled"}
+	}
+
+	setup_cmd := normalize_string(dict_get_or(config, "setup", ""), "")
+	teardown_cmd := normalize_string(dict_get_or(config, "teardown", ""), "")
+	before_each_cmd := normalize_string(dict_get_or(config, "before_each", ""), "")
+	after_each_cmd := normalize_string(dict_get_or(config, "after_each", ""), "")
+	if setup_cmd != "" || teardown_cmd != "" || before_each_cmd != "" || after_each_cmd != "" {
+		return {"used": false, "reason": "suite hooks present"}
+	}
+
+	suite_allowed_paths := dict_get_or(runtime_opts, "suite_allowed_paths", [])
+	if type(suite_allowed_paths) == "array" && len(suite_allowed_paths) > 0 {
+		return {"used": false, "reason": "allowed_paths policy present"}
+	}
+
+	filter_pattern := normalize_string(dict_get_or(runtime_opts, "filter_pattern", ""), "")
+	exclude_pattern := normalize_string(dict_get_or(runtime_opts, "exclude_pattern", ""), "")
+	tags_list := dict_get_or(runtime_opts, "tags_list", [])
+	skip_tags_list := dict_get_or(runtime_opts, "skip_tags_list", [])
+	only_failed_list := dict_get_or(runtime_opts, "only_failed_list", [])
+	quiet_mode := dict_get_or(runtime_opts, "quiet_mode", false) == true
+	verbose_mode := dict_get_or(runtime_opts, "verbose_mode", false) == true
+	no_color := dict_get_or(runtime_opts, "no_color", false) == true
+	parallel_workers := normalize_int(dict_get_or(runtime_opts, "parallel_workers", 1), 1)
+
+	test_results := []
+	runnable := []
+	skipped := 0
+
+	dep_graph := build_dep_graph(tests)
+	i := 0
+	while i < len(tests) {
+		test_def := tests[i]
+		if type(test_def) != "dict" {
+			return {"used": false, "reason": "non-dict test definition at index " + to_string(i)}
+		}
+
+		test_name := normalize_string(dict_get_or(test_def, "name", ""), "test_" + to_string(i))
+		test_desc := normalize_string(dict_get_or(test_def, "description", ""), "")
+		check_type := normalize_string(dict_get_or(test_def, "check", ""), "")
+		params := copy_params_dict(dict_get_or(test_def, "params", {}))
+
+		deps := dict_get_or(dep_graph, test_name, [])
+		if type(deps) == "array" && len(deps) > 0 {
+			return {"used": false, "reason": "dependency constraints present"}
+		}
+
+		retry_count := normalize_int(dict_get_or(test_def, "retry", 0), 0)
+		if retry_count > 0 {
+			return {"used": false, "reason": "retry directives present"}
+		}
+
+		if is_parallel_file_check_supported(check_type) == false {
+			return {"used": false, "reason": "unsupported check type in parallel fast path: " + check_type}
+		}
+
+		test_allowed_paths := dict_get_or(params, "allowed_paths", [])
+		if type(test_allowed_paths) == "array" && len(test_allowed_paths) > 0 {
+			return {"used": false, "reason": "test-level allowed_paths policy present"}
+		}
+
+		is_skipped := dict_get_or(test_def, "skip", false) == true
+
+		if filter_pattern != "" && is_skipped == false {
+			if contains_text(test_name, filter_pattern) == false {
+				is_skipped = true
+			}
+		}
+
+		if exclude_pattern != "" && is_skipped == false {
+			if contains_text(test_name, exclude_pattern) {
+				is_skipped = true
+			}
+		}
+
+		test_tags := []
+		if len(tags_list) > 0 || len(skip_tags_list) > 0 {
+			test_tags_raw := dict_get_or(test_def, "tags", [])
+			test_tags = normalize_filter_values(test_tags_raw)
+		}
+
+		if len(tags_list) > 0 && is_skipped == false {
+			if has_matching_tag(test_tags, tags_list) == false {
+				is_skipped = true
+			}
+		}
+
+		if len(skip_tags_list) > 0 && is_skipped == false {
+			if has_matching_tag(test_tags, skip_tags_list) == true {
+				is_skipped = true
+			}
+		}
+
+		if len(only_failed_list) > 0 && is_skipped == false {
+			in_failed := false
+			ofi := 0
+			while ofi < len(only_failed_list) {
+				if contains_text(test_name, only_failed_list[ofi]) {
+					in_failed = true
+				}
+				ofi := ofi + 1
+			}
+			if in_failed == false {
+				is_skipped = true
+			}
+		}
+
+		if is_skipped {
+			skipped = skipped + 1
+			test_results = push(test_results, {
+				"name": test_name,
+				"description": test_desc,
+				"check": check_type,
+				"passed": true,
+				"skipped": true,
+				"message": "Skipped",
+				"details": {}
+			})
+		} else {
+			runnable = push(runnable, {
+				"name": test_name,
+				"description": test_desc,
+				"check": check_type,
+				"params": params
+			})
+		}
+
+		i := i + 1
+	}
+
+	cache_paths := []
+	cj := 0
+	while cj < len(runnable) {
+		entry := runnable[cj]
+		check_type := normalize_string(dict_get_or(entry, "check", ""), "")
+		if check_uses_cached_file_content(check_type) {
+			params := dict_get_or(entry, "params", {})
+			path := normalize_string(dict_get_or(params, "path", ""), "")
+			if path != "" && path_exists(path) == true {
+				already_added := false
+				ki := 0
+				while ki < len(cache_paths) {
+					if cache_paths[ki] == path {
+						already_added = true
+					}
+					ki := ki + 1
+				}
+				if already_added == false {
+					cache_paths = push(cache_paths, path)
+				}
+			}
+		}
+		cj := cj + 1
+	}
+
+	file_cache := {}
+	prefetch_duration_ms := 0
+	if len(cache_paths) > 0 {
+		prefetch_start := time()
+		contents := []
+		prefetch_ok := true
+		try {
+			contents = await parallel_map(cache_paths, async_read_file, parallel_workers)
+		} except err {
+			prefetch_ok = false
+		}
+		if prefetch_ok == false {
+			return {"used": false, "reason": "parallel prefetch failed"}
+		}
+		pi := 0
+		while pi < len(cache_paths) {
+			file_cache[cache_paths[pi]] = contents[pi]
+			pi := pi + 1
+		}
+		prefetch_duration_ms = time() - prefetch_start
+	}
+
+	passed := 0
+	failed := 0
+	cache_metric_candidates := 0
+	cache_metric_hits := 0
+	cache_metric_misses := 0
+	cache_metric_bytes_reused := 0
+	ri := 0
+	while ri < len(runnable) {
+		entry := runnable[ri]
+		test_name := normalize_string(dict_get_or(entry, "name", ""), "")
+		test_desc := normalize_string(dict_get_or(entry, "description", ""), "")
+		check_type := normalize_string(dict_get_or(entry, "check", ""), "")
+		params := dict_get_or(entry, "params", {})
+
+		test_passed := false
+		check_msg := "Unsupported parallel check"
+		check_details := {}
+
+		path := normalize_string(dict_get_or(params, "path", ""), "")
+
+		if check_type == "file_exists" {
+			if path == "" {
+				check_msg = "No path specified in params.path"
+				check_details = {"path": ""}
+			} else {
+				exists := path_exists(path) == true
+				check_details = {"path": path, "exists": exists}
+				if exists {
+					test_passed = true
+					check_msg = "File exists: " + path
+				} else {
+					check_msg = "File does not exist: " + path
+				}
+			}
+		} else if check_type == "file_does_not_exist" {
+			if path == "" {
+				check_msg = "No path specified in params.path"
+				check_details = {"path": ""}
+			} else {
+				exists := path_exists(path) == true
+				check_details = {"path": path, "exists": exists}
+				if exists == false {
+					test_passed = true
+					check_msg = "File does not exist (as expected): " + path
+				} else {
+					check_msg = "File exists unexpectedly: " + path
+				}
+			}
+		} else if check_type == "file_contains" {
+			expected := normalize_string(dict_get_or(params, "expected", ""), "")
+			if path != "" {
+				cache_metric_candidates = cache_metric_candidates + 1
+			}
+			if path == "" {
+				check_msg = "No path specified"
+				check_details = {"path": "", "expected": expected}
+			} else if expected == "" {
+				check_msg = "No expected text specified"
+				check_details = {"path": path, "expected": ""}
+			} else if path_exists(path) == false {
+				check_msg = "File not found: " + path
+				check_details = {"path": path, "expected": expected, "found": false}
+			} else {
+				content := ""
+				if has_key(file_cache, path) == 1 {
+					content = file_cache[path]
+					cache_metric_hits = cache_metric_hits + 1
+					cache_metric_bytes_reused = cache_metric_bytes_reused + len(content)
+				} else {
+					try { content = read_file(path) } except err { content = "" }
+					cache_metric_misses = cache_metric_misses + 1
+				}
+				found := contains_text(content, expected)
+				check_details = {"path": path, "expected": expected, "found": found, "content_length": len(content)}
+				if found {
+					test_passed = true
+					check_msg = "File contains expected text"
+				} else {
+					check_msg = "File does not contain expected text"
+				}
+			}
+		} else if check_type == "file_does_not_contain" {
+			unexpected := normalize_string(dict_get_or(params, "expected", ""), "")
+			if path != "" {
+				cache_metric_candidates = cache_metric_candidates + 1
+			}
+			if path == "" {
+				check_msg = "No path specified"
+				check_details = {"path": "", "expected": unexpected}
+			} else if unexpected == "" {
+				check_msg = "No expected text specified"
+				check_details = {"path": path, "expected": ""}
+			} else if path_exists(path) == false {
+				test_passed = true
+				check_msg = "File does not exist (trivially does not contain text): " + path
+				check_details = {"path": path, "expected": unexpected, "found": false}
+			} else {
+				content := ""
+				if has_key(file_cache, path) == 1 {
+					content = file_cache[path]
+					cache_metric_hits = cache_metric_hits + 1
+					cache_metric_bytes_reused = cache_metric_bytes_reused + len(content)
+				} else {
+					try { content = read_file(path) } except err { content = "" }
+					cache_metric_misses = cache_metric_misses + 1
+				}
+				found := contains_text(content, unexpected)
+				check_details = {"path": path, "expected": unexpected, "found": found, "content_length": len(content)}
+				if found == false {
+					test_passed = true
+					check_msg = "File does not contain unexpected text (as expected)"
+				} else {
+					check_msg = "File contains unexpected text"
+				}
+			}
+		} else if check_type == "file_line_count" {
+			expected_count := normalize_int(dict_get_or(params, "expected", 0), 0)
+			comparison := normalize_string(dict_get_or(params, "comparison", "eq"), "eq")
+			if path != "" {
+				cache_metric_candidates = cache_metric_candidates + 1
+			}
+			if path == "" {
+				check_msg = "No path specified"
+				check_details = {"path": "", "expected": expected_count, "comparison": comparison}
+			} else if path_exists(path) == false {
+				check_msg = "File not found: " + path
+				check_details = {"path": path, "expected": expected_count, "comparison": comparison}
+			} else {
+				content := ""
+				if has_key(file_cache, path) == 1 {
+					content = file_cache[path]
+					cache_metric_hits = cache_metric_hits + 1
+					cache_metric_bytes_reused = cache_metric_bytes_reused + len(content)
+				} else {
+					try { content = read_file(path) } except err { content = "" }
+					cache_metric_misses = cache_metric_misses + 1
+				}
+
+				line_count := 0
+				if content != "" {
+					line_count = len(split(content, "\n"))
+				}
+
+				matched := false
+				if comparison == "eq" || comparison == "==" {
+					matched = line_count == expected_count
+				} else if comparison == "gt" || comparison == ">" {
+					matched = line_count > expected_count
+				} else if comparison == "lt" || comparison == "<" {
+					matched = line_count < expected_count
+				} else if comparison == "gte" || comparison == ">=" {
+					matched = line_count >= expected_count
+				} else if comparison == "lte" || comparison == "<=" {
+					matched = line_count <= expected_count
+				} else {
+					check_msg = "Unknown comparison: " + comparison
+					check_details = {"path": path, "line_count": line_count, "expected": expected_count, "comparison": comparison}
+					matched = false
+				}
+
+				if check_msg == "Unsupported parallel check" || check_msg == "" {
+					if matched {
+						test_passed = true
+						check_msg = "Line count " + to_string(line_count) + " satisfies " + comparison + " " + to_string(expected_count)
+					} else {
+						check_msg = "Line count " + to_string(line_count) + " does not satisfy " + comparison + " " + to_string(expected_count)
+					}
+					check_details = {"path": path, "line_count": line_count, "expected": expected_count, "comparison": comparison}
+				}
+			}
+		} else if check_type == "file_matches_glob" {
+			pattern := normalize_string(dict_get_or(params, "pattern", ""), "")
+			if path != "" {
+				cache_metric_candidates = cache_metric_candidates + 1
+			}
+			if path == "" {
+				check_msg = "No path specified"
+				check_details = {"path": "", "pattern": pattern}
+			} else if pattern == "" {
+				check_msg = "No pattern specified"
+				check_details = {"path": path, "pattern": ""}
+			} else if path_exists(path) == false {
+				check_msg = "File not found: " + path
+				check_details = {"path": path, "pattern": pattern}
+			} else {
+				content := ""
+				if has_key(file_cache, path) == 1 {
+					content = file_cache[path]
+					cache_metric_hits = cache_metric_hits + 1
+					cache_metric_bytes_reused = cache_metric_bytes_reused + len(content)
+				} else {
+					try { content = read_file(path) } except err { content = "" }
+					cache_metric_misses = cache_metric_misses + 1
+				}
+				matched := glob_match(content, pattern)
+				check_details = {"path": path, "pattern": pattern}
+				if matched {
+					test_passed = true
+					check_msg = "File matches pattern: " + pattern
+				} else {
+					check_msg = "File does not match pattern: " + pattern
+				}
+			}
+		} else if check_type == "file_matches_regex" {
+			pattern := normalize_string(dict_get_or(params, "pattern", ""), "")
+			if path != "" {
+				cache_metric_candidates = cache_metric_candidates + 1
+			}
+			if path == "" {
+				check_msg = "No path specified"
+				check_details = {"path": "", "pattern": pattern}
+			} else if pattern == "" {
+				check_msg = "No regex pattern specified"
+				check_details = {"path": path, "pattern": ""}
+			} else if path_exists(path) == false {
+				check_msg = "File not found: " + path
+				check_details = {"path": path, "pattern": pattern}
+			} else {
+				content := ""
+				if has_key(file_cache, path) == 1 {
+					content = file_cache[path]
+					cache_metric_hits = cache_metric_hits + 1
+					cache_metric_bytes_reused = cache_metric_bytes_reused + len(content)
+				} else {
+					try { content = read_file(path) } except err { content = "" }
+					cache_metric_misses = cache_metric_misses + 1
+				}
+				matched := regex_match(content, pattern)
+				check_details = {"path": path, "pattern": pattern, "content_length": len(content)}
+				if matched {
+					test_passed = true
+					check_msg = "File content matches regex pattern"
+				} else {
+					check_msg = "File content does not match regex pattern"
+				}
+			}
+		}
+
+		if test_passed {
+			passed = passed + 1
+		} else {
+			failed = failed + 1
+		}
+
+		test_results = push(test_results, {
+			"name": test_name,
+			"description": test_desc,
+			"check": check_type,
+			"passed": test_passed,
+			"skipped": false,
+			"message": check_msg,
+			"details": check_details
+		})
+
+		if quiet_mode == false {
+			print_test_status(test_passed, test_name, check_msg, no_color)
+			if verbose_mode {
+				print_verbose_check_details(check_details)
+			}
+		}
+
+		ri := ri + 1
+	}
+
+	return {
+		"used": true,
+		"ok": true,
+		"data": {
+			"suite_name": normalize_string(dict_get_or(config, "name", ""), "unnamed"),
+			"suite_version": normalize_string(dict_get_or(config, "version", ""), ""),
+			"suite_description": normalize_string(dict_get_or(config, "description", ""), ""),
+			"active_policy_stage": normalize_string(dict_get_or(config, "active_policy_stage", ""), ""),
+			"passed": passed,
+			"failed": failed,
+			"skipped": skipped,
+			"total": passed + failed + skipped,
+			"duration_ms": 0,
+			"test_results": test_results,
+			"timestamp": "",
+			"parallel_requested": true,
+			"parallel_used": true,
+			"parallel_mode": "file-fastpath",
+			"parallel_workers": parallel_workers,
+			"parallel_fallback_reason": "",
+			"parallel_prefetched_files": len(cache_paths),
+			"parallel_prefetch_duration_ms": prefetch_duration_ms,
+			"cache_metric_candidates": cache_metric_candidates,
+			"cache_metric_unique_files": len(cache_paths),
+			"cache_metric_hits": cache_metric_hits,
+			"cache_metric_misses": cache_metric_misses,
+			"cache_metric_bytes_reused": cache_metric_bytes_reused
+		}
+	}
+}
+
+export func run_suite(config_path, options) {
+	opts := {}
+	if type(options) == "dict" {
+		opts = options
+	}
+	update_snapshots := dict_get_or(opts, "update_snapshots", false)
+	filter_pattern := trim(normalize_string(dict_get_or(opts, "filter", ""), ""))
+	exclude_pattern := trim(normalize_string(dict_get_or(opts, "exclude", ""), ""))
+	tags_filter := normalize_string(dict_get_or(opts, "tags", ""), "")
+	skip_tags_filter := normalize_string(dict_get_or(opts, "skip_tags", ""), "")
+	quiet_mode := dict_get_or(opts, "quiet", false) == true
+	verbose_mode := dict_get_or(opts, "verbose", false) == true
+	dry_run := dict_get_or(opts, "dry_run", false) == true
+	no_color := dict_get_or(opts, "no_color", false) == true
+	seed_str := normalize_string(dict_get_or(opts, "seed", ""), "")
+	policy_stage := normalize_string(dict_get_or(opts, "policy_stage", ""), "")
+	if policy_stage == "" {
+		policy_stage = normalize_string(env("KUJO_EVAL_POLICY_STAGE"), "")
+	}
+
+	start_time := time()
+
+	tags_list := []
+	if tags_filter != "" { tags_list = normalize_filter_values(split(tags_filter, ",")) }
+	skip_tags_list := []
+	if skip_tags_filter != "" { skip_tags_list = normalize_filter_values(split(skip_tags_filter, ",")) }
+	only_failed_filter_raw := normalize_string(dict_get_or(opts, "only_failed_filter", ""), "")
+	only_failed_list := []
+	if only_failed_filter_raw != "" { only_failed_list = normalize_filter_values(split(only_failed_filter_raw, ",")) }
+
+	result := load_config(config_path)
+
+	if result["ok"] == false {
+		return make_result(false, dict_get_or(result, "error", "Config load failed"), {"suite_name": "", "passed": 0, "failed": 0, "skipped": 0, "total": 0, "duration_ms": 0, "test_results": [], "timestamp": ""})
+	}
+
+	config := dict_get_or(dict_get_or(result, "data", {}), "config", {})
+	if policy_stage != "" {
+		stage_overlays := dict_get_or(config, "policy_stage_overlays", {})
+		stage_overlay := dict_get_or(stage_overlays, policy_stage, {})
+		if type(stage_overlay) == "dict" {
+			for overlay_key in keys(stage_overlay) {
+				config[overlay_key] := stage_overlay[overlay_key]
+			}
+		}
+		config["active_policy_stage"] := policy_stage
+	}
+
+	output_dir_override := normalize_string(dict_get_or(opts, "output_dir_override", ""), "")
+	if output_dir_override != "" {
+		config["output_dir"] := output_dir_override
+	}
+
+	snapshot_dir_override := normalize_string(dict_get_or(opts, "snapshot_dir_override", ""), "")
+	if snapshot_dir_override != "" {
+		config["snapshot_dir"] := snapshot_dir_override
+	}
+
+	tests_raw := dict_get_or(config, "tests", [])
+	tests := []
+	if type(tests_raw) == "array" {
+		tests = tests_raw
+	}
+
+	active_policy_stage := normalize_string(dict_get_or(config, "active_policy_stage", ""), "")
+	if active_policy_stage == "" {
+		active_policy_stage = policy_stage
+	}
+	if active_policy_stage != "" {
+		config["active_policy_stage"] := active_policy_stage
+	}
+
+	if seed_str != "" {
+		seed_val := len(seed_str)
+		si := 0
+		while si < len(seed_str) {
+			seed_val = seed_val + seed_str[si]
+			si := si + 1
+		}
+		tests = shuffle_tests(tests, seed_val)
+	}
+
+	if dry_run {
+		names := []
+		ti := 0
+		while ti < len(tests) {
+			td := tests[ti]
+			if type(td) == "dict" {
+				tn := normalize_string(dict_get_or(td, "name", ""), "test_" + to_string(ti))
+				names := push(names, tn)
+			}
+			ti := ti + 1
+		}
+		if quiet_mode == false {
+			print_bullet_items(names)
+			print("Dry run: " + to_string(len(names)) + " tests would be executed")
+		}
+		return make_result(true, "", {
+			"suite_name": normalize_string(dict_get_or(config, "name", ""), "unnamed"),
+			"dry_run": true,
+			"test_count": len(names),
+			"test_names": names
+		})
+	}
+
+	command_policy_validation := enforce_strict_command_policy(config, tests, active_policy_stage)
+	if dict_get_or(command_policy_validation, "ok", false) == false {
+		return make_result(false, dict_get_or(command_policy_validation, "error", "Command policy validation failed"), {
+			"suite_name": normalize_string(dict_get_or(config, "name", ""), "unnamed"),
+			"active_policy_stage": active_policy_stage,
+			"missing_policy_tests": dict_get_or(command_policy_validation, "missing", []),
+			"passed": 0,
+			"failed": 0,
+			"skipped": 0,
+			"total": len(tests),
+			"duration_ms": 0,
+			"test_results": [],
+			"timestamp": ""
+		})
+	}
+
+	path_policy_validation := enforce_path_policy_mode(config, tests, active_policy_stage)
+	if dict_get_or(path_policy_validation, "ok", false) == false {
+		return make_result(false, dict_get_or(path_policy_validation, "error", "Path policy validation failed"), {
+			"suite_name": normalize_string(dict_get_or(config, "name", ""), "unnamed"),
+			"active_policy_stage": active_policy_stage,
+			"missing_path_policy_tests": dict_get_or(path_policy_validation, "missing", []),
+			"passed": 0,
+			"failed": 0,
+			"skipped": 0,
+			"total": len(tests),
+			"duration_ms": 0,
+			"test_results": [],
+			"timestamp": ""
+		})
+	}
+
+	stop_on_failure := dict_get_or(config, "stop_on_failure", false)
+	snapshot_dir := normalize_string(dict_get_or(config, "snapshot_dir", ""), "./snapshots")
+	suite_allowed_commands_raw := dict_get_or(config, "allowed_commands", [])
+	suite_allowed_commands := []
+	if type(suite_allowed_commands_raw) == "array" {
+		suite_allowed_commands = suite_allowed_commands_raw
+	}
+	suite_allowed_command_patterns_raw := dict_get_or(config, "allowed_command_patterns", [])
+	suite_allowed_command_patterns := []
+	if type(suite_allowed_command_patterns_raw) == "array" {
+		suite_allowed_command_patterns = suite_allowed_command_patterns_raw
+	}
+	suite_blocked_arg_patterns_raw := dict_get_or(config, "blocked_arg_patterns", [])
+	suite_blocked_arg_patterns := []
+	if type(suite_blocked_arg_patterns_raw) == "array" {
+		suite_blocked_arg_patterns = suite_blocked_arg_patterns_raw
+	}
+	suite_command_pattern_match_mode := normalize_string(dict_get_or(config, "command_pattern_match_mode", "substring"), "substring")
+	if suite_command_pattern_match_mode != "token" {
+		suite_command_pattern_match_mode = "substring"
+	}
+	suite_redaction_audit_mode := dict_get_or(config, "redaction_audit_mode", false) == true
+	suite_redact_output_patterns_raw := dict_get_or(config, "redact_output_patterns", [])
+	suite_redact_output_patterns := []
+	if type(suite_redact_output_patterns_raw) == "array" {
+		suite_redact_output_patterns = suite_redact_output_patterns_raw
+	}
+	suite_command_policy := {
+		"allowed_commands": suite_allowed_commands,
+		"allowed_command_patterns": suite_allowed_command_patterns,
+		"blocked_arg_patterns": suite_blocked_arg_patterns,
+		"command_pattern_match_mode": suite_command_pattern_match_mode,
+		"redaction_audit_mode": suite_redaction_audit_mode,
+		"redact_output_patterns": suite_redact_output_patterns
+	}
+	suite_allowed_paths_raw := dict_get_or(config, "allowed_paths", [])
+	suite_allowed_paths := []
+	if type(suite_allowed_paths_raw) == "array" {
+		suite_allowed_paths = suite_allowed_paths_raw
+	}
+	if len(suite_allowed_paths) > 0 {
+		effective_output_dir := normalize_string(dict_get_or(config, "output_dir", ""), "")
+		effective_snapshot_dir := normalize_string(dict_get_or(config, "snapshot_dir", ""), "")
+		suite_allowed_paths = push_unique_string(suite_allowed_paths, effective_output_dir)
+		suite_allowed_paths = push_unique_string(suite_allowed_paths, effective_snapshot_dir)
+	}
+	suite_allowed_env_vars_raw := dict_get_or(config, "allowed_env_vars", [])
+	suite_allowed_env_vars := []
+	if type(suite_allowed_env_vars_raw) == "array" {
+		suite_allowed_env_vars = suite_allowed_env_vars_raw
+	}
+	suite_allowed_http_hosts_raw := dict_get_or(config, "allowed_http_hosts", [])
+	suite_allowed_http_hosts := []
+	if type(suite_allowed_http_hosts_raw) == "array" {
+		suite_allowed_http_hosts = suite_allowed_http_hosts_raw
+	}
+	suite_blocked_http_hosts_raw := dict_get_or(config, "blocked_http_hosts", [])
+	suite_blocked_http_hosts := []
+	if type(suite_blocked_http_hosts_raw) == "array" {
+		suite_blocked_http_hosts = suite_blocked_http_hosts_raw
+	}
+	config_timeout_s := normalize_int(dict_get_or(config, "timeout_seconds", 0), 0)
+	config_timeout_ms := 0
+	if config_timeout_s > 0 { config_timeout_ms = config_timeout_s * 1000 }
+
+	setup_cmd := normalize_string(dict_get_or(config, "setup", ""), "")
+	teardown_cmd := normalize_string(dict_get_or(config, "teardown", ""), "")
+	before_each_cmd := normalize_string(dict_get_or(config, "before_each", ""), "")
+	after_each_cmd := normalize_string(dict_get_or(config, "after_each", ""), "")
+
+	if setup_cmd != "" {
+		run_shell_with_command_policy(setup_cmd, suite_command_policy)
+	}
+
+	test_results := []
+	passed := 0
+	failed := 0
+	skipped := 0
+	passed_names := []
+	parallel_workers := normalize_parallel_workers(opts, config)
+	parallel_requested := parallel_workers > 1
+	parallel_fallback_reason := ""
+	execution_tests := tests
+	mixed_priority_reordered := false
+	if parallel_requested && stop_on_failure == false {
+		if setup_cmd == "" && teardown_cmd == "" && before_each_cmd == "" && after_each_cmd == "" {
+			schedule := build_mixed_parallel_schedule(tests)
+			if dict_get_or(schedule, "reordered", false) == true {
+				execution_tests = dict_get_or(schedule, "tests", tests)
+				mixed_priority_reordered = true
+				parallel_fallback_reason = normalize_string(dict_get_or(schedule, "reason", ""), "mixed priority scheduling applied")
+			}
+		}
+	}
+
+	dep_graph := build_dep_graph(execution_tests)
+	if parallel_requested {
+		parallel_attempt := try_run_parallel_file_fastpath(execution_tests, config, {
+			"stop_on_failure": stop_on_failure,
+			"filter_pattern": filter_pattern,
+			"exclude_pattern": exclude_pattern,
+			"tags_list": tags_list,
+			"skip_tags_list": skip_tags_list,
+			"only_failed_list": only_failed_list,
+			"quiet_mode": quiet_mode,
+			"verbose_mode": verbose_mode,
+			"no_color": no_color,
+			"parallel_workers": parallel_workers,
+			"suite_allowed_paths": suite_allowed_paths
+		})
+		if dict_get_or(parallel_attempt, "used", false) == true {
+			parallel_data := dict_get_or(parallel_attempt, "data", {})
+			parallel_data["duration_ms"] = time() - start_time
+			return make_result(true, "", parallel_data)
+		}
+		parallel_fallback_reason = normalize_string(dict_get_or(parallel_attempt, "reason", ""), "")
+	}
+
+	mixed_file_cache := {}
+	mixed_prefetched_files := 0
+	mixed_prefetch_duration_ms := 0
+	mixed_parallel_used := false
+	cache_metric_candidates := 0
+	cache_metric_hits := 0
+	cache_metric_misses := 0
+	cache_metric_bytes_reused := 0
+	if parallel_requested {
+		mixed_prefetch := build_mixed_prefetch_cache(execution_tests, parallel_workers)
+		if dict_get_or(mixed_prefetch, "ok", false) == true {
+			mixed_file_cache = dict_get_or(mixed_prefetch, "cache", {})
+			mixed_prefetched_files = normalize_int(dict_get_or(mixed_prefetch, "prefetched_files", 0), 0)
+			mixed_prefetch_duration_ms = normalize_int(dict_get_or(mixed_prefetch, "prefetch_duration_ms", 0), 0)
+			if mixed_prefetched_files > 0 {
+				mixed_parallel_used = true
+				if parallel_fallback_reason == "" {
+					parallel_fallback_reason = "fastpath unsupported; mixed prefetch heuristic used"
+				}
+			}
+		} else {
+			if parallel_fallback_reason == "" {
+				parallel_fallback_reason = normalize_string(dict_get_or(mixed_prefetch, "error", ""), "")
+			}
+		}
+	}
+
+	i := 0
+	while i < len(execution_tests) {
+		test_def := execution_tests[i]
+
+		is_dict := type(test_def) == "dict"
+		if is_dict {
+			test_name := normalize_string(dict_get_or(test_def, "name", ""), "test_" + to_string(i))
+			test_desc := normalize_string(dict_get_or(test_def, "description", ""), "")
+			check_type := normalize_string(dict_get_or(test_def, "check", ""), "")
+			params_raw := dict_get_or(test_def, "params", {})
+			params := {}
+			if type(params_raw) == "dict" {
+				for pkey in keys(params_raw) {
+					params[pkey] := params_raw[pkey]
+				}
+			}
+
+			if check_uses_cached_file_content(check_type) {
+				cache_path := normalize_string(dict_get_or(params, "path", ""), "")
+				if cache_path != "" {
+					cache_metric_candidates = cache_metric_candidates + 1
+					if has_key(mixed_file_cache, cache_path) == 1 {
+						cached_content := mixed_file_cache[cache_path]
+						params["cached_file_content"] := cached_content
+						cache_metric_hits = cache_metric_hits + 1
+						cache_metric_bytes_reused = cache_metric_bytes_reused + len(cached_content)
+					} else {
+						cache_metric_misses = cache_metric_misses + 1
+					}
+				}
+			}
+
+			is_skipped := dict_get_or(test_def, "skip", false) == true
+
+			if filter_pattern != "" && is_skipped == false {
+				if contains_text(test_name, filter_pattern) == false {
+					is_skipped = true
+				}
+			}
+
+			if exclude_pattern != "" && is_skipped == false {
+				if contains_text(test_name, exclude_pattern) {
+					is_skipped = true
+				}
+			}
+
+			test_tags := []
+			if len(tags_list) > 0 || len(skip_tags_list) > 0 {
+				test_tags_raw := dict_get_or(test_def, "tags", [])
+				test_tags = normalize_filter_values(test_tags_raw)
+			}
+
+			if len(tags_list) > 0 && is_skipped == false {
+				if has_matching_tag(test_tags, tags_list) == false { is_skipped = true }
+			}
+
+			if len(skip_tags_list) > 0 && is_skipped == false {
+				if has_matching_tag(test_tags, skip_tags_list) == true { is_skipped = true }
+			}
+
+			if len(only_failed_list) > 0 && is_skipped == false {
+				in_failed := false
+				ofi := 0
+				while ofi < len(only_failed_list) {
+					if contains_text(test_name, only_failed_list[ofi]) { in_failed = true }
+					ofi := ofi + 1
+				}
+				if in_failed == false { is_skipped = true }
+			}
+
+			if is_skipped {
+				skipped := skipped + 1
+				skip_entry := {
+					"name": test_name,
+					"description": test_desc,
+					"check": check_type,
+					"passed": true,
+					"skipped": true,
+					"message": "Skipped",
+					"details": {}
+				}
+				test_results := push(test_results, skip_entry)
+			}
+
+			if is_skipped == false {
+				deps := dict_get_or(dep_graph, test_name, [])
+				dep_failed := false
+				di := 0
+				while di < len(deps) {
+					dep_pass := false
+					pni := 0
+					while pni < len(passed_names) {
+						if passed_names[pni] == deps[di] { dep_pass = true }
+						pni := pni + 1
+					}
+					if dep_pass == false { dep_failed = true }
+					di := di + 1
+				}
+				if dep_failed {
+					is_skipped = true
+					skipped := skipped + 1
+					test_results := push(test_results, {
+						"name": test_name,
+						"description": test_desc,
+						"check": check_type,
+						"passed": true,
+						"skipped": true,
+						"message": "Skipped: dependency failed",
+						"details": {"depends_on": deps}
+					})
+					i := i + 1
+					continue
+				}
+
+				if dict_get_or(params, "snapshot_dir", "") == "" && snapshot_dir != "" {
+					params["snapshot_dir"] := snapshot_dir
+				}
+
+				if update_snapshots && check_type == "snapshot_matches" {
+					params["update"] := "true"
+				}
+
+				test_timeout_s := normalize_int(dict_get_or(test_def, "timeout_seconds", 0), 0)
+				test_timeout_ms := 0
+				if test_timeout_s > 0 {
+					test_timeout_ms = test_timeout_s * 1000
+				}
+				if test_timeout_ms > 0 {
+					params["timeout_ms"] := test_timeout_ms
+				} else if config_timeout_ms > 0 {
+					params["timeout_ms"] := config_timeout_ms
+				}
+
+				test_allowed_commands_raw := dict_get_or(params, "allowed_commands", [])
+				test_allowed_commands := []
+				if type(test_allowed_commands_raw) == "array" {
+					test_allowed_commands = test_allowed_commands_raw
+				}
+				if len(test_allowed_commands) == 0 && len(suite_allowed_commands) > 0 {
+					params["allowed_commands"] := suite_allowed_commands
+				}
+
+				test_allowed_command_patterns_raw := dict_get_or(params, "allowed_command_patterns", [])
+				test_allowed_command_patterns := []
+				if type(test_allowed_command_patterns_raw) == "array" {
+					test_allowed_command_patterns = test_allowed_command_patterns_raw
+				}
+				if len(test_allowed_command_patterns) == 0 && len(suite_allowed_command_patterns) > 0 {
+					params["allowed_command_patterns"] := suite_allowed_command_patterns
+				}
+
+				test_blocked_arg_patterns_raw := dict_get_or(params, "blocked_arg_patterns", [])
+				test_blocked_arg_patterns := []
+				if type(test_blocked_arg_patterns_raw) == "array" {
+					test_blocked_arg_patterns = test_blocked_arg_patterns_raw
+				}
+				if len(test_blocked_arg_patterns) == 0 && len(suite_blocked_arg_patterns) > 0 {
+					params["blocked_arg_patterns"] := suite_blocked_arg_patterns
+				}
+
+				test_command_pattern_match_mode := normalize_string(dict_get_or(params, "command_pattern_match_mode", ""), "")
+				if test_command_pattern_match_mode == "" {
+					params["command_pattern_match_mode"] := suite_command_pattern_match_mode
+				}
+
+				if has_key(params, "redaction_audit_mode") == 0 {
+					params["redaction_audit_mode"] := suite_redaction_audit_mode
+				}
+
+				test_redact_output_patterns_raw := dict_get_or(params, "redact_output_patterns", [])
+				test_redact_output_patterns := []
+				if type(test_redact_output_patterns_raw) == "array" {
+					test_redact_output_patterns = test_redact_output_patterns_raw
+				}
+				if len(test_redact_output_patterns) == 0 && len(suite_redact_output_patterns) > 0 {
+					params["redact_output_patterns"] := suite_redact_output_patterns
+				}
+
+				test_allowed_paths_raw := dict_get_or(params, "allowed_paths", [])
+				test_allowed_paths := []
+				if type(test_allowed_paths_raw) == "array" {
+					test_allowed_paths = test_allowed_paths_raw
+				}
+				if len(test_allowed_paths) == 0 && len(suite_allowed_paths) > 0 {
+					params["allowed_paths"] := suite_allowed_paths
+				}
+
+				test_allowed_env_vars_raw := dict_get_or(params, "allowed_env_vars", [])
+				test_allowed_env_vars := []
+				if type(test_allowed_env_vars_raw) == "array" {
+					test_allowed_env_vars = test_allowed_env_vars_raw
+				}
+				if len(test_allowed_env_vars) == 0 && len(suite_allowed_env_vars) > 0 {
+					params["allowed_env_vars"] := suite_allowed_env_vars
+				}
+
+				test_allowed_http_hosts_raw := dict_get_or(params, "allowed_http_hosts", [])
+				test_allowed_http_hosts := []
+				if type(test_allowed_http_hosts_raw) == "array" {
+					test_allowed_http_hosts = test_allowed_http_hosts_raw
+				}
+				if len(test_allowed_http_hosts) == 0 && len(suite_allowed_http_hosts) > 0 {
+					params["allowed_http_hosts"] := suite_allowed_http_hosts
+				}
+
+				test_blocked_http_hosts_raw := dict_get_or(params, "blocked_http_hosts", [])
+				test_blocked_http_hosts := []
+				if type(test_blocked_http_hosts_raw) == "array" {
+					test_blocked_http_hosts = test_blocked_http_hosts_raw
+				}
+				if len(test_blocked_http_hosts) == 0 && len(suite_blocked_http_hosts) > 0 {
+					params["blocked_http_hosts"] := suite_blocked_http_hosts
+				}
+
+				retry_count := normalize_int(dict_get_or(test_def, "retry", 0), 0)
+
+				check_result := {}
+				retry_attempt := 0
+				retry_max := retry_count + 1
+
+				while retry_attempt < retry_max {
+					if before_each_cmd != "" {
+						run_shell_with_command_policy(before_each_cmd, suite_command_policy)
+					}
+
+					check_result = run_check(check_type, params)
+
+					if after_each_cmd != "" {
+						run_shell_with_command_policy(after_each_cmd, suite_command_policy)
+					}
+
+					if dict_get_or(check_result, "ok", false) == true {
+						retry_attempt = retry_max
+					} else if retry_attempt < retry_count {
+						retry_attempt = retry_attempt + 1
+					} else {
+						retry_attempt = retry_max
+					}
+				}
+
+				test_passed := dict_get_or(check_result, "ok", false)
+				check_data := dict_get_or(check_result, "data", {})
+				check_msg := normalize_string(dict_get_or(check_data, "message", ""), "")
+				check_details := dict_get_or(check_data, "details", {})
+
+				if test_passed {
+					passed := passed + 1
+					passed_names := push(passed_names, test_name)
+				} else {
+					failed := failed + 1
+				}
+
+				result_entry := {
+					"name": test_name,
+					"description": test_desc,
+					"check": check_type,
+					"passed": test_passed,
+					"skipped": false,
+					"message": check_msg,
+					"details": check_details
+				}
+				test_results := push(test_results, result_entry)
+
+				if quiet_mode == false {
+					print_test_status(test_passed, test_name, check_msg, no_color)
+					if verbose_mode {
+						print_verbose_check_details(check_details)
+					}
+				}
+
+				if test_passed == false && stop_on_failure {
+					i := len(execution_tests)
+				}
+			}
+		}
+
+		i := i + 1
+	}
+
+	if teardown_cmd != "" {
+		run_shell_with_command_policy(teardown_cmd, suite_command_policy)
+	}
+
+	elapsed_ms := time() - start_time
+	parallel_mode := "serial"
+	if mixed_priority_reordered {
+		parallel_mode = "mixed-priority-heuristic"
+	}
+	if mixed_parallel_used {
+		parallel_mode = "mixed-heuristic"
+	}
+	parallel_used := false
+	if mixed_parallel_used || mixed_priority_reordered {
+		parallel_used = true
+	}
+
+	return make_result(true, "", {
+		"suite_name": normalize_string(dict_get_or(config, "name", ""), "unnamed"),
+		"suite_version": normalize_string(dict_get_or(config, "version", ""), ""),
+		"suite_description": normalize_string(dict_get_or(config, "description", ""), ""),
+		"active_policy_stage": normalize_string(dict_get_or(config, "active_policy_stage", ""), ""),
+		"passed": passed,
+		"failed": failed,
+		"skipped": skipped,
+		"total": passed + failed + skipped,
+		"duration_ms": elapsed_ms,
+		"test_results": test_results,
+		"timestamp": "",
+		"parallel_requested": parallel_requested,
+		"parallel_used": parallel_used,
+		"parallel_mode": parallel_mode,
+		"parallel_workers": parallel_workers,
+		"parallel_fallback_reason": parallel_fallback_reason,
+		"parallel_prefetched_files": mixed_prefetched_files,
+		"parallel_prefetch_duration_ms": mixed_prefetch_duration_ms,
+		"cache_metric_candidates": cache_metric_candidates,
+		"cache_metric_unique_files": mixed_prefetched_files,
+		"cache_metric_hits": cache_metric_hits,
+		"cache_metric_misses": cache_metric_misses,
+		"cache_metric_bytes_reused": cache_metric_bytes_reused
+	})
+}
+
+export func compare_runs(results_a, results_b) {
+	a_data := dict_get_or(results_a, "data", results_a)
+	b_data := dict_get_or(results_b, "data", results_b)
+
+	a_passed := dict_get_or(a_data, "passed", 0)
+	a_failed := dict_get_or(a_data, "failed", 0)
+	a_total := dict_get_or(a_data, "total", 0)
+	a_name := normalize_string(dict_get_or(a_data, "suite_name", ""), "Run A")
+
+	b_passed := dict_get_or(b_data, "passed", 0)
+	b_failed := dict_get_or(b_data, "failed", 0)
+	b_total := dict_get_or(b_data, "total", 0)
+	b_name := normalize_string(dict_get_or(b_data, "suite_name", ""), "Run B")
+
+	regression := b_failed > a_failed
+	improvement := b_passed > a_passed
+
+	summary := ""
+	if regression && improvement {
+		summary = "Mixed: both improvements and regressions detected"
+	} else if regression {
+		summary = "REGRESSION: " + to_string(b_failed - a_failed) + " more failures"
+	} else if improvement {
+		summary = "IMPROVEMENT: " + to_string(b_passed - a_passed) + " more passes"
+	} else if a_passed == b_passed && a_failed == b_failed {
+		summary = "No change in results"
+	} else {
+		summary = "Results differ"
+	}
+
+	return make_result(true, "", {
+		"run_a": {"name": a_name, "passed": a_passed, "failed": a_failed, "total": a_total},
+		"run_b": {"name": b_name, "passed": b_passed, "failed": b_failed, "total": b_total},
+		"regression": regression,
+		"improvement": improvement,
+		"summary": summary
+	})
+}
+
+export func contract_version() {
+	return "2.0.0"
+}
+
+export func describe_eval_core_module() {
+	return {
+		"module": "eval_core",
+		"description": "Core eval engine — suite runner, compare_runs, contract version",
+		"exports": ["run_suite", "compare_runs", "contract_version", "shuffle_tests", "build_dep_graph", "has_matching_tag"],
+		"contract_version": "2.0.0"
+	}
+}
+
+# Importable contract metadata; importing the CLI entrypoint executes dispatch.
+export func describe_module() {
+    return {
+        "module": "eval",
+        "description": "Evaluation framework for AI-native software",
+        "contract_version": contract_version(),
+        "check_count": len(KNOWN_CHECKS()),
+        "commands": ["init", "run", "report", "compare", "list-checks", "snapshots", "version", "watch", "lint", "policy-explain", "diff", "export", "verify-manifest", "completion"],
+        "source_modules": ["common", "cli", "config", "checks", "eval_core", "report", "snapshot"],
+        "report_formats": ["md", "html", "ndjson", "junit", "tap"]
+    }
+}

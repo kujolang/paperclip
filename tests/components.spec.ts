@@ -6,7 +6,7 @@ import { componentsInfo, resolveComponent } from "../src/components/registry.js"
 describe("component bundle", () => {
   it("contains exactly the curated canonical components", async () => {
     expect((await componentsInfo()).map((item) => item.id)).toEqual([
-      "changebucket", "patchbrief", "failure-evidence", "context", "scout", "spec", "fence", "concord", "shipcheck",
+      "changebucket", "patchbrief", "failure-evidence", "context", "scout", "spec", "fence", "concord", "shipcheck", "eval",
     ]);
   });
 

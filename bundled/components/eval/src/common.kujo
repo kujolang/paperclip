@@ -1,0 +1,123 @@
+# Shared utility functions for Eval.
+#
+# Centralizes dict_get_or, normalize_* helpers, and other common
+# functions that were duplicated across 5+ source files.
+
+export func dict_get_or(obj, key, default_value) {
+	if type(obj) != "dict" {
+		return default_value
+	}
+	has_entry := has_key(obj, key)
+	if has_entry == true || has_entry == 1 {
+		return obj[key]
+	}
+	return default_value
+}
+
+export func normalize_string(value, fallback) {
+	if type(value) == "string" {
+		trimmed := trim(value)
+		if trimmed != "" {
+			return trimmed
+		}
+	}
+	return fallback
+}
+
+export func normalize_int(value, fallback) {
+	if type(value) == "int" {
+		return value
+	}
+	if type(value) == "string" {
+		raw := trim(value)
+		if raw != "" {
+			try {
+				parsed := parse_json(raw)
+				if type(parsed) == "int" {
+					return parsed
+				}
+			} except err {}
+		}
+	}
+	return fallback
+}
+
+export func normalize_bool(value, fallback) {
+	if type(value) == "bool" {
+		return value
+	}
+	return fallback
+}
+
+export func normalize_array(value) {
+	if type(value) == "array" {
+		return value
+	}
+	return []
+}
+
+export func normalize_dict(value) {
+	if type(value) == "dict" {
+		return value
+	}
+	return {}
+}
+
+export func contains_text(haystack, needle) {
+	if type(haystack) != "string" || type(needle) != "string" {
+		return false
+	}
+	if needle == "" {
+		return false
+	}
+
+	contains_result := contains(haystack, needle)
+	if type(contains_result) == "bool" {
+		return contains_result
+	}
+	if type(contains_result) == "int" {
+		return contains_result == 1
+	}
+
+	return false
+}
+
+export func make_check_error(check_type, message, details) {
+	return make_result(false, message, {
+		"check": normalize_string(check_type, "unknown"),
+		"message": normalize_string(message, "Unknown error"),
+		"details": normalize_dict(details)
+	})
+}
+
+export func make_check_success(check_type, message, details) {
+	return make_result(true, "", {
+		"check": normalize_string(check_type, "unknown"),
+		"message": normalize_string(message, "OK"),
+		"details": normalize_dict(details)
+	})
+}
+
+export func make_result(ok_flag, error_msg, data_dict) {
+	return {
+		"ok": ok_flag,
+		"error": normalize_string(error_msg, ""),
+		"data": normalize_dict(data_dict)
+	}
+}
+
+export func make_success_result(data_dict) {
+	return make_result(true, "", data_dict)
+}
+
+export func make_error_result(error_msg, data_dict) {
+	return make_result(false, error_msg, data_dict)
+}
+
+export func describe_common_module() {
+	return {
+		"module": "common",
+		"exports": ["dict_get_or", "normalize_string", "normalize_int", "normalize_bool", "normalize_array", "normalize_dict", "contains_text", "make_result", "make_success_result", "make_error_result", "make_check_error", "make_check_success"],
+		"contract_version": "2.0.0"
+	}
+}
