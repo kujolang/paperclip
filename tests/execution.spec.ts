@@ -29,7 +29,7 @@ async function fixture(code = 'process.stdout.write("fixture completed");') {
   const cwd = await mkdtemp(join(tmpdir(), "kujo-execution-test-")); roots.push(cwd);
   const marker = join(cwd, "started");
   const script = join(cwd, "worker.cjs");
-  await writeFile(script, `require('node:fs').appendFileSync(${JSON.stringify(marker)}, 'start\\n');\n${code}`);
+  await writeFile(script, `require('node:fs').appendFileSync(process.argv[2], 'start\\n');\n${code}`);
   const h = createTestHarness({ manifest });
   h.ctx.issues.get = async (id, companyId) => ({ id, companyId, projectId: "project" } as Awaited<ReturnType<typeof h.ctx.issues.get>>);
   h.ctx.projects.getWorkspaceForIssue = async () => ({ id: "workspace", projectId: "project", path: cwd } as Awaited<ReturnType<typeof h.ctx.projects.getWorkspaceForIssue>>);
@@ -40,7 +40,7 @@ async function fixture(code = 'process.stdout.write("fixture completed");') {
   });
   h.ctx.issues.requestConfirmation = create;
   h.ctx.issues.listInteractions = async () => cards;
-  const adapter: ExecutionAdapter = { materialize: vi.fn(async () => ({ invocation: { executable: process.execPath, cwd, args: [script] }, collect: async (result: ExecuteKujoResult) => ({ exitCode: result.exitCode, stdout: result.stdout, stderr: result.stderr }), dispose: vi.fn(async () => {}) })) };
+  const adapter: ExecutionAdapter = { materialize: vi.fn(async () => ({ invocation: { executable: process.execPath, cwd, args: [script, marker] }, collect: async (result: ExecuteKujoResult) => ({ exitCode: result.exitCode, stdout: result.stdout, stderr: result.stderr }), dispose: vi.fn(async () => {}) })) };
   const service = createExecutionCoordinator(h.ctx, adapter); services.push(service);
   const second = () => { const value = createExecutionCoordinator(h.ctx, adapter); services.push(value); return value; };
   const approve = () => {
@@ -301,8 +301,8 @@ describe("human-bound persistent execution foundation", () => {
   it("terminates ordinary child descendants when an owned execution is cancelled", async () => {
     const f = await fixture();
     const childReady = join(f.cwd, "child-ready"); const late = join(f.cwd, "late-effect");
-    const childCode = `require('node:fs').writeFileSync(${JSON.stringify(childReady)}, 'ready'); setTimeout(() => require('node:fs').writeFileSync(${JSON.stringify(late)}, 'escaped'), 1200);`;
-    await writeFile(f.script, `require('node:child_process').spawn(process.execPath, ['-e', ${JSON.stringify(childCode)}], {stdio:'inherit'}); setInterval(() => {}, 1000);`);
+    await writeFile(join(f.cwd, 'child.cjs'), "require('node:fs').writeFileSync(process.argv[2], 'ready'); setTimeout(() => require('node:fs').writeFileSync(process.argv[3], 'escaped'), 1200);");
+    await writeFile(f.script, "const {join}=require('node:path'); require('node:child_process').spawn(process.execPath, [join(__dirname, 'child.cjs'), join(__dirname, 'child-ready'), join(__dirname, 'late-effect')], {stdio:'inherit'}); setInterval(() => {}, 1000);");
     const record = await prepared(f); f.approve();
     const running = f.service.start(scope, record.id); await waitForMarker(childReady);
     await f.service.cancel(scope, record.id);

@@ -30,7 +30,7 @@ const ctx = {
 const marker = join(root, 'executed');
 const adapter = {
   materialize: async () => ({
-    invocation: { executable: process.execPath, cwd: root, args: ['-e', `require('node:fs').appendFileSync(${JSON.stringify(marker)}, 'once\\n')`] },
+    invocation: { executable: process.execPath, cwd: root, args: ['-e', "require('node:fs').appendFileSync(process.argv[1], 'once\\n')", marker] },
     collect: async (output) => ({ exitCode: output.exitCode }), dispose: async () => {},
   }),
 };

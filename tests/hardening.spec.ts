@@ -81,7 +81,8 @@ describe("process isolation, concurrency, and termination", () => {
     const marker = join(root, "executed");
     const controller = new AbortController(); controller.abort();
     try {
-      const input = processInput(`require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'unexpected');`);
+      const input = processInput("require('node:fs').writeFileSync(process.argv[1], 'unexpected');");
+      input.args.push(marker);
       await expect(executeKujo({ ...input, signal: controller.signal })).rejects.toThrow("cancelled before process start");
       await expect(access(marker)).rejects.toThrow();
     } finally { await rm(root, { recursive: true, force: true }); }
