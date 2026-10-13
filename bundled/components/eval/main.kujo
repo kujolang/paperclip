@@ -1,0 +1,1456 @@
+# Eval CLI — main entry point.
+#
+# Usage:
+#   kujo run main.kujo init [--name suite-name] [--template name]
+#   kujo run main.kujo run [config-path] [--update-snapshots] [--format md|html|junit|tap|ndjson]
+#   kujo run main.kujo report [config-path] [--rerun] [--format md|html|junit|tap|ndjson]
+#   kujo run main.kujo compare <results-a.json> <results-b.json>
+#   kujo run main.kujo list-checks
+#   kujo run main.kujo snapshots [--snapshot-dir <dir>]
+#   kujo run main.kujo version
+#   kujo run main.kujo watch [--config <path>]
+#   kujo run main.kujo lint [<config-path>]
+#   kujo run main.kujo policy-explain [<config-path>] [--policy-stage <local|ci|release>]
+#   kujo run main.kujo diff <file-a> <file-b>
+#   kujo run main.kujo export [<config-path>]
+#   kujo run main.kujo verify-manifest [--manifest <path>] [--output-dir <dir>]
+#
+# Or standalone (if eval binary is available):
+#   eval init
+#   eval run [suite]
+#   eval report
+#   eval compare
+
+from src.eval_core import run_suite, compare_runs, contract_version
+from src.config import init_config, load_config, default_config_path, KNOWN_CHECKS, lint_config_file, policy_explain_config
+from src.report import save_report, save_report_with_options, print_report
+from src.snapshot import list_snapshots, delete_snapshot
+from src.common import dict_get_or, normalize_string, normalize_int, make_result
+from src.cli import parse_cli_flags, print_help
+from src.control_contracts import load_subject_context, make_evidence_ref, build_evaluation_result
+
+func write_file_replace(path, content) {
+    backup_path := path + ".bak"
+    if path_exists(path) == true {
+        try {rename_file(path, backup_path)} except err {}
+    }
+    try {
+        write_file(path, content)
+        return true
+    } except err {
+        if path_exists(path) == false&&path_exists(backup_path) == true {
+            try {rename_file(backup_path, path)} except err {}
+        }
+        return false
+    }
+}
+
+func has_suffix(value, suffix) {
+    if len(value) < len(suffix) {
+        return false
+    }
+    start := len(value) - len(suffix)
+    i := 0
+    while i < len(suffix) {
+        if value[start + i] != suffix[i] {
+            return false
+        }
+        i := i + 1
+    }
+    return true
+}
+
+func bool_flag(raw_value, default_value) {
+    if type(raw_value) == "bool" {
+        return raw_value
+    }
+    if type(raw_value) == "int" {
+        return raw_value != 0
+    }
+    if type(raw_value) == "string" {
+        val := trim(raw_value)
+        if val == "1"||val == "true"||val == "TRUE"||val == "yes"||val == "YES" {
+            return true
+        }
+        if val == "0"||val == "false"||val == "FALSE"||val == "no"||val == "NO" {
+            return false
+        }
+    }
+    return default_value
+}
+
+func should_include_artifact_checksums(loaded_config, flags) {
+    enabled := bool_flag(dict_get_or(loaded_config, "artifact_checksums", false), false)
+    if bool_flag(dict_get_or(flags, "artifact-checksums", false), false) {
+        enabled = true
+    }
+    return enabled
+}
+
+func sort_strings(values) {
+    sorted := []
+    i := 0
+    while i < len(values) {
+        sorted = push(sorted, values[i])
+        i := i + 1
+    }
+
+    left := 0
+    while left < len(sorted) {
+        right := left + 1
+        while right < len(sorted) {
+            if sorted[right] < sorted[left] {
+                tmp := sorted[left]
+                sorted[left] = sorted[right]
+                sorted[right] = tmp
+            }
+            right := right + 1
+        }
+        left := left + 1
+    }
+
+    return sorted
+}
+
+func canonical_policy_stage(stage_raw) {
+    stage := normalize_string(stage_raw, "")
+    if stage == "local"||stage == "ci"||stage == "release" {
+        return stage
+    }
+    return ""
+}
+
+func join_string_array(values) {
+    if type(values) != "array"||len(values) == 0 {
+        return "(none)"
+    }
+    out := ""
+    i := 0
+    while i < len(values) {
+        if i > 0 {
+            out = out + ", "
+        }
+        out = out + normalize_string(values[i], "")
+        i := i + 1
+    }
+    if out == "" {
+        return "(none)"
+    }
+    return out
+}
+
+func print_lines(lines) {
+    i := 0
+    while i < len(lines) {
+        print(lines[i])
+        i := i + 1
+    }
+}
+
+func print_kv(label, value) {
+    print("  " + label + ": " + value)
+}
+
+func print_usage_error(message, usage) {
+    print("Error: " + message)
+    print("Usage: " + usage)
+}
+
+func print_bullet_items(items) {
+    i := 0
+    while i < len(items) {
+        print("  - " + items[i])
+        i := i + 1
+    }
+}
+
+func trim_history_entries(history, max_entries) {
+    if type(history) != "array" {
+        return []
+    }
+    if max_entries <= 0||len(history) <= max_entries {
+        return history
+    }
+
+    trimmed := []
+    start := len(history) - max_entries
+    while start < len(history) {
+        trimmed = push(trimmed, history[start])
+        start := start + 1
+    }
+
+    return trimmed
+}
+
+func prune_aux_backup_artifacts(output_dir, max_files) {
+    if max_files < 0 {
+        return
+    }
+
+    entries := []
+    try {
+        entries = list_dir(output_dir)
+    } except err {
+        return
+    }
+
+    backup_files := []
+    i := 0
+    while i < len(entries) {
+        name := entries[i]
+        if has_suffix(name, ".bak") {
+            backup_files = push(backup_files, name)
+        }
+        i := i + 1
+    }
+
+    if len(backup_files) <= max_files {
+        return
+    }
+
+    sorted := sort_strings(backup_files)
+    remove_count := len(sorted) - max_files
+    ri := 0
+    while ri < remove_count {
+        try {
+            delete_file(output_dir + "/" + sorted[ri])
+        } except err {}
+        ri := ri + 1
+    }
+}
+
+func make_summary_payload(results_data) {
+    passed := dict_get_or(results_data, "passed", 0)
+    failed := dict_get_or(results_data, "failed", 0)
+    skipped := dict_get_or(results_data, "skipped", 0)
+    total := dict_get_or(results_data, "total", 0)
+    pass_rate := 0
+    if total > 0 {
+        pass_rate = (passed * 100) / total
+    }
+    status := "PASS"
+    if failed > 0 {
+        status = "FAIL"
+    }
+
+    return {
+        "suite_name": dict_get_or(results_data, "suite_name", ""),
+        "suite_version": dict_get_or(results_data, "suite_version", ""),
+        "active_policy_stage": dict_get_or(results_data, "active_policy_stage", ""),
+        "passed": passed,
+        "failed": failed,
+        "skipped": skipped,
+        "total": total,
+        "duration_ms": dict_get_or(results_data, "duration_ms", 0),
+        "pass_rate": pass_rate,
+        "status": status,
+        "generated_at_ms": time()
+    }
+}
+
+func make_artifact_entry(kind, path) {
+    return {
+        "type": kind,
+        "path": path,
+        "exists": path_exists(path) == true
+    }
+}
+
+func report_media_type(report_format) {
+    normalized := normalize_string(report_format, "md")
+    if normalized == "md" {return "text/markdown"}
+    if normalized == "html" {return "text/html"}
+    if normalized == "junit" {return "application/xml"}
+    if normalized == "ndjson" {return "application/x-ndjson"}
+    return "text/plain"
+}
+
+func write_evaluation_result_artifact(output_dir, results_data, config_path, subject_data, started_ms, finished_ms, report_path, last_run_path, summary_path, report_format) {
+    subject := dict_get_or(subject_data, "subject", {})
+    created_at := format_date(finished_ms / 1000, "YYYY-MM-DDTHH:mm:ss") + "Z"
+    evidence_refs := []
+    if report_path != ""&&path_exists(report_path) == true {
+        evidence_refs = push(evidence_refs, make_evidence_ref("ev_" + substring(sha256(report_path), 0, 24), "eval.report", report_path, report_media_type(report_format), subject, created_at))
+    }
+    if last_run_path != ""&&path_exists(last_run_path) == true {
+        evidence_refs = push(evidence_refs, make_evidence_ref("ev_" + substring(sha256(last_run_path), 0, 24), "eval.last_run", last_run_path, "application/json", subject, created_at))
+    }
+    if summary_path != ""&&path_exists(summary_path) == true {
+        evidence_refs = push(evidence_refs, make_evidence_ref("ev_" + substring(sha256(summary_path), 0, 24), "eval.summary", summary_path, "application/json", subject, created_at))
+    }
+    evaluation_result := build_evaluation_result(results_data, config_path, subject_data, started_ms, finished_ms, evidence_refs)
+    evaluation_result_path := output_dir + "/evaluation-result.json"
+    if write_file_replace(evaluation_result_path, to_json(evaluation_result)) == false {
+        return make_result(false, "Failed to write evaluation result artifact: " + evaluation_result_path, {})
+    }
+    return make_result(true, "", {"path": evaluation_result_path, "result": evaluation_result})
+}
+
+func resolve_summary_channel_path(flags, output_dir) {
+    requested_path := normalize_string(dict_get_or(flags, "summary-channel-path", ""), "")
+    if requested_path != "" {
+        return requested_path
+    }
+    return output_dir + "/cli-summary.json"
+}
+
+func write_summary_channel(summary_channel_path, payload) {
+    if write_file_replace(summary_channel_path, to_json(payload)) == false {
+        return make_result(false, "Failed to write machine summary channel: " + summary_channel_path, {"path": summary_channel_path})
+    }
+    return make_result(true, "", {"path": summary_channel_path})
+}
+
+func checksum_entry_for_artifact(path) {
+    content := ""
+    checksum := ""
+    exists := path_exists(path) == true
+    if exists {
+        try {
+            content = read_file(path)
+            checksum = sha256(content)
+        } except err {}
+    }
+
+    return {
+        "path": path,
+        "exists": exists,
+        "sha256": checksum
+    }
+}
+
+func build_artifact_checksums(artifact_entries) {
+    checksum_entries := []
+    i := 0
+    while i < len(artifact_entries) {
+        entry := artifact_entries[i]
+        if type(entry) == "dict" {
+            path := normalize_string(dict_get_or(entry, "path", ""), "")
+            if path != "" {
+                checksum_entries = push(checksum_entries, checksum_entry_for_artifact(path))
+            }
+        }
+        i := i + 1
+    }
+
+    return {
+        "algorithm": "sha256",
+        "entries": checksum_entries,
+        "generated_at_ms": time()
+    }
+}
+
+func write_artifact_manifest(output_dir, results_data, command_name, artifact_entries, include_checksums) {
+    manifest_path := output_dir + "/artifact-manifest.json"
+    manifest := {
+        "suite_name": dict_get_or(results_data, "suite_name", ""),
+        "suite_version": dict_get_or(results_data, "suite_version", ""),
+        "command": command_name,
+        "generated_at_ms": time(),
+        "artifacts": artifact_entries
+    }
+    if include_checksums {
+        manifest["checksums"] := build_artifact_checksums(artifact_entries)
+    }
+    if write_file_replace(manifest_path, to_json(manifest)) == false {
+        return make_result(false, "Failed to write artifact manifest: " + manifest_path, {"path": manifest_path})
+    }
+    return make_result(true, "", {"path": manifest_path})
+}
+
+func verify_artifact_manifest_payload(manifest_path) {
+    if path_exists(manifest_path) == false {
+        return make_result(false, "Manifest file not found: " + manifest_path, {"path": manifest_path})
+    }
+
+    raw := ""
+    manifest := {}
+    try {
+        raw = read_file(manifest_path)
+        manifest = parse_json(raw)
+    } except err {
+        return make_result(false, "Failed to read or parse manifest: " + manifest_path, {"path": manifest_path})
+    }
+
+    checksums := dict_get_or(manifest, "checksums", {})
+    algorithm := normalize_string(dict_get_or(checksums, "algorithm", ""), "")
+    entries := dict_get_or(checksums, "entries", [])
+    if algorithm != "sha256"||type(entries) != "array"||len(entries) == 0 {
+        return make_result(false, "Manifest does not include checksum entries. Re-run with --artifact-checksums or config artifact_checksums=true.", {"path": manifest_path})
+    }
+
+    failed_paths := []
+    i := 0
+    while i < len(entries) {
+        entry := entries[i]
+        if type(entry) == "dict" {
+            path := normalize_string(dict_get_or(entry, "path", ""), "")
+            expected := normalize_string(dict_get_or(entry, "sha256", ""), "")
+            if path == ""||expected == ""||path_exists(path) == false {
+                failed_paths = push(failed_paths, path)
+            } else {
+                actual := ""
+                try {
+                    actual = sha256(read_file(path))
+                } except err {
+                    actual = ""
+                }
+                if actual != expected {
+                    failed_paths = push(failed_paths, path)
+                }
+            }
+        }
+        i := i + 1
+    }
+
+    if len(failed_paths) > 0 {
+        return make_result(false, "Manifest checksum verification failed", {
+            "path": manifest_path,
+            "failed_paths": failed_paths
+        })
+    }
+
+    return make_result(true, "", {
+        "path": manifest_path,
+        "verified_count": len(entries),
+        "algorithm": algorithm
+    })
+}
+
+func print_compact_summary(results) {
+    results_data := dict_get_or(results, "data", results)
+    suite_name := normalize_string(dict_get_or(results_data, "suite_name", ""), "Eval Suite")
+    passed := dict_get_or(results_data, "passed", 0)
+    failed := dict_get_or(results_data, "failed", 0)
+    skipped := dict_get_or(results_data, "skipped", 0)
+    total := dict_get_or(results_data, "total", 0)
+    duration_ms := dict_get_or(results_data, "duration_ms", 0)
+    pass_rate := 0
+    if total > 0 {
+        pass_rate = (passed * 100) / total
+    }
+    status := "PASS"
+    if failed > 0 {
+        status = "FAIL"
+    }
+    summary_line := "Summary: " + status + " | suite=" + suite_name + " | passed=" + to_string(passed)
+    summary_line = summary_line + " | failed=" + to_string(failed) + " | skipped=" + to_string(skipped) + " | total=" + to_string(total)
+    summary_line = summary_line + " | pass_rate=" + to_string(pass_rate) + "% | duration_ms=" + to_string(duration_ms)
+    print(summary_line)
+}
+
+func command_init(parsed) {
+    flags := parsed["flags"]
+    name := normalize_string(dict_get_or(flags, "name", ""), "eval-suite")
+    from_path := normalize_string(dict_get_or(flags, "from", ""), "")
+    from_scout_path := normalize_string(dict_get_or(flags, "from-scout", ""), "")
+    if from_path == ""&&from_scout_path != "" {
+        from_path = from_scout_path
+    }
+
+    if from_path != ""&&path_exists(from_path) == true {
+        try {
+            raw := read_file(from_path)
+            imported := parse_json(raw)
+            if type(imported) == "array" {
+                config := {
+                    "name": name,
+                    "version": "0.1.0",
+                    "tests": imported
+                }
+                write_file("eval.json", to_json(config))
+                payload := {
+                    "message": "Imported " + to_string(len(imported)) + " tests from " + from_path + " into eval.json",
+                    "path": "eval.json"
+                }
+                print(to_json(make_result(true, "", payload)))
+                return
+            }
+        } except err {
+            print(to_json(make_result(false, "Failed to import from " + from_path, {})))
+            exit(1)
+        }
+    }
+
+    result := init_config(name, dict_get_or(flags, "output-dir", ""), dict_get_or(flags, "snapshot-dir", ""), dict_get_or(flags, "template", "basic"))
+    print(to_json(result))
+    if result["ok"] == false {
+        exit(1)
+    }
+
+    out_dir := normalize_string(dict_get_or(flags, "output-dir", ""), "./eval_results")
+    snap_dir := normalize_string(dict_get_or(flags, "snapshot-dir", ""), "./snapshots")
+    try {create_dir(out_dir); write_file(out_dir + "/.gitkeep", "")} except err {}
+    try {create_dir(snap_dir); write_file(snap_dir + "/.gitkeep", "")} except err {}
+}
+
+func command_run(parsed) {
+    flags := parsed["flags"]
+    positionals := parsed["positionals"]
+    run_started_ms := time()
+
+    config_path := default_config_path()
+    if len(positionals) > 1 {
+        config_path = positionals[1]
+    }
+    config_path = normalize_string(dict_get_or(flags, "config", ""), config_path)
+
+    loaded_config := {}
+    config_load_result := load_config(config_path)
+    if config_load_result["ok"] == true {
+        loaded_config = dict_get_or(dict_get_or(config_load_result, "data", {}), "config", {})
+    }
+
+    output_dir := normalize_string(dict_get_or(flags, "output-dir", ""), normalize_string(dict_get_or(loaded_config, "output_dir", ""), "./eval_results"))
+    snapshot_dir := normalize_string(dict_get_or(flags, "snapshot-dir", ""), normalize_string(dict_get_or(loaded_config, "snapshot_dir", ""), "./snapshots"))
+    manifest_checksums_enabled := should_include_artifact_checksums(loaded_config, flags)
+    history_retention_runs := normalize_int(dict_get_or(loaded_config, "history_retention_runs", 200), 200)
+    if history_retention_runs <= 0 {
+        history_retention_runs = 200
+    }
+    aux_artifact_retention_files := normalize_int(dict_get_or(loaded_config, "aux_artifact_retention_files", 25), 25)
+    if aux_artifact_retention_files < 0 {
+        aux_artifact_retention_files = 25
+    }
+    default_run_id := "eval-" + substring(sha256(config_path + "::" + to_string(run_started_ms)), 0, 24)
+    subject_context_result := load_subject_context(dict_get_or(flags, "subject-context", ""), default_run_id)
+    if subject_context_result["ok"] == false {
+        print(to_json(subject_context_result))
+        exit(1)
+    }
+    subject_data := dict_get_or(subject_context_result, "data", {})
+
+    update_snapshots := dict_get_or(flags, "update_snapshots", false)
+    update_snapshots_flag := dict_get_or(flags, "update-snapshots", false)
+    should_update := false
+    if update_snapshots == true||update_snapshots_flag == true {
+        should_update = true
+    }
+
+    json_output := dict_get_or(flags, "json_output", false)
+    json_output_flag := dict_get_or(flags, "json", false)
+    is_json := false
+    if json_output == true||json_output_flag == true {
+        is_json = true
+    }
+
+    if is_json == false {
+        print_lines(["Running eval suite: " + config_path, ""])
+    }
+
+    filter_val := normalize_string(dict_get_or(flags, "filter", ""), "")
+    exclude_val := normalize_string(dict_get_or(flags, "exclude", ""), "")
+    tags_val := normalize_string(dict_get_or(flags, "tags", ""), "")
+    skip_tags_val := normalize_string(dict_get_or(flags, "skip-tags", ""), "")
+    policy_stage_val := normalize_string(dict_get_or(flags, "policy-stage", ""), "")
+    only_failed := dict_get_or(flags, "only_failed", false)
+    quiet_mode := dict_get_or(flags, "quiet", false) == true
+    verbose_mode := dict_get_or(flags, "verbose", false) == true
+    dry_run_mode := dict_get_or(flags, "dry_run", false) == true
+    no_color_mode := dict_get_or(flags, "no_color", false) == true
+    summary_only_mode := dict_get_or(flags, "summary-only", false) == true
+    if summary_only_mode || is_json {
+        quiet_mode = true
+    }
+    repeat_str := normalize_string(dict_get_or(flags, "repeat", "1"), "1")
+    repeat_count := 1
+    if repeat_str == "2" {repeat_count = 2}
+    else if repeat_str == "3" {repeat_count = 3}
+    else if repeat_str == "5" {repeat_count = 5}
+    else if repeat_str == "10" {repeat_count = 10}
+    parallel_workers_val := normalize_int(dict_get_or(flags, "parallel-workers", dict_get_or(flags, "parallel_workers", 1)), 1)
+    if parallel_workers_val < 1 {
+        parallel_workers_val = 1
+    }
+
+    only_failed_filter := ""
+    if only_failed == true {
+        failures_path := output_dir + "/last_failures.json"
+        if path_exists(failures_path) == true {
+            try {
+                raw := read_file(failures_path)
+                failed_arr := parse_json(raw)
+                if type(failed_arr) == "array"&&len(failed_arr) > 0 {
+                    only_failed_filter = ""
+                    fidx := 0
+                    while fidx < len(failed_arr) {
+                        if fidx > 0 {only_failed_filter = only_failed_filter + ","}
+                        only_failed_filter = only_failed_filter + failed_arr[fidx]
+                        fidx := fidx + 1
+                    }
+                }
+            } except err {}
+        }
+    }
+
+    results := run_suite(config_path, {
+        "update_snapshots": should_update,
+        "filter": filter_val,
+        "exclude": exclude_val,
+        "tags": tags_val,
+        "skip_tags": skip_tags_val,
+        "policy_stage": policy_stage_val,
+        "only_failed_filter": only_failed_filter,
+        "quiet": quiet_mode,
+        "verbose": verbose_mode,
+        "dry_run": dry_run_mode,
+        "no_color": no_color_mode,
+        "seed": normalize_string(dict_get_or(flags, "seed", ""), ""),
+        "output_dir_override": output_dir,
+        "snapshot_dir_override": snapshot_dir,
+        "parallel_workers": parallel_workers_val
+    })
+
+    if repeat_count > 1 {
+        all_runs := []
+        all_runs := push(all_runs, results)
+        ri := 1
+        while ri < repeat_count {
+            next_run := run_suite(config_path, {
+                "update_snapshots": should_update,
+                "filter": filter_val,
+                "exclude": exclude_val,
+                "tags": tags_val,
+                "skip_tags": skip_tags_val,
+                "policy_stage": policy_stage_val,
+                "only_failed_filter": only_failed_filter,
+                "quiet": quiet_mode,
+                "verbose": false,
+                "dry_run": false,
+                "seed": normalize_string(dict_get_or(flags, "seed", ""), ""),
+                "output_dir_override": output_dir,
+                "snapshot_dir_override": snapshot_dir,
+                "parallel_workers": parallel_workers_val
+            })
+            all_runs := push(all_runs, next_run)
+            ri := ri + 1
+        }
+        results = all_runs[0]
+    }
+
+    if results["ok"] == false {
+        print(to_json(make_result(false, dict_get_or(results, "error", "Run failed"), {})))
+        exit(1)
+    }
+
+    if is_json {
+        print(to_json(results))
+    } else {
+        if summary_only_mode {
+            print_compact_summary(results)
+        } else {
+            print_report(results, dict_get_or(flags, "format", "md"))
+        }
+    }
+
+    try {
+        create_dir(output_dir)
+    } except err {}
+
+    save_result := save_report(results, output_dir, "eval-report", dict_get_or(flags, "format", "md"))
+    if save_result["ok"] == false {
+        print(to_json(make_result(false, dict_get_or(save_result, "error", "Failed to save report"), {})))
+        exit(1)
+    }
+    save_data := dict_get_or(save_result, "data", {})
+
+    artifact_entries := []
+    report_path := normalize_string(dict_get_or(save_data, "path", ""), "")
+    if report_path != "" {
+        artifact_entries = push(artifact_entries, make_artifact_entry("report", report_path))
+    }
+
+    last_run_json := to_json(results)
+    last_run_path := output_dir + "/last_run.json"
+    if write_file_replace(last_run_path, last_run_json) == false {
+        print(to_json(make_result(false, "Failed to write run artifact: " + last_run_path, {})))
+        exit(1)
+    }
+    artifact_entries = push(artifact_entries, make_artifact_entry("last_run", last_run_path))
+
+    results_data := dict_get_or(results, "data", results)
+
+    history_entry := {
+        "suite_name": dict_get_or(results_data, "suite_name", ""),
+        "passed": dict_get_or(results_data, "passed", 0),
+        "failed": dict_get_or(results_data, "failed", 0),
+        "skipped": dict_get_or(results_data, "skipped", 0),
+        "total": dict_get_or(results_data, "total", 0),
+        "duration_ms": dict_get_or(results_data, "duration_ms", 0)
+    }
+    history := []
+    history_path := output_dir + "/history.json"
+    if path_exists(history_path) == true {
+        try {
+            raw := read_file(history_path)
+            parsed := parse_json(raw)
+            if type(parsed) == "array" {history = parsed}
+        } except err {}
+    }
+    history := push(history, history_entry)
+    history = trim_history_entries(history, history_retention_runs)
+    if write_file_replace(history_path, to_json(history)) == false {
+        print(to_json(make_result(false, "Failed to write history artifact: " + history_path, {})))
+        exit(1)
+    }
+    artifact_entries = push(artifact_entries, make_artifact_entry("history", history_path))
+
+    pass_rate := 0
+    if dict_get_or(results_data, "total", 0) > 0 {
+        pass_rate = (dict_get_or(results_data, "passed", 0) * 100) / dict_get_or(results_data, "total", 1)
+    }
+    badge_color := "red"
+    if dict_get_or(results_data, "failed", 1) == 0 {badge_color = "green"}
+    else if pass_rate >= 75 {badge_color = "yellow"}
+    badge := {
+        "schemaVersion": 1,
+        "label": "evals",
+        "message": to_string(dict_get_or(results_data, "passed", 0)) + "/" + to_string(dict_get_or(results_data, "total", 0)) + " passed",
+        "color": badge_color
+    }
+    badge_path := output_dir + "/badge.json"
+    if write_file_replace(badge_path, to_json(badge)) == false {
+        print(to_json(make_result(false, "Failed to write badge artifact: " + badge_path, {})))
+        exit(1)
+    }
+    artifact_entries = push(artifact_entries, make_artifact_entry("badge", badge_path))
+
+    failed_names := []
+    fi := 0
+    test_results_arr := dict_get_or(results_data, "test_results", [])
+    if type(test_results_arr) == "array" {
+        while fi < len(test_results_arr) {
+            tr := test_results_arr[fi]
+            if type(tr) == "dict" {
+                if dict_get_or(tr, "passed", false) == false {
+                    failed_names := push(failed_names, dict_get_or(tr, "name", ""))
+                }
+            }
+            fi := fi + 1
+        }
+    }
+    failures_path := output_dir + "/last_failures.json"
+    if write_file_replace(failures_path, to_json(failed_names)) == false {
+        print(to_json(make_result(false, "Failed to write failures artifact: " + failures_path, {})))
+        exit(1)
+    }
+    artifact_entries = push(artifact_entries, make_artifact_entry("last_failures", failures_path))
+
+    summary_path := output_dir + "/summary.json"
+    summary_payload := make_summary_payload(results_data)
+    if write_file_replace(summary_path, to_json(summary_payload)) == false {
+        print(to_json(make_result(false, "Failed to write summary artifact: " + summary_path, {})))
+        exit(1)
+    }
+    artifact_entries = push(artifact_entries, make_artifact_entry("summary", summary_path))
+
+    evaluation_result_write := write_evaluation_result_artifact(output_dir, results_data, config_path, subject_data, run_started_ms, time(), report_path, last_run_path, summary_path, dict_get_or(flags, "format", "md"))
+    if evaluation_result_write["ok"] == false {
+        print(to_json(evaluation_result_write))
+        exit(1)
+    }
+    evaluation_result_path := dict_get_or(dict_get_or(evaluation_result_write, "data", {}), "path", "")
+    artifact_entries = push(artifact_entries, make_artifact_entry("evaluation_result", evaluation_result_path))
+
+    summary_channel_path := resolve_summary_channel_path(flags, output_dir)
+    manifest_path_target := output_dir + "/artifact-manifest.json"
+    summary_channel_payload := {
+        "ok": dict_get_or(results_data, "failed", 0) == 0,
+        "command": "run",
+        "status": dict_get_or(summary_payload, "status", ""),
+        "suite_name": dict_get_or(results_data, "suite_name", ""),
+        "active_policy_stage": dict_get_or(results_data, "active_policy_stage", ""),
+        "passed": dict_get_or(results_data, "passed", 0),
+        "failed": dict_get_or(results_data, "failed", 0),
+        "skipped": dict_get_or(results_data, "skipped", 0),
+        "total": dict_get_or(results_data, "total", 0),
+        "duration_ms": dict_get_or(results_data, "duration_ms", 0),
+        "report_cached": bool_flag(dict_get_or(save_data, "cached", false), false),
+        "report_path": report_path,
+        "last_run_path": last_run_path,
+        "summary_path": summary_path,
+        "evaluation_result_path": evaluation_result_path,
+        "manifest_path": manifest_path_target,
+        "generated_at_ms": time()
+    }
+    summary_channel_result := write_summary_channel(summary_channel_path, summary_channel_payload)
+    if summary_channel_result["ok"] == false {
+        print(to_json(summary_channel_result))
+        exit(1)
+    }
+    artifact_entries = push(artifact_entries, make_artifact_entry("cli_summary_channel", summary_channel_path))
+
+    manifest_result := write_artifact_manifest(output_dir, results_data, "run", artifact_entries, manifest_checksums_enabled)
+    if manifest_result["ok"] == false {
+        print(to_json(manifest_result))
+        exit(1)
+    }
+
+    prune_aux_backup_artifacts(output_dir, aux_artifact_retention_files)
+
+    if dict_get_or(results_data, "failed", 0) > 0 {
+        exit(1)
+    }
+}
+
+func command_report(parsed) {
+    flags := parsed["flags"]
+    positionals := parsed["positionals"]
+    report_started_ms := time()
+    config_path := default_config_path()
+    if len(positionals) > 1 {
+        config_path = positionals[1]
+    }
+    config_path = normalize_string(dict_get_or(flags, "config", ""), config_path)
+
+    loaded_config := {}
+    config_load_result := load_config(config_path)
+    if config_load_result["ok"] == true {
+        loaded_config = dict_get_or(dict_get_or(config_load_result, "data", {}), "config", {})
+    }
+
+    output_dir := normalize_string(dict_get_or(flags, "output-dir", ""), normalize_string(dict_get_or(loaded_config, "output_dir", ""), "./eval_results"))
+    snapshot_dir := normalize_string(dict_get_or(flags, "snapshot-dir", ""), normalize_string(dict_get_or(loaded_config, "snapshot_dir", ""), "./snapshots"))
+    manifest_checksums_enabled := should_include_artifact_checksums(loaded_config, flags)
+    aux_artifact_retention_files := normalize_int(dict_get_or(loaded_config, "aux_artifact_retention_files", 25), 25)
+    if aux_artifact_retention_files < 0 {
+        aux_artifact_retention_files = 25
+    }
+
+    show_history := dict_get_or(flags, "history", false) == true
+    incremental_report := bool_flag(dict_get_or(flags, "incremental", false), false)
+    if bool_flag(dict_get_or(flags, "incremental-report", false), false) {
+        incremental_report = true
+    }
+
+    if show_history {
+        history_path := output_dir + "/history.json"
+        if path_exists(history_path) == true {
+            try {
+                raw := read_file(history_path)
+                history := parse_json(raw)
+                if type(history) == "array" {
+                    print_lines(["Run History (" + to_string(len(history)) + " entries):", ""])
+                    hi := 0
+                    while hi < len(history) {
+                        entry := history[hi]
+                        if type(entry) == "dict" {
+                            name := normalize_string(dict_get_or(entry, "suite_name", ""), "?")
+                            passed := dict_get_or(entry, "passed", 0)
+                            total := dict_get_or(entry, "total", 0)
+                            rate := 0
+                            if total > 0 {rate = (passed * 100) / total}
+                            print_kv(name, to_string(passed) + "/" + to_string(total) + " (" + to_string(rate) + "%)")
+                        }
+                        hi := hi + 1
+                    }
+                } else {
+                    print("No history found.")
+                }
+                return
+            } except err {print("Error reading history."); return}
+        }
+        print("No history file found. Run a suite first.")
+        return
+    }
+
+    rerun_flag := dict_get_or(flags, "rerun", false)
+    should_rerun := false
+    if rerun_flag == true {
+        should_rerun = true
+    }
+
+    results := {}
+    loaded_from_cache := false
+
+    if should_rerun == false {
+        last_run_path := output_dir + "/last_run.json"
+        if path_exists(last_run_path) == true {
+            try {
+                raw := read_file(last_run_path)
+                cached := parse_json(raw)
+                if type(cached) == "dict" {
+                    results = cached
+                    loaded_from_cache = true
+                }
+            } except err {}
+        }
+    }
+
+    if loaded_from_cache == false {
+        results = run_suite(config_path, {
+            "quiet": bool_flag(dict_get_or(flags, "json", false), false),
+            "policy_stage": normalize_string(dict_get_or(flags, "policy-stage", ""), ""),
+            "output_dir_override": output_dir,
+            "snapshot_dir_override": snapshot_dir
+        })
+    }
+
+    if results["ok"] == false {
+        print(to_json(make_result(false, dict_get_or(results, "error", "Run failed"), {})))
+        exit(1)
+    }
+
+    save_result := save_report_with_options(results, output_dir, "eval-report", dict_get_or(flags, "format", "md"), {
+        "incremental_mode": incremental_report
+    })
+    if save_result["ok"] == false {
+        print(to_json(make_result(false, dict_get_or(save_result, "error", "Failed to save report"), {})))
+        exit(1)
+    }
+    save_data := dict_get_or(save_result, "data", {})
+    results_data := dict_get_or(results, "data", results)
+
+    artifact_entries := []
+    report_path := normalize_string(dict_get_or(save_data, "path", ""), "")
+    if report_path != "" {
+        artifact_entries = push(artifact_entries, make_artifact_entry("report", report_path))
+    }
+
+    summary_path := output_dir + "/summary.json"
+    summary_payload := make_summary_payload(results_data)
+    if write_file_replace(summary_path, to_json(summary_payload)) == false {
+        print(to_json(make_result(false, "Failed to write summary artifact: " + summary_path, {})))
+        exit(1)
+    }
+    artifact_entries = push(artifact_entries, make_artifact_entry("summary", summary_path))
+
+    last_run_path := output_dir + "/last_run.json"
+    if path_exists(last_run_path) == true {
+        artifact_entries = push(artifact_entries, make_artifact_entry("last_run", last_run_path))
+    }
+
+    history_path := output_dir + "/history.json"
+    if path_exists(history_path) == true {
+        artifact_entries = push(artifact_entries, make_artifact_entry("history", history_path))
+    }
+
+    evaluation_result_path := output_dir + "/evaluation-result.json"
+    if loaded_from_cache == false {
+        default_run_id := "eval-" + substring(sha256(config_path + "::" + to_string(report_started_ms)), 0, 24)
+        subject_context_result := load_subject_context(dict_get_or(flags, "subject-context", ""), default_run_id)
+        if subject_context_result["ok"] == false {
+            print(to_json(subject_context_result))
+            exit(1)
+        }
+        subject_data := dict_get_or(subject_context_result, "data", {})
+        evaluation_result_write := write_evaluation_result_artifact(output_dir, results_data, config_path, subject_data, report_started_ms, time(), report_path, last_run_path, summary_path, dict_get_or(flags, "format", "md"))
+        if evaluation_result_write["ok"] == false {
+            print(to_json(evaluation_result_write))
+            exit(1)
+        }
+        evaluation_result_path = dict_get_or(dict_get_or(evaluation_result_write, "data", {}), "path", evaluation_result_path)
+    }
+    if path_exists(evaluation_result_path) == true {
+        artifact_entries = push(artifact_entries, make_artifact_entry("evaluation_result", evaluation_result_path))
+    }
+
+    summary_channel_path := resolve_summary_channel_path(flags, output_dir)
+    manifest_path_target := output_dir + "/artifact-manifest.json"
+    summary_channel_payload := {
+        "ok": true,
+        "command": "report",
+        "status": dict_get_or(summary_payload, "status", ""),
+        "suite_name": dict_get_or(results_data, "suite_name", ""),
+        "active_policy_stage": dict_get_or(results_data, "active_policy_stage", ""),
+        "passed": dict_get_or(results_data, "passed", 0),
+        "failed": dict_get_or(results_data, "failed", 0),
+        "skipped": dict_get_or(results_data, "skipped", 0),
+        "total": dict_get_or(results_data, "total", 0),
+        "duration_ms": dict_get_or(results_data, "duration_ms", 0),
+        "from_cache": loaded_from_cache,
+        "report_cached": bool_flag(dict_get_or(save_data, "cached", false), false),
+        "report_incremental_mode": bool_flag(dict_get_or(save_data, "incremental_mode", false), false),
+        "report_incremental_cache_hit": bool_flag(dict_get_or(save_data, "incremental_cache_hit", false), false),
+        "report_incremental_unchanged_sections": dict_get_or(save_data, "unchanged_sections", []),
+        "report_path": report_path,
+        "summary_path": summary_path,
+        "evaluation_result_path": evaluation_result_path,
+        "manifest_path": manifest_path_target,
+        "generated_at_ms": time()
+    }
+    summary_channel_result := write_summary_channel(summary_channel_path, summary_channel_payload)
+    if summary_channel_result["ok"] == false {
+        print(to_json(summary_channel_result))
+        exit(1)
+    }
+    artifact_entries = push(artifact_entries, make_artifact_entry("cli_summary_channel", summary_channel_path))
+
+    manifest_result := write_artifact_manifest(output_dir, results_data, "report", artifact_entries, manifest_checksums_enabled)
+    if manifest_result["ok"] == false {
+        print(to_json(manifest_result))
+        exit(1)
+    }
+
+    prune_aux_backup_artifacts(output_dir, aux_artifact_retention_files)
+
+    json_output := dict_get_or(flags, "json_output", false)
+    json_output_flag := dict_get_or(flags, "json", false)
+    is_json := false
+    if json_output == true||json_output_flag == true {
+        is_json = true
+    }
+
+    if is_json {
+        payload := {
+            "report_path": dict_get_or(save_data, "path", ""),
+            "results": results,
+            "from_cache": loaded_from_cache,
+            "report_cached": bool_flag(dict_get_or(save_data, "cached", false), false),
+            "report_incremental_mode": bool_flag(dict_get_or(save_data, "incremental_mode", false), false),
+            "report_incremental_cache_hit": bool_flag(dict_get_or(save_data, "incremental_cache_hit", false), false),
+            "report_incremental_unchanged_sections": dict_get_or(save_data, "unchanged_sections", []),
+            "summary_channel_path": summary_channel_path
+        }
+        print(to_json(make_result(true, "", payload)))
+    } else {
+        print_report(results, dict_get_or(flags, "format", "md"))
+        report_lines := [""]
+        if loaded_from_cache {
+            report_lines = push(report_lines, "(Report generated from cached results. Use --rerun to re-execute.)")
+        }
+        if bool_flag(dict_get_or(save_data, "cached", false), false) {
+            report_lines = push(report_lines, "(Report artifact unchanged; existing file retained.)")
+        }
+        if bool_flag(dict_get_or(save_data, "incremental_mode", false), false) {
+            report_lines = push(report_lines, "(Incremental report mode enabled.)")
+        }
+        report_lines = push(report_lines, "Report saved to: " + dict_get_or(save_data, "path", ""))
+        print_lines(report_lines)
+    }
+}
+
+func command_compare(parsed) {
+    positionals := parsed["positionals"]
+
+    if len(positionals) < 3 {
+        print_usage_error("compare requires two result JSON files", "eval compare <results-a.json> <results-b.json>")
+        exit(1)
+    }
+
+    path_a := positionals[1]
+    path_b := positionals[2]
+
+    if path_exists(path_a) == false {
+        payload := {
+            "ok": false,
+            "error": "Results file A not found: " + path_a
+        }
+        print(to_json(payload))
+        exit(1)
+    }
+
+    if path_exists(path_b) == false {
+        payload := {
+            "ok": false,
+            "error": "Results file B not found: " + path_b
+        }
+        print(to_json(payload))
+        exit(1)
+    }
+
+    raw_a := read_file(path_a)
+    raw_b := read_file(path_b)
+
+    results_a := parse_json(raw_a)
+    results_b := parse_json(raw_b)
+
+    comparison := compare_runs(results_a, results_b)
+    print(to_json(comparison))
+}
+
+func command_list_checks() {
+    checks := KNOWN_CHECKS()
+    print_lines(["Available check types:", ""])
+    print_bullet_items(checks)
+    print("")
+    print("Total: " + to_string(len(checks)) + " check types")
+}
+
+func command_snapshots(parsed) {
+    flags := parsed["flags"]
+    snapshot_dir := normalize_string(dict_get_or(flags, "snapshot-dir", ""), "./snapshots")
+
+    result := list_snapshots(snapshot_dir)
+
+    if result["ok"] == false {
+        print(to_json(result))
+        exit(1)
+    }
+
+    snap_data := dict_get_or(result, "data", result)
+    snaps := dict_get_or(snap_data, "snapshots", [])
+    if type(snaps) != "array" {
+        snaps = []
+    }
+
+    print_lines(["Snapshots (" + to_string(len(snaps)) + "):", ""])
+    print_bullet_items(snaps)
+}
+
+func command_export(parsed) {
+    flags := parsed["flags"]
+    positionals := parsed["positionals"]
+
+    config_path := default_config_path()
+    if len(positionals) > 1 {config_path = positionals[1]}
+    config_path = normalize_string(dict_get_or(flags, "config", ""), config_path)
+
+    result := load_config(config_path)
+    if result["ok"] == false {print("Error: " + dict_get_or(result, "error", "Unknown")); exit(1)}
+
+    data := dict_get_or(result, "data", {})
+    cfg := dict_get_or(data, "config", {})
+    tests := dict_get_or(cfg, "tests", [])
+
+    sh := "#!/bin/sh\n# Generated by Eval — export of " + normalize_string(dict_get_or(cfg, "name", ""), "suite") + "\n\n"
+    ti := 0
+    while ti < len(tests) {
+        td := tests[ti]
+        if type(td) == "dict" {
+            name := normalize_string(dict_get_or(td, "name", ""), "test_" + to_string(ti))
+            check := normalize_string(dict_get_or(td, "check", ""), "")
+            params := dict_get_or(td, "params", {})
+            cmd := normalize_string(dict_get_or(params, "command", ""), "")
+            sh = sh + "# Test: " + name + " (" + check + ")\n"
+            if cmd != "" {sh = sh + cmd + "\n"}
+            sh = sh + "\n"
+        }
+        ti := ti + 1
+    }
+
+    out_path := normalize_string(dict_get_or(flags, "output", ""), "exported_suite.sh")
+    try {write_file(out_path, sh)} except err {print("Error writing export"); exit(1)}
+    print("Exported " + to_string(len(tests)) + " tests to " + out_path)
+}
+
+func command_version() {
+    print_lines([
+    "Eval v" + contract_version(),
+    "Contract version: " + contract_version()
+    ])
+}
+
+func command_verify_manifest(parsed) {
+    flags := parsed["flags"]
+    output_dir := normalize_string(dict_get_or(flags, "output-dir", ""), "./eval_results")
+    manifest_path := normalize_string(dict_get_or(flags, "manifest", ""), output_dir + "/artifact-manifest.json")
+
+    result := verify_artifact_manifest_payload(manifest_path)
+    json_output := bool_flag(dict_get_or(flags, "json_output", false), false)
+    if json_output {
+        print(to_json(result))
+    } else {
+        if result["ok"] {
+            data := dict_get_or(result, "data", {})
+            print("Manifest checksum verification passed")
+            print_kv("path", normalize_string(dict_get_or(data, "path", manifest_path), manifest_path))
+            print_kv("algorithm", normalize_string(dict_get_or(data, "algorithm", "sha256"), "sha256"))
+            print_kv("verified_count", to_string(dict_get_or(data, "verified_count", 0)))
+        } else {
+            print("Manifest checksum verification failed")
+            print_kv("error", normalize_string(dict_get_or(result, "error", "Unknown verification error"), "Unknown verification error"))
+        }
+    }
+
+    if result["ok"] == false {
+        exit(1)
+    }
+}
+
+func command_completion(parsed) {
+    flags := parsed["flags"]
+    shell := normalize_string(dict_get_or(flags, "shell", ""), "bash")
+
+    cmds := "init run report compare list-checks snapshots version watch lint policy-explain diff export verify-manifest"
+
+    if shell == "bash" {
+        print_lines([
+        "# Bash completion for eval",
+        "_eval_completion() {",
+        "  local cur=$" + "{COMP_WORDS[COMP_CWORD]}",
+        "  COMPREPLY=( $" + "(compgen -W \"" + cmds + "\" -- $" + "cur) )",
+        "}",
+        "complete -F _eval_completion eval"
+        ])
+    } else if shell == "zsh" {
+        print_lines([
+        "# Zsh completion for eval",
+        "#compdef eval",
+        "_eval() {",
+        "  _arguments '1: :(" + cmds + ")'",
+        "}"
+        ])
+    } else {
+        print_lines([
+        "# Fish completion for eval",
+        "complete -c eval -f",
+        "complete -c eval -a '" + cmds + "'"
+        ])
+    }
+}
+
+func command_diff(parsed) {
+    from src.snapshot import compare_snapshot
+    positionals := parsed["positionals"]
+
+    if len(positionals) < 3 {
+        print_usage_error("diff requires two file paths", "eval diff <file-a> <file-b>")
+        exit(1)
+    }
+
+    path_a := positionals[1]
+    path_b := positionals[2]
+
+    content_a := ""
+    content_b := ""
+    try {content_a = read_file(path_a)} except err {print("Error reading: " + path_a); exit(1)}
+    try {content_b = read_file(path_b)} except err {print("Error reading: " + path_b); exit(1)}
+
+    if content_a == content_b {
+        print("Files are identical.")
+    } else {
+        print("Files differ:")
+        print_kv(path_a, to_string(len(content_a)) + " bytes")
+        print_kv(path_b, to_string(len(content_b)) + " bytes")
+        exit(1)
+    }
+}
+
+func command_lint(parsed) {
+    flags := parsed["flags"]
+    positionals := parsed["positionals"]
+
+    config_path := default_config_path()
+    if len(positionals) > 1 {config_path = positionals[1]}
+    config_path = normalize_string(dict_get_or(flags, "config", ""), config_path)
+    json_output := bool_flag(dict_get_or(flags, "json_output", false), false)
+    if bool_flag(dict_get_or(flags, "json", false), false) {
+        json_output = true
+    }
+
+    result := lint_config_file(config_path)
+    if json_output {
+        print(to_json(result))
+        if result["ok"] == false {
+            exit(1)
+        }
+        return
+    }
+
+    if result["ok"] == false {
+        print("❌ Config lint failed: " + dict_get_or(result, "error", "Unknown error"))
+        data := dict_get_or(result, "data", {})
+        diagnostics := dict_get_or(data, "diagnostics", [])
+        i := 0
+        while i < len(diagnostics) {
+            diagnostic := diagnostics[i]
+            if type(diagnostic) == "dict" {
+                code := normalize_string(dict_get_or(diagnostic, "code", "CFG_UNKNOWN"), "CFG_UNKNOWN")
+                location := normalize_string(dict_get_or(diagnostic, "location", "$"), "$")
+                message := normalize_string(dict_get_or(diagnostic, "message", "Validation error"), "Validation error")
+                hint := normalize_string(dict_get_or(diagnostic, "suggested_fix", ""), "")
+                print("  [" + code + "] " + location + " — " + message)
+                if hint != "" {
+                    print("      fix: " + hint)
+                }
+            }
+            i := i + 1
+        }
+        exit(1)
+    }
+
+    data := dict_get_or(result, "data", {})
+    cfg := dict_get_or(data, "config", {})
+    test_count := len(dict_get_or(cfg, "tests", []))
+    print_lines([
+    "✅ Config is valid: " + normalize_string(dict_get_or(cfg, "name", ""), "unnamed") + " (" + to_string(test_count) + " tests)",
+    "   diagnostics: 0 errors, 0 warnings"
+    ])
+}
+
+func command_policy_explain(parsed) {
+    flags := parsed["flags"]
+    positionals := parsed["positionals"]
+
+    config_path := default_config_path()
+    if len(positionals) > 1 {config_path = positionals[1]}
+    config_path = normalize_string(dict_get_or(flags, "config", ""), config_path)
+
+    requested_stage := normalize_string(dict_get_or(flags, "policy-stage", ""), "")
+    if requested_stage == "" {
+        requested_stage = normalize_string(env("KUJO_EVAL_POLICY_STAGE"), "")
+    }
+
+    active_stage := canonical_policy_stage(requested_stage)
+    if requested_stage != ""&&active_stage == "" {
+        print(to_json(make_result(false, "Invalid policy stage: " + requested_stage + ". Expected local, ci, or release.", {})))
+        exit(1)
+    }
+
+    load_result := load_config(config_path)
+    if load_result["ok"] == false {
+        print(to_json(make_result(false, dict_get_or(load_result, "error", "Config load failed"), {"path": config_path})))
+        exit(1)
+    }
+
+    cfg := dict_get_or(dict_get_or(load_result, "data", {}), "config", {})
+    policy_view := policy_explain_config(cfg, active_stage)
+
+    json_output := bool_flag(dict_get_or(flags, "json_output", false), false)
+    if bool_flag(dict_get_or(flags, "json", false), false) {
+        json_output = true
+    }
+
+    if json_output {
+        print(to_json(make_result(true, "", policy_view)))
+        return
+    }
+
+    effective := dict_get_or(policy_view, "effective_policy", {})
+    print("Policy Explain")
+    print_kv("suite", normalize_string(dict_get_or(policy_view, "suite_name", ""), "unnamed"))
+    print_kv("profile", normalize_string(dict_get_or(policy_view, "policy_profile", ""), "(none)"))
+    print_kv("stage", normalize_string(dict_get_or(policy_view, "active_policy_stage", ""), "(none)"))
+    print_kv("stage_overlay_applied", to_string(dict_get_or(policy_view, "stage_overlay_applied", false)))
+    print_kv("require_command_policy", to_string(dict_get_or(effective, "require_command_policy", false)) + " (enforced=" + to_string(dict_get_or(policy_view, "strict_command_policy_enforced", false)) + ")")
+    print_kv("path_policy_mode", normalize_string(dict_get_or(effective, "path_policy_mode", "open"), "open") + " (enforced=" + to_string(dict_get_or(policy_view, "path_allowlist_enforced", false)) + ")")
+    print_kv("command_pattern_match_mode", normalize_string(dict_get_or(effective, "command_pattern_match_mode", "substring"), "substring"))
+    print_kv("redaction_audit_mode", to_string(dict_get_or(effective, "redaction_audit_mode", false)))
+    print_kv("allowed_commands", join_string_array(dict_get_or(effective, "allowed_commands", [])))
+    print_kv("allowed_command_patterns", join_string_array(dict_get_or(effective, "allowed_command_patterns", [])))
+    print_kv("blocked_arg_patterns", join_string_array(dict_get_or(effective, "blocked_arg_patterns", [])))
+    print_kv("redact_output_patterns", join_string_array(dict_get_or(effective, "redact_output_patterns", [])))
+    print_kv("allowed_paths", join_string_array(dict_get_or(effective, "allowed_paths", [])))
+    print_kv("allowed_http_hosts", join_string_array(dict_get_or(effective, "allowed_http_hosts", [])))
+    print_kv("blocked_http_hosts", join_string_array(dict_get_or(effective, "blocked_http_hosts", [])))
+    print_kv("allowed_env_vars", join_string_array(dict_get_or(effective, "allowed_env_vars", [])))
+    print_kv("risk_tier", normalize_string(dict_get_or(policy_view, "risk_tier", "low"), "low") + " (score=" + to_string(dict_get_or(policy_view, "risk_score", 0)) + ")")
+    risk_hints := dict_get_or(policy_view, "risk_hints", [])
+    if type(risk_hints) == "array"&&len(risk_hints) > 0 {
+        print("  risk_hints:")
+        ri := 0
+        while ri < len(risk_hints) {
+            hint := risk_hints[ri]
+            if type(hint) == "dict" {
+                code := normalize_string(dict_get_or(hint, "code", "POLICY_HINT"), "POLICY_HINT")
+                severity := normalize_string(dict_get_or(hint, "severity", "hint"), "hint")
+                message := normalize_string(dict_get_or(hint, "message", ""), "")
+                print("    - [" + severity + "] " + code + ": " + message)
+            }
+            ri = ri + 1
+        }
+    }
+}
+
+func command_watch(parsed) {
+    flags := parsed["flags"]
+    config_path := normalize_string(dict_get_or(flags, "config", ""), "eval.json")
+    poll_ms := normalize_int(dict_get_or(flags, "poll-ms", 2000), 2000)
+    if poll_ms < 0 {poll_ms = 0}
+    max_loops := normalize_int(dict_get_or(flags, "max-loops", 500), 500)
+    if max_loops <= 0 {max_loops = 1}
+
+    print_lines([
+    "Watching " + config_path + " for changes (polling every " + to_string(poll_ms) + "ms, max loops " + to_string(max_loops) + ")...",
+    "Press Ctrl+C to stop.",
+    ""
+    ])
+
+    if path_exists(config_path) == false {
+        print("Config file not found: " + config_path)
+        exit(1)
+    }
+
+    last_content := ""
+    try {last_content = read_file(config_path)} except err {}
+
+    loop_count := 0
+    while loop_count < max_loops {
+        loop_count = loop_count + 1
+        current := ""
+        try {current = read_file(config_path)} except err {}
+
+        if current != last_content&&current != "" {
+            print("Change detected — re-running suite...")
+            command_run(parsed)
+            print("---")
+            last_content = current
+        }
+
+        start_wait := time()
+        while time() - start_wait < poll_ms {
+            noop := 0
+            noop = noop + 1
+        }
+    }
+}
+
+# ---------------------------------------------------------------------------
+# Main dispatch
+# ---------------------------------------------------------------------------
+
+parsed := parse_cli_flags(args())
+
+if dict_get_or(parsed["flags"], "help", false) == true {
+    print_help()
+    exit(0)
+}
+
+subcommand := ""
+if len(parsed["positionals"]) > 0 {
+    subcommand = parsed["positionals"][0]
+}
+
+if subcommand == "" {
+    print_help()
+    exit(0)
+}
+
+if subcommand == "init" {
+    command_init(parsed)
+    exit(0)
+} else if subcommand == "run" {
+    command_run(parsed)
+    exit(0)
+} else if subcommand == "report" {
+    command_report(parsed)
+    exit(0)
+} else if subcommand == "compare" {
+    command_compare(parsed)
+    exit(0)
+} else if subcommand == "list-checks" {
+    command_list_checks()
+    exit(0)
+} else if subcommand == "snapshots" {
+    command_snapshots(parsed)
+    exit(0)
+} else if subcommand == "version" {
+    command_version()
+    exit(0)
+} else if subcommand == "watch" {
+    command_watch(parsed)
+    exit(0)
+} else if subcommand == "lint" {
+    command_lint(parsed)
+    exit(0)
+} else if subcommand == "policy-explain" {
+    command_policy_explain(parsed)
+    exit(0)
+} else if subcommand == "diff" {
+    command_diff(parsed)
+    exit(0)
+} else if subcommand == "export" {
+    command_export(parsed)
+    exit(0)
+} else if subcommand == "verify-manifest" {
+    command_verify_manifest(parsed)
+    exit(0)
+} else if subcommand == "completion" {
+    command_completion(parsed)
+    exit(0)
+} else {
+    print_lines(["Unknown command: " + subcommand, ""])
+    print_help()
+    exit(1)
+}

@@ -1,0 +1,184 @@
+# CLI argument parsing and help text for Eval.
+#
+# Extracted from main.kujo to keep the entry point focused on
+# command dispatch, following the kujo-rag src/cli_args.kujo pattern.
+
+from src.common import dict_get_or, normalize_string
+
+func print_lines(lines) {
+    i := 0
+    while i < len(lines) {
+        print(lines[i])
+        i := i + 1
+    }
+}
+
+export func print_help() {
+    print_lines([
+    "Eval — AI-native evaluation framework",
+    "",
+    "Usage:",
+    "  kujo run main.kujo init [--name <name>]",
+    "  kujo run main.kujo run [<config-path>] [--update-snapshots] [--output-dir <dir>]",
+    "  kujo run main.kujo report [<config-path>] [--output-dir <dir>]",
+    "  kujo run main.kujo compare <results-a.json> <results-b.json>",
+    "  kujo run main.kujo list-checks",
+    "  kujo run main.kujo snapshots [--snapshot-dir <dir>]",
+    "  kujo run main.kujo version",
+    "  kujo run main.kujo watch [--config <path>]",
+    "  kujo run main.kujo lint [<config-path>]",
+    "  kujo run main.kujo policy-explain [<config-path>] [--policy-stage <local|ci|release>]",
+    "  kujo run main.kujo diff <file-a> <file-b>",
+    "  kujo run main.kujo export [<config-path>]",
+    "  kujo run main.kujo verify-manifest [--manifest <path>] [--output-dir <dir>]",
+    "  kujo run main.kujo completion [--shell bash|zsh|fish]",
+    "",
+    "Commands:",
+    "  init          Create an eval.json suite file in the current directory",
+    "  run           Execute all tests in an eval suite",
+    "  report        Generate a report from the last run (md/html/junit/tap/ndjson)",
+    "  compare       Compare two eval run result files",
+    "  list-checks   List all available check types",
+    "  snapshots     List stored snapshots",
+    "  version       Print eval contract version",
+    "  watch         Watch config file and re-run on changes",
+    "  lint          Validate eval.json without running tests",
+    "  policy-explain  Print effective command/path/env policy for a stage",
+    "  diff          Compare two files line-by-line",
+    "  export        Export eval suite to shell script",
+    "  verify-manifest  Verify artifact-manifest checksum entries",
+    "  completion    Generate shell completion script (--shell bash|zsh|fish)",
+    "",
+    "Options:",
+    "  --name <name>            Suite name (for init)",
+    "  --template <name>         Template for init: basic, cli, web, agent (default: basic)",
+    "  --from <path>             Import test definitions from a JSON array file",
+    "  --from-scout <path>       Alias for --from when importing Scout-generated test definitions",
+    "  --config <path>          Path to eval.json (default: ./eval.json)",
+    "  --update-snapshots       Update snapshots instead of comparing",
+    "  --output-dir <dir>       Directory for reports (default: ./eval_results)",
+    "  --summary-channel-path <path>  Machine-readable run/report summary file path (default: <output-dir>/cli-summary.json)",
+    "  --subject-context <path>  Optional JSON run/step/attempt and input evidence context",
+    "  --artifact-checksums     Include SHA-256 checksum entries in artifact-manifest.json",
+    "  --manifest <path>        Path to artifact manifest for verify-manifest (default: <output-dir>/artifact-manifest.json)",
+    "  --snapshot-dir <dir>     Directory for snapshots (default: ./snapshots)",
+    "  --poll-ms <ms>           Watch polling interval in milliseconds (default: 2000)",
+    "  --max-loops <N>          Maximum watch loop iterations before exit (default: 500)",
+    "  --json                   Output results as JSON instead of markdown",
+    "  --rerun                  Force re-execution (for report command)",
+    "  --incremental            Enable incremental report section reuse (report command)",
+    "  --history                Show run history instead of generating report",
+    "  --filter <pattern>       Run only tests whose name contains pattern",
+    "  --exclude <pattern>      Skip tests whose name contains pattern",
+    "  --policy-stage <local|ci|release>  Apply stage-specific policy overlays from config",
+    "  --tags <tag1,tag2>       Run only tests with these tags",
+    "  --skip-tags <tag1,tag2>  Skip tests with these tags",
+    "  --only-failed            Re-run only tests that failed last run",
+    "  --format <md|html|junit|tap|ndjson>  Report output format (default: md)",
+    "  --quiet                   Suppress per-test output, show only summary",
+    "  --summary-only            Print a compact one-line run summary",
+    "  --verbose                 Show full check details as tests run",
+    "  --repeat <N>              Run suite N times for flake detection (default: 1)",
+    "  --parallel-workers <N>    Opt-in parallel mode for independent file checks (default: 1)",
+    "  --seed <N>                Seed for deterministic test ordering",
+    "  --dry-run                 Parse config and list tests without executing",
+    "  --no-color                Use plain text instead of emoji in output",
+    "  --help                   Show this help message",
+    "",
+    "Exit codes:",
+    "  0   Success (all commands)",
+    "  1   Assertion failure (run) or usage/config/runtime error"
+    ])
+}
+
+func value_from_index(text, start_index) {
+    value := ""
+    idx := start_index
+    while idx < len(text) {
+        value = value + text[idx]
+        idx := idx + 1
+    }
+    return value
+}
+
+func is_boolean_flag(arg) {
+    return arg == "--help"||arg == "--update-snapshots"||arg == "--json"||
+    arg == "--rerun"||arg == "--only-failed"||arg == "--quiet"||
+    arg == "--verbose"||arg == "--dry-run"||arg == "--no-color"||
+    arg == "--summary-only"||arg == "--artifact-checksums"||
+    arg == "--history"||arg == "--incremental"||arg == "--incremental-report"
+}
+
+export func parse_cli_flags(args) {
+
+    flags := {}
+    positionals := []
+
+    i := 0
+    while i < len(args) {
+        arg := args[i]
+        if starts_with(arg, "--") {
+            if is_boolean_flag(arg) {
+                key := ""
+                k := 2
+                while k < len(arg) {
+                    key = key + arg[k]
+                    k := k + 1
+                }
+                flags[key] := true
+                if arg == "--update-snapshots" {
+                    flags["update_snapshots"] := true
+                } else if arg == "--json" {
+                    flags["json_output"] := true
+                } else if arg == "--only-failed" {
+                    flags["only_failed"] := true
+                } else if arg == "--dry-run" {
+                    flags["dry_run"] := true
+                } else if arg == "--no-color" {
+                    flags["no_color"] := true
+                }
+            } else if starts_with(arg, "--repeat=") {
+                flags["repeat"] := value_from_index(arg, 9)
+            } else if starts_with(arg, "--seed=") {
+                flags["seed"] := value_from_index(arg, 7)
+            } else if starts_with(arg, "--format=") {
+                flags["format"] := value_from_index(arg, 9)
+            } else {
+                key := ""
+                k := 2
+                while k < len(arg) {
+                    key = key + arg[k]
+                    k := k + 1
+                }
+                if i + 1 < len(args) {
+                    next_arg := args[i + 1]
+                    if starts_with(next_arg, "--") == false {
+                        flags[key] := next_arg
+                        i := i + 1
+                    } else {
+                        flags[key] := true
+                    }
+                } else {
+                    flags[key] := true
+                }
+            }
+        } else {
+            positionals := push(positionals, arg)
+        }
+        i := i + 1
+    }
+
+    return {
+        "flags": flags,
+        "positionals": positionals
+    }
+}
+
+export func describe_cli_module() {
+    return {
+        "module": "cli",
+        "description": "CLI argument parsing and help text",
+        "exports": ["parse_cli_flags", "print_help"],
+        "contract_version": "2.0.0"
+    }
+}

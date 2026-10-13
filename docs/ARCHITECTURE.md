@@ -87,3 +87,8 @@ canonical check of the original host workspace, and uses canonical `report_json`
 It does not copy or fabricate `.git`, execute project modules, or resolve entry
 declarations. The adapter validates all16 unique check identities and summaries.
 `shipcheck-latest` shares the scoped immutable evidence store and retention policy.
+
+Eval is the tenth pinned component. Its internal frozen-input execution primitive
+uses the canonical CLI and result schema, with exact input/component/runtime
+bindings and bounded native receipt collection. It is not registered as a public
+tool. See [execution integration](EXECUTION.md) for approval and admission status.

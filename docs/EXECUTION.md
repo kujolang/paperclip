@@ -1,7 +1,9 @@
 # Approved execution foundation
 
 The execution coordinator is an internal integration prototype. There is no
-public run tool, execution button, background queue or Eval adapter yet. The
+public run tool, execution button or background queue yet. A native Eval
+execution primitive is integrated internally; host admission and public controls
+remain unfinished. The
 manifest does not request confirmation permissions until a reviewed adapter
 needs them. The additive `002_execution.sql` migration reserves durable request
 storage without changing existing evidence records.
@@ -89,8 +91,8 @@ schemas. The opt-in authenticated host qualification below tests the actual work
 host confirmation and PostgreSQL persistence using a disposable board account.
 It does not replace manual UI approval or newcomer usability validation.
 
-Before exposing Eval: add the pinned canonical adapter and frozen input/effect
-preview, bounded canonical result collection, durable failure/parent-child receipts,
+Before exposing Eval: connect host-owned file admission and detailed input/effect
+preview to the native primitive, add durable failure/parent-child receipts,
 retention/admission limits, UI and agent start/status/inspect/cancel flows, and
 actual-host approval/restart/tenant acceptance. Preserve this foundation's tests
 when integrating those surfaces; do not present the prototype as a shipped workflow.
@@ -136,3 +138,42 @@ result; `receipts.json` contains fixture outcomes. Inspect a failure using the
 private `server.log`. Do not publish the database, logs or secrets directory.
 The temporary directory is retained for local diagnosis and may be removed after
 confirming the owned host stopped. Existing Paperclip instances remain untouched.
+
+## Canonical Eval primitive
+
+`prepareNativeEval` captures a supplied set of bounded UTF-8 files, validates its
+selected JSON suite against the pinned canonical schema and binds exact input,
+definition, component, runtime and adapter-policy digests. The caller cannot
+change captured file bytes by mutating its original array. Materialization checks
+the approved bindings and all four declared effect classes, rechecks component
+and runtime integrity, and writes the inputs and canonical component into a new
+private directory. The coordinator owns approval, the process, timeout and
+cancellation; the primitive never creates or accepts its own approval.
+
+All canonical check families and setup/teardown hooks remain native Eval code.
+The primitive conservatively declares file reads, writes, project execution and
+network access for every suite. Commands, HTTP checks and snapshot updates are
+not silently omitted or reimplemented. A suite can access resources outside its
+input copy, so this is trusted execution, not a sandbox or proof of a complete
+project snapshot. Public admission must show the actual suite effects and frozen
+input coverage before users can approve it. No public run handler calls this
+primitive yet.
+
+The native CLI receives an isolated component import root, controlled output
+directory and generated subject identity. Collection reads only the fixed
+`evaluation-result.json`, capped at64KiB; it rejects redirected directories,
+nonregular files, symlinks, shared hard links, wrong subjects, changed definition
+digests and exit/result contradictions. It reuses canonical result validation
+and summary redaction, retaining a native execution label with exact provenance.
+Referenced artifact URIs are not opened. Canonical failed checks remain failed;
+skipped checks remain visible. Invalid or missing result evidence after process
+entry is uncertain under the coordinator. Private files are disposed afterward.
+Suite code remains capable of external side effects; cancellation does not undo
+them and there is no filesystem quota or hostile-code containment promise.
+
+The authenticated-host fixture also runs fixed passing and failing canonical
+Eval suites after board-account acceptance, retains their native receipts and
+checks that those receipts survive full host/database restart. This extends the
+fixed-program acceptance above without exposing execution in the production
+worker. Production profile/admission enforcement, full effect previews, request
+quotas/retention, UI/agent workflows and manual user acceptance remain required.

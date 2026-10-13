@@ -68,8 +68,9 @@ Kujo retains up to 20 results per company/entity for 30 days in its Paperclip da
 | **Review Pack** | Measures change size, explains risk signals, and prepares a review handoff. | ChangeBucket and PatchBrief |
 | **Failure Evidence** | Turns supplied command details and logs into a bounded, redacted record. | CaseFile |
 
-The nine component snapshots are pinned, checksummed, and shipped with the plugin. The
-plugin does not download component code while installing or running.
+The ten component snapshots are pinned, checksummed, and shipped with the plugin. The
+plugin does not download component code while installing or running. The Eval snapshot
+is an internal execution integration; public Eval controls are still being built.
 
 ## Build with Kujo
 

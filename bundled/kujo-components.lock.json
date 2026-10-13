@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "bundleVersion": "0.6.0",
+  "bundleVersion": "0.7.0",
   "runtime": {
     "minimumVersion": "1.8.1"
   },
@@ -364,6 +364,51 @@
           "name": "analysis",
           "format": "json",
           "schema": "schemas/shipcheck-report.schema.json"
+        }
+      ]
+    },
+    {
+      "id": "eval",
+      "repository": "https://github.com/kujolang/eval",
+      "gitCommit": "b4a104f3d5e6464b0335fb07f533e24c8164965b",
+      "version": "1.0.0",
+      "license": "MIT",
+      "entrypoint": "main.kujo",
+      "files": [
+        "LICENSE",
+        "main.kujo",
+        "src/checks.kujo",
+        "src/cli.kujo",
+        "src/common.kujo",
+        "src/config.kujo",
+        "src/control_contracts.kujo",
+        "src/eval_core.kujo",
+        "src/report.kujo",
+        "src/snapshot.kujo",
+        "src/watchdog_telemetry.kujo",
+        "schema/eval-suite.schema.json",
+        "schema/evaluation-result.schema.json"
+      ],
+      "checksums": {
+        "LICENSE": "4b6449939f8dce26dc5fb87756740a5977da9085517af127d9e634e6a6492506",
+        "main.kujo": "e11ad1e272919f98dac62a8f71afff6477a83e3b5703695b84b5f81728f5f0cb",
+        "src/checks.kujo": "35c8e48c1c7f2fe2f947c8dff89be0b694c5dd19216811d899219792a2ea383f",
+        "src/cli.kujo": "7124a5c46bd244cff69011d0cb01cffb979a30319992ed6d56b3898c76622f05",
+        "src/common.kujo": "30550e7ae7bc5a382890ca9e7a4db9930d2ce0040259a1e6a1859fc41b4c1f28",
+        "src/config.kujo": "11ed9ef63235bcea442db0ea56c46e7b18dc9eaed8afb774a2db129bbb7def23",
+        "src/control_contracts.kujo": "ae3161091345e5d567f242e499c574a5bcc3aaaa0a838bc0c500f9bfe50c31d0",
+        "src/eval_core.kujo": "339997d62c36b691682a6e25dd4e6c663376a297c8ee3eccb83db8c59a39c089",
+        "src/report.kujo": "e55c389e8fbbcce58a87794d3801d8434142f4311703a1a0a4965e2ab8559627",
+        "src/snapshot.kujo": "cb52ea3afdcf8ac15be21e68a26bd2f10d387060ad6202bf3fdc89eb63cf5265",
+        "src/watchdog_telemetry.kujo": "158436a098313f4aa2098bcb814b0b108e229a9637c80afd5c735229f52fc88f",
+        "schema/eval-suite.schema.json": "3622c35cdb0c3e8d81b37bf2f444a876c9b7f0ebfbfcbeb585fbf5a6907fdca7",
+        "schema/evaluation-result.schema.json": "4ff2b67a26e8178d2980cc86c1ddf23c67dc04039cdd9eca36939984ef2428f0"
+      },
+      "outputContracts": [
+        {
+          "name": "evaluation",
+          "format": "json",
+          "schema": "schema/evaluation-result.schema.json"
         }
       ]
     }

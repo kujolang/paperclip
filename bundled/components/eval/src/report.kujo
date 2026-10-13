@@ -1,0 +1,836 @@
+# Markdown report generator for eval runs.
+#
+# Generates a markdown report summarizing eval suite results,
+# including pass/fail counts, per-test details, and timing info.
+
+from src.common import dict_get_or, normalize_string, contains_text, make_result
+
+func pad_right(s, width) {
+	result := s
+	i := len(s)
+	while i < width {
+		result = result + " "
+		i := i + 1
+	}
+	return result
+}
+
+func status_icon(passed) {
+	if passed {
+		return "✅"
+	}
+	return "❌"
+}
+
+export func generate_markdown_report(results) {
+	suite_name := normalize_string(dict_get_or(results, "suite_name", ""), "Eval Suite")
+	suite_version := normalize_string(dict_get_or(results, "suite_version", ""), "")
+	suite_description := normalize_string(dict_get_or(results, "suite_description", ""), "")
+	passed_count := dict_get_or(results, "passed", 0)
+	failed_count := dict_get_or(results, "failed", 0)
+	skipped_count := dict_get_or(results, "skipped", 0)
+	total_count := passed_count + failed_count + skipped_count
+	duration_ms := dict_get_or(results, "duration_ms", 0)
+	test_results_raw := dict_get_or(results, "test_results", [])
+	timestamp := normalize_string(dict_get_or(results, "timestamp", ""), "")
+	parallel_mode := normalize_string(dict_get_or(results, "parallel_mode", ""), "")
+	parallel_workers := dict_get_or(results, "parallel_workers", 1)
+	parallel_prefetched_files := dict_get_or(results, "parallel_prefetched_files", 0)
+	cache_metric_candidates := dict_get_or(results, "cache_metric_candidates", 0)
+	cache_metric_unique_files := dict_get_or(results, "cache_metric_unique_files", 0)
+	cache_metric_hits := dict_get_or(results, "cache_metric_hits", 0)
+	cache_metric_misses := dict_get_or(results, "cache_metric_misses", 0)
+	cache_metric_bytes_reused := dict_get_or(results, "cache_metric_bytes_reused", 0)
+	parallel_requested := dict_get_or(results, "parallel_requested", false) == true
+	parallel_used := dict_get_or(results, "parallel_used", false) == true
+	parallel_fallback_reason := normalize_string(dict_get_or(results, "parallel_fallback_reason", ""), "")
+
+	report := ""
+
+	report = report + "# Eval Report: " + suite_name + "\n"
+	report = report + "\n"
+
+	if suite_description != "" {
+		report = report + suite_description + "\n"
+		report = report + "\n"
+	}
+
+	report = report + "## Summary\n"
+	report = report + "\n"
+	report = report + "| Metric | Value |\n"
+	report = report + "|--------|-------|\n"
+	report = report + "| Suite | " + suite_name + " |\n"
+	if suite_version != "" {
+		report = report + "| Version | " + suite_version + " |\n"
+	}
+	report = report + "| Total Tests | " + to_string(total_count) + " |\n"
+	report = report + "| Passed | " + to_string(passed_count) + " |\n"
+	report = report + "| Failed | " + to_string(failed_count) + " |\n"
+	if skipped_count > 0 {
+		report = report + "| Skipped | " + to_string(skipped_count) + " |\n"
+	}
+	report = report + "| Duration | " + to_string(duration_ms) + "ms |\n"
+	if parallel_mode != "" || parallel_requested {
+		parallel_requested_text := "false"
+		if parallel_requested {
+			parallel_requested_text = "true"
+		}
+		parallel_used_text := "false"
+		if parallel_used {
+			parallel_used_text = "true"
+		}
+		report = report + "| Parallel Requested | " + parallel_requested_text + " |\n"
+		report = report + "| Parallel Used | " + parallel_used_text + " |\n"
+		report = report + "| Parallel Mode | " + parallel_mode + " |\n"
+		report = report + "| Parallel Workers | " + to_string(parallel_workers) + " |\n"
+		if parallel_prefetched_files > 0 {
+			report = report + "| Parallel Prefetched Files | " + to_string(parallel_prefetched_files) + " |\n"
+		}
+		if cache_metric_candidates > 0 || cache_metric_hits > 0 || cache_metric_misses > 0 || cache_metric_bytes_reused > 0 {
+			report = report + "| Cache Candidates | " + to_string(cache_metric_candidates) + " |\n"
+			report = report + "| Cache Unique Files | " + to_string(cache_metric_unique_files) + " |\n"
+			report = report + "| Cache Hits | " + to_string(cache_metric_hits) + " |\n"
+			report = report + "| Cache Misses | " + to_string(cache_metric_misses) + " |\n"
+			report = report + "| Cache Bytes Reused | " + to_string(cache_metric_bytes_reused) + " |\n"
+		}
+		if parallel_fallback_reason != "" {
+			report = report + "| Parallel Fallback | " + parallel_fallback_reason + " |\n"
+		}
+	}
+
+	if timestamp != "" {
+		report = report + "| Timestamp | " + timestamp + " |\n"
+	}
+
+	pass_rate := 0.0
+	if total_count > 0 {
+		pass_rate = (passed_count / total_count) * 100.0
+	}
+	report = report + "| Pass Rate | " + to_string(pass_rate) + "% |\n"
+
+	report = report + "\n"
+
+	if failed_count == 0 {
+		report = report + "### Result: ✅ ALL PASSED\n"
+		report = report + "\n"
+	} else {
+		report = report + "### Result: ❌ " + to_string(failed_count) + " FAILED\n"
+		report = report + "\n"
+	}
+
+	report = report + "## Test Results\n"
+	report = report + "\n"
+
+	if type(test_results_raw) != "array" || len(test_results_raw) == 0 {
+		report = report + "No test results to display.\n"
+		report = report + "\n"
+	} else {
+		report = report + "| # | Status | Test | Check | Message |\n"
+		report = report + "|---|--------|------|-------|---------|\n"
+
+		ti := 0
+		while ti < len(test_results_raw) {
+			tr := test_results_raw[ti]
+			if type(tr) == "dict" {
+				num := to_string(ti + 1)
+				passed_flag := dict_get_or(tr, "passed", false)
+				status := status_icon(passed_flag)
+				name := normalize_string(dict_get_or(tr, "name", ""), "unnamed")
+				check := normalize_string(dict_get_or(tr, "check", ""), "")
+				message := normalize_string(dict_get_or(tr, "message", ""), "")
+
+				report = report + "| " + num + " | " + status + " | " + name + " | " + check + " | " + message + " |\n"
+			}
+			ti := ti + 1
+		}
+
+		report = report + "\n"
+	}
+
+	report = report + "## Failed Test Details\n"
+	report = report + "\n"
+
+	has_failures := false
+	fi := 0
+	while fi < len(test_results_raw) {
+		tr := test_results_raw[fi]
+		if type(tr) == "dict" {
+			if dict_get_or(tr, "passed", false) == false {
+				has_failures := true
+				name := normalize_string(dict_get_or(tr, "name", ""), "unnamed")
+				check := normalize_string(dict_get_or(tr, "check", ""), "")
+				message := normalize_string(dict_get_or(tr, "message", ""), "")
+				details := dict_get_or(tr, "details", {})
+
+				report = report + "### " + name + "\n"
+				report = report + "\n"
+				report = report + "- **Check**: `" + check + "`\n"
+				report = report + "- **Message**: " + message + "\n"
+
+				if type(details) == "dict" {
+					for key in keys(details) {
+						val := details[key]
+						report = report + "- **" + key + "**: "
+						if type(val) == "string" {
+							report = report + val
+						} else if type(val) == "bool" {
+							if val {
+								report = report + "true"
+							} else {
+								report = report + "false"
+							}
+						} else if type(val) == "int" || type(val) == "float" {
+							report = report + to_string(val)
+						} else {
+							report = report + to_json(val)
+						}
+						report = report + "\n"
+					}
+				}
+
+				report = report + "\n"
+			}
+		}
+		fi := fi + 1
+	}
+
+	if has_failures == false {
+		report = report + "No failures! 🎉\n"
+		report = report + "\n"
+	}
+
+	report = report + "---\n"
+	report = report + "*Report generated by Eval*\n"
+
+	return report
+}
+
+export func save_report(results, output_dir, report_name, format) {
+	return save_report_with_options(results, output_dir, report_name, format, {
+		"incremental_mode": true
+	})
+}
+
+func report_format_extension(fmt) {
+	if fmt == "html" {
+		return ".html"
+	}
+	if fmt == "junit" {
+		return ".xml"
+	}
+	if fmt == "tap" {
+		return ".tap"
+	}
+	if fmt == "ndjson" {
+		return ".ndjson"
+	}
+	return ".md"
+}
+
+func build_report_section_signatures(results_data, fmt) {
+	tests := dict_get_or(results_data, "test_results", [])
+	if type(tests) != "array" {
+		tests = []
+	}
+
+	if fmt == "md" {
+		failed_entries := []
+		ti := 0
+		while ti < len(tests) {
+			entry := tests[ti]
+			if type(entry) == "dict" && dict_get_or(entry, "passed", false) == false {
+				failed_entries = push(failed_entries, entry)
+			}
+			ti := ti + 1
+		}
+
+		intro_payload := {
+			"suite_name": dict_get_or(results_data, "suite_name", ""),
+			"suite_version": dict_get_or(results_data, "suite_version", ""),
+			"suite_description": dict_get_or(results_data, "suite_description", "")
+		}
+		summary_payload := {
+			"passed": dict_get_or(results_data, "passed", 0),
+			"failed": dict_get_or(results_data, "failed", 0),
+			"skipped": dict_get_or(results_data, "skipped", 0),
+			"duration_ms": dict_get_or(results_data, "duration_ms", 0),
+			"parallel_mode": dict_get_or(results_data, "parallel_mode", ""),
+			"parallel_workers": dict_get_or(results_data, "parallel_workers", 1),
+			"parallel_prefetched_files": dict_get_or(results_data, "parallel_prefetched_files", 0),
+			"cache_metric_candidates": dict_get_or(results_data, "cache_metric_candidates", 0),
+			"cache_metric_unique_files": dict_get_or(results_data, "cache_metric_unique_files", 0),
+			"cache_metric_hits": dict_get_or(results_data, "cache_metric_hits", 0),
+			"cache_metric_misses": dict_get_or(results_data, "cache_metric_misses", 0),
+			"cache_metric_bytes_reused": dict_get_or(results_data, "cache_metric_bytes_reused", 0),
+			"parallel_fallback_reason": dict_get_or(results_data, "parallel_fallback_reason", "")
+		}
+
+		return {
+			"intro": sha256(to_json(intro_payload)),
+			"summary": sha256(to_json(summary_payload)),
+			"test_results": sha256(to_json(tests)),
+			"failed_details": sha256(to_json(failed_entries)),
+			"footer": sha256("kujo-eval-report-footer-v1")
+		}
+	}
+
+	return {
+		"full": sha256(to_json(results_data))
+	}
+}
+
+func unchanged_report_sections(current_signatures, previous_signatures) {
+	unchanged := []
+	for key in keys(current_signatures) {
+		if has_key(previous_signatures, key) == 1 {
+			if current_signatures[key] == previous_signatures[key] {
+				unchanged = push(unchanged, key)
+			}
+		}
+	}
+	return unchanged
+}
+
+func changed_report_sections(current_signatures, previous_signatures) {
+	changed := []
+	for key in keys(current_signatures) {
+		if has_key(previous_signatures, key) == 0 {
+			changed = push(changed, key)
+		} else if current_signatures[key] != previous_signatures[key] {
+			changed = push(changed, key)
+		}
+	}
+	return changed
+}
+
+func all_report_sections_unchanged(current_signatures, previous_signatures) {
+	if len(keys(current_signatures)) == 0 {
+		return false
+	}
+	for key in keys(current_signatures) {
+		if has_key(previous_signatures, key) == 0 {
+			return false
+		}
+		if current_signatures[key] != previous_signatures[key] {
+			return false
+		}
+	}
+	return true
+}
+
+func write_report_incremental_cache(cache_path, fmt, section_signatures) {
+	cache_payload := {
+		"format": fmt,
+		"section_signatures": section_signatures,
+		"updated_at_ms": time()
+	}
+	try {
+		write_file(cache_path, to_json(cache_payload))
+	} except err {}
+}
+
+export func save_report_with_options(results, output_dir, report_name, format, options) {
+	dir := normalize_string(output_dir, "./eval_results")
+	results_data := dict_get_or(results, "data", results)
+	fmt := normalize_string(format, "md")
+	incremental_mode := dict_get_or(options, "incremental_mode", false) == true
+
+	if path_exists(dir) == false {
+		try { create_dir(dir) } except err {
+			return make_result(false, "Failed to create output directory: " + dir, {"path": ""})
+		}
+	}
+
+	ext := report_format_extension(fmt)
+	filename := normalize_string(report_name, "report")
+	if contains_text(filename, ext) == false { filename = filename + ext }
+	file_path := dir + "/" + filename
+	cache_path := file_path + ".cache.json"
+	section_signatures := {}
+	previous_signatures := {}
+	unchanged_sections := []
+	changed_sections := []
+
+	if incremental_mode {
+		section_signatures = build_report_section_signatures(results_data, fmt)
+		if path_exists(cache_path) == true {
+			try {
+				cache_raw := read_file(cache_path)
+				cache_payload := parse_json(cache_raw)
+				if type(cache_payload) == "dict" {
+					previous_signatures = dict_get_or(cache_payload, "section_signatures", {})
+					if type(previous_signatures) != "dict" {
+						previous_signatures = {}
+					}
+				}
+			} except err {}
+		}
+
+		unchanged_sections = unchanged_report_sections(section_signatures, previous_signatures)
+		changed_sections = changed_report_sections(section_signatures, previous_signatures)
+
+		if path_exists(file_path) == true && all_report_sections_unchanged(section_signatures, previous_signatures) {
+			existing_report := ""
+			try {
+				existing_report = read_file(file_path)
+			} except err {
+				existing_report = ""
+			}
+
+			return make_result(true, "", {
+				"path": file_path,
+				"message": "Report unchanged (incremental cache hit): " + file_path,
+				"report": existing_report,
+				"cached": true,
+				"written": false,
+				"incremental_mode": true,
+				"incremental_cache_hit": true,
+				"unchanged_sections": unchanged_sections,
+				"changed_sections": changed_sections
+			})
+		}
+	}
+
+	report := ""
+	if fmt == "html" {
+		report = generate_html_report(results_data)
+	} else if fmt == "junit" {
+		report = generate_junit_report(results_data)
+	} else if fmt == "tap" {
+		report = generate_tap_report(results_data)
+	} else if fmt == "ndjson" {
+		report = generate_ndjson_report(results_data)
+	} else {
+		report = generate_markdown_report(results_data)
+	}
+	if path_exists(file_path) == true {
+		existing_report := ""
+		try {
+			existing_report = read_file(file_path)
+		} except err {
+			existing_report = ""
+		}
+		if existing_report == report {
+			if incremental_mode {
+				if len(keys(section_signatures)) == 0 {
+					section_signatures = build_report_section_signatures(results_data, fmt)
+				}
+				write_report_incremental_cache(cache_path, fmt, section_signatures)
+			}
+			return make_result(true, "", {
+				"path": file_path,
+				"message": "Report unchanged: " + file_path,
+				"report": report,
+				"cached": true,
+				"written": false,
+				"incremental_mode": incremental_mode,
+				"incremental_cache_hit": false,
+				"unchanged_sections": unchanged_sections,
+				"changed_sections": changed_sections
+			})
+		}
+	}
+
+	backup_path := file_path + ".bak"
+	if path_exists(file_path) == true {
+		try { rename_file(file_path, backup_path) } except err {}
+	}
+
+	try { write_file(file_path, report) } except err {
+		if path_exists(file_path) == false && path_exists(backup_path) == true {
+			try { rename_file(backup_path, file_path) } except err {}
+		}
+		return make_result(false, "Failed to write report: " + file_path, {"path": file_path})
+	}
+
+	if incremental_mode {
+		if len(keys(section_signatures)) == 0 {
+			section_signatures = build_report_section_signatures(results_data, fmt)
+		}
+		write_report_incremental_cache(cache_path, fmt, section_signatures)
+		if len(unchanged_sections) == 0 && len(changed_sections) == 0 {
+			unchanged_sections = unchanged_report_sections(section_signatures, previous_signatures)
+			changed_sections = changed_report_sections(section_signatures, previous_signatures)
+		}
+	}
+
+	return make_result(true, "", {
+		"path": file_path,
+		"message": "Report saved: " + file_path,
+		"report": report,
+		"cached": false,
+		"written": true,
+		"incremental_mode": incremental_mode,
+		"incremental_cache_hit": false,
+		"unchanged_sections": unchanged_sections,
+		"changed_sections": changed_sections
+	})
+}
+
+export func print_report(results, format) {
+	results_data := dict_get_or(results, "data", results)
+	fmt := normalize_string(format, "md")
+	report := ""
+	if fmt == "html" {
+		report = generate_html_report(results_data)
+	} else if fmt == "junit" {
+		report = generate_junit_report(results_data)
+	} else if fmt == "tap" {
+		report = generate_tap_report(results_data)
+	} else if fmt == "ndjson" {
+		report = generate_ndjson_report(results_data)
+	} else {
+		report = generate_markdown_report(results_data)
+	}
+	print(report)
+	return make_result(true, "", {"message": "Report printed to stdout"})
+}
+
+func xml_escape_attribute(text) {
+	result := ""
+	i := 0
+	while i < len(text) {
+		ch := text[i]
+		if ch == "&" { result = result + "&amp;" }
+		else if ch == "<" { result = result + "&lt;" }
+		else if ch == ">" { result = result + "&gt;" }
+		else if ch == "\"" { result = result + "&quot;" }
+		else if ch == "'" { result = result + "&apos;" }
+		else { result = result + ch }
+		i := i + 1
+	}
+	return result
+}
+
+export func generate_junit_report(results) {
+	suite_name := xml_escape_attribute(normalize_string(dict_get_or(results, "suite_name", ""), "Eval Suite"))
+	passed_count := dict_get_or(results, "passed", 0)
+	failed_count := dict_get_or(results, "failed", 0)
+	skipped_count := dict_get_or(results, "skipped", 0)
+	total_count := passed_count + failed_count + skipped_count
+	duration_ms := dict_get_or(results, "duration_ms", 0)
+	test_results_raw := dict_get_or(results, "test_results", [])
+
+	xml := ""
+	xml = xml + "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+	xml = xml + "<testsuite name=\"" + suite_name + "\" tests=\"" + to_string(total_count) + "\" failures=\"" + to_string(failed_count) + "\" skipped=\"" + to_string(skipped_count) + "\" time=\"" + to_string(duration_ms) + "\">\n"
+
+	if type(test_results_raw) == "array" {
+		ti := 0
+		while ti < len(test_results_raw) {
+			tr := test_results_raw[ti]
+			if type(tr) == "dict" {
+				name := xml_escape_attribute(normalize_string(dict_get_or(tr, "name", ""), "unnamed"))
+				passed_flag := dict_get_or(tr, "passed", false)
+				message := xml_escape_attribute(normalize_string(dict_get_or(tr, "message", ""), ""))
+				xml = xml + "  <testcase name=\"" + name + "\" time=\"0\">\n"
+				if passed_flag == false {
+					xml = xml + "    <failure message=\"" + message + "\"/>\n"
+				}
+				xml = xml + "  </testcase>\n"
+			}
+			ti := ti + 1
+		}
+	}
+
+	xml = xml + "</testsuite>\n"
+	return xml
+}
+
+export func generate_tap_report(results) {
+	passed_count := dict_get_or(results, "passed", 0)
+	failed_count := dict_get_or(results, "failed", 0)
+	skipped_count := dict_get_or(results, "skipped", 0)
+	total_count := passed_count + failed_count + skipped_count
+	test_results_raw := dict_get_or(results, "test_results", [])
+
+	tap := ""
+	tap = tap + "1.." + to_string(total_count) + "\n"
+
+	if type(test_results_raw) == "array" {
+		ti := 0
+		while ti < len(test_results_raw) {
+			tr := test_results_raw[ti]
+			if type(tr) == "dict" {
+				num := to_string(ti + 1)
+				name := normalize_string(dict_get_or(tr, "name", ""), "unnamed")
+				passed_flag := dict_get_or(tr, "passed", false)
+				message := normalize_string(dict_get_or(tr, "message", ""), "")
+				if passed_flag {
+					tap = tap + "ok " + num + " - " + name + "\n"
+				} else {
+					tap = tap + "not ok " + num + " - " + name + "\n"
+					tap = tap + "  ---\n"
+					tap = tap + "  message: " + message + "\n"
+					tap = tap + "  ...\n"
+				}
+			}
+			ti := ti + 1
+		}
+	}
+
+	return tap
+}
+
+# ===========================================================================
+# HTML report generator (item 6.4)
+# ===========================================================================
+
+HTML_REPORT_CSS := "<style>\n" +
+	"body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 960px; margin: 0 auto; padding: 20px; color: #333; background: #fafafa; }\n" +
+	"h1 { border-bottom: 2px solid #333; padding-bottom: 8px; }\n" +
+	"h2 { margin-top: 28px; }\n" +
+	".summary { display: flex; gap: 12px; margin: 16px 0; flex-wrap: wrap; }\n" +
+	".card { padding: 16px 24px; border-radius: 8px; min-width: 100px; text-align: center; }\n" +
+	".card .label { font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px; }\n" +
+	".card .value { font-size: 28px; font-weight: bold; }\n" +
+	".card-total { background: #e8e8e8; }\n" +
+	".card-passed { background: #d4edda; }\n" +
+	".card-failed { background: #f8d7da; }\n" +
+	".card-skipped { background: #fff3cd; }\n" +
+	".pass-bar { background: #e0e0e0; border-radius: 6px; height: 12px; margin: 12px 0; overflow: hidden; }\n" +
+	".pass-bar-fill { background: #28a745; height: 100%; border-radius: 6px; }\n" +
+	"table { width: 100%; border-collapse: collapse; margin: 12px 0; }\n" +
+	"th { background: #555; color: white; padding: 10px; text-align: left; }\n" +
+	"td { padding: 8px 10px; border-bottom: 1px solid #ddd; }\n" +
+	"tr:nth-child(even) { background: #f2f2f2; }\n" +
+	"tr.row-fail { background: #ffe0e0; }\n" +
+	"tr.row-pass { background: #e0ffe0; }\n" +
+	".status-icon { font-size: 18px; }\n" +
+	"details { margin: 8px 0 16px 16px; border-left: 3px solid #dc3545; padding-left: 12px; }\n" +
+	"summary { cursor: pointer; font-weight: bold; color: #dc3545; }\n" +
+	"pre { background: #f4f4f4; padding: 12px; border-radius: 4px; overflow-x: auto; font-size: 13px; }\n" +
+	"code { background: #f0f0f0; padding: 1px 4px; border-radius: 3px; }\n" +
+	"footer { margin-top: 32px; padding-top: 12px; border-top: 1px solid #ccc; font-size: 12px; color: #888; }\n" +
+	"</style>"
+
+func html_escape(text) {
+	result := ""
+	i := 0
+	while i < len(text) {
+		ch := text[i]
+		if ch == "&" { result = result + "&amp;" }
+		else if ch == "<" { result = result + "&lt;" }
+		else if ch == ">" { result = result + "&gt;" }
+		else if ch == "\"" { result = result + "&quot;" }
+		else { result = result + ch }
+		i := i + 1
+	}
+	return result
+}
+
+export func generate_html_report(results) {
+	suite_name := html_escape(normalize_string(dict_get_or(results, "suite_name", ""), "Eval Suite"))
+	suite_version := html_escape(normalize_string(dict_get_or(results, "suite_version", ""), ""))
+	suite_description := html_escape(normalize_string(dict_get_or(results, "suite_description", ""), ""))
+	passed_count := dict_get_or(results, "passed", 0)
+	failed_count := dict_get_or(results, "failed", 0)
+	skipped_count := dict_get_or(results, "skipped", 0)
+	total_count := passed_count + failed_count + skipped_count
+	duration_ms := dict_get_or(results, "duration_ms", 0)
+	test_results_raw := dict_get_or(results, "test_results", [])
+	timestamp := html_escape(normalize_string(dict_get_or(results, "timestamp", ""), ""))
+
+	pass_rate := 0
+	if total_count > 0 {
+		pass_rate = (passed_count * 100) / total_count
+	}
+
+	html := ""
+
+	# Document head
+	html = html + "<!DOCTYPE html>\n"
+	html = html + "<html lang=\"en\">\n"
+	html = html + "<head>\n"
+	html = html + "<meta charset=\"UTF-8\">\n"
+	html = html + "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">\n"
+	html = html + "<title>Eval Report: " + suite_name + "</title>\n"
+	html = html + HTML_REPORT_CSS + "\n"
+	html = html + "</head>\n"
+	html = html + "<body>\n"
+
+	# Header
+	html = html + "<h1>Eval Report: " + suite_name + "</h1>\n"
+	if suite_version != "" {
+		html = html + "<p><strong>Version:</strong> " + suite_version + "</p>\n"
+	}
+	if suite_description != "" {
+		html = html + "<p>" + suite_description + "</p>\n"
+	}
+	if timestamp != "" {
+		html = html + "<p><em>Generated: " + timestamp + "</em></p>\n"
+	}
+
+	# Summary cards
+	html = html + "<h2>Summary</h2>\n"
+	html = html + "<div class=\"summary\">\n"
+	html = html + "  <div class=\"card card-total\"><div class=\"value\">" + to_string(total_count) + "</div><div class=\"label\">Total</div></div>\n"
+	html = html + "  <div class=\"card card-passed\"><div class=\"value\">" + to_string(passed_count) + "</div><div class=\"label\">Passed</div></div>\n"
+	html = html + "  <div class=\"card card-failed\"><div class=\"value\">" + to_string(failed_count) + "</div><div class=\"label\">Failed</div></div>\n"
+	if skipped_count > 0 {
+		html = html + "  <div class=\"card card-skipped\"><div class=\"value\">" + to_string(skipped_count) + "</div><div class=\"label\">Skipped</div></div>\n"
+	}
+	html = html + "</div>\n"
+
+	# Pass rate bar
+	html = html + "<div class=\"pass-bar\"><div class=\"pass-bar-fill\" style=\"width:" + to_string(pass_rate) + "%;\"></div></div>\n"
+	html = html + "<p><strong>Pass Rate:</strong> " + to_string(pass_rate) + "% | <strong>Duration:</strong> " + to_string(duration_ms) + "ms</p>\n"
+
+	# Result status
+	if failed_count == 0 {
+		html = html + "<h3 style=\"color:#28a745;\">✅ ALL PASSED</h3>\n"
+	} else {
+		html = html + "<h3 style=\"color:#dc3545;\">❌ " + to_string(failed_count) + " FAILED</h3>\n"
+	}
+
+	# Test results table
+	html = html + "<h2>Test Results</h2>\n"
+
+	if type(test_results_raw) != "array" || len(test_results_raw) == 0 {
+		html = html + "<p>No test results to display.</p>\n"
+	} else {
+		html = html + "<table>\n"
+		html = html + "<thead><tr><th>#</th><th>Status</th><th>Test</th><th>Check</th><th>Message</th></tr></thead>\n"
+		html = html + "<tbody>\n"
+
+		ti := 0
+		while ti < len(test_results_raw) {
+			tr := test_results_raw[ti]
+			if type(tr) == "dict" {
+				num := to_string(ti + 1)
+				passed_flag := dict_get_or(tr, "passed", false)
+				is_skipped := dict_get_or(tr, "skipped", false)
+				status_icon_html := "✅"
+				row_class := "row-pass"
+				if is_skipped {
+					status_icon_html = "⏭️"
+					row_class = ""
+				} else if passed_flag == false {
+					status_icon_html = "❌"
+					row_class = "row-fail"
+				}
+				name := html_escape(normalize_string(dict_get_or(tr, "name", ""), "unnamed"))
+				check := html_escape(normalize_string(dict_get_or(tr, "check", ""), ""))
+				message := html_escape(normalize_string(dict_get_or(tr, "message", ""), ""))
+
+				html = html + "<tr class=\"" + row_class + "\">"
+				html = html + "<td>" + num + "</td>"
+				html = html + "<td class=\"status-icon\">" + status_icon_html + "</td>"
+				html = html + "<td>" + name + "</td>"
+				html = html + "<td><code>" + check + "</code></td>"
+				html = html + "<td>" + message + "</td>"
+				html = html + "</tr>\n"
+
+				# Collapsible failure details
+				if passed_flag == false && is_skipped == false {
+					details := dict_get_or(tr, "details", {})
+					html = html + "<tr class=\"" + row_class + "\"><td colspan=\"5\">\n"
+					html = html + "<details>\n"
+					html = html + "<summary>Failure details for: " + name + "</summary>\n"
+
+					if type(details) == "dict" {
+						for key in keys(details) {
+							val := details[key]
+							val_str := ""
+							if type(val) == "string" {
+								val_str = html_escape(val)
+							} else if type(val) == "bool" {
+								if val { val_str = "true" } else { val_str = "false" }
+							} else if type(val) == "int" || type(val) == "float" {
+								val_str = to_string(val)
+							} else {
+								val_str = html_escape(to_json(val))
+							}
+							html = html + "<p><strong>" + html_escape(key) + ":</strong> " + val_str + "</p>\n"
+						}
+					}
+
+					# Render diff specially if present
+					diff_text := normalize_string(dict_get_or(details, "diff", ""), "")
+					if diff_text != "" {
+						html = html + "<h4>Diff</h4>\n"
+						html = html + "<pre>" + html_escape(diff_text) + "</pre>\n"
+					}
+
+					html = html + "</details>\n"
+					html = html + "</td></tr>\n"
+				}
+			}
+			ti := ti + 1
+		}
+
+		html = html + "</tbody>\n"
+		html = html + "</table>\n"
+	}
+
+	# Footer
+	html = html + "<footer>\n"
+	html = html + "<p>Report generated by <strong>Eval</strong>"
+	if suite_version != "" {
+		html = html + " | Suite version: " + suite_version
+	}
+	html = html + "</p>\n"
+	html = html + "</footer>\n"
+
+	html = html + "</body>\n"
+	html = html + "</html>\n"
+
+	return html
+}
+
+#
+# Emits one JSON object per line per test result (NDJSON/JSON Lines format).
+# Suitable for streaming to log aggregators and real-time dashboards.
+#
+export func generate_ndjson_report(results) {
+	test_results_raw := dict_get_or(results, "test_results", [])
+	output := ""
+	if type(test_results_raw) == "array" {
+		ti := 0
+		while ti < len(test_results_raw) {
+			tr := test_results_raw[ti]
+			output = output + to_json(tr) + "\n"
+			ti := ti + 1
+		}
+	}
+	return output
+}
+
+#
+# Writes a markdown summary table to $GITHUB_STEP_SUMMARY when running
+# in GitHub Actions. Does nothing if the env var is not set.
+#
+export func write_github_summary(results) {
+	summary_env := env("GITHUB_STEP_SUMMARY")
+	if summary_env == "" { return make_result(false, "GITHUB_STEP_SUMMARY not set", {}) }
+	results_data := dict_get_or(results, "data", results)
+	suite_name := normalize_string(dict_get_or(results_data, "suite_name", ""), "Eval Suite")
+	passed := dict_get_or(results_data, "passed", 0)
+	failed := dict_get_or(results_data, "failed", 0)
+	total := dict_get_or(results_data, "total", 0)
+	duration := dict_get_or(results_data, "duration_ms", 0)
+
+	icon := "✅"
+	if failed > 0 { icon = "❌" }
+
+	md := "## " + icon + " Eval Results: " + suite_name + "\n\n"
+	md = md + "| Metric | Value |\n|--------|-------|\n"
+	md = md + "| Total | " + to_string(total) + " |\n"
+	md = md + "| Passed | " + to_string(passed) + " |\n"
+	md = md + "| Failed | " + to_string(failed) + " |\n"
+	md = md + "| Duration | " + to_string(duration) + "ms |\n"
+
+	try { write_file(summary_env, md) } except err {
+		return make_result(false, "Failed to write GitHub summary", {})
+	}
+	return make_result(true, "", {"message": "GitHub step summary written"})
+}
+
+export func describe_report_module() {
+	return {
+		"module": "report",
+		"description": "Report generation — Markdown, HTML, JUnit XML, TAP, NDJSON, GitHub summary",
+		"exports": ["generate_markdown_report", "generate_html_report", "generate_junit_report", "generate_tap_report", "generate_ndjson_report", "save_report", "save_report_with_options", "print_report", "write_github_summary"],
+		"contract_version": "2.0.0"
+	}
+}

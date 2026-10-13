@@ -1,0 +1,2499 @@
+# Eval assertion checks.
+#
+# Each check function accepts params (dict) and returns a standard
+# result envelope via make_check_error / make_check_success:
+# {
+#   "ok": true|false,
+#   "error": "",
+#   "data": { "check": "...", "message": "...", "details": {...} }
+# }
+#
+# 20 check types supported — see KNOWN_CHECKS() in src/config.kujo
+
+from src.common import dict_get_or, normalize_string, normalize_int, contains_text, make_check_error, make_check_success
+
+# ---------------------------------------------------------------------------
+# Shell command execution helper
+# ---------------------------------------------------------------------------
+
+DANGEROUS_PATTERNS := ["rm -rf", "rm -r", "sudo ", "chmod", "curl |", "wget |", "/dev/", "mkfs", "dd if=", ":(){ :|:& };:", "> /dev/sda", "shutdown", "reboot", "fork bomb", "nc ", "ncat ", "telnet ", "eval ", "$(", "`", "; rm", "|| rm", "&& rm"]
+MAX_OUTPUT_BYTES := 10485760
+MAX_COMMAND_LENGTH := 32768
+
+func normalize_string_list(values) {
+	result := []
+	if type(values) != "array" {
+		return result
+	}
+
+	i := 0
+	while i < len(values) {
+		entry := values[i]
+		if type(entry) == "string" {
+			trimmed := trim(entry)
+			if trimmed != "" {
+				result = push(result, trimmed)
+			}
+		}
+		i := i + 1
+	}
+
+	return result
+}
+
+func normalize_redaction_pattern(raw_pattern) {
+	pattern := normalize_string(raw_pattern, "")
+	if pattern == "" {
+		return ""
+	}
+
+	pattern = to_lower(pattern)
+	pattern = replace(pattern, "(?i)", "")
+	pattern = trim(pattern)
+
+	if pattern == "" {
+		return ""
+	}
+
+	return pattern
+}
+
+func normalize_redaction_patterns(values) {
+	patterns := []
+	if type(values) != "array" {
+		return patterns
+	}
+
+	i := 0
+	while i < len(values) {
+		normalized_pattern := normalize_redaction_pattern(values[i])
+		if normalized_pattern != "" {
+			patterns = append_unique_pattern(patterns, normalized_pattern)
+		}
+		i := i + 1
+	}
+
+	return patterns
+}
+
+func normalize_command_pattern_match_mode(raw_mode) {
+	mode := normalize_string(raw_mode, "substring")
+	if mode == "token" {
+		return "token"
+	}
+	return "substring"
+}
+
+func bool_flag(raw_value, default_value) {
+	if type(raw_value) == "bool" {
+		return raw_value
+	}
+	if type(raw_value) == "int" {
+		return raw_value != 0
+	}
+	if type(raw_value) == "string" {
+		val := trim(raw_value)
+		if val == "1" || val == "true" || val == "TRUE" || val == "yes" || val == "YES" {
+			return true
+		}
+		if val == "0" || val == "false" || val == "FALSE" || val == "no" || val == "NO" {
+			return false
+		}
+	}
+	return default_value
+}
+
+func split_command_tokens(raw_text) {
+	tokens := []
+	text := trim(raw_text)
+	current := ""
+	i := 0
+	while i < len(text) {
+		c := substring(text, i, i + 1)
+		if c == " " || c == "\t" || c == "\n" || c == "\r" {
+			if current != "" {
+				tokens = push(tokens, current)
+				current = ""
+			}
+		} else {
+			current = current + c
+		}
+		i := i + 1
+	}
+
+	if current != "" {
+		tokens = push(tokens, current)
+	}
+
+	return tokens
+}
+
+func normalize_command_for_policy(raw_text) {
+	tokens := split_command_tokens(to_lower(raw_text))
+	if len(tokens) == 0 {
+		return ""
+	}
+
+	result := tokens[0]
+	i := 1
+	while i < len(tokens) {
+		result = result + " " + tokens[i]
+		i := i + 1
+	}
+
+	return result
+}
+
+func contains_token_sequence(command_tokens, pattern_tokens) {
+	if len(pattern_tokens) == 0 {
+		return false
+	}
+	if len(command_tokens) < len(pattern_tokens) {
+		return false
+	}
+
+	start_i := 0
+	while start_i <= (len(command_tokens) - len(pattern_tokens)) {
+		all_match := true
+		pi := 0
+		while pi < len(pattern_tokens) {
+			if command_tokens[start_i + pi] != pattern_tokens[pi] {
+				all_match = false
+			}
+			pi := pi + 1
+		}
+		if all_match {
+			return true
+		}
+		start_i := start_i + 1
+	}
+
+	return false
+}
+
+func policy_pattern_matches(command, pattern, match_mode) {
+	if match_mode == "token" {
+		command_tokens := split_command_tokens(command)
+		pattern_tokens := split_command_tokens(pattern)
+		return contains_token_sequence(command_tokens, pattern_tokens)
+	}
+	return contains_text(command, pattern)
+}
+
+func command_policy_from_params(params) {
+	match_mode_raw := dict_get_or(params, "command_pattern_match_mode", "substring")
+	match_mode := normalize_command_pattern_match_mode(match_mode_raw)
+	if bool_flag(dict_get_or(params, "token_aware_command_policy", false), false) {
+		match_mode = "token"
+	}
+
+	return {
+		"allowed_commands": normalize_string_list(dict_get_or(params, "allowed_commands", [])),
+		"allowed_command_patterns": normalize_string_list(dict_get_or(params, "allowed_command_patterns", [])),
+		"blocked_arg_patterns": normalize_string_list(dict_get_or(params, "blocked_arg_patterns", [])),
+		"command_pattern_match_mode": match_mode,
+		"redaction_audit_mode": bool_flag(dict_get_or(params, "redaction_audit_mode", false), false),
+		"redact_output_patterns": normalize_string_list(dict_get_or(params, "redact_output_patterns", []))
+	}
+}
+
+func is_command_safe(command, allowed_commands, allowed_command_patterns, blocked_arg_patterns, command_pattern_match_mode) {
+	policy_command := normalize_command_for_policy(command)
+	if policy_command == "" {
+		return {
+			"safe": false,
+			"reason": "Command is empty after normalization"
+		}
+	}
+
+	if type(allowed_commands) == "array" && len(allowed_commands) > 0 {
+		found := false
+		aci := 0
+		while aci < len(allowed_commands) {
+			allowed_normalized := normalize_command_for_policy(allowed_commands[aci])
+			if allowed_normalized != "" && (policy_command == allowed_normalized || starts_with(policy_command, allowed_normalized + " ")) {
+				found = true
+			}
+			aci = aci + 1
+		}
+		if found == false {
+			cmd_first_word := ""
+			cmd_tokens := split_command_tokens(policy_command)
+			if len(cmd_tokens) > 0 {
+				cmd_first_word = cmd_tokens[0]
+			}
+			return {
+				"safe": false,
+				"reason": "Command '" + cmd_first_word + "' is not in the allowed list"
+			}
+		}
+	}
+
+	if type(allowed_command_patterns) == "array" && len(allowed_command_patterns) > 0 {
+		pattern_allowed := false
+		api := 0
+		while api < len(allowed_command_patterns) {
+			pattern := normalize_command_for_policy(allowed_command_patterns[api])
+			if pattern != "" && policy_pattern_matches(policy_command, pattern, command_pattern_match_mode) {
+				pattern_allowed = true
+			}
+			api := api + 1
+		}
+		if pattern_allowed == false {
+			return {
+				"safe": false,
+				"reason": "Command does not match any allowed command pattern (mode: " + command_pattern_match_mode + ")"
+			}
+		}
+	}
+
+	if type(blocked_arg_patterns) == "array" && len(blocked_arg_patterns) > 0 {
+		bpi := 0
+		while bpi < len(blocked_arg_patterns) {
+			blocked_pattern := normalize_command_for_policy(blocked_arg_patterns[bpi])
+			if blocked_pattern != "" && policy_pattern_matches(policy_command, blocked_pattern, command_pattern_match_mode) {
+				return {
+					"safe": false,
+					"reason": "Command contains blocked argument pattern: '" + blocked_pattern + "' (mode: " + command_pattern_match_mode + ")"
+				}
+			}
+			bpi := bpi + 1
+		}
+	}
+
+	di := 0
+	while di < len(DANGEROUS_PATTERNS) {
+		raw_pattern := DANGEROUS_PATTERNS[di]
+		pattern := normalize_command_for_policy(raw_pattern)
+		mut dangerous_match_mode := "substring"
+		if len(raw_pattern) > 0 && substring(raw_pattern, len(raw_pattern) - 1, len(raw_pattern)) == " " {
+			dangerous_match_mode = "token"
+		}
+		if pattern != "" && policy_pattern_matches(policy_command, pattern, dangerous_match_mode) {
+			return {
+				"safe": false,
+				"reason": "Command contains dangerous pattern: '" + pattern + "' (mode: " + dangerous_match_mode + ")"
+			}
+		}
+		di := di + 1
+	}
+
+	return {
+		"safe": true,
+		"reason": ""
+	}
+}
+
+func is_path_safe(path, allowed_paths) {
+	normalized_path := normalize_path_for_policy(path)
+	if normalized_path == "" {
+		return {
+			"safe": false,
+			"reason": "Path is empty after normalization"
+		}
+	}
+
+	if has_traversal_segment(normalized_path) {
+		return {
+			"safe": false,
+			"reason": "Path contains '..' traversal"
+		}
+	}
+
+	if normalized_path == "/etc" || starts_with(normalized_path, "/etc/") || normalized_path == "/root" || starts_with(normalized_path, "/root/") || normalized_path == "/var" || starts_with(normalized_path, "/var/") || normalized_path == "/tmp" || starts_with(normalized_path, "/tmp/") {
+		return {
+			"safe": false,
+			"reason": "Path accesses system directories"
+		}
+	}
+
+	if type(allowed_paths) == "array" && len(allowed_paths) > 0 {
+		if path_has_symlink_segment(normalized_path) {
+			return {
+				"safe": false,
+				"reason": "Path resolves through symbolic link segment"
+			}
+		}
+
+		allowed := false
+		ai := 0
+		while ai < len(allowed_paths) {
+			allowed_path := normalize_path_for_policy(allowed_paths[ai])
+			if allowed_path == "." {
+				if starts_with(normalized_path, "/") == false {
+					allowed := true
+				}
+			} else if allowed_path == normalized_path || starts_with(normalized_path, allowed_path + "/") {
+				allowed := true
+			}
+			ai := ai + 1
+		}
+		if allowed == false {
+			return {
+				"safe": false,
+				"reason": "Path is not within allowed directories"
+			}
+		}
+	}
+
+	return {
+		"safe": true,
+		"reason": ""
+	}
+}
+
+func shell_quote_single(value) {
+	return "'" + replace(value, "'", "'\"'\"'") + "'"
+}
+
+func path_has_symlink_segment(normalized_path) {
+	if normalized_path == "" || normalized_path == "." || normalized_path == "/" {
+		return false
+	}
+
+	is_absolute := starts_with(normalized_path, "/")
+	parts := split(normalized_path, "/")
+	current := ""
+	pi := 0
+	while pi < len(parts) {
+		part := parts[pi]
+		if part != "" {
+			if current == "" {
+				if is_absolute {
+					current = "/" + part
+				} else {
+					current = part
+				}
+			} else {
+				current = current + "/" + part
+			}
+
+			probe := execute_status("test -L " + shell_quote_single(current))
+			if probe.success {
+				return true
+			}
+		}
+		pi := pi + 1
+	}
+
+	return false
+}
+
+func normalize_path_for_policy(path) {
+	raw := normalize_string(path, "")
+	raw = trim(raw)
+	if raw == "" {
+		return ""
+	}
+
+	raw = replace(raw, "\\", "/")
+	parts := split(raw, "/")
+	normalized_parts := []
+	pi := 0
+	while pi < len(parts) {
+		part := parts[pi]
+		if part != "" && part != "." {
+			normalized_parts = push(normalized_parts, part)
+		}
+		pi := pi + 1
+	}
+
+	is_absolute := starts_with(raw, "/")
+	result := ""
+	if is_absolute {
+		result = "/"
+	}
+
+	ri := 0
+	while ri < len(normalized_parts) {
+		if is_absolute == false && ri > 0 {
+			result = result + "/"
+		}
+		if is_absolute && ri > 0 {
+			result = result + "/"
+		}
+		result = result + normalized_parts[ri]
+		ri := ri + 1
+	}
+
+	if is_absolute && len(normalized_parts) == 0 {
+		return "/"
+	}
+
+	if is_absolute == false && len(normalized_parts) == 0 {
+		return "."
+	}
+
+	return result
+}
+
+func has_traversal_segment(path) {
+	parts := split(path, "/")
+	pi := 0
+	while pi < len(parts) {
+		if parts[pi] == ".." {
+			return true
+		}
+		pi := pi + 1
+	}
+	return false
+}
+
+func resolve_allowed_paths(params) {
+	allowed_raw := dict_get_or(params, "allowed_paths", [])
+	allowed := []
+	if type(allowed_raw) == "array" {
+		i := 0
+		while i < len(allowed_raw) {
+			normalized_allowed := normalize_path_for_policy(allowed_raw[i])
+			if normalized_allowed != "" {
+				allowed = push(allowed, normalized_allowed)
+			}
+			i := i + 1
+		}
+	}
+	return allowed
+}
+
+func append_unique_pattern(patterns, pattern) {
+	pi := 0
+	while pi < len(patterns) {
+		if patterns[pi] == pattern {
+			return patterns
+		}
+		pi := pi + 1
+	}
+	return push(patterns, pattern)
+}
+
+func redact_sensitive_with_audit(text, custom_patterns) {
+	source := text
+	lower := to_lower(source)
+	result := source
+	hits := 0
+	patterns := []
+
+	if contains_text(source, "sk-") {
+		result = "[REDACTED: API key pattern detected]"
+		hits = hits + 1
+		patterns = append_unique_pattern(patterns, "sk-")
+	}
+	if contains_text(source, "Bearer ") {
+		result = "[REDACTED: auth token detected]"
+		hits = hits + 1
+		patterns = append_unique_pattern(patterns, "Bearer ")
+	}
+	if contains_text(lower, "password=") || contains_text(lower, "\"password\":") {
+		result = "[REDACTED: password detected]"
+		hits = hits + 1
+		patterns = append_unique_pattern(patterns, "password")
+	}
+	if contains_text(lower, "secret=") || contains_text(lower, "\"secret\":") {
+		result = "[REDACTED: secret detected]"
+		hits = hits + 1
+		patterns = append_unique_pattern(patterns, "secret")
+	}
+	if contains_text(lower, "token=") || contains_text(lower, "\"token\":") || contains_text(lower, "\"access_token\":") {
+		result = "[REDACTED: token detected]"
+		hits = hits + 1
+		patterns = append_unique_pattern(patterns, "token")
+	}
+	if contains_text(lower, "api_key=") || contains_text(lower, "apikey=") || contains_text(lower, "\"api_key\":") || contains_text(lower, "\"apikey\":") {
+		result = "[REDACTED: API key detected]"
+		hits = hits + 1
+		patterns = append_unique_pattern(patterns, "api_key")
+	}
+
+	if type(custom_patterns) == "array" && len(custom_patterns) > 0 {
+		cpi := 0
+		while cpi < len(custom_patterns) {
+			custom_pattern := normalize_string(custom_patterns[cpi], "")
+			if custom_pattern != "" {
+				matched := false
+				try {
+					matched = regex_match(source, custom_pattern)
+				} except err {
+					matched = false
+				}
+				if matched {
+					result = "[REDACTED: custom policy pattern detected]"
+					hits = hits + 1
+					patterns = append_unique_pattern(patterns, custom_pattern)
+				}
+			}
+			cpi := cpi + 1
+		}
+	}
+
+	return {
+		"text": result,
+		"hits": hits,
+		"patterns": patterns
+	}
+}
+
+func run_shell_with_policy(command, command_policy) {
+	stdout_val := ""
+	stderr_val := ""
+	exit_val := -1
+	ok_flag := false
+	error_msg := ""
+
+	if type(command) != "string" || trim(command) == "" {
+		error_msg = "Empty or invalid command"
+		return {
+			"stdout": stdout_val,
+			"stderr": stderr_val,
+			"exit_code": exit_val,
+			"ok": ok_flag,
+			"error": error_msg
+		}
+	}
+
+	cmd := trim(command)
+	if len(cmd) > MAX_COMMAND_LENGTH {
+		error_msg = "Command rejected: exceeds maximum length of " + to_string(MAX_COMMAND_LENGTH) + " bytes"
+		return {
+			"stdout": stdout_val,
+			"stderr": stderr_val,
+			"exit_code": exit_val,
+			"ok": ok_flag,
+			"error": error_msg
+		}
+	}
+
+	allowed := normalize_string_list(dict_get_or(command_policy, "allowed_commands", []))
+	allowed_patterns := normalize_string_list(dict_get_or(command_policy, "allowed_command_patterns", []))
+	blocked_patterns := normalize_string_list(dict_get_or(command_policy, "blocked_arg_patterns", []))
+	command_pattern_match_mode := normalize_command_pattern_match_mode(dict_get_or(command_policy, "command_pattern_match_mode", "substring"))
+	redaction_audit_mode := bool_flag(dict_get_or(command_policy, "redaction_audit_mode", false), false)
+	redact_output_patterns := normalize_string_list(dict_get_or(command_policy, "redact_output_patterns", []))
+	timeout_ms := normalize_int(dict_get_or(command_policy, "timeout_ms", 0), 0)
+	if timeout_ms < 0 {
+		timeout_ms = 0
+	}
+	redaction_hits := 0
+	redaction_patterns := []
+
+	safety := is_command_safe(cmd, allowed, allowed_patterns, blocked_patterns, command_pattern_match_mode)
+	if safety["safe"] == false {
+		error_msg = "Command rejected: " + safety["reason"]
+		return {
+			"stdout": stdout_val,
+			"stderr": stderr_val,
+			"exit_code": exit_val,
+			"ok": ok_flag,
+			"error": error_msg,
+			"redaction_hits": redaction_hits,
+			"redaction_patterns": redaction_patterns
+		}
+	}
+
+	try {
+		execute_options := {
+			"max_output_bytes": MAX_OUTPUT_BYTES
+		}
+		if timeout_ms > 0 {
+			execute_options["timeout_ms"] := timeout_ms
+		}
+
+		proc := execute_status(cmd, execute_options)
+
+		stdout_raw := proc.stdout
+		if type(stdout_raw) == "string" {
+			redacted_stdout := redact_sensitive_with_audit(stdout_raw, redact_output_patterns)
+			stdout_val = dict_get_or(redacted_stdout, "text", "")
+			redaction_hits = redaction_hits + normalize_int(dict_get_or(redacted_stdout, "hits", 0), 0)
+			stdout_patterns := dict_get_or(redacted_stdout, "patterns", [])
+			if type(stdout_patterns) == "array" {
+				spi := 0
+				while spi < len(stdout_patterns) {
+					redaction_patterns = append_unique_pattern(redaction_patterns, stdout_patterns[spi])
+					spi := spi + 1
+				}
+			}
+		}
+
+		stderr_raw := proc.stderr
+		if type(stderr_raw) == "string" {
+			redacted_stderr := redact_sensitive_with_audit(stderr_raw, redact_output_patterns)
+			stderr_val = dict_get_or(redacted_stderr, "text", "")
+			redaction_hits = redaction_hits + normalize_int(dict_get_or(redacted_stderr, "hits", 0), 0)
+			stderr_patterns := dict_get_or(redacted_stderr, "patterns", [])
+			if type(stderr_patterns) == "array" {
+				epi := 0
+				while epi < len(stderr_patterns) {
+					redaction_patterns = append_unique_pattern(redaction_patterns, stderr_patterns[epi])
+					epi := epi + 1
+				}
+			}
+		}
+
+		exit_raw := proc.exitcode
+		if type(exit_raw) == "int" {
+			exit_val = exit_raw
+		}
+
+		timed_out := false
+		timed_out_raw := proc.timed_out
+		if type(timed_out_raw) == "bool" {
+			timed_out = timed_out_raw
+		}
+
+		stdout_truncated := false
+		stdout_truncated_raw := proc.stdout_truncated
+		if type(stdout_truncated_raw) == "bool" {
+			stdout_truncated = stdout_truncated_raw
+		}
+
+		stderr_truncated := false
+		stderr_truncated_raw := proc.stderr_truncated
+		if type(stderr_truncated_raw) == "bool" {
+			stderr_truncated = stderr_truncated_raw
+		}
+
+		if stdout_truncated {
+			if stdout_val == "" {
+				stdout_val = "[TRUNCATED: output exceeded " + to_string(MAX_OUTPUT_BYTES) + " byte limit]"
+			} else {
+				stdout_val = stdout_val + "\n[TRUNCATED: output exceeded " + to_string(MAX_OUTPUT_BYTES) + " byte limit]"
+			}
+		}
+		if stderr_truncated {
+			if stderr_val == "" {
+				stderr_val = "[TRUNCATED: output exceeded " + to_string(MAX_OUTPUT_BYTES) + " byte limit]"
+			} else {
+				stderr_val = stderr_val + "\n[TRUNCATED: output exceeded " + to_string(MAX_OUTPUT_BYTES) + " byte limit]"
+			}
+		}
+
+		if timed_out {
+			ok_flag = false
+			if timeout_ms > 0 {
+				error_msg = "Command timed out after " + to_string(timeout_ms) + "ms and was terminated"
+			} else {
+				error_msg = "Command timed out and was terminated"
+			}
+		} else {
+			ok_flag = true
+		}
+	} except err {
+		error_msg = "Failed to execute command: " + cmd
+	}
+
+	return {
+		"stdout": stdout_val,
+		"stderr": stderr_val,
+		"exit_code": exit_val,
+		"ok": ok_flag,
+		"error": error_msg,
+		"timeout_ms": timeout_ms,
+		"redaction_hits": redaction_hits,
+		"redaction_patterns": redaction_patterns,
+		"redaction_audit_enabled": redaction_audit_mode
+	}
+}
+
+func maybe_add_redaction_audit(details, command_policy, shell_result) {
+	if bool_flag(dict_get_or(command_policy, "redaction_audit_mode", false), false) {
+		details["redaction_hits"] := normalize_int(dict_get_or(shell_result, "redaction_hits", 0), 0)
+		details["redaction_patterns"] := dict_get_or(shell_result, "redaction_patterns", [])
+	}
+	return details
+}
+
+func load_path_content_with_optional_cache(params, path) {
+	if has_key(params, "cached_file_content") == 1 {
+		cached := dict_get_or(params, "cached_file_content", "")
+		if type(cached) == "string" {
+			return {
+				"ok": true,
+				"content": cached,
+				"source": "cache"
+			}
+		}
+	}
+
+	content := ""
+	try { content = read_file(path) } except err {
+		return {
+			"ok": false,
+			"content": "",
+			"source": "read_error"
+		}
+	}
+
+	return {
+		"ok": true,
+		"content": content,
+		"source": "file"
+	}
+}
+
+# Execution receives the original command; evidence receives the same redaction
+# policy as stdout/stderr, including configured custom patterns.
+func command_for_evidence(command, params) {
+    patterns := normalize_string_list(dict_get_or(params, "redact_output_patterns", []))
+    redacted := redact_sensitive_with_audit(command, patterns)
+    return dict_get_or(redacted, "text", "")
+}
+
+export func redact_sensitive(text) {
+	redacted := redact_sensitive_with_audit(normalize_string(text, ""), [])
+	return dict_get_or(redacted, "text", "")
+}
+
+export func run_shell(command) {
+	return run_shell_with_policy(command, command_policy_from_params({}))
+}
+
+export func run_shell_with_allowed(command, allowed_commands) {
+	return run_shell_with_policy(command, {
+		"allowed_commands": normalize_string_list(allowed_commands),
+		"allowed_command_patterns": [],
+		"blocked_arg_patterns": [],
+		"command_pattern_match_mode": "substring",
+		"redaction_audit_mode": false
+	})
+}
+
+export func run_shell_with_command_policy(command, command_policy) {
+	return run_shell_with_policy(command, command_policy)
+}
+
+func run_shell_timed_with_policy(command, timeout_ms, command_policy) {
+	if type(timeout_ms) != "int" || timeout_ms <= 0 {
+		return run_shell_with_policy(command, command_policy)
+	}
+
+	policy_with_timeout := {}
+	if type(command_policy) == "dict" {
+		for key in keys(command_policy) {
+			policy_with_timeout[key] := command_policy[key]
+		}
+	}
+	policy_with_timeout["timeout_ms"] := timeout_ms
+
+	return run_shell_with_policy(command, policy_with_timeout)
+}
+
+export func run_shell_timed(command, timeout_ms) {
+	return run_shell_timed_with_policy(command, timeout_ms, command_policy_from_params({}))
+}
+
+# ---------------------------------------------------------------------------
+# Check implementations
+# ---------------------------------------------------------------------------
+
+export func check_command_succeeds(params) {
+	command := normalize_string(dict_get_or(params, "command", ""), "")
+	timeout_ms := normalize_int(dict_get_or(params, "timeout_ms", 0), 0)
+	command_policy := command_policy_from_params(params)
+	if command == "" {
+		return make_check_error("command_succeeds", "No command specified in params.command", {"command": ""})
+	}
+
+	result := {}
+	if timeout_ms > 0 { result = run_shell_timed_with_policy(command, timeout_ms, command_policy) }
+	else { result = run_shell_with_policy(command, command_policy) }
+	ok := result["exit_code"] == 0 && result["ok"] == true
+	details := {
+		"command": command_for_evidence(command, params),
+		"exit_code": result["exit_code"],
+		"stdout": result["stdout"],
+		"stderr": result["stderr"],
+		"allowed_commands": dict_get_or(command_policy, "allowed_commands", []),
+		"allowed_command_patterns": dict_get_or(command_policy, "allowed_command_patterns", []),
+		"blocked_arg_patterns": dict_get_or(command_policy, "blocked_arg_patterns", []),
+		"command_pattern_match_mode": dict_get_or(command_policy, "command_pattern_match_mode", "substring")
+	}
+	details = maybe_add_redaction_audit(details, command_policy, result)
+
+	if ok {
+		return make_check_success("command_succeeds", "Command succeeded (exit 0)", details)
+	}
+	if result["ok"] == false {
+		return make_check_error("command_succeeds", "Command execution failed: " + result["error"], details)
+	}
+	return make_check_error("command_succeeds", "Command failed with exit code " + to_string(result["exit_code"]), details)
+}
+
+export func check_command_fails(params) {
+	command := normalize_string(dict_get_or(params, "command", ""), "")
+	timeout_ms := normalize_int(dict_get_or(params, "timeout_ms", 0), 0)
+	command_policy := command_policy_from_params(params)
+	if command == "" {
+		return make_check_error("command_fails", "No command specified in params.command", {"command": ""})
+	}
+
+	result := {}
+	if timeout_ms > 0 { result = run_shell_timed_with_policy(command, timeout_ms, command_policy) }
+	else { result = run_shell_with_policy(command, command_policy) }
+	details := {
+		"command": command_for_evidence(command, params),
+		"exit_code": result["exit_code"],
+		"stdout": result["stdout"],
+		"stderr": result["stderr"],
+		"allowed_commands": dict_get_or(command_policy, "allowed_commands", []),
+		"allowed_command_patterns": dict_get_or(command_policy, "allowed_command_patterns", []),
+		"blocked_arg_patterns": dict_get_or(command_policy, "blocked_arg_patterns", []),
+		"command_pattern_match_mode": dict_get_or(command_policy, "command_pattern_match_mode", "substring")
+	}
+	details = maybe_add_redaction_audit(details, command_policy, result)
+
+	if result["ok"] == false {
+		return make_check_error("command_fails", "Command execution failed: " + result["error"], details)
+	}
+
+	ok := result["exit_code"] != 0
+
+	if ok {
+		return make_check_success("command_fails", "Command failed as expected (exit " + to_string(result["exit_code"]) + ")", details)
+	}
+	return make_check_error("command_fails", "Command succeeded unexpectedly (exit 0)", details)
+}
+
+export func check_exit_code_equals(params) {
+	command := normalize_string(dict_get_or(params, "command", ""), "")
+	timeout_ms := normalize_int(dict_get_or(params, "timeout_ms", 0), 0)
+	expected_code := normalize_int(dict_get_or(params, "expected", 0), 0)
+	command_policy := command_policy_from_params(params)
+	if command == "" {
+		return make_check_error("exit_code_equals", "No command specified in params.command", {"command": "", "expected": expected_code})
+	}
+
+	result := {}
+	if timeout_ms > 0 { result = run_shell_timed_with_policy(command, timeout_ms, command_policy) }
+	else { result = run_shell_with_policy(command, command_policy) }
+	details := {
+		"command": command_for_evidence(command, params),
+		"expected": expected_code,
+		"actual": result["exit_code"],
+		"stdout": result["stdout"],
+		"stderr": result["stderr"],
+		"allowed_commands": dict_get_or(command_policy, "allowed_commands", []),
+		"allowed_command_patterns": dict_get_or(command_policy, "allowed_command_patterns", []),
+		"blocked_arg_patterns": dict_get_or(command_policy, "blocked_arg_patterns", []),
+		"command_pattern_match_mode": dict_get_or(command_policy, "command_pattern_match_mode", "substring")
+	}
+	details = maybe_add_redaction_audit(details, command_policy, result)
+
+	if result["ok"] == false {
+		return make_check_error("exit_code_equals", "Command execution failed: " + result["error"], details)
+	}
+
+	ok := result["exit_code"] == expected_code
+
+	if ok {
+		return make_check_success("exit_code_equals", "Exit code matched: " + to_string(expected_code), details)
+	}
+	return make_check_error("exit_code_equals", "Expected exit code " + to_string(expected_code) + " but got " + to_string(result["exit_code"]), details)
+}
+
+export func check_file_exists(params) {
+	path := normalize_string(dict_get_or(params, "path", ""), "")
+	if path == "" {
+		return make_check_error("file_exists", "No path specified in params.path", {"path": ""})
+	}
+
+	safety := is_path_safe(path, resolve_allowed_paths(params))
+	if safety["safe"] == false {
+		return make_check_error("file_exists", "Path rejected: " + safety["reason"], {"path": path})
+	}
+
+	exists := path_exists(path) == true
+	if exists {
+		return make_check_success("file_exists", "File exists: " + path, {"path": path, "exists": true})
+	}
+	return make_check_error("file_exists", "File does not exist: " + path, {"path": path, "exists": false})
+}
+
+export func check_file_does_not_exist(params) {
+	path := normalize_string(dict_get_or(params, "path", ""), "")
+	if path == "" {
+		return make_check_error("file_does_not_exist", "No path specified in params.path", {"path": ""})
+	}
+
+	safety := is_path_safe(path, resolve_allowed_paths(params))
+	if safety["safe"] == false {
+		return make_check_error("file_does_not_exist", "Path rejected: " + safety["reason"], {"path": path})
+	}
+
+	exists := path_exists(path) == true
+	if exists == false {
+		return make_check_success("file_does_not_exist", "File does not exist (as expected): " + path, {"path": path, "exists": false})
+	}
+	return make_check_error("file_does_not_exist", "File exists unexpectedly: " + path, {"path": path, "exists": true})
+}
+
+export func check_file_contains(params) {
+	path := normalize_string(dict_get_or(params, "path", ""), "")
+	expected := normalize_string(dict_get_or(params, "expected", ""), "")
+
+	if path == "" { return make_check_error("file_contains", "No path specified", {"path": "", "expected": expected}) }
+	if expected == "" { return make_check_error("file_contains", "No expected text specified", {"path": path, "expected": ""}) }
+
+	safety := is_path_safe(path, resolve_allowed_paths(params))
+	if safety["safe"] == false { return make_check_error("file_contains", "Path rejected: " + safety["reason"], {"path": path, "expected": expected}) }
+
+	if path_exists(path) == false { return make_check_error("file_contains", "File not found: " + path, {"path": path, "expected": expected, "found": false}) }
+
+	content := ""
+	if has_key(params, "cached_file_content") == 1 {
+		cached := dict_get_or(params, "cached_file_content", "")
+		if type(cached) == "string" {
+			content = cached
+		}
+	}
+	if content == "" {
+		try { content = read_file(path) } except err {
+			return make_check_error("file_contains", "Failed to read file: " + path, {"path": path, "expected": expected, "found": false, "error": "read_failed"})
+		}
+	}
+
+	found := contains_text(content, expected)
+	if found { return make_check_success("file_contains", "File contains expected text", {"path": path, "expected": expected, "found": true, "content_length": len(content)}) }
+	return make_check_error("file_contains", "File does not contain expected text", {"path": path, "expected": expected, "found": false, "content_length": len(content)})
+}
+
+export func check_file_does_not_contain(params) {
+	path := normalize_string(dict_get_or(params, "path", ""), "")
+	unexpected := normalize_string(dict_get_or(params, "expected", ""), "")
+	if path == "" { return make_check_error("file_does_not_contain", "No path specified", {"path": "", "expected": unexpected}) }
+	if unexpected == "" { return make_check_error("file_does_not_contain", "No expected text specified", {"path": path, "expected": ""}) }
+
+	safety := is_path_safe(path, resolve_allowed_paths(params))
+	if safety["safe"] == false { return make_check_error("file_does_not_contain", "Path rejected: " + safety["reason"], {"path": path, "expected": unexpected}) }
+
+	if path_exists(path) == false { return make_check_success("file_does_not_contain", "File does not exist (trivially does not contain text): " + path, {"path": path, "expected": unexpected, "found": false}) }
+
+	content := ""
+	if has_key(params, "cached_file_content") == 1 {
+		cached := dict_get_or(params, "cached_file_content", "")
+		if type(cached) == "string" {
+			content = cached
+		}
+	}
+	if content == "" {
+		try { content = read_file(path) } except err {
+			return make_check_success("file_does_not_contain", "Could not read file (trivially does not contain text)", {"path": path, "expected": unexpected, "found": false})
+		}
+	}
+
+	found := contains_text(content, unexpected)
+	if found == false { return make_check_success("file_does_not_contain", "File does not contain unexpected text (as expected)", {"path": path, "expected": unexpected, "found": false, "content_length": len(content)}) }
+	return make_check_error("file_does_not_contain", "File contains unexpected text", {"path": path, "expected": unexpected, "found": true, "content_length": len(content)})
+}
+
+export func check_output_contains(params) {
+	command := normalize_string(dict_get_or(params, "command", ""), "")
+	expected := normalize_string(dict_get_or(params, "expected", ""), "")
+	command_policy := command_policy_from_params(params)
+	if command == "" { return make_check_error("output_contains", "No command specified", {"command": "", "expected": expected}) }
+	if expected == "" { return make_check_error("output_contains", "No expected text specified", {"command": command_for_evidence(command, params), "expected": ""}) }
+
+	result := run_shell_with_policy(command, command_policy)
+	if result["ok"] == false {
+		details := {
+			"command": command_for_evidence(command, params),
+			"expected": expected,
+			"exit_code": result["exit_code"],
+			"stdout": result["stdout"],
+			"allowed_commands": dict_get_or(command_policy, "allowed_commands", []),
+			"allowed_command_patterns": dict_get_or(command_policy, "allowed_command_patterns", []),
+			"blocked_arg_patterns": dict_get_or(command_policy, "blocked_arg_patterns", []),
+			"command_pattern_match_mode": dict_get_or(command_policy, "command_pattern_match_mode", "substring")
+		}
+		details = maybe_add_redaction_audit(details, command_policy, result)
+		return make_check_error("output_contains", "Command execution failed: " + result["error"], details)
+	}
+
+	stdout := result["stdout"]
+	found := contains_text(stdout, expected)
+	details := {
+		"command": command_for_evidence(command, params),
+		"expected": expected,
+		"found": found,
+		"exit_code": result["exit_code"],
+		"stdout": stdout,
+		"allowed_commands": dict_get_or(command_policy, "allowed_commands", []),
+		"allowed_command_patterns": dict_get_or(command_policy, "allowed_command_patterns", []),
+		"blocked_arg_patterns": dict_get_or(command_policy, "blocked_arg_patterns", []),
+		"command_pattern_match_mode": dict_get_or(command_policy, "command_pattern_match_mode", "substring")
+	}
+	details = maybe_add_redaction_audit(details, command_policy, result)
+
+	if found { return make_check_success("output_contains", "Output contains expected text", details) }
+	return make_check_error("output_contains", "Output does not contain expected text", details)
+}
+
+export func check_output_does_not_contain(params) {
+	command := normalize_string(dict_get_or(params, "command", ""), "")
+	unexpected := normalize_string(dict_get_or(params, "expected", ""), "")
+	command_policy := command_policy_from_params(params)
+	if command == "" { return make_check_error("output_does_not_contain", "No command specified", {"command": "", "expected": unexpected}) }
+	if unexpected == "" { return make_check_error("output_does_not_contain", "No expected text specified", {"command": command_for_evidence(command, params), "expected": ""}) }
+
+	result := run_shell_with_policy(command, command_policy)
+	if result["ok"] == false {
+		details := {
+			"command": command_for_evidence(command, params),
+			"expected": unexpected,
+			"exit_code": result["exit_code"],
+			"stdout": result["stdout"],
+			"allowed_commands": dict_get_or(command_policy, "allowed_commands", []),
+			"allowed_command_patterns": dict_get_or(command_policy, "allowed_command_patterns", []),
+			"blocked_arg_patterns": dict_get_or(command_policy, "blocked_arg_patterns", []),
+			"command_pattern_match_mode": dict_get_or(command_policy, "command_pattern_match_mode", "substring")
+		}
+		details = maybe_add_redaction_audit(details, command_policy, result)
+		return make_check_error("output_does_not_contain", "Command execution failed: " + result["error"], details)
+	}
+
+	stdout := result["stdout"]
+	found := contains_text(stdout, unexpected)
+	details := {
+		"command": command_for_evidence(command, params),
+		"expected": unexpected,
+		"found": found,
+		"exit_code": result["exit_code"],
+		"stdout": stdout,
+		"allowed_commands": dict_get_or(command_policy, "allowed_commands", []),
+		"allowed_command_patterns": dict_get_or(command_policy, "allowed_command_patterns", []),
+		"blocked_arg_patterns": dict_get_or(command_policy, "blocked_arg_patterns", []),
+		"command_pattern_match_mode": dict_get_or(command_policy, "command_pattern_match_mode", "substring")
+	}
+	details = maybe_add_redaction_audit(details, command_policy, result)
+
+	if found == false { return make_check_success("output_does_not_contain", "Output does not contain unexpected text (as expected)", details) }
+	return make_check_error("output_does_not_contain", "Output contains unexpected text", details)
+}
+
+export func check_json_matches_shape(params) {
+	path := normalize_string(dict_get_or(params, "path", ""), "")
+	expected_shape := normalize_string(dict_get_or(params, "shape", ""), "")
+
+	source := ""
+	if path != "" {
+		safety := is_path_safe(path, resolve_allowed_paths(params))
+		if safety["safe"] == false {
+			return make_check_error("json_matches_shape", "Path rejected: " + safety["reason"], {"path": path, "shape": expected_shape, "error": "path_rejected"})
+		}
+		if path_exists(path) == false {
+			return make_check_error("json_matches_shape", "JSON file not found: " + path, {"path": path, "shape": expected_shape, "error": "file_not_found"})
+		}
+		content_result := load_path_content_with_optional_cache(params, path)
+		if dict_get_or(content_result, "ok", false) == false {
+			return make_check_error("json_matches_shape", "Failed to read JSON file: " + path, {"path": path, "shape": expected_shape, "error": "read_failed"})
+		}
+		source = normalize_string(dict_get_or(content_result, "content", ""), "")
+	} else {
+		source = normalize_string(dict_get_or(params, "json", ""), "")
+		if source == "" {
+			return make_check_error("json_matches_shape", "No JSON source specified. Provide params.path or params.json", {"path": "", "shape": expected_shape})
+		}
+	}
+
+	data := {}
+	try {
+		data = parse_json(source)
+	} except err {
+		return make_check_error("json_matches_shape", "Failed to parse JSON", {"path": path, "shape": expected_shape, "error": "parse_failed"})
+	}
+
+	if type(data) != "dict" {
+		return make_check_error("json_matches_shape", "JSON root must be an object for shape matching", {"path": path, "shape": expected_shape, "actual_type": type(data)})
+	}
+
+	required_keys_raw := dict_get_or(params, "required_keys", [])
+	required_keys := []
+	if type(required_keys_raw) == "array" {
+		required_keys = required_keys_raw
+	}
+	if len(required_keys) == 0 && expected_shape != "" {
+		parts := split(expected_shape, ",")
+		k := 0
+		while k < len(parts) {
+			trimmed := trim(parts[k])
+			if trimmed != "" {
+				required_keys := push(required_keys, trimmed)
+			}
+			k := k + 1
+		}
+	}
+
+	if len(required_keys) == 0 {
+		return make_check_success("json_matches_shape", "No shape requirements specified (trivially passes)", {"path": path, "matched": true})
+	}
+
+	missing_keys := []
+	extra_keys := []
+
+	for data_key in keys(data) {
+		found_in_required := false
+		m := 0
+		while m < len(required_keys) {
+			if required_keys[m] == data_key {
+				found_in_required := true
+			}
+			m := m + 1
+		}
+		if found_in_required == false {
+			extra_keys := push(extra_keys, data_key)
+		}
+	}
+
+	n := 0
+	while n < len(required_keys) {
+		key := required_keys[n]
+		if has_key(data, key) == 0 {
+			missing_keys := push(missing_keys, key)
+		}
+		n := n + 1
+	}
+
+	if len(missing_keys) > 0 {
+		msg := ""
+		if len(missing_keys) > 0 {
+			msg = "Missing required keys: "
+			p := 0
+			while p < len(missing_keys) {
+				if p > 0 {
+					msg = msg + ", "
+				}
+				msg = msg + missing_keys[p]
+				p := p + 1
+			}
+		}
+		return make_check_error("json_matches_shape", msg, {
+			"path": path,
+			"required_keys": required_keys,
+			"missing_keys": missing_keys,
+			"extra_keys": extra_keys,
+			"matched": false
+		})
+	}
+
+	return make_check_success("json_matches_shape", "JSON matches expected shape", {
+		"path": path,
+		"required_keys": required_keys,
+		"missing_keys": [],
+		"extra_keys": extra_keys,
+		"matched": true
+	})
+}
+
+export func check_snapshot_matches(params) {
+	from src.snapshot import save_snapshot, compare_snapshot
+
+	name := normalize_string(dict_get_or(params, "name", ""), "")
+	content := normalize_string(dict_get_or(params, "content", ""), "")
+	command := normalize_string(dict_get_or(params, "command", ""), "")
+	command_policy := command_policy_from_params(params)
+	snapshot_dir := normalize_string(dict_get_or(params, "snapshot_dir", ""), "./snapshots")
+	update := normalize_string(dict_get_or(params, "update", ""), "")
+
+	if name == "" { return make_check_error("snapshot_matches", "No snapshot name specified", {}) }
+
+	actual_content := content
+	if actual_content == "" && command != "" {
+		result := run_shell_with_policy(command, command_policy)
+		if result["ok"] == false {
+			failure_details := {
+				"name": name,
+				"command": command_for_evidence(command, params),
+				"allowed_commands": dict_get_or(command_policy, "allowed_commands", []),
+				"allowed_command_patterns": dict_get_or(command_policy, "allowed_command_patterns", []),
+				"blocked_arg_patterns": dict_get_or(command_policy, "blocked_arg_patterns", []),
+				"command_pattern_match_mode": dict_get_or(command_policy, "command_pattern_match_mode", "substring")
+			}
+			failure_details = maybe_add_redaction_audit(failure_details, command_policy, result)
+			return make_check_error("snapshot_matches", "Command execution failed: " + result["error"], failure_details)
+		}
+		actual_content = result["stdout"]
+	}
+
+	if actual_content == "" && command == "" { return make_check_error("snapshot_matches", "No content or command specified", {"name": name}) }
+
+	if update == "true" || update == "1" {
+		save_result := save_snapshot(snapshot_dir, name, actual_content)
+		save_data := dict_get_or(save_result, "data", {})
+		if dict_get_or(save_result, "ok", false) == false {
+			return make_check_error("snapshot_matches", dict_get_or(save_result, "error", "Failed to update snapshot"), {
+				"name": name,
+				"updated": false,
+				"path": dict_get_or(save_data, "path", "")
+			})
+		}
+		return make_check_success("snapshot_matches", "Snapshot updated: " + name, {"name": name, "updated": true, "path": dict_get_or(save_data, "path", "")})
+	}
+
+	compare_result := compare_snapshot(snapshot_dir, name, actual_content)
+	compare_data := dict_get_or(compare_result, "data", {})
+	ok := dict_get_or(compare_data, "match", 0) == 1
+	if ok {
+		return make_check_success("snapshot_matches", "Snapshot matches: " + name, {"name": name, "match": true, "diff": "", "snapshot_path": dict_get_or(compare_data, "snapshot_path", "")})
+	}
+	return make_check_error("snapshot_matches", dict_get_or(compare_data, "message", "Snapshot does not match"), {"name": name, "match": false, "diff": dict_get_or(compare_data, "diff", ""), "snapshot_path": dict_get_or(compare_data, "snapshot_path", "")})
+}
+
+export func check_directory_diff(params) {
+	dir_a := normalize_string(dict_get_or(params, "dir_a", ""), "")
+	dir_b := normalize_string(dict_get_or(params, "dir_b", ""), "")
+	allowed_paths := resolve_allowed_paths(params)
+
+	if dir_a == "" || dir_b == "" {
+		return make_check_error("directory_diff", "Both dir_a and dir_b must be specified", {"dir_a": dir_a, "dir_b": dir_b})
+	}
+
+	safety_a := is_path_safe(dir_a, allowed_paths)
+	safety_b := is_path_safe(dir_b, allowed_paths)
+	if safety_a["safe"] == false {
+		return make_check_error("directory_diff", "Directory A rejected: " + safety_a["reason"], {"dir_a": dir_a, "dir_b": dir_b})
+	}
+	if safety_b["safe"] == false {
+		return make_check_error("directory_diff", "Directory B rejected: " + safety_b["reason"], {"dir_a": dir_a, "dir_b": dir_b})
+	}
+
+	if path_exists(dir_a) == false {
+		return make_check_error("directory_diff", "Directory A not found: " + dir_a, {"dir_a": dir_a, "dir_b": dir_b})
+	}
+
+	if path_exists(dir_b) == false {
+		return make_check_error("directory_diff", "Directory B not found: " + dir_b, {"dir_a": dir_a, "dir_b": dir_b})
+	}
+
+	a_files := []
+	try {
+		a_files = list_dir(dir_a)
+	} except err {
+		return make_check_error("directory_diff", "Failed to list directory A: " + dir_a, {"dir_a": dir_a, "dir_b": dir_b})
+	}
+
+	b_files := []
+	try {
+		b_files = list_dir(dir_b)
+	} except err {
+		return make_check_error("directory_diff", "Failed to list directory B: " + dir_b, {"dir_a": dir_a, "dir_b": dir_b})
+	}
+
+	only_in_a := []
+	only_in_b := []
+	different := []
+
+	b_map := {}
+	bi := 0
+	while bi < len(b_files) {
+		b_map[b_files[bi]] := 1
+		bi := bi + 1
+	}
+
+	ai := 0
+	while ai < len(a_files) {
+		afile := a_files[ai]
+		if has_key(b_map, afile) == 0 {
+			only_in_a := push(only_in_a, afile)
+		} else {
+			a_content := ""
+			b_content := ""
+			try {
+				a_content = read_file(dir_a + "/" + afile)
+				b_content = read_file(dir_b + "/" + afile)
+			} except err {}
+
+			if a_content != b_content {
+				different := push(different, afile)
+			}
+		}
+		ai := ai + 1
+	}
+
+	a_map := {}
+	aj := 0
+	while aj < len(a_files) {
+		a_map[a_files[aj]] := 1
+		aj := aj + 1
+	}
+
+	bj := 0
+	while bj < len(b_files) {
+		if has_key(a_map, b_files[bj]) == 0 {
+			only_in_b := push(only_in_b, b_files[bj])
+		}
+		bj := bj + 1
+	}
+
+	has_diff := len(only_in_a) > 0 || len(only_in_b) > 0 || len(different) > 0
+	message := ""
+	if has_diff == false {
+		message = "Directories are identical"
+	} else {
+		msg_parts := []
+		if len(only_in_a) > 0 {
+			msg_parts := push(msg_parts, to_string(len(only_in_a)) + " files only in A")
+		}
+		if len(only_in_b) > 0 {
+			msg_parts := push(msg_parts, to_string(len(only_in_b)) + " files only in B")
+		}
+		if len(different) > 0 {
+			msg_parts := push(msg_parts, to_string(len(different)) + " files differ")
+		}
+		message = "Directories differ: "
+		pi := 0
+		while pi < len(msg_parts) {
+			if pi > 0 {
+				message = message + ", "
+			}
+			message = message + msg_parts[pi]
+			pi := pi + 1
+		}
+	}
+
+	details := {
+		"dir_a": dir_a,
+		"dir_b": dir_b,
+		"only_in_a": only_in_a,
+		"only_in_b": only_in_b,
+		"different": different
+	}
+	if has_diff == false {
+		return make_check_success("directory_diff", message, details)
+	}
+	return make_check_error("directory_diff", message, details)
+}
+
+# ---------------------------------------------------------------------------
+# Check dispatcher
+# ---------------------------------------------------------------------------
+
+export func check_file_matches_glob(params) {
+	path := normalize_string(dict_get_or(params, "path", ""), "")
+	pattern := normalize_string(dict_get_or(params, "pattern", ""), "")
+
+	if path == "" {
+		return make_check_error("file_matches_glob", "No path specified", {"path": ""})
+	}
+	if pattern == "" {
+		return make_check_error("file_matches_glob", "No pattern specified", {"path": path})
+	}
+
+	safety := is_path_safe(path, resolve_allowed_paths(params))
+	if safety["safe"] == false {
+		return make_check_error("file_matches_glob", "Path rejected: " + safety["reason"], {"path": path})
+	}
+
+	if path_exists(path) == false {
+		return make_check_error("file_matches_glob", "File not found: " + path, {"path": path, "pattern": pattern})
+	}
+
+	content_result := load_path_content_with_optional_cache(params, path)
+	if dict_get_or(content_result, "ok", false) == false {
+		return make_check_error("file_matches_glob", "Failed to read file: " + path, {"path": path, "pattern": pattern})
+	}
+	content := normalize_string(dict_get_or(content_result, "content", ""), "")
+
+	found := contains_text(content, pattern)
+	if found {
+		return make_check_success("file_matches_glob", "File matches pattern: " + pattern, {"path": path, "pattern": pattern})
+	}
+	return make_check_error("file_matches_glob", "File does not match pattern: " + pattern, {"path": path, "pattern": pattern})
+}
+
+export func check_output_matches_glob(params) {
+	command := normalize_string(dict_get_or(params, "command", ""), "")
+	pattern := normalize_string(dict_get_or(params, "pattern", ""), "")
+	command_policy := command_policy_from_params(params)
+
+	if command == "" {
+		return make_check_error("output_matches_glob", "No command specified", {"command": "", "pattern": pattern})
+	}
+	if pattern == "" {
+		return make_check_error("output_matches_glob", "No pattern specified", {"command": command_for_evidence(command, params), "pattern": ""})
+	}
+
+	result := run_shell_with_policy(command, command_policy)
+	if result["ok"] == false {
+		details := {
+			"command": command_for_evidence(command, params),
+			"pattern": pattern,
+			"exit_code": result["exit_code"],
+			"allowed_commands": dict_get_or(command_policy, "allowed_commands", []),
+			"allowed_command_patterns": dict_get_or(command_policy, "allowed_command_patterns", []),
+			"blocked_arg_patterns": dict_get_or(command_policy, "blocked_arg_patterns", []),
+			"command_pattern_match_mode": dict_get_or(command_policy, "command_pattern_match_mode", "substring")
+		}
+		details = maybe_add_redaction_audit(details, command_policy, result)
+		return make_check_error("output_matches_glob", "Command execution failed: " + result["error"], details)
+	}
+
+	stdout := result["stdout"]
+	found := contains_text(stdout, pattern)
+	details := {
+		"command": command_for_evidence(command, params),
+		"pattern": pattern,
+		"exit_code": result["exit_code"],
+		"allowed_commands": dict_get_or(command_policy, "allowed_commands", []),
+		"allowed_command_patterns": dict_get_or(command_policy, "allowed_command_patterns", []),
+		"blocked_arg_patterns": dict_get_or(command_policy, "blocked_arg_patterns", []),
+		"command_pattern_match_mode": dict_get_or(command_policy, "command_pattern_match_mode", "substring")
+	}
+	details = maybe_add_redaction_audit(details, command_policy, result)
+
+	if found {
+		return make_check_success("output_matches_glob", "Output matches pattern: " + pattern, details)
+	}
+	return make_check_error("output_matches_glob", "Output does not match pattern: " + pattern, details)
+}
+
+func stringify_json_value(value) {
+	if type(value) == "string" {
+		return value
+	}
+	if type(value) == "int" || type(value) == "float" {
+		return to_string(value)
+	}
+	if type(value) == "bool" {
+		if value {
+			return "true"
+		}
+		return "false"
+	}
+	return to_json(value)
+}
+
+func normalize_expected_json_type(raw_type) {
+	type_name := to_lower(normalize_string(raw_type, ""))
+	if type_name == "string" || type_name == "number" || type_name == "int" || type_name == "float" || type_name == "bool" || type_name == "boolean" || type_name == "array" || type_name == "object" || type_name == "dict" {
+		return type_name
+	}
+	return ""
+}
+
+func value_matches_expected_json_type(value, expected_type) {
+	type_name := normalize_expected_json_type(expected_type)
+	if type_name == "" {
+		return true
+	}
+
+	if type_name == "string" {
+		return type(value) == "string"
+	}
+	if type_name == "number" || type_name == "int" || type_name == "float" {
+		return type(value) == "int" || type(value) == "float"
+	}
+	if type_name == "bool" || type_name == "boolean" {
+		return type(value) == "bool"
+	}
+	if type_name == "array" {
+		return type(value) == "array"
+	}
+	if type_name == "object" || type_name == "dict" {
+		return type(value) == "dict"
+	}
+
+	return false
+}
+
+func parse_json_path_tokens(json_path) {
+	trimmed := normalize_string(json_path, "")
+	if trimmed == "" {
+		return {
+			"ok": false,
+			"error": "json_path cannot be empty",
+			"tokens": []
+		}
+	}
+
+	tokens := []
+	current := ""
+	i := 0
+	while i < len(trimmed) {
+		ch := trimmed[i]
+		if ch == "." {
+			if current != "" {
+				tokens = push(tokens, {
+					"kind": "key",
+					"value": current
+				})
+				current = ""
+			}
+		} else if ch == "[" {
+			if current != "" {
+				tokens = push(tokens, {
+					"kind": "key",
+					"value": current
+				})
+				current = ""
+			}
+
+			index_value := ""
+			i := i + 1
+			while i < len(trimmed) && trimmed[i] != "]" {
+				index_value = index_value + trimmed[i]
+				i := i + 1
+			}
+
+			if i >= len(trimmed) {
+				return {
+					"ok": false,
+					"error": "json_path has unterminated array index",
+					"tokens": []
+				}
+			}
+
+			index_int := normalize_int(index_value, -1)
+			if index_int < 0 {
+				return {
+					"ok": false,
+					"error": "json_path contains invalid array index: " + index_value,
+					"tokens": []
+				}
+			}
+
+			tokens = push(tokens, {
+				"kind": "index",
+				"value": index_int
+			})
+		} else {
+			current = current + ch
+		}
+
+		i := i + 1
+	}
+
+	if current != "" {
+		tokens = push(tokens, {
+			"kind": "key",
+			"value": current
+		})
+	}
+
+	if len(tokens) == 0 {
+		return {
+			"ok": false,
+			"error": "json_path does not contain any addressable tokens",
+			"tokens": []
+		}
+	}
+
+	return {
+		"ok": true,
+		"error": "",
+		"tokens": tokens
+	}
+}
+
+func resolve_json_path_value(data, json_path) {
+	parsed := parse_json_path_tokens(json_path)
+	if dict_get_or(parsed, "ok", false) == false {
+		return {
+			"ok": false,
+			"error": dict_get_or(parsed, "error", "Invalid json_path"),
+			"value": ""
+		}
+	}
+
+	tokens := dict_get_or(parsed, "tokens", [])
+	current := data
+	i := 0
+	while i < len(tokens) {
+		token := tokens[i]
+		kind := normalize_string(dict_get_or(token, "kind", ""), "")
+
+		if kind == "key" {
+			key_name := normalize_string(dict_get_or(token, "value", ""), "")
+			if type(current) != "dict" || has_key(current, key_name) == 0 {
+				return {
+					"ok": false,
+					"error": "Path not found at key: " + key_name,
+					"value": ""
+				}
+			}
+			current = current[key_name]
+		} else if kind == "index" {
+			index_value := normalize_int(dict_get_or(token, "value", -1), -1)
+			if type(current) != "array" {
+				return {
+					"ok": false,
+					"error": "Path segment expects array index but value is not an array",
+					"value": ""
+				}
+			}
+			if index_value < 0 || index_value >= len(current) {
+				return {
+					"ok": false,
+					"error": "Array index out of range: " + to_string(index_value),
+					"value": ""
+				}
+			}
+			current = current[index_value]
+		} else {
+			return {
+				"ok": false,
+				"error": "Unknown json_path token kind: " + kind,
+				"value": ""
+			}
+		}
+
+		i := i + 1
+	}
+
+	return {
+		"ok": true,
+		"error": "",
+		"value": current
+	}
+}
+
+export func check_json_value_equals(params) {
+	path := normalize_string(dict_get_or(params, "path", ""), "")
+	json_path := normalize_string(dict_get_or(params, "json_path", ""), "")
+	expected := dict_get_or(params, "expected", "")
+	expected_type := normalize_expected_json_type(dict_get_or(params, "expected_type", ""))
+
+	source := ""
+	if path != "" {
+		safety := is_path_safe(path, resolve_allowed_paths(params))
+		if safety["safe"] == false {
+			return make_check_error("json_value_equals", "Path rejected", {"path": path})
+		}
+		if path_exists(path) == false {
+			return make_check_error("json_value_equals", "File not found: " + path, {"path": path})
+		}
+		content_result := load_path_content_with_optional_cache(params, path)
+		if dict_get_or(content_result, "ok", false) == false {
+			return make_check_error("json_value_equals", "Failed to read file", {"path": path})
+		}
+		source = normalize_string(dict_get_or(content_result, "content", ""), "")
+	} else {
+		source = normalize_string(dict_get_or(params, "json", ""), "")
+	}
+
+	if source == "" || json_path == "" {
+		return make_check_error("json_value_equals", "Missing source or json_path", {"json_path": json_path})
+	}
+
+	data := {}
+	try { data = parse_json(source) } except err {
+		return make_check_error("json_value_equals", "Failed to parse JSON", {"json_path": json_path})
+	}
+
+	resolved := resolve_json_path_value(data, json_path)
+	if dict_get_or(resolved, "ok", false) == false {
+		return make_check_error("json_value_equals", "Path not found: " + json_path, {
+			"json_path": json_path,
+			"resolver_error": dict_get_or(resolved, "error", "")
+		})
+	}
+
+	current := dict_get_or(resolved, "value", "")
+	if expected_type != "" {
+		if value_matches_expected_json_type(current, expected_type) == false {
+			return make_check_error("json_value_equals", "Type assertion failed at " + json_path, {
+				"json_path": json_path,
+				"expected_type": expected_type,
+				"actual_type": type(current)
+			})
+		}
+	}
+
+	actual_str := stringify_json_value(current)
+	expected_str := stringify_json_value(expected)
+
+	if actual_str == expected_str {
+		return make_check_success("json_value_equals", "Value matches at " + json_path, {
+			"json_path": json_path,
+			"expected": expected_str,
+			"actual": actual_str,
+			"expected_type": expected_type
+		})
+	}
+	return make_check_error("json_value_equals", "Expected " + expected_str + " but got " + actual_str, {
+		"json_path": json_path,
+		"expected": expected_str,
+		"actual": actual_str,
+		"expected_type": expected_type
+	})
+}
+
+export func check_command_stdout_json_path_equals(params) {
+	command := normalize_string(dict_get_or(params, "command", ""), "")
+	json_path := normalize_string(dict_get_or(params, "json_path", ""), "")
+	expected := dict_get_or(params, "expected", "")
+	expected_type := normalize_expected_json_type(dict_get_or(params, "expected_type", ""))
+	command_policy := command_policy_from_params(params)
+
+	if command == "" { return make_check_error("command_stdout_json_path_equals", "No command specified", {"json_path": json_path}) }
+	if json_path == "" { return make_check_error("command_stdout_json_path_equals", "No json_path specified", {"command": command_for_evidence(command, params)}) }
+
+	result := run_shell_with_policy(command, command_policy)
+	if result["ok"] == false {
+		failure_details := {
+			"command": command_for_evidence(command, params),
+			"json_path": json_path,
+			"allowed_commands": dict_get_or(command_policy, "allowed_commands", []),
+			"allowed_command_patterns": dict_get_or(command_policy, "allowed_command_patterns", []),
+			"blocked_arg_patterns": dict_get_or(command_policy, "blocked_arg_patterns", []),
+			"command_pattern_match_mode": dict_get_or(command_policy, "command_pattern_match_mode", "substring")
+		}
+		failure_details = maybe_add_redaction_audit(failure_details, command_policy, result)
+		return make_check_error("command_stdout_json_path_equals", "Command failed: " + result["error"], failure_details)
+	}
+
+	source := result["stdout"]
+	data := {}
+	try { data = parse_json(source) } except err {
+		parse_details := {
+			"command": command_for_evidence(command, params),
+			"json_path": json_path,
+			"allowed_commands": dict_get_or(command_policy, "allowed_commands", []),
+			"allowed_command_patterns": dict_get_or(command_policy, "allowed_command_patterns", []),
+			"blocked_arg_patterns": dict_get_or(command_policy, "blocked_arg_patterns", []),
+			"command_pattern_match_mode": dict_get_or(command_policy, "command_pattern_match_mode", "substring")
+		}
+		parse_details = maybe_add_redaction_audit(parse_details, command_policy, result)
+		return make_check_error("command_stdout_json_path_equals", "Failed to parse stdout as JSON", parse_details)
+	}
+
+	resolved := resolve_json_path_value(data, json_path)
+	if dict_get_or(resolved, "ok", false) == false {
+		missing_path_details := {
+			"command": command_for_evidence(command, params),
+			"json_path": json_path,
+			"resolver_error": dict_get_or(resolved, "error", ""),
+			"allowed_commands": dict_get_or(command_policy, "allowed_commands", []),
+			"allowed_command_patterns": dict_get_or(command_policy, "allowed_command_patterns", []),
+			"blocked_arg_patterns": dict_get_or(command_policy, "blocked_arg_patterns", []),
+			"command_pattern_match_mode": dict_get_or(command_policy, "command_pattern_match_mode", "substring")
+		}
+		missing_path_details = maybe_add_redaction_audit(missing_path_details, command_policy, result)
+		return make_check_error("command_stdout_json_path_equals", "Path not found: " + json_path, missing_path_details)
+	}
+
+	current := dict_get_or(resolved, "value", "")
+	if expected_type != "" {
+		if value_matches_expected_json_type(current, expected_type) == false {
+			type_details := {
+				"command": command_for_evidence(command, params),
+				"json_path": json_path,
+				"expected_type": expected_type,
+				"actual_type": type(current),
+				"allowed_commands": dict_get_or(command_policy, "allowed_commands", []),
+				"allowed_command_patterns": dict_get_or(command_policy, "allowed_command_patterns", []),
+				"blocked_arg_patterns": dict_get_or(command_policy, "blocked_arg_patterns", []),
+				"command_pattern_match_mode": dict_get_or(command_policy, "command_pattern_match_mode", "substring")
+			}
+			type_details = maybe_add_redaction_audit(type_details, command_policy, result)
+			return make_check_error("command_stdout_json_path_equals", "Type assertion failed at " + json_path, type_details)
+		}
+	}
+
+	actual_str := stringify_json_value(current)
+	expected_str := stringify_json_value(expected)
+
+	details := {
+		"command": command_for_evidence(command, params),
+		"json_path": json_path,
+		"expected_type": expected_type,
+		"expected": expected_str,
+		"actual": actual_str,
+		"allowed_commands": dict_get_or(command_policy, "allowed_commands", []),
+		"allowed_command_patterns": dict_get_or(command_policy, "allowed_command_patterns", []),
+		"blocked_arg_patterns": dict_get_or(command_policy, "blocked_arg_patterns", []),
+		"command_pattern_match_mode": dict_get_or(command_policy, "command_pattern_match_mode", "substring")
+	}
+	details = maybe_add_redaction_audit(details, command_policy, result)
+
+	if actual_str == expected_str {
+		return make_check_success("command_stdout_json_path_equals", "Value matches at " + json_path, details)
+	}
+	return make_check_error("command_stdout_json_path_equals", "Expected " + expected_str + " but got " + actual_str, details)
+}
+
+export func check_file_matches_regex(params) {
+	path := normalize_string(dict_get_or(params, "path", ""), "")
+	pattern := normalize_string(dict_get_or(params, "pattern", ""), "")
+	if path == "" { return make_check_error("file_matches_regex", "No path specified", {"path": "", "pattern": pattern}) }
+	if pattern == "" { return make_check_error("file_matches_regex", "No regex pattern specified", {"path": path, "pattern": ""}) }
+
+	safety := is_path_safe(path, resolve_allowed_paths(params))
+	if safety["safe"] == false { return make_check_error("file_matches_regex", "Path rejected: " + safety["reason"], {"path": path, "pattern": pattern}) }
+
+	if path_exists(path) == false { return make_check_error("file_matches_regex", "File not found: " + path, {"path": path, "pattern": pattern}) }
+
+	content_result := load_path_content_with_optional_cache(params, path)
+	if dict_get_or(content_result, "ok", false) == false {
+		return make_check_error("file_matches_regex", "Failed to read file: " + path, {"path": path, "pattern": pattern})
+	}
+	content := normalize_string(dict_get_or(content_result, "content", ""), "")
+
+	matched := regex_match(content, pattern)
+	if matched == true {
+		return make_check_success("file_matches_regex", "File content matches regex pattern", {"path": path, "pattern": pattern, "content_length": len(content)})
+	}
+	return make_check_error("file_matches_regex", "File content does not match regex pattern", {"path": path, "pattern": pattern, "content_length": len(content)})
+}
+
+export func check_command_timing_less_than(params) {
+	command := normalize_string(dict_get_or(params, "command", ""), "")
+	max_ms := normalize_int(dict_get_or(params, "max_ms", 1000), 1000)
+	command_policy := command_policy_from_params(params)
+	if command == "" { return make_check_error("command_timing_less_than", "No command specified", {"max_ms": max_ms}) }
+
+	start_time := time()
+	result := run_shell_with_policy(command, command_policy)
+	elapsed := time() - start_time
+
+	if result["ok"] == false {
+		details := {
+			"command": command_for_evidence(command, params),
+			"max_ms": max_ms,
+			"elapsed_ms": elapsed,
+			"allowed_commands": dict_get_or(command_policy, "allowed_commands", []),
+			"allowed_command_patterns": dict_get_or(command_policy, "allowed_command_patterns", []),
+			"blocked_arg_patterns": dict_get_or(command_policy, "blocked_arg_patterns", []),
+			"command_pattern_match_mode": dict_get_or(command_policy, "command_pattern_match_mode", "substring")
+		}
+		details = maybe_add_redaction_audit(details, command_policy, result)
+		return make_check_error("command_timing_less_than", "Command failed: " + result["error"], details)
+	}
+
+	details := {
+		"command": command_for_evidence(command, params),
+		"max_ms": max_ms,
+		"elapsed_ms": elapsed,
+		"allowed_commands": dict_get_or(command_policy, "allowed_commands", []),
+		"allowed_command_patterns": dict_get_or(command_policy, "allowed_command_patterns", []),
+		"blocked_arg_patterns": dict_get_or(command_policy, "blocked_arg_patterns", []),
+		"command_pattern_match_mode": dict_get_or(command_policy, "command_pattern_match_mode", "substring")
+	}
+	details = maybe_add_redaction_audit(details, command_policy, result)
+
+	if elapsed < max_ms {
+		return make_check_success("command_timing_less_than", "Command completed in " + to_string(elapsed) + "ms (under " + to_string(max_ms) + "ms)", details)
+	}
+	return make_check_error("command_timing_less_than", "Command took " + to_string(elapsed) + "ms (exceeded " + to_string(max_ms) + "ms)", details)
+}
+
+export func check_file_line_count(params) {
+	path := normalize_string(dict_get_or(params, "path", ""), "")
+	expected := normalize_int(dict_get_or(params, "expected", 0), 0)
+	comparison := normalize_string(dict_get_or(params, "comparison", "equals"), "equals")
+	if path == "" { return make_check_error("file_line_count", "No path specified", {"path": "", "expected": expected}) }
+
+	safety := is_path_safe(path, resolve_allowed_paths(params))
+	if safety["safe"] == false { return make_check_error("file_line_count", "Path rejected", {"path": path}) }
+
+	if path_exists(path) == false { return make_check_error("file_line_count", "File not found: " + path, {"path": path}) }
+
+	content_result := load_path_content_with_optional_cache(params, path)
+	if dict_get_or(content_result, "ok", false) == false {
+		return make_check_error("file_line_count", "Failed to read file", {"path": path})
+	}
+	content := dict_get_or(content_result, "content", "")
+
+	line_count := 1
+	ci := 0
+	while ci < len(content) {
+		if content[ci] == "\n" { line_count = line_count + 1 }
+		ci := ci + 1
+	}
+
+	passed := false
+	if comparison == "equals" { passed = line_count == expected }
+	else if comparison == "greater_than" { passed = line_count > expected }
+	else if comparison == "less_than" { passed = line_count < expected }
+	else { return make_check_error("file_line_count", "Unknown comparison: " + comparison, {"path": path, "comparison": comparison}) }
+
+	if passed {
+		return make_check_success("file_line_count", "Line count " + to_string(line_count) + " " + comparison + " " + to_string(expected), {"path": path, "line_count": line_count, "expected": expected, "comparison": comparison})
+	}
+	return make_check_error("file_line_count", "Line count " + to_string(line_count) + " does not satisfy " + comparison + " " + to_string(expected), {"path": path, "line_count": line_count, "expected": expected, "comparison": comparison})
+}
+
+export func check_directory_contains(params) {
+	dir := normalize_string(dict_get_or(params, "dir", ""), "")
+	pattern := normalize_string(dict_get_or(params, "pattern", ""), "")
+	min_files := normalize_int(dict_get_or(params, "min_files", 1), 1)
+	if dir == "" { return make_check_error("directory_contains", "No directory specified", {"dir": "", "pattern": pattern}) }
+
+	safety := is_path_safe(dir, resolve_allowed_paths(params))
+	if safety["safe"] == false { return make_check_error("directory_contains", "Directory path rejected", {"dir": dir}) }
+
+	if path_exists(dir) == false { return make_check_error("directory_contains", "Directory not found: " + dir, {"dir": dir}) }
+
+	files := []
+	try { files = list_dir(dir) } except err {
+		return make_check_error("directory_contains", "Failed to list directory: " + dir, {"dir": dir})
+	}
+
+	matched := 0
+	i := 0
+	while i < len(files) {
+		f := files[i]
+		if pattern == "" || contains_text(f, pattern) { matched = matched + 1 }
+		i := i + 1
+	}
+
+	if matched >= min_files {
+		return make_check_success("directory_contains", "Found " + to_string(matched) + " matching files (min " + to_string(min_files) + ")", {"dir": dir, "pattern": pattern, "matched": matched, "min_files": min_files})
+	}
+	return make_check_error("directory_contains", "Found only " + to_string(matched) + " matching files (need " + to_string(min_files) + ")", {"dir": dir, "pattern": pattern, "matched": matched, "min_files": min_files})
+}
+
+export func check_two_files_equal(params) {
+	path_a := normalize_string(dict_get_or(params, "path_a", ""), "")
+	path_b := normalize_string(dict_get_or(params, "path_b", ""), "")
+	allowed_paths := resolve_allowed_paths(params)
+	if path_a == "" || path_b == "" { return make_check_error("two_files_equal", "Both path_a and path_b required", {"path_a": path_a, "path_b": path_b}) }
+
+	safety_a := is_path_safe(path_a, allowed_paths)
+	safety_b := is_path_safe(path_b, allowed_paths)
+	if safety_a["safe"] == false { return make_check_error("two_files_equal", "Path A rejected", {"path_a": path_a, "path_b": path_b}) }
+	if safety_b["safe"] == false { return make_check_error("two_files_equal", "Path B rejected", {"path_a": path_a, "path_b": path_b}) }
+
+	if path_exists(path_a) == false { return make_check_error("two_files_equal", "File A not found: " + path_a, {"path_a": path_a, "path_b": path_b}) }
+	if path_exists(path_b) == false { return make_check_error("two_files_equal", "File B not found: " + path_b, {"path_a": path_a, "path_b": path_b}) }
+
+	content_a := ""
+	content_b := ""
+	try { content_a = read_file(path_a) } except err { return make_check_error("two_files_equal", "Failed to read file A", {"path_a": path_a, "path_b": path_b}) }
+	try { content_b = read_file(path_b) } except err { return make_check_error("two_files_equal", "Failed to read file B", {"path_a": path_a, "path_b": path_b}) }
+
+	if content_a == content_b {
+		return make_check_success("two_files_equal", "Files are identical", {"path_a": path_a, "path_b": path_b, "size_a": len(content_a), "size_b": len(content_b)})
+	}
+	return make_check_error("two_files_equal", "Files differ (size A=" + to_string(len(content_a)) + ", B=" + to_string(len(content_b)) + ")", {"path_a": path_a, "path_b": path_b, "size_a": len(content_a), "size_b": len(content_b)})
+}
+
+export func check_file_size_greater_than(params) {
+	path := normalize_string(dict_get_or(params, "path", ""), "")
+	bytes := normalize_int(dict_get_or(params, "bytes", 0), 0)
+	if path == "" { return make_check_error("file_size_greater_than", "No path specified", {"path": ""}) }
+	safety := is_path_safe(path, resolve_allowed_paths(params))
+	if safety["safe"] == false { return make_check_error("file_size_greater_than", "Path rejected", {"path": path}) }
+	if path_exists(path) == false { return make_check_error("file_size_greater_than", "File not found: " + path, {"path": path}) }
+	content := ""
+	try { content = read_file(path) } except err { return make_check_error("file_size_greater_than", "Failed to read file", {"path": path}) }
+	size := len(content)
+	if size > bytes { return make_check_success("file_size_greater_than", "File size " + to_string(size) + " > " + to_string(bytes), {"path": path, "size": size, "threshold": bytes}) }
+	return make_check_error("file_size_greater_than", "File size " + to_string(size) + " <= " + to_string(bytes), {"path": path, "size": size, "threshold": bytes})
+}
+
+export func check_file_size_less_than(params) {
+	path := normalize_string(dict_get_or(params, "path", ""), "")
+	bytes := normalize_int(dict_get_or(params, "bytes", 0), 0)
+	if path == "" { return make_check_error("file_size_less_than", "No path specified", {"path": ""}) }
+	safety := is_path_safe(path, resolve_allowed_paths(params))
+	if safety["safe"] == false { return make_check_error("file_size_less_than", "Path rejected", {"path": path}) }
+	if path_exists(path) == false { return make_check_error("file_size_less_than", "File not found: " + path, {"path": path}) }
+	content := ""
+	try { content = read_file(path) } except err { return make_check_error("file_size_less_than", "Failed to read file", {"path": path}) }
+	size := len(content)
+	if size < bytes { return make_check_success("file_size_less_than", "File size " + to_string(size) + " < " + to_string(bytes), {"path": path, "size": size, "threshold": bytes}) }
+	return make_check_error("file_size_less_than", "File size " + to_string(size) + " >= " + to_string(bytes), {"path": path, "size": size, "threshold": bytes})
+}
+
+export func check_env_var_equals(params) {
+	name := normalize_string(dict_get_or(params, "name", ""), "")
+	expected_val := normalize_string(dict_get_or(params, "expected", ""), "")
+	allowed_raw := dict_get_or(params, "allowed_env_vars", [])
+	allowed := []
+	if type(allowed_raw) == "array" { allowed = allowed_raw }
+	if name == "" { return make_check_error("env_var_equals", "No env var name specified", {"name": ""}) }
+	if len(allowed) > 0 {
+		is_allowed := false
+		ai := 0
+		while ai < len(allowed) {
+			if allowed[ai] == name { is_allowed = true }
+			ai := ai + 1
+		}
+		if is_allowed == false { return make_check_error("env_var_equals", "Env var '" + name + "' not in allowed list", {"name": name}) }
+	}
+	actual := env(name)
+	if type(actual) != "string" { actual = "" }
+	if actual == expected_val {
+		return make_check_success("env_var_equals", "Env var " + name + " matches", {"name": name, "expected": expected_val})
+	}
+	return make_check_error("env_var_equals", "Expected " + expected_val + " but got " + actual, {"name": name, "expected": expected_val, "actual": actual})
+}
+
+export func check_stdout_json_matches_shape(params) {
+	command := normalize_string(dict_get_or(params, "command", ""), "")
+	required_keys_raw := dict_get_or(params, "required_keys", [])
+	command_policy := command_policy_from_params(params)
+	if command == "" { return make_check_error("stdout_json_matches_shape", "No command specified", {}) }
+
+	result := run_shell_with_policy(command, command_policy)
+	if result["ok"] == false {
+		details := {
+			"command": command_for_evidence(command, params),
+			"exit_code": result["exit_code"],
+			"allowed_commands": dict_get_or(command_policy, "allowed_commands", []),
+			"allowed_command_patterns": dict_get_or(command_policy, "allowed_command_patterns", []),
+			"blocked_arg_patterns": dict_get_or(command_policy, "blocked_arg_patterns", []),
+			"command_pattern_match_mode": dict_get_or(command_policy, "command_pattern_match_mode", "substring")
+		}
+		details = maybe_add_redaction_audit(details, command_policy, result)
+		return make_check_error("stdout_json_matches_shape", "Command execution failed: " + result["error"], details)
+	}
+
+	stdout := result["stdout"]
+
+	data := {}
+	try { data = parse_json(stdout) } except err {
+		details := {
+			"command": command_for_evidence(command, params),
+			"exit_code": result["exit_code"],
+			"allowed_commands": dict_get_or(command_policy, "allowed_commands", []),
+			"allowed_command_patterns": dict_get_or(command_policy, "allowed_command_patterns", []),
+			"blocked_arg_patterns": dict_get_or(command_policy, "blocked_arg_patterns", []),
+			"command_pattern_match_mode": dict_get_or(command_policy, "command_pattern_match_mode", "substring")
+		}
+		details = maybe_add_redaction_audit(details, command_policy, result)
+		return make_check_error("stdout_json_matches_shape", "Command stdout is not valid JSON", details)
+	}
+
+	required_keys := []
+	if type(required_keys_raw) == "array" { required_keys = required_keys_raw }
+	if len(required_keys) == 0 {
+		details := {
+			"command": command_for_evidence(command, params),
+			"allowed_commands": dict_get_or(command_policy, "allowed_commands", []),
+			"allowed_command_patterns": dict_get_or(command_policy, "allowed_command_patterns", []),
+			"blocked_arg_patterns": dict_get_or(command_policy, "blocked_arg_patterns", []),
+			"command_pattern_match_mode": dict_get_or(command_policy, "command_pattern_match_mode", "substring")
+		}
+		details = maybe_add_redaction_audit(details, command_policy, result)
+		return make_check_success("stdout_json_matches_shape", "No shape requirements (trivially passes)", details)
+	}
+
+	missing_keys := []
+	ki := 0
+	while ki < len(required_keys) {
+		if has_key(data, required_keys[ki]) == 0 {
+			missing_keys := push(missing_keys, required_keys[ki])
+		}
+		ki := ki + 1
+	}
+
+	if len(missing_keys) > 0 {
+		details := {
+			"command": command_for_evidence(command, params),
+			"missing_keys": missing_keys,
+			"allowed_commands": dict_get_or(command_policy, "allowed_commands", []),
+			"allowed_command_patterns": dict_get_or(command_policy, "allowed_command_patterns", []),
+			"blocked_arg_patterns": dict_get_or(command_policy, "blocked_arg_patterns", []),
+			"command_pattern_match_mode": dict_get_or(command_policy, "command_pattern_match_mode", "substring")
+		}
+		details = maybe_add_redaction_audit(details, command_policy, result)
+		return make_check_error("stdout_json_matches_shape", "Missing required keys in stdout JSON", details)
+	}
+	details := {
+		"command": command_for_evidence(command, params),
+		"required_keys": required_keys,
+		"allowed_commands": dict_get_or(command_policy, "allowed_commands", []),
+		"allowed_command_patterns": dict_get_or(command_policy, "allowed_command_patterns", []),
+		"blocked_arg_patterns": dict_get_or(command_policy, "blocked_arg_patterns", []),
+		"command_pattern_match_mode": dict_get_or(command_policy, "command_pattern_match_mode", "substring")
+	}
+	details = maybe_add_redaction_audit(details, command_policy, result)
+	return make_check_success("stdout_json_matches_shape", "Stdout JSON matches expected shape", details)
+}
+
+func normalize_http_host_list(values) {
+	result := []
+	if type(values) != "array" {
+		return result
+	}
+
+	i := 0
+	while i < len(values) {
+		entry := normalize_string(values[i], "")
+		if entry != "" {
+			result = push(result, to_lower(entry))
+		}
+		i = i + 1
+	}
+
+	return result
+}
+
+func string_has_suffix(text, suffix) {
+	if suffix == "" {
+		return false
+	}
+	if len(text) < len(suffix) {
+		return false
+	}
+
+	start := len(text) - len(suffix)
+	i := 0
+	while i < len(suffix) {
+		if text[start + i] != suffix[i] {
+			return false
+		}
+		i = i + 1
+	}
+
+	return true
+}
+
+func parse_http_host_details(url) {
+	raw_url := to_lower(normalize_string(url, ""))
+	scheme := ""
+	offset := 0
+
+	if starts_with(raw_url, "http://") {
+		scheme = "http"
+		offset = 7
+	} else if starts_with(raw_url, "https://") {
+		scheme = "https"
+		offset = 8
+	} else {
+		return {"ok": false, "error": "url_must_start_with_http_or_https"}
+	}
+
+	authority := ""
+	i := offset
+	while i < len(raw_url) {
+		ch := raw_url[i]
+		if ch == "/" || ch == "?" || ch == "#" {
+			i = len(raw_url)
+		} else {
+			authority = authority + ch
+			i = i + 1
+		}
+	}
+
+	if authority == "" {
+		return {"ok": false, "error": "missing_host"}
+	}
+
+	host := authority
+	if starts_with(authority, "[") {
+		close_idx := -1
+		ai := 0
+		while ai < len(authority) {
+			if authority[ai] == "]" {
+				close_idx = ai
+			}
+			ai = ai + 1
+		}
+		if close_idx <= 1 {
+			return {"ok": false, "error": "invalid_ipv6_host"}
+		}
+		host = ""
+		hi := 1
+		while hi < close_idx {
+			host = host + authority[hi]
+			hi = hi + 1
+		}
+	} else {
+		parts := split(authority, ":")
+		if len(parts) > 0 {
+			host = normalize_string(parts[0], "")
+		}
+	}
+
+	if host == "" {
+		return {"ok": false, "error": "missing_host"}
+	}
+
+	return {
+		"ok": true,
+		"scheme": scheme,
+		"host": host,
+		"host_with_port": authority
+	}
+}
+
+func http_host_matches(policy_entry, host, host_with_port) {
+	entry := to_lower(normalize_string(policy_entry, ""))
+	if entry == "" {
+		return false
+	}
+
+	if entry == host || entry == host_with_port {
+		return true
+	}
+
+	if starts_with(entry, "*.") {
+		suffix := ""
+		si := 2
+		while si < len(entry) {
+			suffix = suffix + entry[si]
+			si = si + 1
+		}
+		if suffix != "" && string_has_suffix(host, suffix) {
+			prefix_len := len(host) - len(suffix)
+			if prefix_len > 0 && host[prefix_len - 1] == "." {
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
+func evaluate_http_host_policy(url, params) {
+	host_details := parse_http_host_details(url)
+	if dict_get_or(host_details, "ok", false) == false {
+		return {
+			"ok": false,
+			"message": "Invalid HTTP URL for host policy evaluation",
+			"details": {
+				"url": url,
+				"error": normalize_string(dict_get_or(host_details, "error", "invalid_url"), "invalid_url")
+			}
+		}
+	}
+
+	host := normalize_string(dict_get_or(host_details, "host", ""), "")
+	host_with_port := normalize_string(dict_get_or(host_details, "host_with_port", ""), "")
+	allowed_http_hosts := normalize_http_host_list(dict_get_or(params, "allowed_http_hosts", []))
+	blocked_http_hosts := normalize_http_host_list(dict_get_or(params, "blocked_http_hosts", []))
+
+	bi := 0
+	while bi < len(blocked_http_hosts) {
+		blocked_entry := blocked_http_hosts[bi]
+		if http_host_matches(blocked_entry, host, host_with_port) {
+			return {
+				"ok": false,
+				"message": "HTTP host blocked by policy: " + host,
+				"details": {
+					"url": url,
+					"host": host,
+					"host_with_port": host_with_port,
+					"allowed_http_hosts": allowed_http_hosts,
+					"blocked_http_hosts": blocked_http_hosts,
+					"blocked_by": blocked_entry
+				}
+			}
+		}
+		bi = bi + 1
+	}
+
+	if len(allowed_http_hosts) > 0 {
+		allowed_match := false
+		ai := 0
+		while ai < len(allowed_http_hosts) {
+			if http_host_matches(allowed_http_hosts[ai], host, host_with_port) {
+				allowed_match = true
+			}
+			ai = ai + 1
+		}
+		if allowed_match == false {
+			return {
+				"ok": false,
+				"message": "HTTP host not allowlisted by policy: " + host,
+				"details": {
+					"url": url,
+					"host": host,
+					"host_with_port": host_with_port,
+					"allowed_http_hosts": allowed_http_hosts,
+					"blocked_http_hosts": blocked_http_hosts
+				}
+			}
+		}
+	}
+
+	return {
+		"ok": true,
+		"details": {
+			"host": host,
+			"host_with_port": host_with_port,
+			"allowed_http_hosts": allowed_http_hosts,
+			"blocked_http_hosts": blocked_http_hosts
+		}
+	}
+}
+
+export func check_http_status(params) {
+	url := normalize_string(dict_get_or(params, "url", ""), "")
+	expected_status := normalize_int(dict_get_or(params, "expected_status", 200), 200)
+	if url == "" { return make_check_error("http_status", "No URL specified", {"url": ""}) }
+	host_policy := evaluate_http_host_policy(url, params)
+	if dict_get_or(host_policy, "ok", false) == false {
+		return make_check_error("http_status", normalize_string(dict_get_or(host_policy, "message", "HTTP host policy rejected request"), "HTTP host policy rejected request"), dict_get_or(host_policy, "details", {"url": url}))
+	}
+
+	resp := {}
+	try {
+		resp = http_get(url)
+	} except err {
+		details := {
+			"url": url,
+			"host": dict_get_or(dict_get_or(host_policy, "details", {}), "host", ""),
+			"host_with_port": dict_get_or(dict_get_or(host_policy, "details", {}), "host_with_port", ""),
+			"allowed_http_hosts": dict_get_or(dict_get_or(host_policy, "details", {}), "allowed_http_hosts", []),
+			"blocked_http_hosts": dict_get_or(dict_get_or(host_policy, "details", {}), "blocked_http_hosts", [])
+		}
+		return make_check_error("http_status", "HTTP request failed: " + url, details)
+	}
+
+	status := normalize_int(dict_get_or(resp, "status", 0), 0)
+	details := {
+		"url": url,
+		"status": status,
+		"expected": expected_status,
+		"host": dict_get_or(dict_get_or(host_policy, "details", {}), "host", ""),
+		"host_with_port": dict_get_or(dict_get_or(host_policy, "details", {}), "host_with_port", ""),
+		"allowed_http_hosts": dict_get_or(dict_get_or(host_policy, "details", {}), "allowed_http_hosts", []),
+		"blocked_http_hosts": dict_get_or(dict_get_or(host_policy, "details", {}), "blocked_http_hosts", [])
+	}
+	if status == expected_status {
+		return make_check_success("http_status", "HTTP " + to_string(status) + " matches expected", details)
+	}
+	return make_check_error("http_status", "Expected HTTP " + to_string(expected_status) + " but got " + to_string(status), details)
+}
+
+export func check_http_body_contains(params) {
+	url := normalize_string(dict_get_or(params, "url", ""), "")
+	expected := normalize_string(dict_get_or(params, "expected", ""), "")
+	expected_status := normalize_int(dict_get_or(params, "expected_status", 200), 200)
+	if url == "" { return make_check_error("http_body_contains", "No URL specified", {"url": ""}) }
+	if expected == "" { return make_check_error("http_body_contains", "No expected text specified", {"url": url, "expected": ""}) }
+	host_policy := evaluate_http_host_policy(url, params)
+	if dict_get_or(host_policy, "ok", false) == false {
+		error_details := dict_get_or(host_policy, "details", {"url": url})
+		error_details["expected"] = expected
+		return make_check_error("http_body_contains", normalize_string(dict_get_or(host_policy, "message", "HTTP host policy rejected request"), "HTTP host policy rejected request"), error_details)
+	}
+
+	resp := {}
+	try {
+		resp = http_get(url)
+	} except err {
+		details := {
+			"url": url,
+			"expected": expected,
+			"host": dict_get_or(dict_get_or(host_policy, "details", {}), "host", ""),
+			"host_with_port": dict_get_or(dict_get_or(host_policy, "details", {}), "host_with_port", ""),
+			"allowed_http_hosts": dict_get_or(dict_get_or(host_policy, "details", {}), "allowed_http_hosts", []),
+			"blocked_http_hosts": dict_get_or(dict_get_or(host_policy, "details", {}), "blocked_http_hosts", [])
+		}
+		return make_check_error("http_body_contains", "HTTP request failed: " + url, details)
+	}
+
+	status := normalize_int(dict_get_or(resp, "status", 0), 0)
+	body := normalize_string(dict_get_or(resp, "body", ""), "")
+	details := {
+		"url": url,
+		"status": status,
+		"expected_status": expected_status,
+		"expected": expected,
+		"body_length": len(body),
+		"host": dict_get_or(dict_get_or(host_policy, "details", {}), "host", ""),
+		"host_with_port": dict_get_or(dict_get_or(host_policy, "details", {}), "host_with_port", ""),
+		"allowed_http_hosts": dict_get_or(dict_get_or(host_policy, "details", {}), "allowed_http_hosts", []),
+		"blocked_http_hosts": dict_get_or(dict_get_or(host_policy, "details", {}), "blocked_http_hosts", [])
+	}
+
+	if status != expected_status {
+		return make_check_error("http_body_contains", "Expected HTTP " + to_string(expected_status) + " but got " + to_string(status), details)
+	}
+
+	found := contains_text(body, expected)
+	if found {
+		return make_check_success("http_body_contains", "HTTP " + to_string(status) + ", body contains expected text", details)
+	}
+	return make_check_error("http_body_contains", "Body does not contain expected text", details)
+}
+
+export func run_check(check_type, params) {
+	kind := normalize_string(check_type, "")
+
+	if kind == "command_succeeds" {
+		return check_command_succeeds(params)
+	}
+	if kind == "command_fails" {
+		return check_command_fails(params)
+	}
+	if kind == "exit_code_equals" {
+		return check_exit_code_equals(params)
+	}
+	if kind == "file_exists" {
+		return check_file_exists(params)
+	}
+	if kind == "file_does_not_exist" {
+		return check_file_does_not_exist(params)
+	}
+	if kind == "file_contains" {
+		return check_file_contains(params)
+	}
+	if kind == "file_does_not_contain" {
+		return check_file_does_not_contain(params)
+	}
+	if kind == "output_contains" {
+		return check_output_contains(params)
+	}
+	if kind == "output_does_not_contain" {
+		return check_output_does_not_contain(params)
+	}
+	if kind == "json_matches_shape" {
+		return check_json_matches_shape(params)
+	}
+	if kind == "snapshot_matches" {
+		return check_snapshot_matches(params)
+	}
+	if kind == "directory_diff" {
+		return check_directory_diff(params)
+	}
+	if kind == "file_matches_glob" {
+		return check_file_matches_glob(params)
+	}
+	if kind == "output_matches_glob" {
+		return check_output_matches_glob(params)
+	}
+	if kind == "json_value_equals" {
+		return check_json_value_equals(params)
+	}
+	if kind == "file_size_greater_than" {
+		return check_file_size_greater_than(params)
+	}
+	if kind == "file_size_less_than" {
+		return check_file_size_less_than(params)
+	}
+	if kind == "env_var_equals" {
+		return check_env_var_equals(params)
+	}
+	if kind == "stdout_json_matches_shape" {
+		return check_stdout_json_matches_shape(params)
+	}
+	if kind == "http_status" {
+		return check_http_status(params)
+	}
+	if kind == "http_body_contains" {
+		return check_http_body_contains(params)
+	}
+	if kind == "command_stdout_json_path_equals" {
+		return check_command_stdout_json_path_equals(params)
+	}
+	if kind == "file_matches_regex" {
+		return check_file_matches_regex(params)
+	}
+	if kind == "command_timing_less_than" {
+		return check_command_timing_less_than(params)
+	}
+	if kind == "file_line_count" {
+		return check_file_line_count(params)
+	}
+	if kind == "directory_contains" {
+		return check_directory_contains(params)
+	}
+	if kind == "two_files_equal" {
+		return check_two_files_equal(params)
+	}
+
+	return make_check_error(kind, "Unknown check type: " + kind, {})
+}
+
+export func describe_checks_module() {
+	return {
+		"module": "checks",
+		"description": "All check implementations, security validators, and run_check dispatcher",
+		"exports": ["run_check", "run_shell", "is_command_safe", "is_path_safe", "redact_sensitive"],
+		"contract_version": "2.0.0"
+	}
+}

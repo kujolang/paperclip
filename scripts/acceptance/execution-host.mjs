@@ -116,6 +116,7 @@ try {
   await mkdir(join(fixture, "dist"), { recursive: true });
   await mkdir(join(fixture, "migrations"));
   await mkdir(join(root, "workspace"));
+  await symlink(join(repo, "bundled"), join(fixture, "bundled"), process.platform === "win32" ? "junction" : "dir");
   await symlink(join(repo, "node_modules"), join(fixture, "node_modules"), process.platform === "win32" ? "junction" : "dir");
   await writeFile(join(fixture, "package.json"), JSON.stringify({ name: "@kujolang/approval-acceptance-fixture", version: "0.0.0", private: true, type: "module",
     paperclipPlugin: { manifest: "./dist/manifest.js", worker: "./dist/worker.js" } }));
@@ -181,6 +182,20 @@ try {
   assert.equal(succeeded.result.exitCode, 0); assert.match(succeeded.result.stdout, /authenticated host fixture completed/);
   assert.deepEqual((await action("start", { id: pending.id })).data, succeeded);
   checks.push("host-recorded board acceptance authorizes native Kujo; terminal replay immutable");
+  const nativeReceipts = [];
+  for (const mode of ["eval", "eval-fail"]) {
+    const native = await prepare(`canonical-${mode}`, mode);
+    await accept(native);
+    const receipt = (await action("start", { id: native.id })).data;
+    assert.equal(receipt.state, mode === "eval" ? "succeeded" : "failed");
+    assert.equal(receipt.approvedBy, userId);
+    assert.equal(receipt.result.sourceKind, "native");
+    assert.equal(receipt.result.classification, mode === "eval" ? "passed" : "failed");
+    assert.equal(receipt.result.definitionDigest, receipt.request.plan.definitionDigest);
+    assert.deepEqual((await action("start", { id: native.id })).data, receipt);
+    nativeReceipts.push(receipt);
+  }
+  checks.push("host-approved canonical Eval retains native pass/fail receipts without replay");
   const cancelled = await prepare("cancel-before-accept");
   assert.equal((await action("cancel", { id: cancelled.id })).data.state, "cancelled");
   await accept(cancelled);
@@ -207,10 +222,11 @@ try {
   await waitUntil(async () => { try { return (await status(restartPending.id)).state === "pending"; } catch { return false; } });
   assert.deepEqual(await status(succeeded.id), succeeded);
   assert.equal((await status(slow.id)).state, "cancelled");
+  for (const receipt of nativeReceipts) assert.deepEqual(await status(receipt.id), receipt);
   await accept(restartPending);
   assert.equal((await action("start", { id: restartPending.id })).data.state, "succeeded");
   checks.push("full authenticated host/database restart preserves session, pending card, cancellation and terminal result");
-  await json("receipts.json", { succeeded, cancelled: await status(slow.id), afterRestart: await status(restartPending.id) });
+  await json("receipts.json", { succeeded, nativeReceipts, cancelled: await status(slow.id), afterRestart: await status(restartPending.id) });
   evidence.status = "passed";
 } catch (error) {
   evidence.status = "failed";

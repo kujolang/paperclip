@@ -1,0 +1,1018 @@
+# Eval configuration loader and validator.
+#
+# Loads eval.json from the current directory (or a specified path),
+# validates the suite structure, and returns a normalized config.
+#
+# Expected config shape:
+# {
+#   "name": "suite-name",
+#   "description": "What this suite tests",
+#   "version": "1.0.0",
+#   "output_dir": "./eval_results",
+#   "snapshot_dir": "./snapshots",
+#   "stop_on_failure": false,
+#   "tests": [
+#     {
+#       "name": "test name",
+#       "description": "optional description",
+#       "check": "command_succeeds",
+#       "params": { ... }
+#     }
+#   ]
+# }
+
+DEFAULT_OUTPUT_DIR := "./eval_results"
+DEFAULT_SNAPSHOT_DIR := "./snapshots"
+MAX_CONFIG_SIZE_BYTES := 1048576
+MAX_TESTS := 1000
+MAX_STRING_LENGTH := 10000
+DEFAULT_HISTORY_RETENTION_RUNS := 200
+DEFAULT_AUX_ARTIFACT_RETENTION_FILES := 25
+DEFAULT_PARALLEL_WORKERS := 1
+
+from src.common import dict_get_or, normalize_string, normalize_int, normalize_bool, normalize_array, normalize_dict, make_result
+
+func is_known_policy_profile(profile_name) {
+	if profile_name == "strict-ci" || profile_name == "local-dev" || profile_name == "release-gate" {
+		return true
+	}
+	return false
+}
+
+func policy_profile_defaults(profile_name) {
+	if profile_name == "strict-ci" {
+		return {
+			"allowed_commands": ["kujo", "echo", "cat", "bash"],
+			"allowed_command_patterns": ["kujo run", "kujo test", "echo ", "cat ", "bash scripts/"],
+			"blocked_arg_patterns": ["--privileged", "rm -rf", "curl |", "wget |", "sudo", "mkfs", "dd if="],
+			"command_pattern_match_mode": "token",
+			"require_command_policy": false,
+			"path_policy_mode": "open",
+			"redaction_audit_mode": true,
+			"redact_output_patterns": [],
+			"allowed_http_hosts": [],
+			"blocked_http_hosts": [],
+			"allowed_env_vars": ["CI", "GITHUB_SHA", "GITHUB_REF"]
+		}
+	}
+
+	if profile_name == "release-gate" {
+		return {
+			"allowed_commands": ["kujo", "echo", "cat", "bash"],
+			"allowed_command_patterns": ["kujo run", "kujo test", "echo ", "cat ", "bash scripts/"],
+			"blocked_arg_patterns": ["--privileged", "rm -rf", "curl |", "wget |", "sudo", "mkfs", "dd if="],
+			"command_pattern_match_mode": "token",
+			"require_command_policy": false,
+			"path_policy_mode": "allowlist-required",
+			"redaction_audit_mode": true,
+			"redact_output_patterns": [],
+			"allowed_paths": ["./eval_results", "./snapshots", "./examples", "./tests", "./README.md"],
+			"allowed_http_hosts": [],
+			"blocked_http_hosts": [],
+			"allowed_env_vars": ["CI", "GITHUB_SHA", "GITHUB_REF"]
+		}
+	}
+
+	if profile_name == "local-dev" {
+		return {
+			"allowed_commands": [],
+			"allowed_command_patterns": [],
+			"blocked_arg_patterns": ["rm -rf", "curl | sh", "wget | sh", "mkfs", "dd if="],
+			"command_pattern_match_mode": "substring",
+			"require_command_policy": false,
+			"path_policy_mode": "open",
+			"redact_output_patterns": [],
+			"redaction_audit_mode": false,
+			"allowed_paths": [],
+			"allowed_http_hosts": [],
+			"blocked_http_hosts": [],
+			"allowed_env_vars": []
+		}
+	}
+
+	return {}
+}
+
+func policy_profile_stage_defaults(profile_name) {
+	if profile_name == "strict-ci" {
+		return {
+			"ci": {
+				"require_command_policy": true,
+				"path_policy_mode": "allowlist-required",
+				"allowed_paths": ["./eval_results", "./snapshots", "./examples", "./tests", "./README.md", "./schema"]
+			},
+			"release": {
+				"require_command_policy": true,
+				"path_policy_mode": "allowlist-required",
+				"allowed_paths": ["./eval_results", "./snapshots", "./examples", "./README.md", "./schema"]
+			}
+		}
+	}
+
+	if profile_name == "release-gate" {
+		return {
+			"ci": {
+				"require_command_policy": true,
+				"path_policy_mode": "allowlist-required",
+				"allowed_paths": ["./eval_results", "./snapshots", "./examples", "./tests", "./README.md", "./schema"]
+			},
+			"release": {
+				"require_command_policy": true,
+				"path_policy_mode": "allowlist-required",
+				"allowed_paths": ["./eval_results", "./snapshots", "./examples", "./README.md", "./schema"]
+			}
+		}
+	}
+
+	return {}
+}
+
+func normalize_path_policy_mode(raw_mode, fallback_mode) {
+	mode := normalize_string(raw_mode, fallback_mode)
+	if mode != "allowlist-required" {
+		return "open"
+	}
+	return "allowlist-required"
+}
+
+func is_known_path_policy_profile(profile_name) {
+	if profile_name == "open" || profile_name == "ci-restricted" || profile_name == "release-deny-default" {
+		return true
+	}
+	return false
+}
+
+func path_policy_profile_defaults(profile_name) {
+	if profile_name == "ci-restricted" {
+		return {
+			"path_policy_profile": profile_name,
+			"path_policy_mode": "allowlist-required",
+			"allowed_paths": ["./README.md", "./docs", "./examples", "./schema", "./src", "./tests", "./main.kujo", "./kujo.toml", "./kennel.toml"]
+		}
+	}
+
+	if profile_name == "release-deny-default" {
+		return {
+			"path_policy_profile": profile_name,
+			"path_policy_mode": "allowlist-required",
+			"allowed_paths": ["./eval_results", "./snapshots", "./examples/fixtures", "./schema", "./docs/release-signoff.md"]
+		}
+	}
+
+	return {
+		"path_policy_profile": "open",
+		"path_policy_mode": "open",
+		"allowed_paths": []
+	}
+}
+
+func apply_path_policy_profile(raw_overlay) {
+	overlay := normalize_dict(raw_overlay)
+	profile_name := normalize_string(dict_get_or(overlay, "path_policy_profile", ""), "")
+	if profile_name == "" || is_known_path_policy_profile(profile_name) == false {
+		return overlay
+	}
+
+	profile_defaults := path_policy_profile_defaults(profile_name)
+	for key in keys(profile_defaults) {
+		if has_key(overlay, key) == 0 {
+			overlay[key] := profile_defaults[key]
+		}
+	}
+
+	return overlay
+}
+
+func invalid_path_policy_profile_diagnostic(cfg) {
+	normalized := normalize_dict(cfg)
+	top_profile := normalize_string(dict_get_or(normalized, "path_policy_profile", ""), "")
+	if top_profile != "" && is_known_path_policy_profile(top_profile) == false {
+		return {
+			"valid": false,
+			"profile": top_profile,
+			"location": "path_policy_profile"
+		}
+	}
+
+	overlays := normalize_dict(dict_get_or(normalized, "policy_stage_overlays", {}))
+	stages := ["local", "ci", "release"]
+	si := 0
+	while si < len(stages) {
+		stage := stages[si]
+		if has_key(overlays, stage) == 1 {
+			overlay := normalize_dict(dict_get_or(overlays, stage, {}))
+			profile := normalize_string(dict_get_or(overlay, "path_policy_profile", ""), "")
+			if profile != "" && is_known_path_policy_profile(profile) == false {
+				return {
+					"valid": false,
+					"profile": profile,
+					"location": "policy_stage_overlays." + stage + ".path_policy_profile"
+				}
+			}
+		}
+		si := si + 1
+	}
+
+	return {
+		"valid": true,
+		"profile": "",
+		"location": ""
+	}
+}
+
+func normalize_policy_stage_overlay(raw_overlay) {
+	overlay := apply_path_policy_profile(raw_overlay)
+
+	command_pattern_match_mode := normalize_string(dict_get_or(overlay, "command_pattern_match_mode", "substring"), "substring")
+	if command_pattern_match_mode != "token" {
+		command_pattern_match_mode = "substring"
+	}
+
+	return {
+		"path_policy_profile": normalize_string(dict_get_or(overlay, "path_policy_profile", ""), ""),
+		"allowed_commands": normalize_array(dict_get_or(overlay, "allowed_commands", [])),
+		"allowed_command_patterns": normalize_array(dict_get_or(overlay, "allowed_command_patterns", [])),
+		"blocked_arg_patterns": normalize_array(dict_get_or(overlay, "blocked_arg_patterns", [])),
+		"command_pattern_match_mode": command_pattern_match_mode,
+		"require_command_policy": normalize_bool(dict_get_or(overlay, "require_command_policy", false), false),
+		"path_policy_mode": normalize_path_policy_mode(dict_get_or(overlay, "path_policy_mode", "open"), "open"),
+		"redaction_audit_mode": normalize_bool(dict_get_or(overlay, "redaction_audit_mode", false), false),
+		"redact_output_patterns": normalize_array(dict_get_or(overlay, "redact_output_patterns", [])),
+		"allowed_paths": normalize_array(dict_get_or(overlay, "allowed_paths", [])),
+		"allowed_http_hosts": normalize_array(dict_get_or(overlay, "allowed_http_hosts", [])),
+		"blocked_http_hosts": normalize_array(dict_get_or(overlay, "blocked_http_hosts", [])),
+		"allowed_env_vars": normalize_array(dict_get_or(overlay, "allowed_env_vars", []))
+	}
+}
+
+func append_policy_hint(hints, code, severity, message) {
+	return push(hints, {
+		"code": code,
+		"severity": severity,
+		"message": message
+	})
+}
+
+func derive_policy_risk_summary(active_stage, effective_policy) {
+	hints := []
+	risk_score := 0
+	stage_is_guarded := active_stage == "ci" || active_stage == "release"
+
+	require_command_policy := normalize_bool(dict_get_or(effective_policy, "require_command_policy", false), false)
+	path_policy_mode := normalize_string(dict_get_or(effective_policy, "path_policy_mode", "open"), "open")
+	redaction_audit_mode := normalize_bool(dict_get_or(effective_policy, "redaction_audit_mode", false), false)
+	allowed_commands := normalize_array(dict_get_or(effective_policy, "allowed_commands", []))
+	allowed_command_patterns := normalize_array(dict_get_or(effective_policy, "allowed_command_patterns", []))
+	blocked_arg_patterns := normalize_array(dict_get_or(effective_policy, "blocked_arg_patterns", []))
+
+	if stage_is_guarded && require_command_policy == false {
+		hints = append_policy_hint(hints, "POLICY_OPEN_COMMAND_POSTURE", "warning", "Command policy is open in guarded stage; require_command_policy is disabled.")
+		risk_score = risk_score + 2
+	}
+
+	if stage_is_guarded && path_policy_mode != "allowlist-required" {
+		hints = append_policy_hint(hints, "POLICY_OPEN_PATH_POSTURE", "warning", "Path policy is open in guarded stage; path_policy_mode is not allowlist-required.")
+		risk_score = risk_score + 2
+	}
+
+	if len(allowed_commands) == 0 && len(allowed_command_patterns) == 0 {
+		hints = append_policy_hint(hints, "POLICY_NO_COMMAND_ALLOWLIST", "hint", "No command allowlist is configured.")
+		risk_score = risk_score + 1
+	}
+
+	if len(blocked_arg_patterns) == 0 {
+		hints = append_policy_hint(hints, "POLICY_NO_BLOCKED_ARG_PATTERNS", "hint", "No blocked argument patterns are configured.")
+		risk_score = risk_score + 1
+	}
+
+	if redaction_audit_mode == false {
+		hints = append_policy_hint(hints, "POLICY_REDACTION_AUDIT_DISABLED", "hint", "Redaction audit mode is disabled.")
+		risk_score = risk_score + 1
+	}
+
+	risk_tier := "low"
+	if risk_score >= 4 {
+		risk_tier = "high"
+	} else if risk_score >= 2 {
+		risk_tier = "moderate"
+	}
+
+	return {
+		"risk_score": risk_score,
+		"risk_tier": risk_tier,
+		"risk_hints": hints
+	}
+}
+
+func normalize_policy_stage_overlays(raw_overlays) {
+	overlays := normalize_dict(raw_overlays)
+	normalized := {}
+	stages := ["local", "ci", "release"]
+	si := 0
+	while si < len(stages) {
+		stage := stages[si]
+		if has_key(overlays, stage) == 1 {
+			normalized[stage] := normalize_policy_stage_overlay(dict_get_or(overlays, stage, {}))
+		}
+		si := si + 1
+	}
+	return normalized
+}
+
+func merge_policy_stage_overlays(default_overlays, user_overlays) {
+	merged := {}
+	stages := ["local", "ci", "release"]
+	si := 0
+	while si < len(stages) {
+		stage := stages[si]
+		base_stage := normalize_dict(dict_get_or(default_overlays, stage, {}))
+		user_stage := normalize_dict(dict_get_or(user_overlays, stage, {}))
+
+		stage_result := {}
+		for bk in keys(base_stage) {
+			stage_result[bk] := base_stage[bk]
+		}
+		for uk in keys(user_stage) {
+			stage_result[uk] := user_stage[uk]
+		}
+
+		if len(keys(stage_result)) > 0 {
+			merged[stage] := normalize_policy_stage_overlay(stage_result)
+		}
+
+		si := si + 1
+	}
+
+	return merged
+}
+
+export func KNOWN_CHECKS() {
+	return [
+		"command_succeeds",
+		"command_fails",
+		"file_exists",
+		"file_does_not_exist",
+		"file_contains",
+		"file_does_not_contain",
+		"json_matches_shape",
+		"output_contains",
+		"output_does_not_contain",
+		"snapshot_matches",
+		"directory_diff",
+		"exit_code_equals",
+		"file_matches_glob",
+		"output_matches_glob",
+		"json_value_equals",
+		"file_size_greater_than",
+		"file_size_less_than",
+		"env_var_equals",
+		"stdout_json_matches_shape",
+		"http_status",
+		"http_body_contains",
+		"command_stdout_json_path_equals",
+		"file_matches_regex",
+		"command_timing_less_than",
+		"file_line_count",
+		"directory_contains",
+		"two_files_equal"
+	]
+}
+
+func check_type_is_known(check_type, known_checks) {
+	i := 0
+	while i < len(known_checks) {
+		if known_checks[i] == check_type {
+			return true
+		}
+		i := i + 1
+	}
+	return false
+}
+
+func append_lint_diagnostic(diagnostics, code, location, message, suggested_fix) {
+	return push(diagnostics, {
+		"code": code,
+		"location": location,
+		"message": message,
+		"suggested_fix": suggested_fix,
+		"severity": "error"
+	})
+}
+
+func valid_expected_json_type(raw_type) {
+	type_name := to_lower(normalize_string(raw_type, ""))
+	if type_name == "string" || type_name == "number" || type_name == "int" || type_name == "float" || type_name == "bool" || type_name == "boolean" || type_name == "array" || type_name == "object" || type_name == "dict" {
+		return true
+	}
+	return false
+}
+
+func canonical_policy_stage(stage_raw) {
+	stage := normalize_string(stage_raw, "")
+	if stage == "local" || stage == "ci" || stage == "release" {
+		return stage
+	}
+	return ""
+}
+
+export func policy_explain_config(config, policy_stage) {
+	normalized := normalize_dict(config)
+	active_stage := canonical_policy_stage(policy_stage)
+	stage_overlay := {}
+
+	allowed_commands := normalize_array(dict_get_or(normalized, "allowed_commands", []))
+	allowed_command_patterns := normalize_array(dict_get_or(normalized, "allowed_command_patterns", []))
+	blocked_arg_patterns := normalize_array(dict_get_or(normalized, "blocked_arg_patterns", []))
+	command_pattern_match_mode := normalize_string(dict_get_or(normalized, "command_pattern_match_mode", "substring"), "substring")
+	if command_pattern_match_mode != "token" {
+		command_pattern_match_mode = "substring"
+	}
+	require_command_policy := normalize_bool(dict_get_or(normalized, "require_command_policy", false), false)
+	path_policy_mode := normalize_path_policy_mode(dict_get_or(normalized, "path_policy_mode", "open"), "open")
+	redaction_audit_mode := normalize_bool(dict_get_or(normalized, "redaction_audit_mode", false), false)
+	redact_output_patterns := normalize_array(dict_get_or(normalized, "redact_output_patterns", []))
+	allowed_paths := normalize_array(dict_get_or(normalized, "allowed_paths", []))
+	allowed_http_hosts := normalize_array(dict_get_or(normalized, "allowed_http_hosts", []))
+	blocked_http_hosts := normalize_array(dict_get_or(normalized, "blocked_http_hosts", []))
+	allowed_env_vars := normalize_array(dict_get_or(normalized, "allowed_env_vars", []))
+	path_policy_profile := normalize_string(dict_get_or(normalized, "path_policy_profile", ""), "")
+
+	if active_stage != "" {
+		overlays := normalize_dict(dict_get_or(normalized, "policy_stage_overlays", {}))
+		overlay_raw := normalize_dict(dict_get_or(overlays, active_stage, {}))
+		if len(keys(overlay_raw)) > 0 {
+			stage_overlay = normalize_policy_stage_overlay(overlay_raw)
+			if has_key(stage_overlay, "path_policy_profile") == 1 {
+				path_policy_profile = normalize_string(dict_get_or(stage_overlay, "path_policy_profile", path_policy_profile), path_policy_profile)
+			}
+			if has_key(stage_overlay, "allowed_commands") == 1 {
+				allowed_commands = normalize_array(dict_get_or(stage_overlay, "allowed_commands", allowed_commands))
+			}
+			if has_key(stage_overlay, "allowed_command_patterns") == 1 {
+				allowed_command_patterns = normalize_array(dict_get_or(stage_overlay, "allowed_command_patterns", allowed_command_patterns))
+			}
+			if has_key(stage_overlay, "blocked_arg_patterns") == 1 {
+				blocked_arg_patterns = normalize_array(dict_get_or(stage_overlay, "blocked_arg_patterns", blocked_arg_patterns))
+			}
+			if has_key(stage_overlay, "command_pattern_match_mode") == 1 {
+				command_pattern_match_mode = normalize_string(dict_get_or(stage_overlay, "command_pattern_match_mode", command_pattern_match_mode), command_pattern_match_mode)
+				if command_pattern_match_mode != "token" {
+					command_pattern_match_mode = "substring"
+				}
+			}
+			if has_key(stage_overlay, "require_command_policy") == 1 {
+				require_command_policy = normalize_bool(dict_get_or(stage_overlay, "require_command_policy", require_command_policy), require_command_policy)
+			}
+			if has_key(stage_overlay, "path_policy_mode") == 1 {
+				path_policy_mode = normalize_path_policy_mode(dict_get_or(stage_overlay, "path_policy_mode", path_policy_mode), path_policy_mode)
+			}
+			if has_key(stage_overlay, "redaction_audit_mode") == 1 {
+				redaction_audit_mode = normalize_bool(dict_get_or(stage_overlay, "redaction_audit_mode", redaction_audit_mode), redaction_audit_mode)
+			}
+			if has_key(stage_overlay, "redact_output_patterns") == 1 {
+				redact_output_patterns = normalize_array(dict_get_or(stage_overlay, "redact_output_patterns", redact_output_patterns))
+			}
+			if has_key(stage_overlay, "allowed_paths") == 1 {
+				allowed_paths = normalize_array(dict_get_or(stage_overlay, "allowed_paths", allowed_paths))
+			}
+			if has_key(stage_overlay, "allowed_http_hosts") == 1 {
+				allowed_http_hosts = normalize_array(dict_get_or(stage_overlay, "allowed_http_hosts", allowed_http_hosts))
+			}
+			if has_key(stage_overlay, "blocked_http_hosts") == 1 {
+				blocked_http_hosts = normalize_array(dict_get_or(stage_overlay, "blocked_http_hosts", blocked_http_hosts))
+			}
+			if has_key(stage_overlay, "allowed_env_vars") == 1 {
+				allowed_env_vars = normalize_array(dict_get_or(stage_overlay, "allowed_env_vars", allowed_env_vars))
+			}
+		}
+	}
+
+	stage_enforced := active_stage == "ci" || active_stage == "release"
+	strict_command_policy_enforced := false
+	if stage_enforced && require_command_policy {
+		strict_command_policy_enforced = true
+	}
+	path_allowlist_enforced := false
+	if stage_enforced && path_policy_mode == "allowlist-required" {
+		path_allowlist_enforced = true
+	}
+	risk_summary := derive_policy_risk_summary(active_stage, {
+		"allowed_commands": allowed_commands,
+		"allowed_command_patterns": allowed_command_patterns,
+		"blocked_arg_patterns": blocked_arg_patterns,
+		"require_command_policy": require_command_policy,
+		"path_policy_mode": path_policy_mode,
+		"redaction_audit_mode": redaction_audit_mode
+	})
+
+	return {
+		"suite_name": normalize_string(dict_get_or(normalized, "name", ""), "unnamed"),
+		"policy_profile": normalize_string(dict_get_or(normalized, "policy_profile", ""), ""),
+		"active_policy_stage": active_stage,
+		"stage_overlay_applied": len(keys(stage_overlay)) > 0,
+		"stage_overlay": stage_overlay,
+		"effective_policy": {
+			"allowed_commands": allowed_commands,
+			"allowed_command_patterns": allowed_command_patterns,
+			"blocked_arg_patterns": blocked_arg_patterns,
+			"command_pattern_match_mode": command_pattern_match_mode,
+			"require_command_policy": require_command_policy,
+			"path_policy_mode": path_policy_mode,
+			"path_policy_profile": path_policy_profile,
+			"redaction_audit_mode": redaction_audit_mode,
+			"redact_output_patterns": redact_output_patterns,
+			"allowed_paths": allowed_paths,
+			"allowed_http_hosts": allowed_http_hosts,
+			"blocked_http_hosts": blocked_http_hosts,
+			"allowed_env_vars": allowed_env_vars
+		},
+		"strict_command_policy_enforced": strict_command_policy_enforced,
+		"path_allowlist_enforced": path_allowlist_enforced,
+		"risk_score": dict_get_or(risk_summary, "risk_score", 0),
+		"risk_tier": normalize_string(dict_get_or(risk_summary, "risk_tier", "low"), "low"),
+		"risk_hints": dict_get_or(risk_summary, "risk_hints", [])
+	}
+}
+
+export func lint_config_file(config_path) {
+	path := normalize_string(config_path, "eval.json")
+	diagnostics := []
+
+	if path_exists(path) == false {
+		diagnostics = append_lint_diagnostic(diagnostics, "CFG_FILE_NOT_FOUND", "$", "Config file not found: " + path, "Create the suite with: kujo run main.kujo init --name my-suite")
+		return make_result(false, "Config lint failed with 1 diagnostic", {
+			"path": path,
+			"diagnostics": diagnostics,
+			"error_count": 1,
+			"warning_count": 0
+		})
+	}
+
+	raw := ""
+	try {
+		raw = read_file(path)
+	} except err {
+		diagnostics = append_lint_diagnostic(diagnostics, "CFG_READ_FAILED", "$", "Failed to read config file: " + path, "Check file permissions and retry.")
+		return make_result(false, "Config lint failed with 1 diagnostic", {
+			"path": path,
+			"diagnostics": diagnostics,
+			"error_count": 1,
+			"warning_count": 0
+		})
+	}
+
+	if len(raw) > MAX_CONFIG_SIZE_BYTES {
+		diagnostics = append_lint_diagnostic(diagnostics, "CFG_SIZE_LIMIT", "$", "Config exceeds maximum size of " + to_string(MAX_CONFIG_SIZE_BYTES) + " bytes", "Split large suites into multiple configs and run them independently.")
+		return make_result(false, "Config lint failed with 1 diagnostic", {
+			"path": path,
+			"diagnostics": diagnostics,
+			"error_count": 1,
+			"warning_count": 0
+		})
+	}
+
+	cfg := {}
+	try {
+		cfg = parse_json(raw)
+	} except err {
+		diagnostics = append_lint_diagnostic(diagnostics, "CFG_JSON_PARSE", "$", "Invalid JSON syntax", "Run the file through a JSON formatter and remove trailing commas/comments.")
+		return make_result(false, "Config lint failed with 1 diagnostic", {
+			"path": path,
+			"diagnostics": diagnostics,
+			"error_count": 1,
+			"warning_count": 0
+		})
+	}
+
+	if type(cfg) != "dict" {
+		diagnostics = append_lint_diagnostic(diagnostics, "CFG_ROOT_TYPE", "$", "Config root must be a JSON object", "Wrap top-level fields in a JSON object: {\"name\":...,\"tests\":[...]}")
+		return make_result(false, "Config lint failed with 1 diagnostic", {
+			"path": path,
+			"diagnostics": diagnostics,
+			"error_count": 1,
+			"warning_count": 0
+		})
+	}
+
+	known_checks := KNOWN_CHECKS()
+	name := normalize_string(dict_get_or(cfg, "name", ""), "")
+	if name == "" {
+		diagnostics = append_lint_diagnostic(diagnostics, "CFG_MISSING_NAME", "name", "Missing required non-empty string field: name", "Add a suite name, for example: \"name\": \"my-suite\"")
+	}
+
+	tests_raw := dict_get_or(cfg, "tests", [])
+	if type(tests_raw) != "array" {
+		diagnostics = append_lint_diagnostic(diagnostics, "CFG_TESTS_TYPE", "tests", "Field tests must be an array", "Set \"tests\" to an array of test objects.")
+		tests_raw = []
+	}
+
+	if len(tests_raw) == 0 {
+		diagnostics = append_lint_diagnostic(diagnostics, "CFG_TESTS_EMPTY", "tests", "At least one test is required", "Add one or more tests with name, check, and params fields.")
+	}
+
+	if len(tests_raw) > MAX_TESTS {
+		diagnostics = append_lint_diagnostic(diagnostics, "CFG_TESTS_LIMIT", "tests", "Config exceeds maximum test count of " + to_string(MAX_TESTS), "Split tests into multiple suite files.")
+	}
+
+	policy_profile := normalize_string(dict_get_or(cfg, "policy_profile", ""), "")
+	if policy_profile != "" && is_known_policy_profile(policy_profile) == false {
+		diagnostics = append_lint_diagnostic(diagnostics, "CFG_POLICY_PROFILE_UNKNOWN", "policy_profile", "Unknown policy_profile: " + policy_profile, "Use one of: strict-ci, local-dev, release-gate.")
+	}
+
+	if has_key(cfg, "command_pattern_match_mode") == 1 {
+		mode := normalize_string(dict_get_or(cfg, "command_pattern_match_mode", ""), "")
+		if mode != "substring" && mode != "token" {
+			diagnostics = append_lint_diagnostic(diagnostics, "CFG_COMMAND_PATTERN_MODE", "command_pattern_match_mode", "Invalid command_pattern_match_mode: " + mode, "Use \"substring\" or \"token\".")
+		}
+	}
+
+	if has_key(cfg, "path_policy_mode") == 1 {
+		path_mode := normalize_string(dict_get_or(cfg, "path_policy_mode", ""), "")
+		if path_mode != "open" && path_mode != "allowlist-required" {
+			diagnostics = append_lint_diagnostic(diagnostics, "CFG_PATH_POLICY_MODE", "path_policy_mode", "Invalid path_policy_mode: " + path_mode, "Use \"open\" or \"allowlist-required\".")
+		}
+	}
+
+	path_profile_diag := invalid_path_policy_profile_diagnostic(cfg)
+	if dict_get_or(path_profile_diag, "valid", true) == false {
+		path_profile := normalize_string(dict_get_or(path_profile_diag, "profile", ""), "")
+		location := normalize_string(dict_get_or(path_profile_diag, "location", "path_policy_profile"), "path_policy_profile")
+		diagnostics = append_lint_diagnostic(diagnostics, "CFG_PATH_POLICY_PROFILE", location, "Unknown path_policy_profile: " + path_profile, "Use one of: open, ci-restricted, release-deny-default.")
+	}
+
+	ti := 0
+	while ti < len(tests_raw) {
+		tdef := tests_raw[ti]
+		if type(tdef) != "dict" {
+			diagnostics = append_lint_diagnostic(diagnostics, "CFG_TEST_OBJECT", "tests[" + to_string(ti) + "]", "Each tests entry must be an object", "Replace this entry with an object containing name, check, and params.")
+			ti := ti + 1
+			continue
+		}
+
+		test_name := normalize_string(dict_get_or(tdef, "name", ""), "")
+		if test_name == "" {
+			diagnostics = append_lint_diagnostic(diagnostics, "CFG_TEST_NAME", "tests[" + to_string(ti) + "].name", "Test name must be a non-empty string", "Set a unique test name.")
+		}
+
+		check_type := normalize_string(dict_get_or(tdef, "check", ""), "")
+		if check_type == "" {
+			diagnostics = append_lint_diagnostic(diagnostics, "CFG_TEST_CHECK", "tests[" + to_string(ti) + "].check", "Missing required check type", "Set check to one of the values from list-checks.")
+		} else if check_type_is_known(check_type, known_checks) == false {
+			diagnostics = append_lint_diagnostic(diagnostics, "CFG_TEST_CHECK_UNKNOWN", "tests[" + to_string(ti) + "].check", "Unknown check type: " + check_type, "Run `kujo run main.kujo list-checks` and choose a supported check.")
+		}
+
+		params := dict_get_or(tdef, "params", {})
+		if type(params) != "dict" {
+			diagnostics = append_lint_diagnostic(diagnostics, "CFG_TEST_PARAMS_TYPE", "tests[" + to_string(ti) + "].params", "params must be an object", "Set params to a JSON object containing check arguments.")
+		} else {
+			if (check_type == "command_succeeds" || check_type == "command_fails" || check_type == "output_contains" || check_type == "output_does_not_contain" || check_type == "output_matches_glob" || check_type == "command_stdout_json_path_equals" || check_type == "command_timing_less_than" || check_type == "exit_code_equals") && normalize_string(dict_get_or(params, "command", ""), "") == "" {
+				diagnostics = append_lint_diagnostic(diagnostics, "CFG_TEST_COMMAND_REQUIRED", "tests[" + to_string(ti) + "].params.command", "Command-backed check requires params.command", "Add a non-empty command string.")
+			}
+
+			if check_type == "json_value_equals" || check_type == "command_stdout_json_path_equals" {
+				expected_type := normalize_string(dict_get_or(params, "expected_type", ""), "")
+				if expected_type != "" && valid_expected_json_type(expected_type) == false {
+					diagnostics = append_lint_diagnostic(diagnostics, "CFG_TEST_EXPECTED_TYPE_INVALID", "tests[" + to_string(ti) + "].params.expected_type", "Unsupported expected_type: " + expected_type, "Use one of: string, number, int, float, bool, boolean, array, object, dict.")
+				}
+			}
+		}
+
+		ti := ti + 1
+	}
+
+	if len(diagnostics) == 0 {
+		validated := validate_config(cfg)
+		if validated["ok"] == false {
+			diagnostics = append_lint_diagnostic(diagnostics, "CFG_VALIDATION_FAILED", "$", dict_get_or(validated, "error", "Validation failed"), "Fix the reported field and rerun `kujo run main.kujo lint`.")
+		} else {
+			validated_data := dict_get_or(validated, "data", {})
+			return make_result(true, "", {
+				"path": path,
+				"diagnostics": [],
+				"error_count": 0,
+				"warning_count": 0,
+				"config": dict_get_or(validated_data, "config", {})
+			})
+		}
+	}
+
+	return make_result(false, "Config lint failed with " + to_string(len(diagnostics)) + " diagnostics", {
+		"path": path,
+		"diagnostics": diagnostics,
+		"error_count": len(diagnostics),
+		"warning_count": 0
+	})
+}
+
+export func load_config(config_path) {
+	path := normalize_string(config_path, "eval.json")
+
+	file_exists := path_exists(path)
+	if file_exists == false {
+		if path == "eval.json" { return make_result(false, "No eval.json found in current directory. Run 'eval init' to create one.", {"path": path}) }
+		return make_result(false, "Config file not found: " + path, {"path": path})
+	}
+
+	raw := ""
+	try { raw = read_file(path) } except err {
+		return make_result(false, "Failed to read config file: " + path, {"path": path})
+	}
+
+	if len(raw) > MAX_CONFIG_SIZE_BYTES { return make_result(false, "Config file exceeds maximum size of " + to_string(MAX_CONFIG_SIZE_BYTES) + " bytes", {"path": path}) }
+
+	cfg := {}
+	try { cfg = parse_json(raw) } except err {
+		context := ""
+		if len(raw) > 80 { context = raw[0] + raw[1] + raw[2] + "..." + raw[len(raw)-3] + raw[len(raw)-2] + raw[len(raw)-1] }
+		else { context = raw }
+		return make_result(false, "Invalid JSON in config file: " + path + ". Context: " + context, {"path": path})
+	}
+
+	if type(cfg) != "dict" { return make_result(false, "Config must be a JSON object", {"path": path}) }
+
+	validation := validate_config(cfg)
+	if validation["ok"] == false { return make_result(false, dict_get_or(validation, "error", "Validation failed"), {"path": path}) }
+
+	validated_config := dict_get_or(validation, "data", {})
+	final_config := dict_get_or(validated_config, "config", {})
+	return make_result(true, "", {"config": final_config, "path": path})
+}
+
+export func validate_config(cfg) {
+	normalized := normalize_dict(cfg)
+
+	name := normalize_string(dict_get_or(normalized, "name", ""), "")
+	if name == "" { return make_result(false, "Config requires a 'name' field (non-empty string)", {}) }
+
+	tests_raw := dict_get_or(normalized, "tests", [])
+	tests := normalize_array(tests_raw)
+	if len(tests) == 0 { return make_result(false, "Config requires at least one test in 'tests' array", {}) }
+
+	if len(tests) > MAX_TESTS { return make_result(false, "Config exceeds maximum test count of " + to_string(MAX_TESTS), {}) }
+
+	validated_tests := []
+	known := KNOWN_CHECKS()
+	i := 0
+	while i < len(tests) {
+		tdef := normalize_dict(tests[i])
+		test_name := normalize_string(dict_get_or(tdef, "name", ""), "test_" + to_string(i))
+
+		if len(test_name) > MAX_STRING_LENGTH { return make_result(false, "Test name exceeds maximum length of " + to_string(MAX_STRING_LENGTH), {}) }
+
+		check_type := normalize_string(dict_get_or(tdef, "check", ""), "")
+		if check_type == "" { return make_result(false, "Test '" + test_name + "' missing required 'check' field", {}) }
+
+		check_valid := false
+		j := 0
+		while j < len(known) {
+			if known[j] == check_type {
+				check_valid := true
+			}
+			j := j + 1
+		}
+
+		if check_valid == false { return make_result(false, "Test '" + test_name + "' has unknown check type: " + check_type, {}) }
+
+		vt_entry := {
+			"name": test_name,
+			"description": normalize_string(dict_get_or(tdef, "description", ""), ""),
+			"check": check_type,
+			"params": normalize_dict(dict_get_or(tdef, "params", {})),
+			"skip": normalize_bool(dict_get_or(tdef, "skip", false), false),
+			"tags": normalize_array(dict_get_or(tdef, "tags", [])),
+			"depends_on": normalize_array(dict_get_or(tdef, "depends_on", [])),
+			"timeout_seconds": normalize_int(dict_get_or(tdef, "timeout_seconds", 0), 0),
+			"retry": normalize_int(dict_get_or(tdef, "retry", 0), 0)
+		}
+		validated_tests := push(validated_tests, vt_entry)
+
+		i := i + 1
+	}
+
+	policy_profile := normalize_string(dict_get_or(normalized, "policy_profile", ""), "")
+	if policy_profile != "" && is_known_policy_profile(policy_profile) == false {
+		return make_result(false, "Unknown policy_profile: " + policy_profile + ". Expected one of strict-ci, local-dev, release-gate", {})
+	}
+
+	path_profile_diag := invalid_path_policy_profile_diagnostic(normalized)
+	if dict_get_or(path_profile_diag, "valid", true) == false {
+		return make_result(false, "Unknown path_policy_profile at " + normalize_string(dict_get_or(path_profile_diag, "location", "path_policy_profile"), "path_policy_profile") + ": " + normalize_string(dict_get_or(path_profile_diag, "profile", ""), "") + ". Expected one of open, ci-restricted, release-deny-default", {})
+	}
+
+	profile_defaults := policy_profile_defaults(policy_profile)
+
+	allowed_commands := normalize_array(dict_get_or(profile_defaults, "allowed_commands", []))
+	if has_key(normalized, "allowed_commands") == 1 {
+		allowed_commands = normalize_array(dict_get_or(normalized, "allowed_commands", []))
+	}
+
+	allowed_command_patterns := normalize_array(dict_get_or(profile_defaults, "allowed_command_patterns", []))
+	if has_key(normalized, "allowed_command_patterns") == 1 {
+		allowed_command_patterns = normalize_array(dict_get_or(normalized, "allowed_command_patterns", []))
+	}
+
+	blocked_arg_patterns := normalize_array(dict_get_or(profile_defaults, "blocked_arg_patterns", []))
+	if has_key(normalized, "blocked_arg_patterns") == 1 {
+		blocked_arg_patterns = normalize_array(dict_get_or(normalized, "blocked_arg_patterns", []))
+	}
+
+	command_pattern_match_mode := normalize_string(dict_get_or(profile_defaults, "command_pattern_match_mode", "substring"), "substring")
+	if has_key(normalized, "command_pattern_match_mode") == 1 {
+		command_pattern_match_mode = normalize_string(dict_get_or(normalized, "command_pattern_match_mode", "substring"), "substring")
+	}
+	if command_pattern_match_mode != "token" {
+		command_pattern_match_mode = "substring"
+	}
+
+	require_command_policy := normalize_bool(dict_get_or(profile_defaults, "require_command_policy", false), false)
+	if has_key(normalized, "require_command_policy") == 1 {
+		require_command_policy = normalize_bool(dict_get_or(normalized, "require_command_policy", false), false)
+	}
+
+	path_policy_mode := normalize_path_policy_mode(dict_get_or(profile_defaults, "path_policy_mode", "open"), "open")
+	if has_key(normalized, "path_policy_mode") == 1 {
+		path_policy_mode = normalize_path_policy_mode(dict_get_or(normalized, "path_policy_mode", "open"), "open")
+	}
+
+	path_policy_profile := normalize_string(dict_get_or(normalized, "path_policy_profile", ""), "")
+	if path_policy_profile != "" {
+		path_profile_defaults := path_policy_profile_defaults(path_policy_profile)
+		if has_key(normalized, "path_policy_mode") == 0 {
+			path_policy_mode = normalize_path_policy_mode(dict_get_or(path_profile_defaults, "path_policy_mode", "open"), "open")
+		}
+	}
+
+	redaction_audit_mode := normalize_bool(dict_get_or(profile_defaults, "redaction_audit_mode", false), false)
+	if has_key(normalized, "redaction_audit_mode") == 1 {
+		redaction_audit_mode = normalize_bool(dict_get_or(normalized, "redaction_audit_mode", false), false)
+	}
+
+	redact_output_patterns := normalize_array(dict_get_or(profile_defaults, "redact_output_patterns", []))
+	if has_key(normalized, "redact_output_patterns") == 1 {
+		redact_output_patterns = normalize_array(dict_get_or(normalized, "redact_output_patterns", []))
+	}
+
+	allowed_paths := normalize_array(dict_get_or(profile_defaults, "allowed_paths", []))
+	if path_policy_profile != "" {
+		path_profile_defaults := path_policy_profile_defaults(path_policy_profile)
+		allowed_paths = normalize_array(dict_get_or(path_profile_defaults, "allowed_paths", allowed_paths))
+	}
+	if has_key(normalized, "allowed_paths") == 1 {
+		allowed_paths = normalize_array(dict_get_or(normalized, "allowed_paths", []))
+	}
+
+	allowed_http_hosts := normalize_array(dict_get_or(profile_defaults, "allowed_http_hosts", []))
+	if has_key(normalized, "allowed_http_hosts") == 1 {
+		allowed_http_hosts = normalize_array(dict_get_or(normalized, "allowed_http_hosts", []))
+	}
+
+	blocked_http_hosts := normalize_array(dict_get_or(profile_defaults, "blocked_http_hosts", []))
+	if has_key(normalized, "blocked_http_hosts") == 1 {
+		blocked_http_hosts = normalize_array(dict_get_or(normalized, "blocked_http_hosts", []))
+	}
+
+	allowed_env_vars := normalize_array(dict_get_or(profile_defaults, "allowed_env_vars", []))
+	if has_key(normalized, "allowed_env_vars") == 1 {
+		allowed_env_vars = normalize_array(dict_get_or(normalized, "allowed_env_vars", []))
+	}
+
+	history_retention_runs := normalize_int(dict_get_or(normalized, "history_retention_runs", DEFAULT_HISTORY_RETENTION_RUNS), DEFAULT_HISTORY_RETENTION_RUNS)
+	if history_retention_runs <= 0 {
+		history_retention_runs = DEFAULT_HISTORY_RETENTION_RUNS
+	}
+
+	aux_artifact_retention_files := normalize_int(dict_get_or(normalized, "aux_artifact_retention_files", DEFAULT_AUX_ARTIFACT_RETENTION_FILES), DEFAULT_AUX_ARTIFACT_RETENTION_FILES)
+	if aux_artifact_retention_files < 0 {
+		aux_artifact_retention_files = DEFAULT_AUX_ARTIFACT_RETENTION_FILES
+	}
+
+	parallel_workers := normalize_int(dict_get_or(normalized, "parallel_workers", DEFAULT_PARALLEL_WORKERS), DEFAULT_PARALLEL_WORKERS)
+	if parallel_workers < 1 {
+		parallel_workers = DEFAULT_PARALLEL_WORKERS
+	}
+	if parallel_workers > 32 {
+		parallel_workers = 32
+	}
+
+	artifact_checksums := normalize_bool(dict_get_or(normalized, "artifact_checksums", false), false)
+	default_policy_stage_overlays := normalize_policy_stage_overlays(policy_profile_stage_defaults(policy_profile))
+	user_policy_stage_overlays := normalize_policy_stage_overlays(dict_get_or(normalized, "policy_stage_overlays", {}))
+	policy_stage_overlays := merge_policy_stage_overlays(default_policy_stage_overlays, user_policy_stage_overlays)
+
+	config := {
+		"name": name,
+		"description": normalize_string(dict_get_or(normalized, "description", ""), ""),
+		"version": normalize_string(dict_get_or(normalized, "version", ""), "0.0.0"),
+		"output_dir": normalize_string(dict_get_or(normalized, "output_dir", ""), DEFAULT_OUTPUT_DIR),
+		"snapshot_dir": normalize_string(dict_get_or(normalized, "snapshot_dir", ""), DEFAULT_SNAPSHOT_DIR),
+		"timeout_seconds": normalize_int(dict_get_or(normalized, "timeout_seconds", 0), 0),
+		"setup": normalize_string(dict_get_or(normalized, "setup", ""), ""),
+		"teardown": normalize_string(dict_get_or(normalized, "teardown", ""), ""),
+		"before_each": normalize_string(dict_get_or(normalized, "before_each", ""), ""),
+		"after_each": normalize_string(dict_get_or(normalized, "after_each", ""), ""),
+		"policy_profile": policy_profile,
+		"stop_on_failure": normalize_bool(dict_get_or(normalized, "stop_on_failure", false), false),
+		"history_retention_runs": history_retention_runs,
+		"aux_artifact_retention_files": aux_artifact_retention_files,
+		"parallel_workers": parallel_workers,
+		"artifact_checksums": artifact_checksums,
+		"policy_stage_overlays": policy_stage_overlays,
+		"path_policy_profile": path_policy_profile,
+		"allowed_commands": allowed_commands,
+		"allowed_command_patterns": allowed_command_patterns,
+		"blocked_arg_patterns": blocked_arg_patterns,
+		"command_pattern_match_mode": command_pattern_match_mode,
+		"require_command_policy": require_command_policy,
+		"path_policy_mode": path_policy_mode,
+		"redaction_audit_mode": redaction_audit_mode,
+		"redact_output_patterns": redact_output_patterns,
+		"allowed_paths": allowed_paths,
+		"allowed_http_hosts": allowed_http_hosts,
+		"blocked_http_hosts": blocked_http_hosts,
+		"allowed_env_vars": allowed_env_vars,
+		"tests": validated_tests
+	}
+
+	return make_result(true, "", {"config": config})
+}
+
+export func init_config(name, output_dir, snapshot_dir, template) {
+	suite_name := normalize_string(name, "eval-suite")
+	out_dir := normalize_string(output_dir, DEFAULT_OUTPUT_DIR)
+	snap_dir := normalize_string(snapshot_dir, DEFAULT_SNAPSHOT_DIR)
+	tmpl := normalize_string(template, "basic")
+
+	default_tests := [
+		{
+			"name": "example: command succeeds",
+			"description": "Verify a CLI command exits successfully",
+			"check": "command_succeeds",
+			"params": {"command": "echo hello world"}
+		},
+		{
+			"name": "example: output contains text",
+			"description": "Verify command output contains expected text",
+			"check": "output_contains",
+			"params": {"command": "echo hello world", "expected": "hello"}
+		},
+		{
+			"name": "example: file exists",
+			"description": "Verify a file exists on disk",
+			"check": "file_exists",
+			"params": {"path": "eval.json"}
+		}
+	]
+
+	if tmpl == "cli" {
+		default_tests = [
+			{"name": "CLI: help works", "check": "command_succeeds", "params": {"command": "echo 'Usage: mytool'"}},
+			{"name": "CLI: version flag", "check": "output_contains", "params": {"command": "echo 'v1.0.0'", "expected": "v1"}},
+			{"name": "CLI: exit code on error", "check": "exit_code_equals", "params": {"command": "exit 2", "expected": 2}}
+		]
+	}
+	if tmpl == "web" {
+		default_tests = [
+			{"name": "Web: HTTP 200", "check": "http_status", "params": {"url": "http://localhost:3000/health", "expected_status": 200}},
+			{"name": "Web: JSON shape", "check": "stdout_json_matches_shape", "params": {"command": "echo '{\"status\":\"ok\"}'", "required_keys": ["status"]}},
+			{"name": "Web: response body", "check": "http_body_contains", "params": {"url": "http://localhost:3000/", "expected": "html"}}
+		]
+	}
+	if tmpl == "agent" {
+		default_tests = [
+			{"name": "Agent: output file generated", "check": "file_exists", "params": {"path": "./output/result.json"}},
+			{"name": "Agent: output is valid JSON", "check": "json_matches_shape", "params": {"path": "./output/result.json", "required_keys": ["result", "confidence"]}},
+			{"name": "Agent: completes within budget", "check": "command_timing_less_than", "params": {"command": "echo done", "max_ms": 30000}}
+		]
+	}
+
+	config := {
+		"name": suite_name,
+		"description": "Eval suite for " + suite_name + " (template: " + tmpl + ")",
+		"version": "0.1.0",
+		"output_dir": out_dir,
+		"snapshot_dir": snap_dir,
+		"artifact_checksums": false,
+		"parallel_workers": DEFAULT_PARALLEL_WORKERS,
+		"stop_on_failure": false,
+		"tests": default_tests
+	}
+
+	config_json := to_json(config)
+	write_file("eval.json", config_json)
+
+	return make_result(true, "", {"message": "Initialized eval suite '" + suite_name + "' in eval.json", "path": "eval.json"})
+}
+
+export func default_config_path() {
+	return "eval.json"
+}
+
+export func describe_config_module() {
+	return {
+		"module": "config",
+		"description": "Configuration loading, validation, and init",
+		"exports": ["load_config", "validate_config", "init_config", "KNOWN_CHECKS", "default_config_path", "lint_config_file", "policy_explain_config"],
+		"contract_version": "2.0.0",
+		"check_count": len(KNOWN_CHECKS())
+	}
+}
