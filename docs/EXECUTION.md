@@ -553,8 +553,8 @@ and retention of active/paused/uncertain runs without deleting their state.
 
 ### Pinned Dispatch native commands
 
-Bundle `0.10.0` adds Dispatch `1.3.0` at
-`ac2609b8ef14cbf8fbec5df5dfc1789fa4fa25b8`: CLI, canonical source modules,
+Bundle `0.10.1` pins Dispatch `1.3.0` with the additive control-view contract at
+`e83f034077ef46e138cf3ac59603a9f91d410ab5`: CLI, canonical source modules,
 fixture sources, workflow examples, schemas, metadata and license. No external AI
 SDK, provider credentials, container runtime or participant SDK is installed by
 this snapshot. Dispatch native workflows are qualified on Linux/macOS only.
@@ -570,16 +570,35 @@ authenticated host context. Native output remains private input to later bounded
 validated and redacted host projections.
 
 Its first command set lists templates/runs, starts an explicitly offline fixture,
-inspects a run, and submits a typed v2 retained-evidence decision. No arbitrary
+inspects a run, and submits a typed v2 retained-evidence decision or a revision-bound
+legacy approval/rejection. No arbitrary
 command, path, provider, environment, `--yes`, retry or input amendment is passed
 through. Native Dispatch validates current boundaries and decision replay; this
-adapter does not reproduce that logic. Commands retain the existing 27-second
-process ceiling. Timeout or lost observation does not authorize another start.
+adapter does not reproduce that logic. Commands default to the existing 27-second
+process ceiling. An internal caller may explicitly select `workflow-job` for a
+fixed 120-second start/decision budget; read-only commands remain at 27 seconds.
+The selection and deadline are bound into the policy digest. This requires a
+durable job controller and human approval for that exact budget before production
+use; it must not run as a synchronous public RPC. Current public execution-plan
+contracts remain capped at 27 seconds. Timeout or lost observation does not
+authorize another start.
 Disposing the private code snapshot leaves native run state intact.
 
+The internal control reader accepts only successful, bounded canonical inspect
+responses for the expected run, preserving the complete control observation or
+its explicit unavailable result. It never reads `state.json` as authority.
+Legacy decision construction requires a paused/needs-changes v1 request with the
+same run, a supported allowed action and no expiring-request contract. It binds
+the observed revision, event, step and decision ID to the host-derived human
+actor and response. A view is an observation, not authorization or journal
+reconciliation. Host approval must still be fresh at execution; canonical
+Dispatch rejects a stale revision under its run lock. New receipts distinguish
+exact applied duplicates, changed payload conflicts and uncertain claims.
+
 Bundled integration tests use distinct supervised native processes and private
-storage for each operation. They qualify canonical template discovery, offline
-approval pause, later inspection, workspace import exclusion, v2 stale-revision
+storage for each operation and explicitly selects the internal job budget. The suite exercises canonical template discovery, offline
+approval pause and completion of all three templates through an inspected legacy
+revision, later inspection, workspace import exclusion, v1/v2 stale-revision
 rejection, one-boundary approval, the next gate staying paused, identical decision
 replay suppression and conflicting decision rejection. Test fixtures preserve the
 canonical source pin; neither the canonical checkout nor live credentials are

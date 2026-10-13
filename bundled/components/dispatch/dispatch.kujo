@@ -1,3 +1,4 @@
+from src.core.control_view import build_control_view
 from src.core.retained_recovery import inspect_retained_run, plan_retained_reconciliation, apply_retained_reconciliation
 from src.bridge.sdk_adapter import custom_provider_api_key_env_allowed, custom_provider_endpoint_allowed, call_agent_model
 from src.cli.bundled_workflow import bundled_workflow_path, normalize_config_path
@@ -1089,6 +1090,7 @@ func run_inspect(command_args) {
         payload := {
             "command": "inspect",
             "ok": true,
+            "control": build_control_view(run_state),
             "run_id": run_state["run_id"],
             "output_root": output_root,
             "contract": contract,
@@ -1561,6 +1563,27 @@ func run_resume_decision(command_args) {
     recovered := reconcile_control_journal(run_state)
     if recovered["ok"] == false {exit_error(to_json(recovered["error"]))}
     run_state = recovered["run_state"]
+    decision_digest := sha256(to_json(decision))
+    decision_history := dict_get_or(run_state, "human_decisions", {})
+    if type(decision_history) != "dict" {decision_history = {}}
+    revision_bound := key_exists(decision, "expected_state_revision")
+    if has_key(decision_history, decision_id) {
+        receipt := decision_history[decision_id]
+        retained_digest := dict_get_or(receipt, "decision_sha256", "")
+        if retained_digest != "" {
+            if retained_digest != decision_digest {exit_error("decision_conflict: decision_id is bound to a different payload")}
+            if dict_get_or(receipt, "status", "") != "applied" {exit_error("control_recovery_required: retained decision is not applied; do not replay automatically")}
+            release_run_lock(lock)
+            print(to_json({"status": "already_applied", "run_id": run_id, "decision_id": decision_id}))
+            return
+        }
+        if revision_bound {exit_error("control_recovery_required: legacy receipt cannot prove an exact decision payload")}
+    }
+    if revision_bound {
+        expected_revision := decision["expected_state_revision"]
+        if type(expected_revision) != "int"||expected_revision < 1 {exit_error("invalid_resume_request: expected_state_revision must be a positive integer")}
+        if expected_revision != dict_get_or(run_state, "revision", 0) {exit_error("stale_resume_decision: expected_state_revision does not match current run state")}
+    }
     human_event := dict_get_or(run_state, "human_intervention", {})
     if dict_get_or(human_event, "event_id", "") != event_id||dict_get_or(dict_get_or(human_event, "run", {}), "step_id", "") != step_id {
         exit_error("Resume request does not match the currently suspended event and step.")
@@ -1571,10 +1594,6 @@ func run_resume_decision(command_args) {
     expected_decision_id := trim(to_string(dict_get_or(dict_get_or(human_event, "security", {}), "decision_id", "")))
     if expected_decision_id == ""||decision_id != expected_decision_id {
         exit_error("Resume request decision_id does not match the current approval.")
-    }
-    decision_history := dict_get_or(run_state, "human_decisions", {})
-    if type(decision_history) != "dict" {
-        decision_history := {}
     }
     if has_key(decision_history, decision_id)&&dict_get_or(decision_history[decision_id], "status", "") == "claimed" {exit_error("control_recovery_required: decision was claimed; do not replay automatically")}
     if has_key(decision_history, decision_id)&&dict_get_or(decision_history[decision_id], "status", "") == "applied" {
@@ -1590,6 +1609,7 @@ func run_resume_decision(command_args) {
     topic := dict_get_or(dict_get_or(run_state, "input", {}), "topic", "")
     workflow := dispatch_resolve_resume_workflow(run_state, "", topic, false)
     decision_history[decision_id] := {
+        "decision_sha256": decision_digest,
         "event_id": event_id,
         "step_id": step_id,
         "decision": decision_value,

@@ -10,42 +10,55 @@ import type { ExecuteKujoInput, ResolvedRuntime } from "../../runtime/types.js";
 import { evidenceDigest } from "../../storage/history.js";
 
 const identity = z.string().min(1).max(200);
-const runId = z.string().regex(/^run-[a-zA-Z0-9-]{1,120}$/);
+export const dispatchRunIdSchema = z.string().regex(/^run-[a-zA-Z0-9-]{1,120}$/);
+export const dispatchActorSchema = z.object({ id: identity, type: z.literal("human"), authenticated_by: identity, authorization: identity }).strict();
+export const dispatchLegacyDecisionSchema = z.object({
+  run_id: dispatchRunIdSchema, step_id: identity, event_id: identity, decision_id: identity,
+  expected_state_revision: z.number().int().positive(), decision: z.enum(["approve", "reject"]),
+  actor: dispatchActorSchema, response: z.string().min(1).max(2000), decided_at: z.iso.datetime({ offset: true }),
+}).strict();
 export const dispatchDecisionSchema = z.object({
-  schema: z.literal("kujo.intervention-decision/v2"), run_id: runId,
+  schema: z.literal("kujo.intervention-decision/v2"), run_id: dispatchRunIdSchema,
   decision_id: identity, request_id: identity, boundary_id: identity,
   expected_state_revision: z.number().int().nonnegative(),
   // The first integration consumes retained evidence only. Native retry/amend
   // contracts require additional effect/provider admission before projection.
   action: z.enum(["approve_override", "resume_from_boundary", "abort"]),
   continuation: z.object({}).strict(),
-  actor: z.object({ id: identity, type: z.literal("human"), authenticated_by: identity, authorization: identity }).strict(),
+  actor: dispatchActorSchema,
   reason: z.string().min(1).max(2000), decided_at: z.iso.datetime({ offset: true }),
 }).strict();
 export const dispatchCommandSchema = z.discriminatedUnion("operation", [
   z.object({ operation: z.literal("templates") }).strict(),
   z.object({ operation: z.literal("start-fixture"), template: z.enum(["research-report", "crud-reliability", "approval-handoff"]), topic: z.string().trim().min(1).max(500).refine(value => !value.startsWith("--") && !value.includes("\0"), "Topic must be text, not a CLI option") }).strict(),
   z.object({ operation: z.literal("runs") }).strict(),
-  z.object({ operation: z.literal("inspect"), runId }).strict(),
+  z.object({ operation: z.literal("inspect"), runId: dispatchRunIdSchema }).strict(),
+  z.object({ operation: z.literal("decide-approval"), decision: dispatchLegacyDecisionSchema }).strict(),
   z.object({ operation: z.literal("decide"), decision: dispatchDecisionSchema }).strict(),
 ]);
 export type DispatchCommand = z.infer<typeof dispatchCommandSchema>;
 const sha = (value: Buffer) => createHash("sha256").update(value).digest("hex");
-const policy = { adapter: "dispatch-offline-native/v1", timeoutMs: 27000, stdoutBytes: 500000, stderrBytes: 64000, mode: "offline-fixture" };
+const basePolicy = { adapter: "dispatch-offline-native/v2", timeoutMs: 27000, stdoutBytes: 500000, stderrBytes: 64000, mode: "offline-fixture" };
 
 /** Internal command materializer, not an approval authority or public tool.
  * The host must bind command/component/runtime/policy digests to approval and
- * persistent ownership before invoking. Decision actor identity must come from
+ * persistent ownership before invoking. A workflow-job budget requires durable
+ * job admission with that exact budget; this helper does not grant it. Decision actor identity must come from
  * authenticated host context, never caller-supplied tool parameters. Never replay start after lost observation.
  * Existing runner state is retained; only the private code snapshot is disposed.
  */
 export async function prepareDispatchInvocation(input: {
   command: DispatchCommand; runtime: ResolvedRuntime;
   storageRoot: string; storageBinding: WorkflowStorageBinding;
+  /** Explicit internal job budget; never select this for a synchronous public RPC. */
+  executionBudget?: "short" | "workflow-job";
 }) {
   if (process.platform !== "darwin" && process.platform !== "linux") throw new Error("Dispatch requires a supported POSIX platform");
   // Snapshot caller data before asynchronous work; no mutable decision aliases.
   const command = dispatchCommandSchema.parse(input.command);
+  const executionBudget = z.enum(["short", "workflow-job"]).default("short").parse(input.executionBudget);
+  const workflowEffect = ["start-fixture", "decide", "decide-approval"].includes(command.operation);
+  const policy = { ...basePolicy, executionBudget, timeoutMs: executionBudget === "workflow-job" && workflowEffect ? 120000 : 27000 };
   const runtime = { ...input.runtime };
   const storageBinding = { ...input.storageBinding };
   const store = await openWorkflowStorage(input.storageRoot);

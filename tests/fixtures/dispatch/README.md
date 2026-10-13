@@ -1,5 +1,5 @@
 These two Kujo fixtures are unmodified copies from Dispatch commit
-`ac2609b8ef14cbf8fbec5df5dfc1789fa4fa25b8` (MIT):
+`e83f034077ef46e138cf3ac59603a9f91d410ab5` (MIT):
 
 - `tests/resume_policy_fixture.kujo`
 - `tests/control_boundary_fixtures.kujo`
