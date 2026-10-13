@@ -27,7 +27,7 @@ let child;
 let log;
 let stopping;
 let cookie = "";
-const evidence = { schemaVersion: 1, fixture: "fixed-program authenticated execution", startedAt: new Date().toISOString(),
+const evidence = { schemaVersion: 1, fixture: "isolated authenticated execution and host admission", startedAt: new Date().toISOString(),
   hostCommit: execFileSync("git", ["-C", host, "rev-parse", "HEAD"], { encoding: "utf8" }).trim(),
   pluginCommit: execFileSync("git", ["-C", repo, "rev-parse", "HEAD"], { encoding: "utf8" }).trim(), checks };
 async function port() {
@@ -116,6 +116,13 @@ try {
   await mkdir(join(fixture, "dist"), { recursive: true });
   await mkdir(join(fixture, "migrations"));
   await mkdir(join(root, "workspace"));
+  execFileSync("git", ["-c", "init.templateDir=", "init", "--quiet", join(root, "workspace")], {
+    env: { PATH: process.env.PATH, SYSTEMROOT: process.env.SYSTEMROOT, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: process.platform === "win32" ? "NUL" : "/dev/null" },
+  });
+  await writeFile(join(root, "workspace", "answer.json"), '{"answer":42}');
+  await writeFile(join(root, "workspace", "eval.json"), JSON.stringify({ name: "Host-owned Eval admission", tests: [
+    { name: "answer", check: "json_value_equals", params: { path: "answer.json", json_path: "answer", expected: 42 } },
+  ] }));
   await symlink(join(repo, "bundled"), join(fixture, "bundled"), process.platform === "win32" ? "junction" : "dir");
   await symlink(join(repo, "node_modules"), join(fixture, "node_modules"), process.platform === "win32" ? "junction" : "dir");
   await writeFile(join(fixture, "package.json"), JSON.stringify({ name: "@kujolang/approval-acceptance-fixture", version: "0.0.0", private: true, type: "module",
@@ -196,6 +203,27 @@ try {
     nativeReceipts.push(receipt);
   }
   checks.push("host-approved canonical Eval retains native pass/fail receipts without replay");
+  assert.match((await action("inspect-host-eval", { suite: "eval.json" }, { status: 502 })).message, /disabled/);
+  const saveConfig = async configJson => call("/plugins/kujolang.paperclip/config", { method: "POST", body: { companyId, configJson } });
+  await saveConfig({ features: { execution: true }, capabilityProfile: "ship" });
+  await waitUntil(async () => { try { return (await action("inspect-host-eval", { suite: "eval.json" })).data.coverage.complete; } catch { return false; } });
+  const hostRequest = (await action("prepare-host-eval", { suite: "eval.json", submissionId: "host-workspace" })).data;
+  assert.match(hostRequest.request.plan.preview, /json_value_equals/);
+  await accept(hostRequest);
+  const hostReceipt = (await action("start-host-eval", { id: hostRequest.id })).data;
+  assert.equal(hostReceipt.state, "succeeded"); assert.equal(hostReceipt.result.classification, "passed");
+  assert.equal(hostReceipt.result.coverage.copied, 2);
+  checks.push("company-configured host workspace capture, review preview and approved native execution");
+  const changed = (await action("prepare-host-eval", { suite: "eval.json", submissionId: "host-changed" })).data;
+  await accept(changed); await writeFile(join(root, "workspace", "answer.json"), '{"answer":41}');
+  assert.equal((await action("start-host-eval", { id: changed.id })).data.state, "stale");
+  await writeFile(join(root, "workspace", "answer.json"), '{"answer":42}');
+  const revoked = (await action("prepare-host-eval", { suite: "eval.json", submissionId: "host-revoked" })).data;
+  await saveConfig({ features: { execution: false } });
+  assert.match((await action("start-host-eval", { id: revoked.id }, { status: 502 })).message, /disabled/);
+  assert.equal((await action("cancel-host-eval", { id: revoked.id })).data.state, "cancelled");
+  await saveConfig({ features: { execution: true }, capabilityProfile: "ship" });
+  checks.push("changed host inputs invalidate approval; disabled execution still permits scoped cancellation");
   const cancelled = await prepare("cancel-before-accept");
   assert.equal((await action("cancel", { id: cancelled.id })).data.state, "cancelled");
   await accept(cancelled);
@@ -226,7 +254,27 @@ try {
   await accept(restartPending);
   assert.equal((await action("start", { id: restartPending.id })).data.state, "succeeded");
   checks.push("full authenticated host/database restart preserves session, pending card, cancellation and terminal result");
-  await json("receipts.json", { succeeded, nativeReceipts, cancelled: await status(slow.id), afterRestart: await status(restartPending.id) });
+  assert.deepEqual((await action("status-host-eval", { id: hostReceipt.id })).data, hostReceipt);
+  const capacityRequests = [];
+  for (let index = 0; index < 20; index++) capacityRequests.push(await prepare(`capacity-${index}`));
+  assert.match((await action("prepare", { submissionId: "capacity-overflow" }, { status: 502 })).message, /capacity/);
+  assert.equal((await action("list", {})).data.filter(record => ["preparing", "pending", "running", "cancel_requested"].includes(record.state)).length, 20);
+  for (const request of capacityRequests) await action("cancel", { id: request.id });
+  const recovered = await prepare("capacity-recovered"); assert.equal(recovered.state, "pending");
+  await action("cancel", { id: recovered.id });
+  checks.push("real PostgreSQL enforces twenty active request slots and releases cancelled capacity");
+  const runCapacity = [];
+  for (let index = 0; index < 3; index++) { const request = await prepare(`run-capacity-${index}`, "slow"); await accept(request); runCapacity.push(request); }
+  const runningCapacity = [];
+  for (const request of runCapacity.slice(0, 2)) {
+    const task = action("start", { id: request.id }); task.catch(() => {}); runningCapacity.push(task);
+    await waitUntil(async () => (await status(request.id)).state === "running");
+  }
+  assert.equal((await action("start", { id: runCapacity[2].id })).data.state, "pending");
+  for (const request of runCapacity) await action("cancel", { id: request.id });
+  await Promise.all(runningCapacity);
+  checks.push("real PostgreSQL admits two running owners and keeps a third approved request pending");
+  await json("receipts.json", { hostReceipt, succeeded, nativeReceipts, cancelled: await status(slow.id), afterRestart: await status(restartPending.id) });
   evidence.status = "passed";
 } catch (error) {
   evidence.status = "failed";

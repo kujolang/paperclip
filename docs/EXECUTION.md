@@ -2,8 +2,8 @@
 
 The execution coordinator is an internal integration prototype. There is no
 public run tool, execution button or background queue yet. A native Eval
-execution primitive is integrated internally; host admission and public controls
-remain unfinished. The
+execution primitive and host admission service are integrated internally; public
+controls remain unfinished. The
 manifest does not request confirmation permissions until a reviewed adapter
 needs them. The additive `002_execution.sql` migration reserves durable request
 storage without changing existing evidence records.
@@ -77,7 +77,7 @@ access or promise containment of adversarial project code.
 States are `preparing`, `pending`, `running`, `cancel_requested`, `succeeded`,
 `failed`, `cancelled`, `expired`, `rejected`, `stale` and `uncertain`. A successful
 process exit does not by itself establish every declared acceptance criterion;
-the future Eval adapter must retain and classify its canonical result separately.
+the Eval adapter retains and classifies its canonical result separately.
 Request digests are checked on every read, and all transitions use parameterized,
 namespace-qualified, single-statement SQL scoped to company and issue. No
 invented host transaction or compare-and-swap API is required.
@@ -91,10 +91,9 @@ schemas. The opt-in authenticated host qualification below tests the actual work
 host confirmation and PostgreSQL persistence using a disposable board account.
 It does not replace manual UI approval or newcomer usability validation.
 
-Before exposing Eval: connect host-owned file admission and detailed input/effect
-preview to the native primitive, add durable failure/parent-child receipts,
-retention/admission limits, UI and agent start/status/inspect/cancel flows, and
-actual-host approval/restart/tenant acceptance. Preserve this foundation's tests
+Before exposing Eval: add durable failure/parent-child receipts, UI and agent
+start/status/inspect/cancel flows, and qualify those production handlers against
+the actual host. Preserve this foundation's tests
 when integrating those surfaces; do not present the prototype as a shipped workflow.
 
 ## Reproduce authenticated host qualification
@@ -117,8 +116,8 @@ The harness creates a new private temporary instance with separate configuration
 ports, database, storage and secrets. It never accepts an existing server URL or
 database. It signs up a disposable authenticated test board user, creates fixture
 company/project/issue/workspace records, and installs a development-only worker.
-The worker uses the real coordinator and bundled runtime but executes only two
-fixed fixture programs. No project code or agent-supplied command is executed.
+The worker uses the real coordinator and bundled runtime and executes fixed fixture programs and canonical Eval suites in a disposable
+Git workspace. No user project or agent-supplied command is executed.
 The fixture uses the production plugin ID only inside this isolated database;
 never install it over an existing Kujo plugin. Neither the harness nor fixture is
 in the npm package.
@@ -175,5 +174,55 @@ The authenticated-host fixture also runs fixed passing and failing canonical
 Eval suites after board-account acceptance, retains their native receipts and
 checks that those receipts survive full host/database restart. This extends the
 fixed-program acceptance above without exposing execution in the production
-worker. Production profile/admission enforcement, full effect previews, request
-quotas/retention, UI/agent workflows and manual user acceptance remain required.
+worker. The fixture also qualifies the host admission service and database limits below.
+Production UI/agent workflows and manual user acceptance remain required.
+
+
+## Host admission and review
+
+The internal host service resolves the issue, company, project and canonical
+workspace through Paperclip. Execution defaults off. Enabling
+`features.execution` requires the installed/full profile or a canonical profile
+containing `kujo.eval.suite.run` (currently Ship). No profile grants approval.
+Production handlers must still derive requester identity from authenticated host
+context; no caller workspace, executable, file bytes or approval ID is accepted.
+
+The service captures Git-visible text files into a private input copy, bounded to
+1,000 files, 64 KiB per file and 16 MiB total. The review contains the redacted
+suite definition, declared effects, output override and input coverage. Ignored
+paths, dependencies and external resources are not frozen. Sensitive, binary,
+unreadable and oversized files are omitted; omissions turn a native pass into a
+partial result while preserving the native classification. Suite commands can
+access resources outside the copy. This does not establish dependency isolation
+or a complete executable project snapshot.
+
+The plan binds copied bytes, omitted inventory, workspace identity, canonical
+Ability definition, runtime and effective settings. Admission is checked again
+before execution; changed inputs or settings cannot reuse approval. Reviews that
+exceed the host confirmation size limit are rejected before allocating a request
+or card. At most two captures and two starts run concurrently per worker service.
+Cancellation remains available when execution is disabled. Current workspace
+freshness after execution is explicitly not rechecked.
+
+## Durable limits and retention
+
+The additive `003_execution_limits.sql` migration adds company-scoped unique
+slots: at most 20 active requests and two persisted running owners. Capacity is
+shared across issues and workers. A third approved request remains pending;
+there is no automatic queue. Concurrent slot contention can require an explicit
+refresh/retry, but a lost ownership response never triggers an automatic retry.
+Legacy active requests without slots conservatively block new admission until
+they finish or expire; migration does not evict them.
+
+Before admission, claim and list, maintenance expires abandoned pending requests,
+marks expired owner leases uncertain, and prunes terminal requests older than
+30 days or beyond the latest 100 per company. Active requests are preserved.
+Retention is opportunistic: newly finished rows can temporarily exceed 100 until
+the next maintenance operation. Listing returns at most 100 scoped requests,
+active first. These limits constrain persisted ownership, not unknown orphan
+processes after a crash; the recovery limits above still apply.
+
+The authenticated fixture checks actual company settings, host workspace capture,
+full review, native receipts, stale-input rejection, cancellation after disabling,
+20-request capacity and two-owner admission using real PostgreSQL. It remains an
+internal fixture, not qualification of a public production execution surface.
