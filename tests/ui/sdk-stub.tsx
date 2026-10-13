@@ -6,6 +6,9 @@ declare global {
   interface Window {
     __KUJO_DELAY_PACKAGES__?: boolean;
     __KUJO_RESOLVE_PACKAGES__?: () => void;
+    __KUJO_DELAY_CREATION__?: boolean;
+    __KUJO_RESOLVE_CREATION__?: () => void;
+    __KUJO_CREATION_REQUESTS__?: Array<Record<string, unknown>>;
     __KUJO_DELAY_SOURCE__?: boolean;
     __KUJO_RESOLVE_SOURCE__?: () => void;
     __KUJO_SOURCE_REQUESTS__?: Array<Record<string, unknown>>;
@@ -62,6 +65,18 @@ export function usePluginAction(action: string) {
     if (action === "inspect-kujo-packages") {
       if (window.__KUJO_DELAY_PACKAGES__) { await new Promise<void>(resolve => { window.__KUJO_RESOLVE_PACKAGES__ = resolve; }); throw new Error("private delayed package result"); }
       return { status: "warnings", reportId: "package-fixture" };
+    }
+    if (action === "manage-kujo-starter") {
+      const params = input as { operation: string; kind?: string; name?: string; id?: string };
+      if (window.__KUJO_DELAY_CREATION__) { await new Promise<void>(resolve => { window.__KUJO_RESOLVE_CREATION__ = resolve; }); throw new Error("private delayed creation result"); }
+      const requests = window.__KUJO_CREATION_REQUESTS__ ??= [];
+      if (params.operation === "list") return { requests, history: { pending: false } };
+      if (params.operation === "inspect") return { plan: { summary: "New canonical starter files; no overwrite", preview: "src/main.kujo · reviewed digest" }, preview: { kind: params.kind, name: params.name, entrypoint: "src/main.kujo", files: [{ path: "src/main.kujo", content: 'print("Hello from Kujo")' }] } };
+      if (params.operation === "prepare") { const item = { id: "creation_fixture", kind: params.kind, name: params.name, state: "pending", plan: { preview: "reviewed inventory" }, result: null }; requests.push(item); return item; }
+      const item = requests.find(record => record.id === params.id)!;
+      if (params.operation === "start") { item.state = "succeeded"; item.classification = "created"; item.result = { classification: "created", destination: item.name, entrypoint: `${item.name}/src/main.kujo`, files: [{ path: "src/main.kujo" }] }; item.history = { notice: "Creation plan and outcome retained." }; }
+      if (params.operation === "cancel") item.state = "cancelled";
+      return { ...item };
     }
     if (action === "manage-kujo-execution") {
       const params = input as { operation: string; mode?: string; path?: string; id?: string };

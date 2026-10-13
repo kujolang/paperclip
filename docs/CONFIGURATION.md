@@ -36,6 +36,13 @@ clamped to500 KB stdout/64 KB stderr and runtime to27 seconds. See
 [native source and tests](EXECUTION.md#native-source-and-tests) for frozen-input
 coverage and the absence of sandboxing or persistent services.
 
+`features.projectCreation` defaults to `false`. Installed, Build and Full expose
+approved script/API/MCP/fixture-agent creation through `manage-kujo-starter` and
+the issue panel. It is independent of Eval, run/test and read-only example
+previews; none of those settings grants write permission. Every creation requires
+a separate human-only approval. Metadata/cancellation remain available while
+disabled, and requests share existing company quotas and retention.
+
 ## Process limits
 
 | Setting | Default | Allowed range |

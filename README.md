@@ -113,6 +113,20 @@ create project files, install dependencies or execute the generated program.
 The agent starter includes instructions, schemas, capability policy and evaluation;
 its pinned Kennel dependencies must be installed before use. The API includes the canonical backend, loopback defaults, SQLite persistence, API contracts and setup guidance; previewing it never opens a port or creates a database. The MCP starter includes a local framework and contained demo files, with explicit root/auth settings and client setup. See [starter previews](docs/USAGE.md#preview-kujo-starters).
 
+## Create an approved Kujo project
+
+Enable **Human-approved Kujo project creation** and select Installed, Build or
+Full. On an issue with a local workspace, choose a script, SQLite API, MCP server
+or fixture AI agent in **Create a Kujo project**. Review its files and destination,
+request approval, accept the human-only issue card, then select **Create approved
+files**. An empty workspace works without Git.
+
+Creation uses canonical preview bytes and native no-overwrite file copies. It
+never installs dependencies, starts a server or runs the generated program.
+Interrupted creation may leave files; inspect the receipt before another request.
+After creation, run the script through **Run or test Kujo**, or read the generated
+README for application setup. See [creation and recovery](docs/EXECUTION.md#approved-starter-creation).
+
 ## Evidence history
 
 Terminal Eval and source/test requests retain linked request-plan and outcome records here. You
@@ -168,10 +182,11 @@ The plugin ships pinned, checksummed Ability contracts/catalogs and generates it
 
 ## Agent tools
 
-Paperclip agents can call eighteen tools:
+Paperclip agents can call nineteen tools:
 
 | Tool | Use |
 | --- | --- |
+| `kujolang.paperclip:manage-kujo-starter` | Preview and create approved canonical starter files in a new issue-workspace directory. No overwrite, dependency installation or generated-program execution. |
 | `kujolang.paperclip:manage-kujo-execution` | Preview, request approval, start, inspect or cancel a fixed native run/test on the assigned issue/current run. Separate opt-in and human approval required. |
 | `kujolang.paperclip:manage-evaluation` | Inspect, prepare, start, read or cancel an approved Eval suite on the assigned issue/current run. Human approval is required before execution. |
 | `kujolang.paperclip:inspect-release-readiness` | Inspect native release metadata signals and coverage; never executes tests or certifies a release. |

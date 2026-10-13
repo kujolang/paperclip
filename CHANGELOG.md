@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Create approved canonical script, API, MCP and fixture-agent starter files through a separate opt-in issue workflow. Bind human approval to exact inventory/runtime/workspace settings; use native no-overwrite publication and retain partial outcomes, linked evidence and portable receipts without running generated code.
+
 - Add separately enabled, human-approved native script, test-file and fixture-test execution on bounded frozen inputs, with issue UI/assigned-agent tool, stale-plan rejection, cancellation, shared company limits and linked portable host receipts. Native exit/output does not imply test counts or full-project success.
 
 - Pin the canonical MCP Windows path-boundary repair so starter file tools work across the supported native platforms.
