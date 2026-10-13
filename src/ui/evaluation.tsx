@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { usePluginAction } from "@paperclipai/plugin-sdk/ui";
+import type { ExecutionPlan } from "../execution/contracts.js";
 import type { EvaluationSummary, EvaluationView } from "../features/eval/bridge.js";
 
 type Props = { issueId: string; enabled: boolean; ready: boolean };
@@ -12,7 +13,7 @@ export function EvaluationPanel({ issueId, enabled, ready }: Props) {
   const [suite, setSuite] = useState("eval.json");
   const [requests, setRequests] = useState<EvaluationSummary[]>([]);
   const [selected, setSelected] = useState<EvaluationView | null>(null);
-  const [preview, setPreview] = useState<unknown>(null);
+  const [preview, setPreview] = useState<{ plan: ExecutionPlan; coverage: unknown } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const live = useRef(true);
@@ -33,7 +34,7 @@ export function EvaluationPanel({ issueId, enabled, ready }: Props) {
         ...(["inspect", "prepare"].includes(operation) ? { suite } : {}),
         ...(operation === "prepare" ? { submissionId: submission.current } : {}) });
       if (!live.current || ticket !== generation.current) return;
-      if (operation === "inspect") setPreview(data);
+      if (operation === "inspect") setPreview(data as { plan: ExecutionPlan; coverage: unknown });
       else if (operation === "cancel") setSelected(null);
       else { setSelected(data as EvaluationView); setPreview(null); }
       if (operation === "prepare") submission.current = null;
@@ -56,7 +57,7 @@ export function EvaluationPanel({ issueId, enabled, ready }: Props) {
     </div>
     {busy && <div role="status">{busy === "start" ? "Running approved evaluation…" : "Loading evaluation…"}</div>}
     {error && <div role="alert">{error}</div>}
-    {preview !== null && <details open><summary>Suite and input coverage</summary><pre style={pre}>{JSON.stringify(preview, null, 2)}</pre></details>}
+    {preview !== null && <details open><summary>Suite and input coverage</summary><p>{preview.plan.summary}</p><p>Effects: {preview.plan.effects.join(", ")}</p><pre style={pre}>{preview.plan.preview ?? JSON.stringify(preview.coverage, null, 2)}</pre></details>}
     {selected && <div style={{ display: "grid", gap: 8 }}>
       <strong>{selected.suite}</strong>
       <span>Process: {selected.state}</span>

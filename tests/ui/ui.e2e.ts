@@ -387,6 +387,7 @@ test("Eval requires explicit preview, approval request and start, with retained 
   const section = page.getByRole("region", { name: "Approved evaluation", exact: true });
   await section.getByRole("button", { name: "Preview suite", exact: true }).click();
   await expect(section.getByText("Suite and input coverage", { exact: true })).toBeVisible();
+  await expect(section.getByText("json_value_equals", { exact: true })).toBeVisible();
   await section.getByRole("button", { name: "Request approval", exact: true }).click();
   await expect(section.getByText(/Accept the human-only confirmation/)).toBeVisible();
   expect(await page.evaluate(() => window.__KUJO_ACTIONS__?.filter(item => (item.input as { operation?: string }).operation === "start"))).toHaveLength(0);
