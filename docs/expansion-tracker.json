@@ -1,0 +1,88 @@
+{
+  "schemaVersion": 1,
+  "objective": "Implement the full Kujo Paperclip expansion approved by the user on 2026-10-12",
+  "scope": "docs/expansion-scope.txt",
+  "status": "in_progress",
+  "requirements": [
+    {
+      "id": "readiness",
+      "requirement": "Runtime health, feature states, repair guidance, clean/empty/missing workspace onboarding",
+      "status": "in_progress",
+      "evidence": [
+        "Runtime probe and capability-driven UI implemented; tests/doctor.spec.ts and broken-runtime Playwright case. Full package verify: 47 tests passed. Missing/empty workspace and guided first-result onboarding remain pending."
+      ]
+    },
+    {
+      "id": "cohort",
+      "requirement": "Refresh reviewed component cohort and public docs/catalog release state",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "id": "understand",
+      "requirement": "Scout/Scent repository understanding, issue-aware defaults, bounded contextual reads",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "id": "language",
+      "requirement": "Check/lint diagnostics, formatting preview, examples, package inspection, script/API/MCP/AI starters and explicit run/test/scaffold",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "id": "evidence",
+      "requirement": "Immutable history, receipts, comparisons, stale-state, retention/export and explicit host attachment",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "id": "abilities",
+      "requirement": "Canonical definitions, profiles, generated manifest tool declarations, installed/enabled/authorized/supported states",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "id": "verification",
+      "requirement": "Spec acceptance, Eval, Fence, Concord, ShipCheck with real result classifications and imported evidence",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "id": "execution",
+      "requirement": "Human-bound effect approval, persistent job ownership, start/status/inspect/cancel, Dispatch/Muzzle/Workcell",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "id": "knowledge-ai",
+      "requirement": "RAG query/ingest, AI/Agents SDK workflows, Watchdog correlation, Kennel lifecycle, MCP validation/scaffolds",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "id": "webops",
+      "requirement": "Lens, SiteProbe, ContentGraph, SearchBridge supported task workflows",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "id": "publishing",
+      "requirement": "SSG/SiteKit/CMS/Commerce/Presentations and bounded editorial workflows",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "id": "specialists",
+      "requirement": "Discoverable Tribunal/PackWrite/Howl/Redact/Ward and interoperability boundaries",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "id": "acceptance",
+      "requirement": "Fresh public install, all declared platforms, host minimum/latest, UI/accessibility, failure/restart/tenant/approval cases, newcomer usability validation",
+      "status": "pending",
+      "evidence": []
+    }
+  ]
+}
