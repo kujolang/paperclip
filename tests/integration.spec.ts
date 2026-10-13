@@ -35,8 +35,8 @@ describe("real Kujo component bridge", () => {
     const cwd = await fixture();
     const pack = await generateReviewPack({ cwd, workspaceId: "ws", projectId: "project", config });
     expect(pack.footprint.filesChanged).toBe(2);
-    expect(pack.componentStatus.footprint).toBe("ok");
-    expect(pack.provenance.components.map((item) => item.id)).toContain(process.platform === "win32" ? "paperclip-git-fallback" : "changebucket");
+    expect(pack.componentStatus).toEqual({ footprint: "ok", summary: "ok", suggestedTests: "ok", handoff: "ok" });
+    expect(pack.provenance.components.map((item) => item.id)).toContain("changebucket");
   }, 90_000);
 
   it("captures and defensively redacts failure evidence", async () => {
@@ -57,6 +57,7 @@ describe("real Kujo component bridge", () => {
   it("selects a bounded task-specific Context Pack", async () => {
     const cwd = await fixture();
     const pack = await generateContextPack({ cwd, workspaceId: "ws", projectId: "project", task: "Add OAuth callback handling", depth: "minimal", config });
+    expect(pack.provenance.componentId).toBe("context");
     expect(pack.files.length).toBeGreaterThan(0);
     expect(pack.estimatedTokens).toBeLessThanOrEqual(pack.budget);
     expect(pack.files.some((file) => file.path.includes("oauth"))).toBe(true);

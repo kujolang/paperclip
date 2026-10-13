@@ -1,15 +1,11 @@
 import { createHash, randomUUID } from "node:crypto";
-import { mkdtemp, readFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import type { PluginConfig } from "../../config/schema.js";
 import { CONTEXT_BUDGETS, DEFAULT_LIMITS, PLUGIN_VERSION } from "../../config/defaults.js";
-import { runComponent } from "../../components/execute-component.js";
+import { runComponent, type RunComponentResult } from "../../components/execute-component.js";
 import { captureWorkspaceSnapshot, isSnapshotCurrent } from "../../paperclip/git.js";
 import { assertBoundedWorkspaceInputs, prepareContextWorkspace } from "../../paperclip/workspace-guard.js";
 import type { ContextPack } from "./schema.js";
 import { contextPackSchema } from "./schema.js";
-import { removeTree } from "../../runtime/files.js";
 import { KujoPluginError } from "../../runtime/errors.js";
 
 export type ContextDepth = keyof typeof CONTEXT_BUDGETS;
@@ -19,6 +15,7 @@ type ScentContext = {
   estimated_tokens?: unknown;
   selected_files?: ScentFile[];
   excluded?: unknown[];
+  excluded_count?: number;
   truncated?: unknown;
   warnings?: unknown[];
 };
@@ -39,23 +36,22 @@ export async function generateContextPack(input: {
   if (!task) throw new Error("Task is required");
   const snapshot = await captureWorkspaceSnapshot(input.cwd);
   const budget = CONTEXT_BUDGETS[input.depth];
-  const temp = await mkdtemp(join(tmpdir(), "kujo-paperclip-context-"));
   const workspace = await prepareContextWorkspace(input.cwd, task);
   try {
     const args = [
       "pack", "--task", task, "--target", "generic", "--budget", String(budget),
       "--max-files", String(MAX_FILES[input.depth]), "--max-file-bytes", String(DEFAULT_LIMITS.maxContextFileBytes),
-      "--out", temp, "--format", "json", "--json",
+      "--dry-run", "--format", "json", "--json",
     ];
     // The bounded mirror contains at most four Git-visible files. Scent's
     // current Windows path validator cannot safely compare relative excludes.
     if (process.platform !== "win32") {
       for (const exclusion of EXCLUSIONS) args.push("--exclude", exclusion);
     }
-    let result: Awaited<ReturnType<typeof runComponent>> | undefined;
+    let result: RunComponentResult<ScentContext> | undefined;
     let output: ScentContext;
     try {
-      result = await runComponent({
+      result = await runComponent<ScentContext>({
         component: "context",
         cwd: workspace.path,
         args,
@@ -63,7 +59,10 @@ export async function generateContextPack(input: {
         acceptExitCodes: process.platform === "win32" ? [0, 1] : [0],
         timeoutMs: 8_000,
       });
-      output = JSON.parse(await readFile(join(temp, "context.json"), "utf8")) as ScentContext;
+      if (!result.parsed || !Array.isArray(result.parsed.selected_files)) {
+        throw new KujoPluginError("KUJO_COMPONENT_SCHEMA_INVALID", "Scent dry-run did not return a file selection");
+      }
+      output = result.parsed;
     } catch (error) {
       if (!(error instanceof KujoPluginError) || error.code !== "KUJO_EXEC_TIMEOUT") throw error;
       const selected = workspace.selectedPaths.slice(0, MAX_FILES[input.depth]);
@@ -102,7 +101,7 @@ export async function generateContextPack(input: {
       budget,
       estimatedTokens: Math.min(estimatedTokens, budget),
       files,
-      ignoredFiles: Array.isArray(output.excluded) ? output.excluded.length : 0,
+      ignoredFiles: output.excluded_count ?? (Array.isArray(output.excluded) ? output.excluded.length : 0),
       truncated,
       ...(truncated ? { truncationReason: "Context budget or file limit reached" } : {}),
       exclusions: EXCLUSIONS,
@@ -120,6 +119,6 @@ export async function generateContextPack(input: {
       },
     });
   } finally {
-    await Promise.all([removeTree(temp), workspace.cleanup()]);
+    await workspace.cleanup();
   }
 }

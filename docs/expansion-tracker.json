@@ -15,8 +15,10 @@
     {
       "id": "cohort",
       "requirement": "Refresh reviewed component cohort and public docs/catalog release state",
-      "status": "pending",
-      "evidence": []
+      "status": "in_progress",
+      "evidence": [
+        "Four component pins refreshed from clean canonical repositories. Full local verify passed with 47 tests; integration now requires successful canonical outputs instead of silently accepting fallbacks. Cross-platform CI and ecosystem public-catalog reconciliation remain pending."
+      ]
     },
     {
       "id": "understand",

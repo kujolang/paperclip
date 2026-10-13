@@ -199,8 +199,7 @@ export func markdown_code(value) {
 # Get the current timestamp as an ISO-like string.
 export func timestamp_now() {
 	try {
-		result := execute("date -u +%Y-%m-%dT%H:%M:%SZ", {"timeout_ms": 3000})
-		return trim(to_string(result))
+		return now_utc()
 	} except err {
 		return "unknown"
 	}

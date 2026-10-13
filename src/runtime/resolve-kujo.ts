@@ -6,7 +6,7 @@ import { executeVersion } from "./execute-kujo.js";
 import type { PluginConfig } from "../config/schema.js";
 import type { ResolvedRuntime } from "./types.js";
 
-const MINIMUM_RUNTIME = "1.2.0";
+const MINIMUM_RUNTIME = "1.8.1";
 
 function compareVersions(left: string, right: string): number {
   const a = left.split(".").map(Number);

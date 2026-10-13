@@ -21,3 +21,24 @@ The plugin supports macOS arm64/x64, Linux arm64/x64, and Windows x64. CI runs t
 - Component and runtime updates require the full native matrix and clean-install smoke test.
 
 Paperclip releases outside the tested train are not supported until the scheduled compatibility job passes and the table is updated.
+
+## Upcoming component cohort
+
+The expansion branch pins the four existing components to reviewed clean canonical
+source commits recorded in `components.sources.json` and the checksum lock.
+ChangeBucket is 1.1.0; PatchBrief is 1.0.1; CaseFile and Scent remain 1.0.0 with
+post-release source fixes identified by commit. A component version alone does
+not identify those fixes. No source is fetched at install or runtime.
+
+This cohort requires Kujo 1.8.1, the bundled and tested runtime. The existing
+Review, Context and Failure Evidence schema version remains 1. New ChangeBucket
+v2 flags are not enabled implicitly.
+
+Context selection uses Scent dry-run JSON metadata. File contents are retrieved
+only through the separate bounded content operation; Scent does not need to
+write private POSIX artifacts for this workflow.
+
+CaseFile uses exclusive directory creation on all supported platforms. POSIX
+directories use mode0700; Windows directories inherit the parent ACL. The plugin
+captures into its temporary workspace under the host user's temporary directory,
+which must be private to that user. It does not change workspace ACLs.

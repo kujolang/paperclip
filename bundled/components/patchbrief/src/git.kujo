@@ -1,10 +1,16 @@
 # Git command wrappers for PatchBrief.
 # Provides safe wrappers around git commands for diff inspection.
-# Uses Kujo's execute built-in for process execution.
+# Uses bounded argv-based processes; repository data never enters a shell.
 
-from src.common import str_starts_with, str_contains, str_trim, shell_quote
+from src.common import str_starts_with, str_contains, str_trim
 
 DIFF_ANALYSIS_MAX_BYTES := 1048576
+
+func git_output(arguments, timeout_ms) {
+	result := spawn_process(concat(["git"], arguments), {"timeout_ms": timeout_ms, "max_output_bytes": 1048576})
+	assert(result.success && !result.timed_out && !result.stdout_truncated && !result.stderr_truncated, "Git inspection failed or exceeded its output limit")
+	return result.stdout
+}
 
 func push_unique(items, value) {
 	text := to_string(value)
@@ -21,7 +27,7 @@ func push_unique(items, value) {
 # Check if the current directory is inside a git repository.
 export func is_git_repo() {
 	try {
-		_ := execute("git rev-parse --git-dir 2>/dev/null", {"timeout_ms": 5000})
+		_ := git_output(["rev-parse", "--git-dir"], 5000)
 		return true
 	} except err {
 		return false
@@ -31,14 +37,14 @@ export func is_git_repo() {
 # Get the current branch name.
 export func current_branch() {
 	try {
-		result := execute("git symbolic-ref --short HEAD", {"timeout_ms": 5000})
+		result := git_output(["symbolic-ref", "--short", "HEAD"], 5000)
 		branch := trim(to_string(result))
 		if branch != "" {
 			return branch
 		}
 	} except err {
 		try {
-			short := execute("git rev-parse --short HEAD", {"timeout_ms": 5000})
+			short := git_output(["rev-parse", "--short", "HEAD"], 5000)
 			return "HEAD@" + trim(to_string(short))
 		} except err2 {
 			return "unknown"
@@ -50,7 +56,7 @@ export func current_branch() {
 # Get the repository name from the remote origin URL or directory name.
 export func repo_name() {
 	try {
-		url := execute("git remote get-url origin 2>/dev/null", {"timeout_ms": 5000})
+		url := git_output(["remote", "get-url", "origin"], 5000)
 		url_str := str_trim(to_string(url))
 		if url_str != "" && str_starts_with(url_str, "fatal") == false {
 			parts := split(url_str, "/")
@@ -68,7 +74,7 @@ export func repo_name() {
 		}
 	} except err {}
 	try {
-		root := execute("git rev-parse --show-toplevel", {"timeout_ms": 5000})
+		root := git_output(["rev-parse", "--show-toplevel"], 5000)
 		return basename(str_trim(to_string(root)))
 	} except err2 {
 		return "unknown"
@@ -78,7 +84,7 @@ export func repo_name() {
 # Get the diff stat summary (files changed, insertions, deletions).
 export func diff_stat() {
 	try {
-		output := execute("git diff --no-ext-diff --stat HEAD 2>/dev/null", {"timeout_ms": 10000})
+		output := git_output(["diff", "--no-ext-diff", "--no-textconv", "--stat", "HEAD"], 10000)
 		text := to_string(output)
 		if str_trim(text) == "" {
 			return {"ok": true, "output": "", "files": 0, "added": 0, "removed": 0}
@@ -139,7 +145,7 @@ export func changed_files() {
 
 export func changed_files_result() {
 	try {
-		output := execute("git status --porcelain=v1 -z --untracked-files=all 2>/dev/null", {"timeout_ms": 10000})
+		output := git_output(["status", "--porcelain=v1", "-z", "--untracked-files=all"], 10000)
 		text := to_string(output)
 		if text == "" {
 			return {"ok": true, "files": []}
@@ -187,10 +193,10 @@ export func full_diff_analysis_with_limit(max_bytes) {
 		limit = 16777216
 	}
 	try {
-		result := spawn_process(["git", "diff", "--no-ext-diff", "HEAD"], {"timeout_ms": 30000, "max_output_bytes": limit})
+		result := spawn_process(["git", "diff", "--no-ext-diff", "--no-textconv", "HEAD"], {"timeout_ms": 30000, "max_output_bytes": limit})
 		if result.success == false && result.timed_out == false {
 			# An unborn repository has no HEAD; compare its index with the empty tree.
-			result = spawn_process(["git", "diff", "--no-ext-diff", "--cached"], {"timeout_ms": 30000, "max_output_bytes": limit})
+			result = spawn_process(["git", "diff", "--no-ext-diff", "--no-textconv", "--cached"], {"timeout_ms": 30000, "max_output_bytes": limit})
 		}
 		text := to_string(result.stdout)
 		failed := result.success == false || result.timed_out == true
@@ -209,8 +215,7 @@ export func full_diff_analysis_with_limit(max_bytes) {
 # Get the diff for a specific file.
 export func file_diff(file_path) {
 	try {
-		cmd := "git diff --no-ext-diff HEAD -- " + shell_quote(file_path)
-		output := execute(cmd, {"timeout_ms": 10000})
+		output := git_output(["--literal-pathspecs", "diff", "--no-ext-diff", "--no-textconv", "HEAD", "--", file_path], 10000)
 		return to_string(output)
 	} except err {
 		return ""
@@ -227,8 +232,7 @@ export func recent_commits(count) {
 		if safe_count > 100 {
 			safe_count := 100
 		}
-		cmd := "git log --oneline -" + to_string(safe_count) + " 2>/dev/null"
-		output := execute(cmd, {"timeout_ms": 10000})
+		output := git_output(["log", "--oneline", "-" + to_string(safe_count)], 10000)
 		text := str_trim(to_string(output))
 		if text == "" {
 			return []
