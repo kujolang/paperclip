@@ -22,10 +22,9 @@ describe("configuration and input boundaries", () => {
     expect(() => validateGitRef("main..secret")).toThrow(/Invalid git ref/);
   });
 
-  it("honors an explicit executable before bundled/PATH resolution", async () => {
-    const resolved = await resolveKujo(parsePluginConfig({ runtime: { binary: process.execPath, allowSystemPathFallback: false } }), process.cwd());
-    expect(resolved.source).toBe("configured");
-    expect(resolved.executable).toBe(process.execPath);
+  it("rejects a non-Kujo executable without falling back to the bundled runtime", async () => {
+    await expect(resolveKujo(parsePluginConfig({ runtime: { binary: process.execPath, allowSystemPathFallback: false } }), process.cwd()))
+      .rejects.toMatchObject({ code: "KUJO_RUNTIME_INCOMPATIBLE" });
   });
 });
 

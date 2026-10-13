@@ -9,8 +9,9 @@ import {
 import type { ReviewPack } from "../features/review/schema.js";
 import type { FailureEvidence } from "../features/failure/schema.js";
 import type { ContextPack } from "../features/context/schema.js";
+import type { DoctorReport } from "../health/doctor.js";
 
-type Detail = { review: ReviewPack | null; failure: FailureEvidence | null; context: ContextPack | null };
+type Detail = { review: ReviewPack | null; failure: FailureEvidence | null; context: ContextPack | null; readiness?: DoctorReport };
 type PanelProps = PluginDetailTabProps & { compact?: boolean };
 
 const colors = {
@@ -316,8 +317,13 @@ function KujoPanel({ context, compact = false }: PanelProps) {
           <strong style={{ fontSize: compact ? 17 : 20, letterSpacing: "-0.02em" }}>Kujo</strong>
           <span style={muted}>Scope the work. Review the change. Preserve the evidence.</span>
         </div>
-        <StatusBadge status="ok" label="READY" />
+        <StatusBadge status={data?.readiness?.status === "ok" ? "ok" : "warning"} label={data?.readiness?.status === "ok" ? "READY" : "NEEDS ATTENTION"} />
       </header>
+
+      {data?.readiness?.status !== "ok" && <div role="status" style={card}>
+        {data?.readiness?.runtime.repair ?? "Kujo readiness has not been verified. Check runtime and component health in plugin settings."}
+        <ActionButton tone="secondary" onClick={() => { void refresh(); }}>Check again</ActionButton>
+      </div>}
 
       {actionError && <div role="alert" style={{ ...card, borderColor: colors.danger, color: colors.danger }}>{actionError}</div>}
 
@@ -331,7 +337,7 @@ function KujoPanel({ context, compact = false }: PanelProps) {
             <div style={actionCard}>
               <SectionTitle title="Review changes" detail="Measure blast radius and prepare a review handoff." />
               <div style={{ flex: 1 }} />
-              <ActionButton disabled={busy !== null} onClick={() => run("review", () => generateReview({ entityType: context.entityType, entityId: context.entityId }))}>
+              <ActionButton disabled={busy !== null || data?.readiness?.capabilities.review !== "ready"} onClick={() => run("review", () => generateReview({ entityType: context.entityType, entityId: context.entityId }))}>
                 {busy === "review" ? "Generating…" : "Generate Review Pack"} <span aria-hidden="true">→</span>
               </ActionButton>
             </div>
@@ -349,7 +355,7 @@ function KujoPanel({ context, compact = false }: PanelProps) {
                   style={input}
                 />
               </label>
-              <ActionButton disabled={busy !== null || !task.trim()} onClick={() => run("context", () => generateContext({ entityType: context.entityType, entityId: context.entityId, task, depth: "focused" }))}>
+              <ActionButton disabled={busy !== null || !task.trim() || data?.readiness?.capabilities.context !== "ready"} onClick={() => run("context", () => generateContext({ entityType: context.entityType, entityId: context.entityId, task, depth: "focused" }))}>
                 {busy === "context" ? "Selecting…" : "Generate Context Pack"} <span aria-hidden="true">→</span>
               </ActionButton>
             </div>
@@ -377,7 +383,7 @@ function KujoPanel({ context, compact = false }: PanelProps) {
                   style={input}
                 />
               </label>
-              <ActionButton disabled={busy !== null || !failureTitle.trim()} onClick={() => run("failure", () => captureFailure({ entityType: context.entityType, entityId: context.entityId, title: failureTitle, log: failureLog }))}>
+              <ActionButton disabled={busy !== null || !failureTitle.trim() || data?.readiness?.capabilities.failureEvidence !== "ready"} onClick={() => run("failure", () => captureFailure({ entityType: context.entityType, entityId: context.entityId, title: failureTitle, log: failureLog }))}>
                 {busy === "failure" ? "Capturing…" : "Capture Failure Evidence"} <span aria-hidden="true">→</span>
               </ActionButton>
             </div>

@@ -8,6 +8,11 @@
 
 ## Unreleased
 
+- Probe the actual Kujo runtime during health checks and use company-specific
+  readiness in the task/detail panels instead of an unconditional READY badge.
+- Disable unavailable actions and offer repair guidance with a retry control.
+- Reject relative executable overrides and non-Kujo version output.
+
 - Update the Paperclip SDK, bundled Kujo runtime, Zod, browser and test tooling,
   React development stack, type definitions, and pinned GitHub Actions.
 

@@ -41,9 +41,21 @@ const surface = parameters.get("surface") ?? "detail";
 const entityType = parameters.get("entity") ?? "project";
 const theme = parameters.get("theme") ?? "light";
 document.documentElement.dataset.theme = theme;
-window.__KUJO_FIXTURE_DATA__ = parameters.get("state") === "populated"
+const detailData = parameters.get("state") === "populated"
   ? populatedData
   : { review: null, failure: null, context: null };
+window.__KUJO_FIXTURE_DATA__ = {
+  ...detailData,
+  readiness: {
+    status: parameters.get("runtime") === "broken" ? "error" : "ok",
+    runtime: { status: parameters.get("runtime") === "broken" ? "error" : "ok", repair: "Repair the configured Kujo binary in plugin settings." },
+    capabilities: {
+      review: parameters.get("runtime") === "broken" ? "blocked" : "ready",
+      context: parameters.get("runtime") === "broken" ? "blocked" : "ready",
+      failureEvidence: parameters.get("runtime") === "broken" ? "blocked" : "ready",
+    },
+  },
+};
 window.__KUJO_ACTIONS__ = [];
 
 const props = {

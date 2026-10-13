@@ -58,3 +58,15 @@ for (const testCase of [
     });
   });
 }
+
+test("broken runtime never claims readiness or permits generation", async ({ page }) => {
+  await page.goto("/?surface=task&entity=issue&runtime=broken");
+  await expect(page.getByLabel("NEEDS ATTENTION status")).toBeVisible();
+  await expect(page.getByLabel("READY status")).toHaveCount(0);
+  await expect(page.getByText("Repair the configured Kujo binary in plugin settings.")).toBeVisible();
+  await page.getByLabel("Task").fill("Inspect this task");
+  await page.getByLabel("Title").fill("Failure");
+  for (const name of [/Generate Review Pack/, /Generate Context Pack/, /Capture Failure Evidence/]) {
+    await expect(page.getByRole("button", { name })).toBeDisabled();
+  }
+});

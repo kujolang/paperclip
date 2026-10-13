@@ -35,6 +35,11 @@ uninstall behavior, and release checks.
 
 ## First use
 
+The Kujo panel checks the runtime and bundled components before enabling its
+actions. **Needs attention** includes repair guidance when the configured binary
+is missing, incompatible, or not Kujo. Correct the configuration, then select
+**Check again**. Disabled features remain unavailable even when the runtime is healthy.
+
 1. Open the Paperclip issue you want to work on.
 2. Generate a focused **Context Pack** before the agent reads the repository broadly.
 3. Make and test the change with the project's normal tools.
