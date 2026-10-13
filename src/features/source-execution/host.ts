@@ -1,3 +1,5 @@
+import { SourcePreparationError, sourcePreparationFailure, type SourcePreparationStage } from "../../execution/preparation-error.js";
+import { KujoPluginError } from "../../runtime/errors.js";
 import { createHash } from "node:crypto";
 import { mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -31,47 +33,59 @@ export function createSourceExecutionService(ctx: PluginContext) {
   let captures = 0, starts = 0;
   async function admission(scope: ExecutionScope) {
     const config = parsePluginConfig(await ctx.config.get(scope.companyId));
-    if (!sourceExecutionEnabled(config)) throw new Error("Kujo run/test is disabled by company settings or capability profile");
+    if (!sourceExecutionEnabled(config)) throw new SourcePreparationError("admission", "disabled");
     const issue = await ctx.issues.get(scope.issueId, scope.companyId);
-    if (!issue || issue.id !== scope.issueId || issue.companyId !== scope.companyId || !issue.projectId) throw new Error("Execution issue is unavailable in this company");
+    if (!issue || issue.id !== scope.issueId || issue.companyId !== scope.companyId || !issue.projectId) throw new SourcePreparationError("admission", "issue_unavailable");
     const workspace = await resolveWorkspace(ctx, { ...scope, entityType: "issue", entityId: scope.issueId });
-    if (workspace.projectId !== issue.projectId) throw new Error("Issue and workspace must belong to the same project");
+    if (workspace.projectId !== issue.projectId) throw new SourcePreparationError("admission", "workspace_mismatch");
     return { config, workspace };
   }
   async function capture(scope: ExecutionScope, rawMode: SourceMode, rawPath?: string, signal?: AbortSignal) {
-    const mode = sourceMode.parse(rawMode);
-    if (mode === "fixtures" && rawPath !== undefined) throw new Error("Fixture mode selects the project's tests directory; omit path");
-    const path = mode === "fixtures" ? "tests/" : sourcePathSchema.parse(rawPath);
-    const { config, workspace } = await admission(scope);
-    if (captures >= 2) throw new Error("Source execution preparation is busy; retry after current preparations finish");
-    if (signal?.aborted) throw new Error("Source preparation cancelled");
-    captures++;
+    let stage: SourcePreparationStage = "admission";
     let directory: string | undefined;
+    let admitted = false;
     try {
+      const mode = sourceMode.parse(rawMode);
+      if (mode === "fixtures" && rawPath !== undefined) throw new SourcePreparationError(stage, "fixture_path");
+      const path = mode === "fixtures" ? "tests/" : sourcePathSchema.parse(rawPath);
+      const { config, workspace } = await admission(scope);
+      if (captures >= 2) throw new SourcePreparationError(stage, "busy");
+      if (signal?.aborted) throw new KujoPluginError("KUJO_EXEC_CANCELLED", "Source preparation cancelled");
+      captures++; admitted = true;
+      stage = "temporary_directory";
       directory = await mkdtemp(join(tmpdir(), "kujo-source-execution-"));
+      stage = "workspace_snapshot";
       const before = await captureWorkspaceSnapshot(workspace.path);
+      stage = "runtime";
       const runtime = await resolveKujo(config, directory);
+      stage = "inventory";
       const inventory = await discoverWorkspaceInventory(workspace.path, item => item === path || (mode === "fixtures" && item.startsWith("tests/")) ? -1 : 0);
       const names = new Set<string>();
       for (const name of inventory.paths) {
-        if (names.has(name.toLowerCase()) || name.split("/").some(part => /[ .]$/.test(part) || /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(part))) throw new Error("Execution inputs contain ambiguous or platform-reserved paths");
+        if (names.has(name.toLowerCase()) || name.split("/").some(part => /[ .]$/.test(part) || /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(part))) throw new SourcePreparationError(stage, "ambiguous_paths");
         names.add(name.toLowerCase());
       }
+      stage = "copy_inputs";
       const copied = await copyWorkspaceSnapshot({ cwd: workspace.path, directory, runtime, config, catalog: inventory });
+      stage = "select_source";
       const selected = copied.files.filter(file => file.status === "copied" && (mode === "fixtures" ? file.path.startsWith("tests/") && file.path.endsWith(".kujo") : file.path === path));
-      if (!selected.length) throw new Error("Choose admitted Git-visible Kujo source; fixture mode requires tests/*.kujo files");
+      if (!selected.length) throw new SourcePreparationError(stage, "source_missing");
       const coverage = { scope: "git-visible-text", complete: !inventory.truncated && !inventory.rejected && !inventory.excludedSensitive && copied.files.every(file => file.status === "copied"),
         gitVisible: inventory.visible, copied: copied.files.filter(file => file.status === "copied").length, copiedBytes: copied.copiedBytes,
         truncated: inventory.truncated, rejectedNames: inventory.rejected, excludedSensitive: inventory.excludedSensitive,
         omittedFiles: copied.files.filter(file => file.status !== "copied").length,
         notice: "Only admitted Git-visible text is copied. Ignored dependencies, binary resources, credentials and external services are not supplied or frozen. Relative output is temporary and removed; trusted code can still affect the host or network." };
+      stage = "freshness";
       const current = await admission(scope);
-      if (current.workspace.id !== workspace.id || current.workspace.path !== workspace.path || evidenceDigest(policy(config)) !== evidenceDigest(policy(current.config)) || !(await isSnapshotCurrent(workspace.path, before))) throw new Error("Workspace or settings changed during preparation; refresh before requesting approval");
+      if (current.workspace.id !== workspace.id || current.workspace.path !== workspace.path || evidenceDigest(policy(config)) !== evidenceDigest(policy(current.config)) || !(await isSnapshotCurrent(workspace.path, before))) throw new SourcePreparationError(stage, "inputs_changed");
+      stage = "preview";
       const projection = projections.find(item => item.id === "kujo.paperclip.source.execute")!;
       const args = mode === "fixtures" ? ["test", "--runtime", "interpreter"] : mode === "test" ? ["test-run", `./${path}`] : ["run", "--interpreter", ...(runtime.platform === "win32" ? ["--kill-children-on-exit"] : []), `./${path}`];
       const source = mode === "fixtures" ? undefined : await readFile(join(copied.workspace, path), "utf8");
       const preview = redactText(JSON.stringify({ command: ["kujo", ...args], selectedFiles: selected.map(file => file.path), source, inputCoverage: coverage }, null, 2)).text;
-      if (preview.length > 12000) throw new Error("Source/test preview exceeds the approval size limit; select a smaller entry file or test group");
+      if (preview.length > 12000) throw new SourcePreparationError(stage, "preview_limit");
+      stage = "runtime_digest";
+      const runtimeDigest = sha(await readFile(runtime.executable));
       const plan: ExecutionPlan = {
         operation: `source.${mode}`, projectId: workspace.projectId, workspaceId: workspace.id, suite: path,
         abilityReceipt: { serializerVersion: 1, abilityId: "kujo.paperclip.source.execute", abilityVersion: projection.definition.version, definitionDigest: projection.definitionDigest, handlerVersion: "1.0.0" },
@@ -79,10 +93,10 @@ export function createSourceExecutionService(ctx: PluginContext) {
         preview, effects: ["read_workspace", "write_files", "execute_project", "network"], inputDigest: copied.digest,
         workspaceDigest: evidenceDigest({ id: workspace.id, projectId: workspace.projectId, path: workspace.path }),
         definitionDigest: evidenceDigest({ mode, path, selected, args }), componentDigest: evidenceDigest({ adapter: "native-source-execution/v1", args }),
-        runtimeDigest: sha(await readFile(runtime.executable)), policyDigest: evidenceDigest({ adapter: "source-host-admission/v1", scope, config: policy(config), definition: projection.definitionDigest }),
+        runtimeDigest, policyDigest: evidenceDigest({ adapter: "source-host-admission/v1", scope, config: policy(config), definition: projection.definitionDigest }),
         timeoutMs: config.limits.timeoutMs, maxStdoutBytes: Math.min(config.limits.maxStdoutBytes, 500000), maxStderrBytes: Math.min(config.limits.maxStderrBytes, 64000),
       };
-      if (signal?.aborted) throw new Error("Source preparation cancelled");
+      if (signal?.aborted) throw new KujoPluginError("KUJO_EXEC_CANCELLED", "Source preparation cancelled");
       const root = directory;
       return { plan, coverage, invocation: { executable: runtime.executable, cwd: copied.workspace, args },
         collect: async (output: { stdout: string; stderr: string; exitCode: number; durationMs: number }) => ({ schemaVersion: 1, sourceKind: "native", executionObserved: true,
@@ -91,8 +105,13 @@ export function createSourceExecutionService(ctx: PluginContext) {
           coverage, inputDigest: plan.inputDigest, runtimeVersion: runtime.runtimeVersion,
           notice: "Native command exit and bounded output observed on frozen inputs. Output is program-supplied; no independent test count or project-wide success is inferred. Temporary relative output is removed. Host/network effects are not rolled back." }),
         dispose: async () => { await removeTree(root); } };
-    } catch (error) { if (directory) await removeTree(directory); throw error; }
-    finally { captures--; }
+    } catch (error) {
+      if (directory) {
+        try { await removeTree(directory); }
+        catch (cleanupError) { throw sourcePreparationFailure("cleanup", cleanupError); }
+      }
+      throw sourcePreparationFailure(stage, error);
+    } finally { if (admitted) captures--; }
   }
   const coordinator = createExecutionCoordinator(ctx, {
     async materialize(scope, plan, signal) {

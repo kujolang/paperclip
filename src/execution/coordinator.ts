@@ -1,3 +1,4 @@
+import { SourcePreparationError } from "./preparation-error.js";
 import { randomUUID } from "node:crypto";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { z } from "zod";
@@ -234,7 +235,7 @@ export function createExecutionCoordinator(ctx: PluginContext, adapter: Executio
         const cancelled = error instanceof KujoPluginError && error.code === "KUJO_EXEC_CANCELLED";
         const uncertain = lostObservation || (enteredProcess && !(error instanceof KujoPluginError));
         await ledger.finish(scope, id, ownerId, claimId, uncertain ? "uncertain" : cancelled ? "cancelled" : "failed", null,
-          uncertain ? "execution_outcome_unconfirmed" : error instanceof KujoPluginError ? error.code : "materialization_failed");
+          uncertain ? "execution_outcome_unconfirmed" : error instanceof KujoPluginError ? error.code : error instanceof SourcePreparationError ? error.diagnostic : "materialization_failed");
       } finally {
         clearInterval(timer);
         // Disposal cannot erase an already committed execution outcome.
