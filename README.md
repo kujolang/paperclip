@@ -58,6 +58,7 @@ Kujo retains up to 20 results per company/entity for 30 days in its Paperclip da
 
 | Workflow | What it does | Kujo component |
 | --- | --- | --- |
+| **Architecture boundaries** | Checks import boundaries against Fence policy and reports findings, coverage and the configured failure threshold. | Fence |
 | **Task contracts** | Validates a declared task contract and shows acceptance criteria and checks as not-run. | Spec |
 | **Kujo source tools** | Checks and lints a selected source file; previews formatting without applying changes. | Kujo runtime |
 | **Repository understanding** | Maps project structure, languages, dependencies, routes and heuristic observations; shows partial scans explicitly. | Scout |
@@ -65,7 +66,7 @@ Kujo retains up to 20 results per company/entity for 30 days in its Paperclip da
 | **Review Pack** | Measures change size, explains risk signals, and prepares a review handoff. | ChangeBucket and PatchBrief |
 | **Failure Evidence** | Turns supplied command details and logs into a bounded, redacted record. | CaseFile |
 
-The six component snapshots are pinned, checksummed, and shipped with the plugin. The
+The seven component snapshots are pinned, checksummed, and shipped with the plugin. The
 plugin does not download component code while installing or running.
 
 ## Build with Kujo
@@ -80,6 +81,8 @@ The upcoming release requires Paperclip database namespace migrations and authen
 
 Enable **Verification** in company settings to review a Git-visible `.spec.json`, `.spec.yml`, `.spec.yaml` or `.spec.toml` task contract. The native Spec validator reports contract errors and warnings; strict mode treats warnings as failures. Acceptance criteria and declared checks remain **not-run**, and declared approval points do not grant approval. No workspace files or check commands are executed or changed.
 
+Select **Inspect architecture** to evaluate the workspace root `fence.toml` or `fence.json` with native Fence. Findings show files, lines, zones and ownership. Partial coverage, policy exceptions and stale evidence remain visible; meeting `fail_on` does not mean the project or its tests passed. Configured parser commands are blocked.
+
 The same setting lets you import `kujo.evaluation-result/v1` JSON, including Eval's `evaluation-result.json`. The panel distinguishes imported pass/fail claims, warnings, skipped-only or empty runs, partial runs, blocked evaluations and errors. It validates the pinned canonical schema and stores a redacted summary with the supplied-byte digest. It does not authenticate the producer, open evidence references, or establish that the result applies to this workspace. See [Verification imports](docs/VERIFICATION.md).
 
 ## Explore Kujo
@@ -92,10 +95,11 @@ The plugin ships pinned, checksummed Ability contracts/catalogs and generates it
 
 ## Agent tools
 
-Paperclip agents can call twelve tools:
+Paperclip agents can call thirteen tools:
 
 | Tool | Use |
 | --- | --- |
+| `kujolang.paperclip:inspect-architecture` | Inspect a bounded snapshot against the workspace Fence policy; no project commands or tests run. |
 | `kujolang.paperclip:inspect-task-contract` | Validate one Git-visible Spec contract; inspect declared outcomes without executing checks. |
 | `kujolang.paperclip:import-verification` | Retain a redacted, explicitly imported evaluation summary; never runs checks. |
 | `kujolang.paperclip:list-capabilities` | Discover scoped tool readiness, profiles and optional ecosystem integrations. |

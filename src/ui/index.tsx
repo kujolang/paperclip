@@ -23,7 +23,9 @@ import type { EvidenceMetadata } from "../storage/history.js";
 import type { VerificationReport } from "../features/verification/import.js";
 import type { SpecReport } from "../features/spec/inspect.js";
 
-type Detail = { spec?: SpecReport | null; specs?: { files: string[]; truncated: boolean }; verification?: VerificationReport | null; verificationEnabled?: boolean; catalog?: CapabilityCatalog; history?: EvidenceMetadata[]; language?: LanguageReport | null; sources?: { files: string[]; truncated: boolean }; understanding?: Understanding | null; review: ReviewPack | null; failure: FailureEvidence | null; context: ContextPack | null; readiness?: DoctorReport; workspace?: WorkspaceReadiness; suggestedTask?: string };
+import type { FenceReport } from "../features/fence/schema.js";
+
+type Detail = { fence?: FenceReport | null; spec?: SpecReport | null; specs?: { files: string[]; truncated: boolean }; verification?: VerificationReport | null; verificationEnabled?: boolean; catalog?: CapabilityCatalog; history?: EvidenceMetadata[]; language?: LanguageReport | null; sources?: { files: string[]; truncated: boolean }; understanding?: Understanding | null; review: ReviewPack | null; failure: FailureEvidence | null; context: ContextPack | null; readiness?: DoctorReport; workspace?: WorkspaceReadiness; suggestedTask?: string };
 type PanelProps = PluginDetailTabProps & { compact?: boolean };
 
 const colors = {
@@ -412,6 +414,51 @@ function VerificationSection({ context, report, refresh }: { context: PanelProps
   </section>;
 }
 
+function FenceSection({ context, report, ready, refresh }: { context: PanelProps["context"]; report: FenceReport | null; ready: boolean; refresh: () => void }) {
+  const inspect = usePluginAction("inspect-architecture");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const active = useRef(true);
+  useEffect(() => { active.current = true; return () => { active.current = false; }; }, []);
+  async function submit() {
+    setBusy(true); setError(null);
+    try {
+      await inspect({ entityType: context.entityType, entityId: context.entityId });
+      if (active.current) await refresh();
+    } catch (value) { if (active.current) setError(value instanceof Error ? value.message : String(value)); }
+    finally { if (active.current) setBusy(false); }
+  }
+  return <section style={{ ...card, overflowWrap: "anywhere" }} aria-label="Architecture boundaries">
+    <SectionTitle title="Architecture boundaries" detail="Check imports against your project's Fence policy." badge={<StatusBadge status="pending" label="BEST-EFFORT BOUNDARIES" />} />
+    <div style={muted}>Uses a Git-visible fence.toml or fence.json at the workspace root. Define source roots, zones and allowed dependencies in that policy. Project commands and tests are not executed.</div>
+    <ActionButton disabled={busy || !ready} onClick={() => { void submit(); }}>{busy ? "Inspecting architecture…" : "Inspect architecture"}</ActionButton>
+    {!ready && <div style={muted}>A working Kujo runtime and intact Fence component are required. Check runtime readiness above.</div>}
+    {error && <div role="alert" style={{ color: colors.danger }}>{error}</div>}
+    {report ? <div aria-label="Architecture result">
+      <strong>Architecture inspection: {report.status}{report.stale ? " · STALE — inspect again" : ""}</strong>
+      <p>{report.message}</p>
+      <div style={muted}>Fence {report.provenance.version} · {report.coverage.inspected} of {report.coverage.selected} selected files inspected · {report.coverage.gitVisible} Git-visible paths</div>
+      {report.threshold && <p>Declared fail_on: {report.threshold} · Threshold result: {report.thresholdStatus ?? "not-run"}. This threshold does not establish that every finding is resolved.</p>}
+      {report.coverage.truncated && <p>Path inventory was truncated at 1,000 entries. Coverage is incomplete.</p>}
+      {report.coverage.rejectedNames > 0 && <p>{report.coverage.rejectedNames} nonportable or unsafe path names were excluded.</p>}
+      {report.diagnostics.map((item, index) => <div key={index}>{item.severity}: {item.message}</div>)}
+      {report.report && <>
+        <p>{report.report.summary.imports_checked} imports checked · {report.report.summary.errors} errors · {report.report.summary.warnings} warnings · {report.report.summary.ignored_violations} ignored findings</p>
+        <details><summary>Zones ({report.report.zones.length})</summary><ul>{report.report.zones.slice(0, 100).map((item, index) => <li key={index}>{item.name}: {item.files} files · {item.errors} errors · {item.warnings} warnings</li>)}</ul></details>
+        <h4>Boundary findings</h4>
+        {report.report.violations.length ? <ul>{report.report.violations.slice(0, 100).map((item, index) => <li key={index}>
+          <strong>{item.severity}: {item.file}:{item.line}</strong><div>{item.message}</div><div>{item.from_zone} → {item.to_zone}{item.from_owner || item.to_owner ? ` · Owners: ${item.from_owner || "unspecified"} → ${item.to_owner || "unspecified"}` : ""}</div>
+          <div>{item.suggestion}</div>
+        </li>)}</ul> : <div style={muted}>No boundary findings in the inspected subset.</div>}
+        {!!report.report.skipped_files.length && <details><summary>Native skipped files ({report.report.skipped_files.length})</summary><ul>{report.report.skipped_files.slice(0, 100).map((item, index) => <li key={index}>{item.file}: {item.reason}</li>)}</ul></details>}
+        {!!report.report.ignored_violations.length && <details><summary>Policy exceptions ({report.report.ignored_violations.length})</summary><ul>{report.report.ignored_violations.slice(0, 100).map((item, index) => <li key={index}>{item.file}:{item.line}: {item.reason}{item.expires ? ` · Expires ${item.expires}` : ""}</li>)}</ul></details>}
+      </>}
+      {!!report.coverage.omitted.length && <details open><summary>Selected files omitted ({report.coverage.omitted.length})</summary><ul>{report.coverage.omitted.slice(0, 100).map((item, index) => <li key={index}>{item.path}: {item.reason}</li>)}</ul></details>}
+      <p style={muted}>{report.scope} Lists show at most 100 items each; use Evidence history to inspect or export the full retained result.</p>
+    </div> : <div style={muted}>No architecture inspection yet. If no policy exists, the result will explain that the check was not run.</div>}
+  </section>;
+}
+
 function SpecSection({ context, report, files, ready, refresh }: { context: PanelProps["context"]; report: SpecReport | null; files: { files: string[]; truncated: boolean }; ready: boolean; refresh: () => void }) {
   const inspect = usePluginAction("inspect-task-contract");
   const [path, setPath] = useState(report?.path ?? "");
@@ -516,7 +563,7 @@ function KujoPanel({ context, compact = false }: PanelProps) {
   if (loading) return <Spinner label="Loading Kujo workspace intelligence" />;
   if (error) return <div role="alert" style={{ ...card, color: colors.danger }}>Unable to load Kujo: {error.message}</div>;
 
-  const hasArtifacts = (data?.history?.length ?? 0) > 0 || data?.verification || data?.spec || data?.language || data?.understanding || Boolean(data?.review || data?.failure || data?.context);
+  const hasArtifacts = (data?.history?.length ?? 0) > 0 || data?.verification || data?.fence || data?.spec || data?.language || data?.understanding || Boolean(data?.review || data?.failure || data?.context);
 
   return (
     <div style={{ ...panel, ...(compact ? { marginTop: 12 } : {}) }}>
@@ -620,6 +667,7 @@ function KujoPanel({ context, compact = false }: PanelProps) {
 
       {data?.catalog && <CapabilityExplorer key={`catalog:${targetKey}`} catalog={data.catalog} />}
 
+      {data?.verificationEnabled && canGenerate && <FenceSection key={`fence:${targetKey}:${data.fence?.id ?? "none"}`} context={context} report={data.fence ?? null} ready={data.readiness?.capabilities.fence === "ready"} refresh={refresh} />}
       {data?.verificationEnabled && canGenerate && <SpecSection key={`spec:${targetKey}:${data.spec?.id ?? "none"}`} context={context} report={data.spec ?? null} files={data.specs ?? { files: [], truncated: false }} ready={data.readiness?.capabilities.spec === "ready"} refresh={refresh} />}
       {data?.verificationEnabled && <VerificationSection key={`verification:${targetKey}:${data.verification?.id ?? "none"}`} context={context} report={data.verification ?? null} refresh={refresh} />}
 

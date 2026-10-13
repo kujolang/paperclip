@@ -13,6 +13,8 @@
 
 ## Unreleased
 
+- Add native Fence architecture inspection with a scoped tool and project/issue UI. Preserve configured thresholds, findings, ownership, exceptions and partial coverage in retained evidence; refuse parser commands and keep workspace reads bounded.
+
 - Add pinned native Spec task-contract inspection to project/issue panels and a scoped agent tool. Validate JSON/YAML/TOML contracts, preserve not-run acceptance/check states and ungranted approval declarations, redact selected summaries, and retain immutable scoped history without executing project code.
 
 - Import bounded canonical evaluation results through project/issue panels and an agent tool. Preserve imported provenance, distinguish skipped/partial/blocked/error claims, validate pinned schemas, and retain only redacted summaries. Imports and clearing retained data work without a local workspace.

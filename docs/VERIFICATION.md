@@ -10,11 +10,21 @@ Only the first 1,000 eligible Git-visible paths are listed. Reads use the native
 
 Agent input: `inspect-task-contract` with `{ "path": "specs/release.spec.yml", "strict": true }`. The host supplies company/workspace identity. Project and issue actions persist scoped evidence; run surfaces remain read-only.
 
+## Architecture boundaries
+
+Enable Verification and choose **Inspect architecture** in a project or issue. The `inspect-architecture` agent tool accepts `{}`; Paperclip supplies company/workspace identity. The pinned Fence implementation loads the root Git-visible `fence.toml` or `fence.json` and checks declared zones/dependencies. Missing policy and empty source selection are **not-run**; malformed or unsupported configuration is **blocked**. No implicit policy is generated.
+
+The result preserves native findings, file/line locations, zones, ownership, suggestions, ignored violations with reasons/expiry, and the project's `fail_on` threshold. A policy using `fail_on = "none"` can meet its threshold while containing errors; both facts remain visible. **Partial** means path/file admission or native skips limited coverage, even when the inspected subset met its threshold. A passed result is a best-effort import-boundary observation, not evidence that project tests passed or acceptance criteria were met.
+
+The adapter copies at most 1,000 Git-visible paths, 64 KiB per file and 16 MiB total into private storage. Root policy files are prioritized. Sensitive filenames, binary text, symlinks/junctions, unsafe paths and oversized files are not read as analysis text. Omitted selected files and truncated inventories remain explicit. Canonical file selection and import resolution use host-supplied inventories; no ambient filesystem resolution occurs. Configuration aliases and roots must stay relative to the snapshot. Configured parser adapters are blocked because they would execute project commands. No cache, project imports, tests or workspace writes occur.
+
+Copying considers the bounded inventory before native selection, so excluded files can consume the copy budget; use the coverage record to judge completeness. A second bounded snapshot detects changes during inspection. Later workspace observations mark retained results stale without rewriting immutable receipts. Common-secret redaction applies to retained native output. Source bytes are removed with temporary storage; their snapshot digest and component provenance remain in scoped history. The panel displays the first 100 items in each result list; exports retain all admitted items.
+
 ## Imported evaluation claims
 
 Enable `features.verification` in company settings. The installed/full/review/ship profiles expose **Import evaluation result** and the `import-verification` agent tool. Build and essentials profiles do not. The feature defaults off. Imports work without a local workspace or native Kujo runtime.
 
-Paste `kujo.evaluation-result/v1` JSON into the project or issue panel. Eval 2.0.0 emits this format as `evaluation-result.json`; other producers must supply the same contract. The import adapter does not convert legacy tool reports or invoke native tools. Native Spec validation is described above; Eval, Fence, Concord and ShipCheck execution integrations remain separate work.
+Paste `kujo.evaluation-result/v1` JSON into the project or issue panel. Eval 2.0.0 emits this format as `evaluation-result.json`; other producers must supply the same contract. The import adapter does not convert legacy tool reports or invoke native tools. Native Spec validation and Fence inspection are described above; Eval, Concord and ShipCheck execution integrations remain separate work.
 
 The plugin validates the exact canonical JSON Schema pinned at Kujo commit `6695bd9beac4787c9d2db768e9f61dfdb26a95a5`, including date formats and evidence-reference shapes. Build checks verify the bundled schema and example bytes against `bundled/verification-sources.lock.json`. Schema validation establishes structure, not authenticity or applicability.
 

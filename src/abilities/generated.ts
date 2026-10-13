@@ -3606,6 +3606,117 @@ export const projections = [
         "source": "spec"
       }
     ]
+  },
+  {
+    "exportName": "fenceTool",
+    "id": "kujo.paperclip.fence.inspect",
+    "feature": "verification",
+    "canonicalIds": [
+      "kujo.fence.architecture.check"
+    ],
+    "components": [
+      "fence"
+    ],
+    "profiles": [
+      "installed",
+      "review",
+      "ship",
+      "full"
+    ],
+    "tool": {
+      "name": "inspect-architecture",
+      "displayName": "Inspect Architecture",
+      "description": "Inspect import boundaries using the pinned native Fence policy in a bounded Git-visible snapshot. Reports coverage and the configured threshold; never runs project commands or tests.",
+      "parametersSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {}
+      }
+    },
+    "definition": {
+      "schema": "kujo.ability/v1",
+      "id": "kujo.paperclip.fence.inspect",
+      "version": "1.0.0",
+      "title": "Inspect Architecture",
+      "description": "Inspect import boundaries using the pinned native Fence policy in a bounded Git-visible snapshot. Reports coverage and the configured threshold; never runs project commands or tests.",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {}
+      },
+      "output_schema": {
+        "type": "object",
+        "additionalProperties": true
+      },
+      "effects": [
+        {
+          "kind": "read",
+          "resource": "kujo.paperclip.workspace"
+        },
+        {
+          "kind": "write",
+          "resource": "kujo.paperclip.evidence"
+        },
+        {
+          "kind": "write",
+          "resource": "kujo.paperclip.activity"
+        }
+      ],
+      "idempotency": {
+        "mode": "none"
+      },
+      "semantics": {
+        "open_world": false,
+        "destructive": false,
+        "executes_code": false
+      }
+    },
+    "definitionDigest": "1fc62ef8f5b3758db674316ccec0f82d251c937d8a6f953dde22a717ad9cfe08",
+    "canonicalDefinitions": [
+      {
+        "definition": {
+          "schema": "kujo.ability/v1",
+          "id": "kujo.fence.architecture.check",
+          "version": "1.0.0",
+          "title": "Check architecture boundaries",
+          "description": "Check a repository against its Fence architecture policy.",
+          "input_schema": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string",
+                "maxLength": 4096,
+                "default": "."
+              },
+              "changed_only": {
+                "type": "boolean",
+                "default": false
+              },
+              "baseline": {
+                "type": "boolean",
+                "default": false
+              }
+            },
+            "additionalProperties": false
+          },
+          "output_schema": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "effects": [
+            {
+              "kind": "read",
+              "resource": "kujo.repository.architecture"
+            }
+          ],
+          "idempotency": {
+            "mode": "intrinsic"
+          }
+        },
+        "definitionDigest": "d428cc2981a87a67f1b5f755a0a28eb62317d6fa52902635f9d651bee6ee930c",
+        "source": "fence"
+      }
+    ]
   }
 ] as const;
 export const catalogTool = projections[0].tool;
@@ -3620,4 +3731,5 @@ export const contextTool = projections[8].tool;
 export const contextContentTool = projections[9].tool;
 export const importVerificationTool = projections[10].tool;
 export const specTool = projections[11].tool;
+export const fenceTool = projections[12].tool;
 export const projectedTools = projections.map((entry) => entry.tool);

@@ -1,5 +1,6 @@
 import { capabilityCatalog, applyCapabilityProfile, type CapabilityCatalog } from "../../src/abilities/catalog.js";
 import { parsePluginConfig } from "../../src/config/schema.js";
+import { FENCE_SCOPE } from "../../src/features/fence/schema.js";
 import type { DoctorReport } from "../../src/health/doctor.js";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
@@ -59,6 +60,17 @@ window.__KUJO_FIXTURE_DATA__ = {
       nonGoals: ["Deploying the release"], approvalPoints: ["Maintainer reviews release evidence"] },
     scope: "Contract validation only. Acceptance criteria and declared checks have not been executed or proved; approval points are declarations, not granted approvals.",
   } : null,
+  fence: parameters.get("fence") ? {
+    id: "fixture-fence", status: parameters.get("fence") === "passed" ? "passed" : "partial", stale: true,
+    message: "Canonical Fence analysis completed.", threshold: "none", thresholdStatus: "passed", provenance: { version: "1.0.0" },
+    diagnostics: [{ severity: "warning", message: "Review the declared policy version." }],
+    coverage: { inspected: 2, selected: 3, gitVisible: 4, truncated: false, rejectedNames: 0, omitted: parameters.get("fence") === "passed" ? [] : [{ path: "src/ui/large.ts", reason: "oversize" }] },
+    report: { summary: { imports_checked: 1, errors: 1, warnings: 0, ignored_violations: 1 },
+      zones: [{ name: "ui", files: 1, errors: 1, warnings: 0 }], skipped_files: [],
+      ignored_violations: [{ file: "src/ui/legacy.ts", line: 3, reason: "Migration exception", expires: "2026-11-01" }],
+      violations: [{ severity: "error", file: "src/ui/view.ts", line: 1, message: "UI must not depend on core", from_zone: "ui", to_zone: "core", from_owner: "frontend", to_owner: "platform", suggestion: "Depend on the public API." }] },
+    scope: FENCE_SCOPE,
+  } : null,
   history: parameters.get("history") ? ["before", "after"].map((id, index) => ({ id, kind: "language-latest", artifactId: id, storedAt: `2026-10-12 12:0${index}:00+00`, sourceKind: "observed", result: index ? "failed" : "observed", digest: "a".repeat(64), inputDigest: null, definitionDigest: null, parentId: null, payloadBytes: 500 })) : [],
   understanding: parameters.get("map") ? {
     status: "partial", stale: true, provenance: { componentVersion: "1.1.0" },
@@ -96,10 +108,11 @@ window.__KUJO_FIXTURE_DATA__ = {
 const fixture = window.__KUJO_FIXTURE_DATA__ as { readiness: DoctorReport; catalog?: CapabilityCatalog; verificationEnabled: boolean };
 fixture.readiness.runtime.platform = "linux";
 fixture.readiness.runtime.arch = "x64";
-fixture.readiness.components = ["scout", "context", "failure-evidence", "changebucket", "patchbrief", "spec"].map((id) => ({ id: id as DoctorReport["components"][number]["id"], version: "1.0.0", integrity: "ok" }));
+fixture.readiness.components = ["scout", "context", "failure-evidence", "changebucket", "patchbrief", "spec", "fence"].map((id) => ({ id: id as DoctorReport["components"][number]["id"], version: "1.0.0", integrity: "ok" }));
 const fixtureConfig = applyCapabilityProfile(parsePluginConfig({ capabilityProfile: parameters.get("profile") ?? "installed", features: { verification: parameters.get("verification") === "1" } }));
-for (const feature of Object.keys(fixture.readiness.capabilities) as Array<keyof DoctorReport["capabilities"]>) if (!fixtureConfig.features[feature === "spec" ? "verification" : feature]) fixture.readiness.capabilities[feature] = "disabled";
+for (const feature of Object.keys(fixture.readiness.capabilities) as Array<keyof DoctorReport["capabilities"]>) if (!fixtureConfig.features[(feature === "spec" || feature === "fence") ? "verification" : feature]) fixture.readiness.capabilities[feature] = "disabled";
 fixture.readiness.capabilities.spec = !fixtureConfig.features.verification ? "disabled" : fixture.readiness.runtime.status === "ok" ? "ready" : "blocked";
+fixture.readiness.capabilities.fence = fixture.readiness.capabilities.spec;
 fixture.verificationEnabled = fixtureConfig.features.verification;
 fixture.catalog = capabilityCatalog(fixtureConfig, fixture.readiness, true);
 window.__KUJO_ACTIONS__ = [];
