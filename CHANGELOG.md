@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.9 — 2026-10-13
+
+- Isolate canonical component imports from project modules in VM and interpreter modes.
+- Require Kujo 1.8.1 for configured runtime overrides; the maintenance release keeps the bundled runtime and four component source pins from 0.1.8.
+
 ## 0.1.8 — 2026-10-12
 
 - Update the Paperclip SDK to 2026.1012.0, bundled Kujo runtime to 1.8.1, and Zod to 4.6.5.
@@ -7,8 +12,6 @@
 - Keep the four pinned components and existing Context Pack, Review Pack, and Failure Evidence contracts unchanged; broader Kujo feature expansion is a separate release.
 
 ## Unreleased
-
-- Isolate native component imports from the analyzed project in both VM and interpreter modes, preserving canonical component selection.
 
 - Add pinned native Spec task-contract inspection to project/issue panels and a scoped agent tool. Validate JSON/YAML/TOML contracts, preserve not-run acceptance/check states and ungranted approval declarations, redact selected summaries, and retain immutable scoped history without executing project code.
 
