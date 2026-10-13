@@ -1,0 +1,255 @@
+// src/config.kujo
+// Load and normalize Fence configuration.
+//
+// Primary format is `fence.toml` (Kujo's parse_toml handles the nested
+// [zones.*] tables and arrays used by Fence). `fence.json` is supported as a
+// secondary fallback for environments that prefer JSON.
+
+from src.util import dict_has, dict_get, arr_has
+from src.paths import is_safe_output, parent_dir, normalize_sep
+
+// Locate a config file. Returns "" when none exists.
+export func find_config_path() {
+    if file_exists("fence.toml") {
+        return "fence.toml"
+    }
+    if file_exists("fence.json") {
+        return "fence.json"
+    }
+    return ""
+}
+
+// Load configuration. Returns a dict:
+//   { found: bool, path: string, ok: bool, error: string, config: dict }
+// `ok` is false (with `error` set) on parse failure; `found` is false when no
+// config file exists at all.
+export func load_config() {
+    let path = find_config_path()
+    if path == "" {
+        return make_load_result(false, "", false, "no config file found", {})
+    }
+
+    let composed = load_composed(path, [], 0)
+    if composed["ok"] == false { return make_load_result(true, path, false, composed["error"], {}) }
+    let cfg = normalize_config(composed["raw"])
+    return make_load_result(true, path, true, "", cfg)
+}
+
+// Load local config composition dependency-first. Includes are repo-relative,
+// path-confined, depth-limited, and cycle checked. Child values override base;
+// known tables merge one level so zones and aliases compose naturally.
+export func load_composed(path, chain, depth) {
+    let p = normalize_sep(path)
+    if depth > 16 { return { "ok": false, "error": "config composition exceeds 16 levels", "raw": {} } }
+    if is_safe_output(p) == false { return { "ok": false, "error": "unsafe config include path: " + p, "raw": {} } }
+    if arr_has(chain, p) { return { "ok": false, "error": "config include cycle at " + p, "raw": {} } }
+    if file_exists(p) == false { return { "ok": false, "error": "config include not found: " + p, "raw": {} } }
+    if existing_config_within_cwd(p) == false { return { "ok": false, "error": "config include escapes the working directory through a symlink: " + p, "raw": {} } }
+    let parsed = parse_config_file(p)
+    if parsed["ok"] == false { return parsed }
+    let refs = dict_get(parsed["raw"], "extends", [])
+    if type_of(refs) != "array" { return { "ok": false, "error": "extends must be an array of local paths", "raw": {} } }
+    mut merged = {}
+    let next_chain = push(chain, p)
+    let n = len(refs)
+    mut i = 0
+    while i < n {
+        if type_of(refs[i]) != "string" || refs[i] == "" { return { "ok": false, "error": "extends entries must be non-empty strings", "raw": {} } }
+        let dep_path = resolve_include_path(p, refs[i])
+        let dep = load_composed(dep_path, next_chain, depth + 1)
+        if dep["ok"] == false { return dep }
+        merged = merge_raw(merged, dep["raw"])
+        i = i + 1
+    }
+    merged = merge_raw(merged, parsed["raw"])
+    return { "ok": true, "error": "", "raw": merged }
+}
+
+func existing_config_within_cwd(path) {
+    mut absolute = ""
+    mut cwd = ""
+    try {
+        absolute = normalize_sep(path_absolute(path))
+        cwd = normalize_sep(path_absolute("."))
+    } except e { return false }
+    if absolute == cwd { return true }
+    return starts_with(absolute, cwd + "/")
+}
+
+func parse_config_file(path) {
+    mut parsed = {}
+    try {
+        if ends_with(path, ".json") { parsed = parse_json(read_file(path)) }
+        else { parsed = parse_toml(read_file(path)) }
+    } except e {
+        return { "ok": false, "error": "invalid config syntax in " + path, "raw": {} }
+    }
+    if type_of(parsed) != "dict" { return { "ok": false, "error": "config root must be an object: " + path, "raw": {} } }
+    let shape_error = raw_shape_error(parsed)
+    if shape_error != "" { return { "ok": false, "error": shape_error + " in " + path, "raw": {} } }
+    return { "ok": true, "error": "", "raw": parsed }
+}
+
+func resolve_include_path(owner, ref) {
+    let dir = parent_dir(owner)
+    if dir == "" { return normalize_sep(ref) }
+    return normalize_sep(dir + "/" + ref)
+}
+
+func merge_raw(base, overlay) {
+    mut out = base
+    let names = keys(overlay)
+    let n = len(names)
+    mut i = 0
+    while i < n {
+        let name = names[i]
+        if merge_table_name(name) && type_of(dict_get(out, name, 0)) == "dict" && type_of(overlay[name]) == "dict" {
+            out[name] = merge_table(out[name], overlay[name])
+        } else if name != "extends" {
+            out[name] = overlay[name]
+        }
+        i = i + 1
+    }
+    return out
+}
+
+func merge_table_name(name) {
+    return name == "zones" || name == "aliases" || name == "external" || name == "scan" || name == "limits" || name == "parser_adapters"
+}
+
+func merge_table(base, overlay) {
+    mut out = base
+    let names = keys(overlay)
+    let n = len(names)
+    mut i = 0
+    while i < n { out[names[i]] = overlay[names[i]]; i = i + 1 }
+    return out
+}
+
+func make_load_result(found, path, ok, error, config) {
+    return {
+        "found": found,
+        "path": path,
+        "ok": ok,
+        "error": error,
+        "config": config
+    }
+}
+
+// Fill defaults and guarantee a stable shape for downstream code.
+export func normalize_config(raw) {
+    mut cfg = {}
+
+    cfg["version"] = dict_get(raw, "version", 1)
+    cfg["source_roots"] = dict_get(raw, "source_roots", ["src"])
+    cfg["default_severity"] = dict_get(raw, "default_severity", "error")
+    cfg["fail_on"] = dict_get(raw, "fail_on", "error")
+    cfg["unknown_dependency_policy"] = dict_get(raw, "unknown_dependency_policy", "warn")
+    cfg["output_roots"] = dict_get(raw, "output_roots", [])
+
+    let limits = dict_get(raw, "limits", {})
+    cfg["max_files"] = dict_get(limits, "max_files", 0)
+    cfg["max_imports"] = dict_get(limits, "max_imports", 0)
+    cfg["max_report_bytes"] = dict_get(limits, "max_report_bytes", 0)
+
+    let scan = dict_get(raw, "scan", {})
+    cfg["include"] = dict_get(scan, "include", [])
+    cfg["exclude"] = dict_get(scan, "exclude", [])
+
+    cfg["aliases"] = dict_get(raw, "aliases", {})
+    cfg["go_module"] = dict_get(raw, "go_module", "")
+    cfg["ignores"] = dict_get(raw, "ignores", [])
+    cfg["parser_adapters"] = dict_get(raw, "parser_adapters", {})
+    cfg["use_cache"] = false
+    cfg["import_cache"] = {}
+
+    // Optional external dependency allow/deny lists.
+    let ext = dict_get(raw, "external", {})
+    cfg["external_allow"] = dict_get(ext, "allow", [])
+    cfg["external_deny"] = dict_get(ext, "deny", [])
+
+    let zones = dict_get(raw, "zones", {})
+    cfg["zones"] = normalize_zones(zones, cfg["default_severity"])
+    cfg["zone_names"] = keys(cfg["zones"])
+
+    return cfg
+}
+
+// Ensure every zone has the expected fields with sane defaults.
+func normalize_zones(zones, default_severity) {
+    let names = keys(zones)
+    let n = len(names)
+    mut out = {}
+    mut i = 0
+    while i < n {
+        let name = names[i]
+        let z = zones[name]
+        mut zn = {}
+        zn["paths"] = dict_get(z, "paths", [])
+        zn["can_depend_on"] = dict_get(z, "can_depend_on", [])
+        zn["cannot_depend_on"] = dict_get(z, "cannot_depend_on", [])
+        zn["severity"] = dict_get(z, "severity", default_severity)
+        zn["external_allow"] = dict_get(z, "external_allow", [])
+        zn["external_deny"] = dict_get(z, "external_deny", [])
+        zn["owner"] = dict_get(z, "owner", "")
+        out[name] = zn
+        i = i + 1
+    }
+    return out
+}
+
+// Reject malformed containers before normalization or command-specific use.
+// Unknown keys remain accepted for forward-compatible configuration.
+func raw_shape_error(raw) {
+    let table_fields = ["scan", "limits", "external", "zones", "aliases", "parser_adapters"]
+    mut i = 0
+    while i < len(table_fields) {
+        let key = table_fields[i]
+        if dict_has(raw, key) && type_of(raw[key]) != "dict" { return key + " must be a table" }
+        i = i + 1
+    }
+    let list_error = string_lists_error(raw, ["source_roots", "output_roots", "extends"])
+    if list_error != "" { return list_error }
+    let scan_error = string_lists_error(dict_get(raw, "scan", {}), ["include", "exclude"])
+    if scan_error != "" { return "scan." + scan_error }
+    let external_error = string_lists_error(dict_get(raw, "external", {}), ["allow", "deny"])
+    if external_error != "" { return "external." + external_error }
+    let raw_zones = dict_get(raw, "zones", {})
+    let names = keys(raw_zones)
+    mut j = 0
+    while j < len(names) {
+        let zone = raw_zones[names[j]]
+        if type_of(zone) != "dict" { return "zones." + names[j] + " must be a table" }
+        let zone_error = string_lists_error(zone, ["paths", "can_depend_on", "cannot_depend_on", "external_allow", "external_deny"])
+        if zone_error != "" { return "zones." + names[j] + "." + zone_error }
+        j = j + 1
+    }
+    let aliases = dict_get(raw, "aliases", {})
+    let alias_names = keys(aliases)
+    mut k = 0
+    while k < len(alias_names) {
+        if type_of(aliases[alias_names[k]]) != "string" { return "aliases values must be strings" }
+        k = k + 1
+    }
+    let ignores = dict_get(raw, "ignores", [])
+    if type_of(ignores) != "array" { return "ignores must be an array of tables" }
+    return ""
+}
+
+func string_lists_error(object, fields) {
+    mut i = 0
+    while i < len(fields) {
+        let name = fields[i]
+        if dict_has(object, name) {
+            let values = object[name]
+            if type_of(values) != "array" { return name + " must be an array of strings" }
+            mut j = 0
+            while j < len(values) {
+                if type_of(values[j]) != "string" { return name + " entries must be strings" }
+                j = j + 1
+            }
+        }
+        i = i + 1
+    }
+    return ""
+}

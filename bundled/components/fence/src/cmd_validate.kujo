@@ -1,0 +1,44 @@
+// src/cmd_validate.kujo
+// Implements `fence validate`.
+
+from src.config import load_config
+from src.validate import validate_config, count_errors
+from src.meta import no_config_text
+
+export func cmd_validate(parsed) {
+    let loaded = load_config()
+    if loaded["found"] == false {
+        print(no_config_text())
+        return 2
+    }
+    if loaded["ok"] == false {
+        print("Config error: " + loaded["error"])
+        return 3
+    }
+
+    let cfg = loaded["config"]
+    let diags = validate_config(cfg)
+    let n = len(diags)
+
+    if n == 0 {
+        print("Config is valid: " + loaded["path"])
+        return 0
+    }
+
+    mut i = 0
+    while i < n {
+        let d = diags[i]
+        let tag = to_upper(d["severity"])
+        print("[" + tag + "] " + d["message"])
+        i = i + 1
+    }
+
+    let errs = count_errors(diags)
+    print("")
+    if errs > 0 {
+        print(to_string(errs) + " error(s) found in " + loaded["path"] + ".")
+        return 2
+    }
+    print("Config has warnings but no errors.")
+    return 0
+}

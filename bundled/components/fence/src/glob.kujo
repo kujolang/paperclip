@@ -1,0 +1,224 @@
+// src/glob.kujo
+// Pragmatic, deterministic glob matching for Fence.
+//
+// Supported patterns (documented as best-effort, NOT full glob):
+//   - exact paths:            src/main.kujo
+//   - suffix:                 **/*.ts          (matches any path ending in .ts)
+//   - prefix tree:            src/ui/**        (matches anything under src/ui/)
+//   - `?` in a segment:        src/a?c.ts      (one char, no `/`)
+//   - `*` in a segment:        src/*a*b.ts     (one segment, no `/`)
+//   - combinations of the above resolved segment-by-segment.
+//
+// Limitations: no `{}`, `[]`, or `**` in the middle followed by more
+// structure beyond a trailing suffix. These cover the fence.toml shapes.
+
+from src.paths import normalize_sep, base_name
+
+// Public: does `path` match `pattern`?
+export func glob_match(pattern, path) {
+    let pat = normalize_sep(pattern)
+    let p = normalize_sep(path)
+
+    if pat == p {
+        return true
+    }
+
+    // `**/X/**` -> match any path that contains X as a contiguous segment run.
+    if starts_with(pat, "**/") {
+        if ends_with(pat, "/**") {
+            let mid = substring(pat, 3, len(pat) - 3)
+            return contains_segment(p, mid)
+        }
+    }
+
+    // `**/*.ext` or `**/suffix` -> match on suffix only.
+    if starts_with(pat, "**/") {
+        let rest = substring(pat, 3, len(pat))
+        return match_suffix_or_segment(rest, p)
+    }
+
+    // `prefix/**` -> match anything at/under prefix.
+    if ends_with(pat, "/**") {
+        let prefix = substring(pat, 0, len(pat) - 3)
+        if p == prefix {
+            return true
+        }
+        return starts_with(p, prefix + "/")
+    }
+
+    // `prefix/**/*.ext` -> under prefix AND ending with .ext.
+    if contains(pat, "/**/") == 1 {
+        let idx = index_before_globstar(pat)
+        let pre2 = substring(pat, 0, idx)
+        let tail = substring(pat, idx + 4, len(pat))
+        if starts_with(p, pre2 + "/") {
+            return match_suffix_or_segment(tail, p)
+        }
+        return false
+    }
+
+    // Otherwise compare segment-by-segment, honoring single-segment `*`.
+    return match_segments(pat, p)
+}
+
+// True when `seg` appears as a contiguous segment run inside path `p`:
+// p == seg, p starts with seg + "/", p ends with "/" + seg, or contains
+// "/" + seg + "/".
+func contains_segment(p, seg) {
+    if p == seg {
+        return true
+    }
+    if starts_with(p, seg + "/") {
+        return true
+    }
+    if ends_with(p, "/" + seg) {
+        return true
+    }
+    return contains(p, "/" + seg + "/") == 1
+}
+
+// True if any pattern in the list matches the path.
+export func glob_match_any(patterns, path) {
+    let n = len(patterns)
+    mut i = 0
+    while i < n {
+        if glob_match(patterns[i], path) {
+            return true
+        }
+        i = i + 1
+    }
+    return false
+}
+
+// Find the index of `/` immediately preceding the first `/**/`.
+func index_before_globstar(pat) {
+    mut i = 0
+    loop {
+        let win = substring(pat, i, i + 4)
+        if win == "" {
+            return -1
+        }
+        if win == "/**/" {
+            return i
+        }
+        i = i + 1
+    }
+    return -1
+}
+
+// Match a trailing fragment that is either `*.ext` (suffix) or an exact
+// final segment, against the basename of the path.
+func match_suffix_or_segment(frag, path) {
+    if starts_with(frag, "*.") {
+        let ext = substring(frag, 1, len(frag))
+        return ends_with(path, ext)
+    }
+    if starts_with(frag, "*") {
+        let suffix = substring(frag, 1, len(frag))
+        return ends_with(path, suffix)
+    }
+    // exact final segment
+    let b = base_name(path)
+    if b == frag {
+        return true
+    }
+    return ends_with(path, "/" + frag)
+}
+
+// Segment-by-segment comparison supporting a single `*` wildcard per segment.
+func match_segments(pat, path) {
+    let ps = split(pat, "/")
+    let xs = split(path, "/")
+    if len(ps) != len(xs) {
+        return false
+    }
+    let n = len(ps)
+    mut i = 0
+    while i < n {
+        if segment_match(ps[i], xs[i]) == false {
+            return false
+        }
+        i = i + 1
+    }
+    return true
+}
+
+// Match one path segment with wildcard support:
+//   *  matches any run of characters within the segment (zero or more)
+//   ?  matches exactly one character
+// Multiple `*` and `?` per segment are supported. Implemented as an iterative
+// two-pointer matcher with star backtracking over character arrays, so it is
+// recursion-free (Kujo's call stack is shallow) and UTF-8 safe (array length is
+// element-based, unlike byte-based len() on strings).
+func segment_match(pseg, xseg) {
+    if pseg == xseg {
+        return true
+    }
+    let pat = to_chars(pseg)
+    let str = to_chars(xseg)
+    let pn = len(pat)
+    let sn = len(str)
+
+    mut pi = 0
+    mut si = 0
+    mut star = -1
+    mut mark = 0
+
+    while si < sn {
+        mut advanced = false
+        if pi < pn {
+            if pat[pi] == "?" {
+                pi = pi + 1
+                si = si + 1
+                advanced = true
+            } else {
+                if pat[pi] == str[si] {
+                    pi = pi + 1
+                    si = si + 1
+                    advanced = true
+                } else {
+                    if pat[pi] == "*" {
+                        star = pi
+                        mark = si
+                        pi = pi + 1
+                        advanced = true
+                    }
+                }
+            }
+        }
+        if advanced == false {
+            if star >= 0 {
+                pi = star + 1
+                mark = mark + 1
+                si = mark
+            } else {
+                return false
+            }
+        }
+    }
+
+    // Consume trailing `*` in the pattern.
+    while pi < pn {
+        if pat[pi] == "*" {
+            pi = pi + 1
+        } else {
+            return false
+        }
+    }
+    return pi == pn
+}
+
+// Convert a string to an array of single-character strings.
+func to_chars(s) {
+    mut out = []
+    mut i = 0
+    loop {
+        let ch = substring(s, i, i + 1)
+        if ch == "" {
+            break
+        }
+        out = push(out, ch)
+        i = i + 1
+    }
+    return out
+}

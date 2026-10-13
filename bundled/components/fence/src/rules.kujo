@@ -1,0 +1,171 @@
+// src/rules.kujo
+// The dependency rule engine: decide whether a from_zone -> to_zone edge is
+// allowed, and build violation records with deterministic fix suggestions.
+
+from src.util import arr_has, dict_get
+
+// Verdict shape: { allowed, severity, rule, message }.
+func verdict(allowed, severity, rule, message) {
+    return {
+        "allowed": allowed,
+        "severity": severity,
+        "rule": rule,
+        "message": message
+    }
+}
+
+// Decide a single zone-to-zone dependency.
+//   from_zone: the importing file's zone (a known zone)
+//   to_zone:   the imported target's zone, or "unknown" when unmappable
+export func check_dependency(from_zone, to_zone, cfg) {
+    let zones = cfg["zones"]
+    let zinfo = zones[from_zone]
+    let sev = dict_get(zinfo, "severity", cfg["default_severity"])
+
+    // A zone may always depend on itself.
+    if from_zone == to_zone {
+        return verdict(true, "info", "same-zone", "allowed")
+    }
+
+    // Explicit deny wins.
+    if arr_has(zinfo["cannot_depend_on"], to_zone) {
+        let rule = "zones." + from_zone + ".cannot_depend_on includes " + to_zone
+        return verdict(false, sev, rule, from_zone + " cannot depend on " + to_zone)
+    }
+
+    // Explicit allow permits.
+    if arr_has(zinfo["can_depend_on"], to_zone) {
+        return verdict(true, "info", "zones." + from_zone + ".can_depend_on includes " + to_zone, "allowed")
+    }
+
+    // Unlisted or unmappable target -> unknown_dependency_policy.
+    let policy = cfg["unknown_dependency_policy"]
+    if policy == "allow" {
+        return verdict(true, "info", "unknown_dependency_policy = allow", "allowed")
+    }
+    if policy == "deny" {
+        let rule_d = "unlisted dependency denied by unknown_dependency_policy = deny"
+        return verdict(false, sev, rule_d, from_zone + " -> " + to_zone + " is not permitted")
+    }
+    // warn (default)
+    let rule_w = "unlisted dependency under unknown_dependency_policy = warn"
+    return verdict(false, "warning", rule_w, from_zone + " -> " + to_zone + " is unknown/ambiguous")
+}
+
+// Decide an external (third-party) import for a given zone.
+// Returns { allowed, severity, rule, message }. Allow wins over deny. When the
+// package matches neither list it is allowed (externals are not violations by
+// default).
+export func check_external(from_zone, import_path, cfg) {
+    let zones = cfg["zones"]
+    let zinfo = zones[from_zone]
+    let sev = dict_get(zinfo, "severity", cfg["default_severity"])
+
+    let allow = concat_lists(dict_get(zinfo, "external_allow", []), cfg["external_allow"])
+    if pkg_matches(import_path, allow) {
+        return verdict(true, "info", "external allow-list", "allowed")
+    }
+
+    let deny = concat_lists(dict_get(zinfo, "external_deny", []), cfg["external_deny"])
+    if pkg_matches(import_path, deny) {
+        let rule = "external dependency '" + import_path + "' denied for zone " + from_zone
+        return verdict(false, sev, rule, from_zone + " may not depend on external package " + import_path)
+    }
+
+    return verdict(true, "info", "external default-allow", "allowed")
+}
+
+// True when `pkg` equals an entry or is a subpath of one (entry + "/...").
+func pkg_matches(pkg, entries) {
+    let n = len(entries)
+    mut i = 0
+    while i < n {
+        let e = entries[i]
+        if pkg == e {
+            return true
+        }
+        if starts_with(pkg, e + "/") {
+            return true
+        }
+        i = i + 1
+    }
+    return false
+}
+
+func concat_lists(a, b) {
+    mut out = []
+    let an = len(a)
+    mut i = 0
+    while i < an {
+        out = push(out, a[i])
+        i = i + 1
+    }
+    let bn = len(b)
+    mut j = 0
+    while j < bn {
+        out = push(out, b[j])
+        j = j + 1
+    }
+    return out
+}
+
+// Build a violation record for a denied external dependency.
+export func make_external_violation(severity, from_zone, file, import_str, line, rule, confidence, from_owner) {
+    return {
+        "severity": severity,
+        "from_zone": from_zone,
+        "to_zone": "external",
+        "from_owner": from_owner,
+        "to_owner": "",
+        "file": file,
+        "line": line,
+        "confidence": confidence,
+        "import": import_str,
+        "resolved": "",
+        "rule": rule,
+        "message": from_zone + " may not depend on external package " + import_str,
+        "suggestion": "Remove this dependency or move it behind an allowed boundary; update [external] in fence.toml only if it is intentional."
+    }
+}
+
+// Deterministic fix suggestion based on the zones involved.
+export func suggest(from_zone, to_zone) {
+    if to_zone == "unknown" {
+        return "Define this relationship explicitly in fence.toml, or move the target into a known zone."
+    }
+    if to_zone == "database" {
+        return "Move database access behind a domain or service boundary."
+    }
+    if to_zone == "ui" {
+        if from_zone == "domain" {
+            return "Domain code should not depend on UI. Move shared types to shared or invert the dependency."
+        }
+        return "Avoid depending on UI from " + from_zone + ". Invert the dependency or extract shared types."
+    }
+    if to_zone == "infra" {
+        return "Depend on a domain/service abstraction instead of infra directly."
+    }
+    if to_zone == "http" {
+        return "Do not import HTTP/transport code here. Keep transport concerns at the edge."
+    }
+    return "Update fence.toml only if this dependency is intentional; otherwise refactor to respect the boundary."
+}
+
+// Build a full violation record for reporting.
+export func make_violation(severity, from_zone, to_zone, file, import_str, line, resolved, rule, confidence, from_owner, to_owner) {
+    return {
+        "severity": severity,
+        "from_zone": from_zone,
+        "to_zone": to_zone,
+        "from_owner": from_owner,
+        "to_owner": to_owner,
+        "file": file,
+        "line": line,
+        "confidence": confidence,
+        "import": import_str,
+        "resolved": resolved,
+        "rule": rule,
+        "message": from_zone + " cannot depend on " + to_zone,
+        "suggestion": suggest(from_zone, to_zone)
+    }
+}

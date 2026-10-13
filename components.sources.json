@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "bundleVersion": "0.3.0",
+  "bundleVersion": "0.4.0",
   "runtime": {
     "minimumVersion": "1.8.1"
   },
@@ -143,6 +143,60 @@
           "name": "validation",
           "format": "json",
           "schema": "schemas/spec-validation.schema.json"
+        }
+      ]
+    },
+    {
+      "id": "fence",
+      "repository": "https://github.com/kujolang/fence",
+      "sourceDirectory": "fence",
+      "gitCommit": "818fad467674efeb6d6b5973211834d3f1a0b1fd",
+      "version": "1.0.0",
+      "entrypoint": "fence.kujo",
+      "files": [
+        "LICENSE",
+        "fence.kujo",
+        "src/analyze.kujo",
+        "src/baseline.kujo",
+        "src/cache.kujo",
+        "src/cli.kujo",
+        "src/cliargs.kujo",
+        "src/cmd_baseline.kujo",
+        "src/cmd_check.kujo",
+        "src/cmd_doctor.kujo",
+        "src/cmd_explain.kujo",
+        "src/cmd_graph.kujo",
+        "src/cmd_ignores.kujo",
+        "src/cmd_init.kujo",
+        "src/cmd_validate.kujo",
+        "src/cmd_workspace.kujo",
+        "src/config.kujo",
+        "src/cycles.kujo",
+        "src/decisions.kujo",
+        "src/git.kujo",
+        "src/glob.kujo",
+        "src/graph.kujo",
+        "src/ignores.kujo",
+        "src/imports.kujo",
+        "src/imports_ext.kujo",
+        "src/meta.kujo",
+        "src/output.kujo",
+        "src/parser_adapters.kujo",
+        "src/paths.kujo",
+        "src/reports.kujo",
+        "src/resolve.kujo",
+        "src/rules.kujo",
+        "src/templates.kujo",
+        "src/util.kujo",
+        "src/validate.kujo",
+        "src/walk.kujo",
+        "src/zones.kujo"
+      ],
+      "outputContracts": [
+        {
+          "name": "analysis",
+          "format": "json",
+          "schema": "schemas/fence-analysis.schema.json"
         }
       ]
     }

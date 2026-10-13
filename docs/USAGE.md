@@ -137,7 +137,7 @@ Each receipt records source kind (observed, supplied, or migrated legacy), a res
 
 **Attach to this issue** explicitly creates an issue document and requires a host-authenticated human in the same company. Agent calls cannot authorize attachment by passing actor or company fields. Only records retained against that exact issue can be attached. Documents above 400 KB are rejected; use the download instead. Attached documents are separate Paperclip records and remain governed by the host's retention policy.
 
-Retention uses database insertion time: at most 20 records across all six artifact kinds per company/entity, with records older than 30 days inaccessible and removed on the next history read or append. There is no background expiry sweep. Each payload is limited to 5 MB. **Clear Kujo data** removes retained history and legacy latest keys for the selected project/issue; it does not remove documents already attached to issues. No generic SQL or arbitrary file access is exposed.
+Retention uses database insertion time: at most 20 records across all eight artifact kinds per company/entity, with records older than 30 days inaccessible and removed on the next history read or append. There is no background expiry sweep. Each payload is limited to 5 MB. **Clear Kujo data** removes retained history and legacy latest keys for the selected project/issue; it does not remove documents already attached to issues. No generic SQL or arbitrary file access is exposed.
 
 Agents can use `kujolang.paperclip:list-evidence` with `{ "scope": "project" }` (default) or `{ "scope": "run" }`, then `kujolang.paperclip:get-evidence` with the same scope and an `evidenceId`. IDs for the project/run/company come from the authenticated host context. Reads above 64 KiB are rejected with a panel-download hint; the tools never attach documents.
 
@@ -175,3 +175,23 @@ Choose **Review task contract** to validate its structure. This does not run the
 file check or approve publication. Criteria and checks remain not-run. Agents can
 call `inspect-task-contract` with the relative path and optional `strict: true`.
 Use Evidence history for comparisons and redacted exports.
+
+
+## Inspect architecture boundaries
+
+Enable Verification, define the root `fence.json` or `fence.toml` policy, then select **Inspect architecture**. For example, this JSON policy prevents UI code from importing core implementation files:
+
+```json
+{
+  "version": 1,
+  "source_roots": ["src"],
+  "fail_on": "error",
+  "scan": { "include": ["src/**/*.ts"] },
+  "zones": {
+    "ui": { "paths": ["src/ui/**"], "cannot_depend_on": ["core"] },
+    "core": { "paths": ["src/core/**"] }
+  }
+}
+```
+
+Agents call `kujolang.paperclip:inspect-architecture` with `{}`. Findings identify the file/line, dependency zones, declared owners and suggested remedy. Review the selected/inspected counts, omitted files, native skips and exceptions alongside the threshold result. The plugin never executes project commands or tests in this action. See [Verification workflows](VERIFICATION.md) for bounds and partial-result semantics. Results use the same scoped history, comparison, export and human-only attachment workflow as other evidence.

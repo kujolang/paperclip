@@ -55,6 +55,7 @@ export async function doctor(config: PluginConfig = parsePluginConfig({})) {
     runtime,
     components: statuses,
     capabilities: {
+      fence: capability(config.features.verification, ["fence"]),
       spec: capability(config.features.verification, ["spec"]),
       language: capability(config.features.language, []),
       understand: capability(config.features.understand, ["scout"]),

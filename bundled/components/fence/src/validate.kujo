@@ -1,0 +1,357 @@
+// src/validate.kujo
+// Structural validation of a normalized Fence config.
+//
+// Returns an array of diagnostics: { severity: "error"|"warning", message }.
+// The caller decides exit codes (any error => invalid config).
+
+from src.util import arr_has, dict_has, join_strings
+from src.cycles import one_cycle
+
+func valid_severity(s) {
+    if s == "info" {
+        return true
+    }
+    if s == "warning" {
+        return true
+    }
+    if s == "error" {
+        return true
+    }
+    return false
+}
+
+func valid_fail_on(s) {
+    if s == "none" {
+        return true
+    }
+    if s == "warning" {
+        return true
+    }
+    if s == "error" {
+        return true
+    }
+    return false
+}
+
+func valid_policy(s) {
+    if s == "allow" {
+        return true
+    }
+    if s == "warn" {
+        return true
+    }
+    if s == "deny" {
+        return true
+    }
+    return false
+}
+
+func diag(severity, message) {
+    return { "severity": severity, "message": message }
+}
+
+// Validate a normalized config (output of config.normalize_config).
+export func validate_config(cfg) {
+    mut out = []
+
+    // Top-level required fields.
+    let roots = cfg["source_roots"]
+    if len(roots) == 0 {
+        out = push(out, diag("error", "source_roots must list at least one directory"))
+    }
+
+    let zones = cfg["zones"]
+    let zone_names = cfg["zone_names"]
+    if len(zone_names) == 0 {
+        out = push(out, diag("error", "at least one [zones.*] section is required"))
+    }
+
+    if valid_fail_on(cfg["fail_on"]) == false {
+        out = push(out, diag("error", "invalid fail_on '" + to_string(cfg["fail_on"]) + "' (use none, warning, error)"))
+    }
+    if valid_policy(cfg["unknown_dependency_policy"]) == false {
+        out = push(out, diag("error", "invalid unknown_dependency_policy '" + to_string(cfg["unknown_dependency_policy"]) + "' (use allow, warn, deny)"))
+    }
+    if valid_severity(cfg["default_severity"]) == false {
+        out = push(out, diag("error", "invalid default_severity '" + to_string(cfg["default_severity"]) + "' (use info, warning, error)"))
+    }
+    if type_of(cfg["go_module"]) != "string" {
+        out = push(out, diag("error", "go_module must be a string"))
+    }
+    out = validate_limits(cfg, out)
+    out = validate_output_roots(cfg["output_roots"], out)
+    out = validate_ignores(cfg["ignores"], out)
+    out = validate_parser_adapters(cfg["parser_adapters"], out)
+
+    // Config schema version guard.
+    if to_string(cfg["version"]) != "1" {
+        out = push(out, diag("warning", "unsupported config version '" + to_string(cfg["version"]) + "'; Fence v1 expects version = 1"))
+    }
+
+    // Per-zone checks.
+    out = validate_zones(zones, zone_names, out)
+
+    // Cross-zone overlap detection.
+    out = check_overlaps(zones, zone_names, out)
+
+    // Dependency-cycle detection over allowed edges.
+    let cyc = one_cycle(cfg)
+    if len(cyc) > 0 {
+        out = push(out, diag("warning", "dependency cycle in allowed edges: " + join_strings(cyc, " -> ")))
+    }
+
+    return out
+}
+
+func validate_parser_adapters(adapters, acc) {
+    mut out = acc
+    if type_of(adapters) != "dict" {
+        return push(out, diag("error", "parser_adapters must be a table keyed by file extension"))
+    }
+    let exts = keys(adapters)
+    let n = len(exts)
+    mut i = 0
+    while i < n {
+        let ext = exts[i]
+        let argv = adapters[ext]
+        if starts_with(ext, ".") == false || type_of(argv) != "array" || len(argv) == 0 {
+            out = push(out, diag("error", "parser_adapters." + ext + " must be a non-empty argv array and the key must start with '.'"))
+        } else {
+            let an = len(argv)
+            mut j = 0
+            while j < an {
+                if type_of(argv[j]) != "string" || argv[j] == "" {
+                    out = push(out, diag("error", "parser_adapters." + ext + " argv entries must be non-empty strings"))
+                    j = an
+                }
+                j = j + 1
+            }
+        }
+        i = i + 1
+    }
+    return out
+}
+
+func validate_ignores(entries, acc) {
+    mut out = acc
+    let n = len(entries)
+    mut i = 0
+    while i < n {
+        let e = entries[i]
+        if type_of(e) != "dict" {
+            out = push(out, diag("error", "each [[ignores]] entry must be a table"))
+        } else {
+            if dict_has(e, "reason") == false || type_of(e["reason"]) != "string" || trim(e["reason"]) == "" {
+                out = push(out, diag("error", "ignores entry " + to_string(i + 1) + " requires a non-empty reason"))
+            }
+            if dict_has(e, "expires") == false || valid_expiry(e["expires"]) == false {
+                out = push(out, diag("error", "ignores entry " + to_string(i + 1) + " requires a real expires date = YYYY-MM-DD"))
+            }
+            let selectors = ["from_zone", "to_zone", "file", "import"]
+            mut si = 0
+            while si < len(selectors) {
+                let field = selectors[si]
+                if dict_has(e, field) && type_of(e[field]) != "string" {
+                    out = push(out, diag("error", "ignores entry " + to_string(i + 1) + " " + field + " must be a string"))
+                }
+                si = si + 1
+            }
+        }
+        i = i + 1
+    }
+    return out
+}
+
+// Validate calendar semantics as well as spelling before matching or auditing.
+func valid_expiry(value) {
+    if type_of(value) != "string" { return false }
+    if regex_match(value, "^[0-9]{4}-[0-9]{2}-[0-9]{2}$") == false { return false }
+    try {
+        let parsed = parse_date(value, "YYYY-MM-DD")
+        return format_date(parsed, "YYYY-MM-DD") == value
+    } except e { return false }
+}
+
+func validate_limits(cfg, acc) {
+    mut out = acc
+    let names = ["max_files", "max_imports", "max_report_bytes"]
+    let n = len(names)
+    mut i = 0
+    while i < n {
+        let name = names[i]
+        let value = cfg[name]
+        if type_of(value) != "int" || value < 0 {
+            out = push(out, diag("error", "limits." + name + " must be a non-negative integer (0 = unlimited)"))
+        }
+        i = i + 1
+    }
+    return out
+}
+
+func validate_output_roots(roots, acc) {
+    mut out = acc
+    let n = len(roots)
+    mut i = 0
+    while i < n {
+        let root = roots[i]
+        if type_of(root) != "string" || root == "" || starts_with(root, "/") || starts_with(root, "~") || contains(root, "..") == 1 || contains(root, ":") == 1 {
+            out = push(out, diag("error", "output_roots entries must be safe, non-empty repo-relative directories"))
+        }
+        i = i + 1
+    }
+    return out
+}
+
+// Warn when two zones declare provably-overlapping path patterns (identical, or
+// one zone's `prefix/**` tree subsumes a pattern in another zone). Files in the
+// overlap resolve to whichever zone is listed first, which is easy to get wrong.
+func check_overlaps(zones, zone_names, acc) {
+    mut out = acc
+    let n = len(zone_names)
+    mut i = 0
+    while i < n {
+        mut j = i + 1
+        while j < n {
+            let za = zone_names[i]
+            let zb = zone_names[j]
+            let hit = zones_overlap(zones[za]["paths"], zones[zb]["paths"])
+            if hit != "" {
+                out = push(out, diag("warning", "zones '" + za + "' and '" + zb + "' have overlapping paths (" + hit + "); first-listed zone wins"))
+            }
+            j = j + 1
+        }
+        i = i + 1
+    }
+    return out
+}
+
+// Return a description of the first overlapping pattern pair, or "" if none.
+func zones_overlap(paths_a, paths_b) {
+    let an = len(paths_a)
+    mut i = 0
+    while i < an {
+        let bn = len(paths_b)
+        mut j = 0
+        while j < bn {
+            if pattern_overlap(paths_a[i], paths_b[j]) {
+                return paths_a[i] + " ~ " + paths_b[j]
+            }
+            j = j + 1
+        }
+        i = i + 1
+    }
+    return ""
+}
+
+func pattern_overlap(pa, pb) {
+    if pa == pb {
+        return true
+    }
+    let ga = tree_prefix(pa)
+    if ga != "" {
+        if pb == ga {
+            return true
+        }
+        if starts_with(pb, ga + "/") {
+            return true
+        }
+    }
+    let gb = tree_prefix(pb)
+    if gb != "" {
+        if pa == gb {
+            return true
+        }
+        if starts_with(pa, gb + "/") {
+            return true
+        }
+    }
+    return false
+}
+
+// The directory prefix of a tree pattern (`X/**` or `X/**/*.ext` -> "X"),
+// or "" when the pattern is not a tree pattern.
+func tree_prefix(pat) {
+    if ends_with(pat, "/**") {
+        return substring(pat, 0, len(pat) - 3)
+    }
+    let idx = index_of(pat, "/**/")
+    if idx >= 0 {
+        return substring(pat, 0, idx)
+    }
+    return ""
+}
+
+func validate_zones(zones, zone_names, acc) {
+    mut out = acc
+    let n = len(zone_names)
+    mut i = 0
+    while i < n {
+        let name = zone_names[i]
+        let z = zones[name]
+
+        // paths present?
+        if len(z["paths"]) == 0 {
+            out = push(out, diag("warning", "zone '" + name + "' has no paths and will never match files"))
+        }
+
+        // severity valid?
+        if valid_severity(z["severity"]) == false {
+            out = push(out, diag("error", "zone '" + name + "' has invalid severity '" + to_string(z["severity"]) + "'"))
+        }
+        if type_of(z["owner"]) != "string" {
+            out = push(out, diag("error", "zone '" + name + "' owner must be a string"))
+        }
+
+        // referenced zones exist + no conflicts.
+        out = check_refs(name, z["can_depend_on"], zone_names, "can_depend_on", out)
+        out = check_refs(name, z["cannot_depend_on"], zone_names, "cannot_depend_on", out)
+        out = check_conflicts(name, z["can_depend_on"], z["cannot_depend_on"], out)
+
+        i = i + 1
+    }
+    return out
+}
+
+// Flag references to zones that are not defined.
+func check_refs(zone_name, refs, zone_names, field, acc) {
+    mut out = acc
+    let n = len(refs)
+    mut i = 0
+    while i < n {
+        let target = refs[i]
+        if arr_has(zone_names, target) == false {
+            out = push(out, diag("error", "zone '" + zone_name + "." + field + "' references unknown zone '" + target + "'"))
+        }
+        i = i + 1
+    }
+    return out
+}
+
+// Flag a zone that lists the same target in both allow and deny.
+func check_conflicts(zone_name, allow, deny, acc) {
+    mut out = acc
+    let n = len(allow)
+    mut i = 0
+    while i < n {
+        let target = allow[i]
+        if arr_has(deny, target) {
+            out = push(out, diag("error", "zone '" + zone_name + "' lists '" + target + "' in both can_depend_on and cannot_depend_on"))
+        }
+        i = i + 1
+    }
+    return out
+}
+
+// Count error-severity diagnostics.
+export func count_errors(diags) {
+    let n = len(diags)
+    mut c = 0
+    mut i = 0
+    while i < n {
+        if diags[i]["severity"] == "error" {
+            c = c + 1
+        }
+        i = i + 1
+    }
+    return c
+}

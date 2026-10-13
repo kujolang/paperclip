@@ -1,0 +1,66 @@
+// src/cmd_graph.kujo
+// Implements `fence graph`.
+
+from src.config import load_config
+from src.graph import render_graph, render_observed_graph
+from src.cliargs import flag_or, has_flag
+from src.output import write_safe_under
+from src.cycles import one_cycle
+from src.util import join_strings
+from src.walk import walk
+from src.analyze import analyze_files
+from src.validate import validate_config, count_errors
+
+export func cmd_graph(parsed) {
+    let flags = parsed["flags"]
+    let loaded = load_config()
+    if loaded["found"] == false {
+        print("No fence.toml found. Run: kujo run fence.kujo -- init")
+        return 2
+    }
+    if loaded["ok"] == false {
+        print("Config error: " + loaded["error"])
+        return 3
+    }
+
+    let cfg = loaded["config"]
+    if count_errors(validate_config(cfg)) > 0 { print("Config is invalid. Run validate for details."); return 2 }
+
+    // `graph --cycles` reports dependency cycles instead of the full graph.
+    if has_flag(flags, "cycles") {
+        let cyc = one_cycle(cfg)
+        if len(cyc) == 0 {
+            print("No dependency cycles found in allowed edges.")
+            return 0
+        }
+        print("Dependency cycle: " + join_strings(cyc, " -> "))
+        return 1
+    }
+
+    let format = flag_or(flags, "format", "human")
+    mut g = render_graph(cfg, format)
+    if has_flag(flags, "observed") {
+        let observed_files = walk(cfg["source_roots"], cfg["include"], cfg["exclude"])
+        let observed_result = analyze_files(observed_files, cfg)
+        if len(observed_result["skipped_files"]) > 0 { print("Error: incomplete source analysis; observed graph is unavailable."); return 4 }
+        g = render_observed_graph(cfg, observed_result["observed_edges"], format)
+    }
+    if g["ok"] == false {
+        print("Error: " + g["text"])
+        return 2
+    }
+
+    let output_path = flag_or(flags, "output", "")
+    if output_path != "" {
+        let w = write_safe_under(output_path, g["text"], true, cfg["output_roots"])
+        if w["ok"] == false {
+            print("Error: " + w["error"])
+            return 5
+        }
+        print("Wrote graph to " + output_path)
+        return 0
+    }
+
+    print(g["text"])
+    return 0
+}

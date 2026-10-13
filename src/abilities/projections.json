@@ -1028,5 +1028,70 @@
         "executes_code": false
       }
     }
+  },
+  {
+    "exportName": "fenceTool",
+    "id": "kujo.paperclip.fence.inspect",
+    "feature": "verification",
+    "canonicalIds": [
+      "kujo.fence.architecture.check"
+    ],
+    "components": [
+      "fence"
+    ],
+    "profiles": [
+      "installed",
+      "review",
+      "ship",
+      "full"
+    ],
+    "tool": {
+      "name": "inspect-architecture",
+      "displayName": "Inspect Architecture",
+      "description": "Inspect import boundaries using the pinned native Fence policy in a bounded Git-visible snapshot. Reports coverage and the configured threshold; never runs project commands or tests.",
+      "parametersSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {}
+      }
+    },
+    "definition": {
+      "schema": "kujo.ability/v1",
+      "id": "kujo.paperclip.fence.inspect",
+      "version": "1.0.0",
+      "title": "Inspect Architecture",
+      "description": "Inspect import boundaries using the pinned native Fence policy in a bounded Git-visible snapshot. Reports coverage and the configured threshold; never runs project commands or tests.",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {}
+      },
+      "output_schema": {
+        "type": "object",
+        "additionalProperties": true
+      },
+      "effects": [
+        {
+          "kind": "read",
+          "resource": "kujo.paperclip.workspace"
+        },
+        {
+          "kind": "write",
+          "resource": "kujo.paperclip.evidence"
+        },
+        {
+          "kind": "write",
+          "resource": "kujo.paperclip.activity"
+        }
+      ],
+      "idempotency": {
+        "mode": "none"
+      },
+      "semantics": {
+        "open_world": false,
+        "destructive": false,
+        "executes_code": false
+      }
+    }
   }
 ]

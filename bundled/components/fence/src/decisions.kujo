@@ -1,0 +1,46 @@
+// One policy decision shared by check and explain. Resolution and extraction
+// remain outside this module so callers can reuse their per-run caches.
+from src.rules import check_dependency, make_violation, check_external, make_external_violation
+from src.util import dict_get, dict_has
+from src.ignores import ignore_match
+
+export func decide_dependency(file, file_zone, imp, res, to_zone, cfg) {
+    let no_ignore = { "ignored": false, "reason": "", "expires": "" }
+    if file_zone == "unknown" { return { "decision": "ungoverned", "violation": {}, "ignore": no_ignore } }
+    let v = judge(file, file_zone, imp, res, to_zone, cfg)
+    if dict_has(v, "severity") {
+        let ignored = ignore_match(v, cfg["ignores"])
+        if ignored["ignored"] { return { "decision": "allowed", "violation": v, "ignore": ignored } }
+        return { "decision": "denied", "violation": v, "ignore": ignored }
+    }
+    if res["status"] == "external" { return { "decision": "external", "violation": {}, "ignore": no_ignore } }
+    return { "decision": "allowed", "violation": {}, "ignore": no_ignore }
+}
+
+// Evaluate one resolved import. Returns a violation record, or 0 when allowed
+// / not applicable.
+func judge(file, file_zone, imp, res, to_zone, cfg) {
+    let status = res["status"]
+
+    // External packages: allowed by default, unless an allow/deny list applies.
+    if status == "external" {
+        let ev = check_external(file_zone, imp["path"], cfg)
+        if ev["allowed"] {
+            return {}
+        }
+        return make_external_violation(ev["severity"], file_zone, file, imp["path"], imp["line"], ev["rule"], dict_get(imp, "confidence", "best_effort"), zone_owner(cfg, file_zone))
+    }
+
+    let verdict = check_dependency(file_zone, to_zone, cfg)
+    if verdict["allowed"] {
+        return {}
+    }
+
+    return make_violation(verdict["severity"], file_zone, to_zone, file, imp["path"], imp["line"], res["resolved"], verdict["rule"], dict_get(imp, "confidence", "best_effort"), zone_owner(cfg, file_zone), zone_owner(cfg, to_zone))
+}
+
+func zone_owner(cfg, zone) {
+    if dict_has(cfg["zones"], zone) { return dict_get(cfg["zones"][zone], "owner", "") }
+    return ""
+}
+

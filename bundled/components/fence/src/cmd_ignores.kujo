@@ -1,0 +1,54 @@
+// Review structured policy exceptions for ownership and CI expiry gates.
+
+from src.config import load_config
+from src.cliargs import flag_or, has_flag
+from src.ignores import audit_ignores
+from src.validate import validate_config, count_errors
+
+export func cmd_ignores(parsed) {
+    let positionals = parsed["positionals"]
+    if len(positionals) == 0 || (positionals[0] != "list" && positionals[0] != "check") {
+        print("Usage: kujo run fence.kujo -- ignores list|check [--within-days 30] [--format human|json] [--fail-expiring]")
+        return 2
+    }
+    let loaded = load_config()
+    if loaded["found"] == false { print("No fence.toml found. Run: kujo run fence.kujo -- init"); return 2 }
+    if loaded["ok"] == false { print("Config error: " + loaded["error"]); return 3 }
+    if count_errors(validate_config(loaded["config"])) > 0 { print("Config is invalid. Run `kujo run fence.kujo -- validate` for details."); return 2 }
+    let days_raw = flag_or(parsed["flags"], "within-days", "30")
+    if regex_match(days_raw, "^[0-9]+$") == false { print("Error: --within-days must be an integer between 0 and 3650"); return 2 }
+    let days = to_int(days_raw)
+    if days < 0 || days > 3650 { print("Error: --within-days must be between 0 and 3650"); return 2 }
+    let audit = audit_ignores(loaded["config"]["ignores"], days, now())
+    let format = flag_or(parsed["flags"], "format", "human")
+    if format == "json" { print(to_json_pretty(audit)) }
+    else if format == "human" { print(render_audit(audit)) }
+    else { print("Error: ignores format must be human or json"); return 2 }
+    if positionals[0] == "check" {
+        if len(audit["expired"]) > 0 { return 1 }
+        if has_flag(parsed["flags"], "fail-expiring") && len(audit["expiring"]) > 0 { return 1 }
+    }
+    return 0
+}
+
+func render_audit(audit) {
+    mut out = "Fence Ignore Audit\n==================\n\n"
+    out = out + "Active: " + to_string(len(audit["active"])) + "\n"
+    out = out + "Expiring within " + to_string(audit["within_days"]) + " days: " + to_string(len(audit["expiring"])) + "\n"
+    out = out + "Expired: " + to_string(len(audit["expired"])) + "\n"
+    out = out + audit_rows("\nExpiring\n--------\n", audit["expiring"])
+    out = out + audit_rows("\nExpired\n-------\n", audit["expired"])
+    return out
+}
+
+func audit_rows(title, rows) {
+    if len(rows) == 0 { return "" }
+    mut out = title
+    let n = len(rows)
+    mut i = 0
+    while i < n {
+        out = out + "- #" + to_string(rows[i]["index"]) + " expires " + rows[i]["expires"] + ": " + rows[i]["reason"] + "\n"
+        i = i + 1
+    }
+    return out
+}

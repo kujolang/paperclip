@@ -1,0 +1,236 @@
+// src/cmd_check.kujo
+// Implements `fence check`.
+
+from src.config import load_config
+from src.validate import validate_config, count_errors
+from src.walk import walk
+from src.analyze import analyze_files
+from src.reports import summarize, render_human, render_json, render_markdown, render_sarif
+from src.output import write_safe_under
+from src.cliargs import flag_or, has_flag
+from src.git import changed_files
+from src.glob import glob_match
+from src.baseline import load_baseline, apply_baseline
+from src.meta import no_config_text
+from src.util import utf8_byte_length
+from src.cache import load_cache, save_cache
+
+export func cmd_check(parsed) {
+    let flags = parsed["flags"]
+
+    let loaded = load_config()
+    if loaded["found"] == false {
+        print(no_config_text())
+        return 2
+    }
+    if loaded["ok"] == false {
+        print("Config error: " + loaded["error"])
+        return 3
+    }
+
+    mut cfg = loaded["config"]
+
+    // Optional fail-on override. Apply it before validation so an invalid CLI
+    // value cannot silently behave like `none` in the summary threshold.
+    let fail_override = flag_or(flags, "fail-on", "")
+    if has_flag(flags, "fail-on") {
+        cfg["fail_on"] = fail_override
+    }
+    if has_flag(flags, "cache") {
+        cfg["use_cache"] = true
+        cfg["import_cache"] = load_cache(cfg["parser_adapters"])
+    }
+
+    let diags = validate_config(cfg)
+    if count_errors(diags) > 0 {
+        print("Config is invalid. Run `kujo run fence.kujo -- validate` for details.")
+        return 2
+    }
+
+    // Determine the file set (full walk or changed-only).
+    let file_res = select_files(cfg, flags)
+    if file_res["ok"] == false {
+        print("Error: " + file_res["error"])
+        return file_res["code"]
+    }
+    let files = file_res["files"]
+    if cfg["max_files"] > 0 && len(files) > cfg["max_files"] {
+        print("Error: resource limit exceeded: " + to_string(len(files)) + " files selected, limit is " + to_string(cfg["max_files"]))
+        return 4
+    }
+
+    mut result = analyze_files(files, cfg)
+    if cfg["use_cache"] {
+        let saved_cache = save_cache(result["import_cache"])
+        if saved_cache["ok"] == false { print("Error: " + saved_cache["error"]); return 5 }
+    }
+    if cfg["max_imports"] > 0 && result["imports_checked"] > cfg["max_imports"] {
+        print("Error: resource limit exceeded: " + to_string(result["imports_checked"]) + " imports checked, limit is " + to_string(cfg["max_imports"]))
+        return 4
+    }
+
+    // Optional baseline suppression of pre-existing violations.
+    mut suppressed = 0
+    if has_flag(flags, "baseline") {
+        let bl = load_baseline()
+        if bl["found"] == false {
+            print("No fence-baseline.json found. Run: kujo run fence.kujo -- baseline create")
+            return 2
+        }
+        if bl["ok"] == false {
+            print("Error: fence-baseline.json has invalid JSON or an unsupported schema.")
+            return 3
+        }
+        let applied = apply_baseline(result, bl["fingerprints"])
+        result = applied["result"]
+        suppressed = applied["suppressed"]
+    }
+
+    let summary = summarize(result, cfg)
+
+    let format = flag_or(flags, "format", "human")
+    let rendered = render_for_flags(result, summary, loaded["path"], format, flags, cfg["max_report_bytes"])
+    if rendered["ok"] == false {
+        print("Error: " + rendered["error"])
+        return 2
+    }
+    if cfg["max_report_bytes"] > 0 {
+        let report_bytes = utf8_byte_length(rendered["text"])
+        if report_bytes > cfg["max_report_bytes"] {
+            print("Error: resource limit exceeded: report is " + to_string(report_bytes) + " bytes, limit is " + to_string(cfg["max_report_bytes"]))
+            return 4
+        }
+    }
+
+    let quiet = has_flag(flags, "quiet")
+    let summary_only = has_flag(flags, "summary-only")
+
+    let output_path = flag_or(flags, "output", "")
+    if output_path != "" {
+        let w = write_safe_under(output_path, rendered["text"], true, cfg["output_roots"])
+        if w["ok"] == false {
+            print("Error: " + w["error"])
+            return 5
+        }
+        if quiet == false {
+            print("Wrote report to " + output_path)
+        }
+    } else {
+        if quiet {
+            print(status_line(summary))
+        } else {
+            if summary_only {
+                print(status_line(summary))
+            } else {
+                print(rendered["text"])
+            }
+        }
+    }
+
+    if quiet == false {
+        if suppressed > 0 && format != "json" && format != "sarif" {
+            print("(" + to_string(suppressed) + " pre-existing violation(s) suppressed by baseline)")
+        }
+    }
+
+    if summary["skipped_files"] > 0 { return 4 }
+    if summary["failing"] > 0 {
+        return 1
+    }
+    return 0
+}
+
+// One-line status used by --quiet / --summary-only.
+func status_line(summary) {
+    return "Fence: " + to_upper(summary["status"]) + " - " + to_string(summary["files_scanned"]) + " files, " + to_string(summary["violations"]) + " violations (" + to_string(summary["errors"]) + " errors, " + to_string(summary["warnings"]) + " warnings)"
+}
+
+// Validate format even when no report body is consumed. A configured report
+// ceiling still requires the complete body, preserving existing limit semantics.
+export func render_for_flags(result, summary, config_path, format, flags, max_bytes) {
+    if format != "human" && format != "json" && format != "markdown" && format != "sarif" {
+        return { "ok": false, "error": "unknown format '" + format + "' (use human, json, markdown, sarif)", "text": "" }
+    }
+    if max_bytes == 0 && flag_or(flags, "output", "") == "" && (has_flag(flags, "quiet") || has_flag(flags, "summary-only")) {
+        return { "ok": true, "error": "", "text": "" }
+    }
+    return render(result, summary, config_path, format)
+}
+
+func render(result, summary, config_path, format) {
+    if format == "human" {
+        return { "ok": true, "error": "", "text": render_human(result, summary, config_path) }
+    }
+    if format == "json" {
+        return { "ok": true, "error": "", "text": render_json(result, summary, config_path) }
+    }
+    if format == "markdown" {
+        return { "ok": true, "error": "", "text": render_markdown(result, summary, config_path) }
+    }
+    if format == "sarif" {
+        return { "ok": true, "error": "", "text": render_sarif(result, summary, config_path) }
+    }
+    return { "ok": false, "error": "unknown format '" + format + "' (use human, json, markdown, sarif)", "text": "" }
+}
+
+// Resolve the set of files to scan. Returns:
+//   { ok, error, code, files }
+func select_files(cfg, flags) {
+    if has_flag(flags, "changed-only") {
+        let base = flag_or(flags, "base", "HEAD")
+        let ch = changed_files(base)
+        if ch["ok"] == false {
+            return { "ok": false, "error": ch["error"], "code": ch["code"], "files": [] }
+        }
+        // Filter changed files through include/exclude + existence.
+        let filtered = filter_changed(ch["files"], cfg)
+        return { "ok": true, "error": "", "code": 0, "files": filtered }
+    }
+    let files = walk(cfg["source_roots"], cfg["include"], cfg["exclude"])
+    return { "ok": true, "error": "", "code": 0, "files": files }
+}
+
+func filter_changed(changed, cfg) {
+    let include = cfg["include"]
+    let exclude = cfg["exclude"]
+    mut out = []
+    let n = len(changed)
+    mut i = 0
+    while i < n {
+        let f = changed[i]
+        if file_exists(f) {
+            if is_scan_target(f, include, exclude) {
+                out = push(out, f)
+            }
+        }
+        i = i + 1
+    }
+    return out
+}
+
+func is_scan_target(f, include, exclude) {
+    let inc = matches_list(f, include)
+    if inc == false {
+        return false
+    }
+    if len(exclude) > 0 && matches_list(f, exclude) {
+        return false
+    }
+    return true
+}
+
+// Local include/exclude check (imported indirectly to avoid extra frames).
+func matches_list(f, patterns) {
+    let n = len(patterns)
+    if n == 0 {
+        return true
+    }
+    mut i = 0
+    while i < n {
+        if glob_match(patterns[i], f) {
+            return true
+        }
+        i = i + 1
+    }
+    return false
+}

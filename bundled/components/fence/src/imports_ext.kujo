@@ -1,0 +1,232 @@
+// src/imports_ext.kujo
+// Best-effort import extractors for Rust, PHP, and Go.
+// Same record shape as imports.kujo: { kind, path, raw, line }.
+//
+// These languages are SCANNED targets only. Fence itself is written in Kujo.
+
+func rec(kind, path, raw, line) {
+    return { "kind": kind, "path": path, "raw": raw, "line": line, "confidence": "best_effort", "detector": "builtin" }
+}
+
+func to_lines(content) {
+    return split(content, "\n")
+}
+
+func clean_line(line) {
+    return trim(replace(line, "\r", ""))
+}
+
+func first_quoted(s) {
+    mut i = 0
+    mut q = ""
+    mut start = -1
+    loop {
+        let ch = substring(s, i, i + 1)
+        if ch == "" {
+            return ""
+        }
+        if start < 0 {
+            if ch == "'" || ch == "\"" {
+                q = ch
+                start = i + 1
+            }
+        } else {
+            if ch == q {
+                return substring(s, start, i)
+            }
+        }
+        i = i + 1
+    }
+    return ""
+}
+
+func strip_trailing(tok) {
+    return regex_replace(trim(tok), "[;,]+$", "")
+}
+
+// ---- Rust ----
+// use crate::domain::User;  -> path "crate::domain::User"
+// use super::thing;
+// mod parser;  /  pub mod parser;
+export func extract_rust(content) {
+    let lines = to_lines(content)
+    let n = len(lines)
+    mut out = []
+    mut i = 0
+    while i < n {
+        let line = clean_line(lines[i])
+        if regex_match(line, "^use\\s+[A-Za-z0-9_:]+") {
+            // Preserve grouped imports containing spaces after commas.
+            let p = strip_trailing(substring(line, 4, len(line)))
+            out = add_rust_use(out, p, line, i + 1)
+        } else {
+            if regex_match(line, "^(pub\\s+)?mod\\s+[A-Za-z0-9_]+\\s*;") {
+                let m = regex_replace(line, "^(pub\\s+)?mod\\s+", "")
+                out = push(out, rec("mod", strip_trailing(m), line, i + 1))
+            }
+        }
+        i = i + 1
+    }
+    return out
+}
+
+// Expand `use crate::domain::{User, Role};` so each grouped dependency is
+// independently resolvable and reportable. Nested groups remain best-effort.
+func add_rust_use(out, path, raw, line_number) {
+    let open_at = index_of(path, "{")
+    let close_at = last_group_close(path)
+    if open_at < 0 || close_at <= open_at {
+        return push(out, rec("use", path, raw, line_number))
+    }
+    let prefix = substring(path, 0, open_at)
+    let body = substring(path, open_at + 1, close_at)
+    let items = split_group_items(body)
+    let n = len(items)
+    mut res = out
+    mut i = 0
+    while i < n {
+        let item = trim(items[i])
+        if item != "" {
+            if contains(item, "{") == 1 {
+                res = add_rust_use(res, prefix + item, raw, line_number)
+            } else if item == "self" {
+                res = push(res, rec("use", regex_replace(prefix, "::$", ""), raw, line_number))
+            } else {
+                res = push(res, rec("use", prefix + item, raw, line_number))
+            }
+        }
+        i = i + 1
+    }
+    return res
+}
+
+func last_group_close(path) {
+    mut last = -1
+    mut i = 0
+    loop {
+        let ch = substring(path, i, i + 1)
+        if ch == "" { return last }
+        if ch == "}" { last = i }
+        i = i + 1
+    }
+    return last
+}
+
+// Split commas only at the current brace depth so nested Rust/PHP groups are
+// expanded without requiring a full parser.
+func split_group_items(body) {
+    mut out = []
+    mut current = ""
+    mut depth = 0
+    mut i = 0
+    loop {
+        let ch = substring(body, i, i + 1)
+        if ch == "" { break }
+        if ch == "{" { depth = depth + 1 }
+        if ch == "}" { depth = depth - 1 }
+        if ch == "," && depth == 0 {
+            out = push(out, current)
+            current = ""
+        } else {
+            current = current + ch
+        }
+        i = i + 1
+    }
+    if trim(current) != "" { out = push(out, current) }
+    return out
+}
+
+// ---- PHP ----
+// use App\Domain\User;
+// require_once __DIR__ . '/x.php';
+// include 'x.php';
+export func extract_php(content) {
+    let lines = to_lines(content)
+    let n = len(lines)
+    mut out = []
+    mut i = 0
+    while i < n {
+        let line = clean_line(lines[i])
+        if regex_match(line, "^use\\s+\\\\?[A-Za-z0-9_\\\\]+") {
+            let namespace = regex_replace(strip_trailing(substring(line, 4, len(line))), "^\\\\", "")
+            out = add_php_use(out, namespace, line, i + 1)
+        } else {
+            if regex_match(line, "\\b(require_once|require|include_once|include)\\b") {
+                mut path = first_quoted(line)
+                if contains(line, "__DIR__") == 1 {
+                    if starts_with(path, "/") {
+                        path = "." + path
+                    } else {
+                        path = "./" + path
+                    }
+                }
+                if path != "" {
+                    out = push(out, rec("require", path, line, i + 1))
+                }
+            }
+        }
+        i = i + 1
+    }
+    return out
+}
+
+func add_php_use(out, path, raw, line_number) {
+    let open_at = index_of(path, "{")
+    let close_at = last_group_close(path)
+    if open_at < 0 || close_at <= open_at {
+        return push(out, rec("use", path, raw, line_number))
+    }
+    let prefix = substring(path, 0, open_at)
+    let body = substring(path, open_at + 1, close_at)
+    let items = split_group_items(body)
+    let n = len(items)
+    mut res = out
+    mut i = 0
+    while i < n {
+        let item = trim(items[i])
+        if item != "" { res = push(res, rec("use", prefix + item, raw, line_number)) }
+        i = i + 1
+    }
+    return res
+}
+
+// ---- Go ----
+// import "fmt"
+// import "myapp/domain"
+// import (
+//   "fmt"
+//   "myapp/shared"
+// )
+export func extract_go(content) {
+    let lines = to_lines(content)
+    let n = len(lines)
+    mut out = []
+    mut in_block = false
+    mut i = 0
+    while i < n {
+        let line = clean_line(lines[i])
+        if in_block {
+            if regex_match(line, "^\\)") {
+                in_block = false
+            } else {
+                let path = first_quoted(line)
+                if path != "" {
+                    out = push(out, rec("import", path, line, i + 1))
+                }
+            }
+        } else {
+            if regex_match(line, "^import\\s*\\(") {
+                in_block = true
+            } else {
+                if regex_match(line, "^import\\s+([._A-Za-z0-9]+\\s+)?['\"]") {
+                    let path = first_quoted(line)
+                    if path != "" {
+                        out = push(out, rec("import", path, line, i + 1))
+                    }
+                }
+            }
+        }
+        i = i + 1
+    }
+    return out
+}

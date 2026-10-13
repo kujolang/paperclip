@@ -1,0 +1,50 @@
+// src/cmd_init.kujo
+// Implements `fence init`.
+
+from src.templates import template_by_name, template_names
+from src.cliargs import flag_or, has_flag
+from src.output import write_safe
+
+// Returns an exit code.
+export func cmd_init(parsed) {
+    let flags = parsed["flags"]
+    let template_name = flag_or(flags, "template", "layered")
+    let force = has_flag(flags, "force")
+
+    let content = template_by_name(template_name)
+    if content == "" {
+        print_lines([
+            "Unknown template: " + template_name,
+            "Available templates: " + template_names()
+        ])
+        return 2
+    }
+
+    if file_exists("fence.toml") {
+        if force == false {
+            print("fence.toml already exists. Use --force to overwrite.")
+            return 2
+        }
+    }
+
+    let res = write_safe("fence.toml", content, force)
+    if res["ok"] == false {
+        print("Error: " + res["error"])
+        return 5
+    }
+
+    print_lines([
+        "Created fence.toml (template: " + template_name + ").",
+        "Next: edit fence.toml, then run `kujo run fence.kujo -- check`."
+    ])
+    return 0
+}
+
+func print_lines(lines) {
+    let n = len(lines)
+    mut i = 0
+    while i < n {
+        print(lines[i])
+        i = i + 1
+    }
+}

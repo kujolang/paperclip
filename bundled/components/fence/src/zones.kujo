@@ -1,0 +1,51 @@
+// src/zones.kujo
+// Map files to architecture zones using the configured path globs.
+
+from src.glob import glob_match
+
+// Return the name of the first zone whose paths match `file_path`,
+// or "unknown" when no zone matches. First match wins (deterministic by the
+// config's zone order, which keys() preserves as sorted order).
+export func match_zone(file_path, zones, zone_names) {
+    let n = len(zone_names)
+    mut i = 0
+    while i < n {
+        let name = zone_names[i]
+        let paths = zones[name]["paths"]
+        let pn = len(paths)
+        mut j = 0
+        while j < pn {
+            if glob_match(paths[j], file_path) {
+                return name
+            }
+            j = j + 1
+        }
+        i = i + 1
+    }
+    return "unknown"
+}
+
+// Return every zone that matches (used to warn about ambiguous mappings).
+export func match_zones_all(file_path, zones, zone_names) {
+    let n = len(zone_names)
+    mut out = []
+    mut i = 0
+    while i < n {
+        let name = zone_names[i]
+        let paths = zones[name]["paths"]
+        let pn = len(paths)
+        mut matched = false
+        mut j = 0
+        while j < pn {
+            if glob_match(paths[j], file_path) {
+                matched = true
+            }
+            j = j + 1
+        }
+        if matched {
+            out = push(out, name)
+        }
+        i = i + 1
+    }
+    return out
+}

@@ -14,7 +14,7 @@ describe("runtime readiness", () => {
     const report = await doctor(parsePluginConfig({ features: { review: false } }));
     expect(report.runtime).toMatchObject({ status: "ok", source: "bundled" });
     expect(report.runtime.version).toMatch(/^\d+\.\d+\.\d+$/);
-    expect(report.capabilities).toEqual({ spec: "disabled", language: "ready", understand: "ready", examples: "ready", review: "disabled", context: "ready", failureEvidence: "ready" });
+    expect(report.capabilities).toEqual({ fence: "disabled", spec: "disabled", language: "ready", understand: "ready", examples: "ready", review: "disabled", context: "ready", failureEvidence: "ready" });
   });
 
   it("returns actionable blocked state for a missing configured executable", async () => {
@@ -22,7 +22,7 @@ describe("runtime readiness", () => {
     expect(report.status).toBe("error");
     expect(report.runtime).toMatchObject({ status: "error", code: "KUJO_RUNTIME_NOT_FOUND" });
     expect(report.runtime.repair).toContain("override");
-    expect(report.capabilities).toEqual({ spec: "disabled", language: "blocked", understand: "blocked", examples: "blocked", review: "blocked", context: "blocked", failureEvidence: "blocked" });
+    expect(report.capabilities).toEqual({ fence: "disabled", spec: "disabled", language: "blocked", understand: "blocked", examples: "blocked", review: "blocked", context: "blocked", failureEvidence: "blocked" });
   });
 
   it("does not mistake Node's version for a compatible Kujo runtime", async () => {

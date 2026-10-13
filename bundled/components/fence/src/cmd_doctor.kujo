@@ -1,0 +1,68 @@
+// src/cmd_doctor.kujo
+// Implements `fence doctor` - environment diagnostics.
+
+from src.config import load_config
+from src.validate import validate_config
+from src.meta import version_line
+from src.git import is_git_repo, current_branch, changed_count
+from src.util import join_strings
+
+export func cmd_doctor(parsed) {
+    print(version_line())
+    kv("Working directory", os_getcwd())
+
+    let git = is_git_repo()
+    kv("Git repository", yes_no(git))
+    if git {
+        let branch = current_branch()
+        if branch != "" {
+            kv("Current branch", branch)
+        }
+        let cc = changed_count()
+        if cc >= 0 {
+            kv("Changed files (vs HEAD)", to_string(cc))
+        }
+    }
+
+    let loaded = load_config()
+    if loaded["found"] == false {
+        kv("Config file", "not found (run `kujo run fence.kujo -- init`)")
+        return 0
+    }
+    kv("Config file", loaded["path"])
+    if loaded["ok"] == false {
+        kv("Config parse", "FAILED (" + loaded["error"] + ")")
+        return 0
+    }
+
+    let cfg = loaded["config"]
+    kv("Source roots", join_strings(cfg["source_roots"], ", "))
+    kv("Configured zones", to_string(len(cfg["zone_names"])) + " (" + join_strings(cfg["zone_names"], ", ") + ")")
+    kv("Language detectors", "kujo, js/ts, python, rust, php, go")
+
+    let diags = validate_config(cfg)
+    kv("Config diagnostics", to_string(len(diags)))
+    print_warnings(diags)
+    return 0
+}
+
+func kv(label, value) {
+    print(label + ": " + value)
+}
+
+func print_warnings(diags) {
+    let n = len(diags)
+    mut i = 0
+    while i < n {
+        let d = diags[i]
+        print("  [" + to_upper(d["severity"]) + "] " + d["message"])
+        i = i + 1
+    }
+}
+
+func yes_no(b) {
+    if b {
+        return "yes"
+    }
+    return "no"
+}

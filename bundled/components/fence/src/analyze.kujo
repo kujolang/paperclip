@@ -1,0 +1,262 @@
+// src/analyze.kujo
+// Core analysis pipeline: walk -> extract -> resolve -> map zone -> apply rules.
+//
+// Loop variables here use unique names (fi/fc, mi/mc) so that callee helpers
+// (which use plain i/n internally) cannot alias and corrupt the loop counters.
+
+from src.imports import detect_imports_with_adapters
+from src.resolve import resolve_import_with_inventory
+from src.zones import match_zone
+from src.decisions import decide_dependency
+from src.util import dict_get, dict_has, arr_has
+from src.paths import file_ext
+from src.cache import cached_imports
+
+// Analyze a list of files against the config. Returns:
+//   {
+//     files_scanned, imports_checked,
+//     violations: [...],
+//     zone_files: { zone: count },
+//     metrics: { resolution_cache_hits/misses, zone_cache_hits/misses }
+//   }
+export func analyze_files(files, cfg) {
+    if cfg["max_files"] > 0 && len(files) > cfg["max_files"] { throw("resource limit exceeded: max_files") }
+    let zones = cfg["zones"]
+    let zone_names = cfg["zone_names"]
+    let roots = cfg["source_roots"]
+    let aliases = cfg["aliases"]
+
+    mut violations = []
+    mut zone_files = {}
+    mut skipped_files = []
+    mut observed_edges = []
+    mut ignored_violations = []
+    mut imports_checked = 0
+    mut zone_cache = {}
+    mut resolution_cache = {}
+    mut resolution_hits = 0
+    mut resolution_misses = 0
+    mut zone_hits = 0
+    mut zone_misses = 0
+    mut import_cache = cfg["import_cache"]
+    mut import_cache_hits = 0
+    mut import_cache_misses = 0
+
+    let fc = len(files)
+    mut fi = 0
+    while fi < fc {
+        let file = files[fi]
+        let file_zone_result = cached_zone_result(file, zones, zone_names, zone_cache)
+        let file_zone = file_zone_result["zone"]
+        zone_cache = file_zone_result["cache"]
+        if file_zone_result["hit"] {
+            zone_hits = zone_hits + 1
+        } else {
+            zone_misses = zone_misses + 1
+        }
+        zone_files = bump(zone_files, file_zone)
+
+        mut detected = {}
+        if cfg["use_cache"] {
+            let cached = cached_imports(file, cfg["parser_adapters"], import_cache)
+            detected = cached["result"]
+            import_cache = cached["cache"]
+            if cached["hit"] { import_cache_hits = import_cache_hits + 1 } else { import_cache_misses = import_cache_misses + 1 }
+        } else {
+            detected = detect_imports_with_adapters(file, cfg["parser_adapters"])
+        }
+        let imps = detected["imports"]
+        if detected["ok"] == false {
+            skipped_files = push(skipped_files, { "file": file, "reason": detected["error"] })
+        }
+        let mc = len(imps)
+        mut mi = 0
+        while mi < mc {
+            let imp = imps[mi]
+            imports_checked = imports_checked + 1
+            if cfg["max_imports"] > 0 && imports_checked > cfg["max_imports"] { throw("resource limit exceeded: max_imports") }
+            // Only files that belong to a known zone are governed.
+            if file_zone != "unknown" {
+                let cache_key = resolution_key(imp["path"], file)
+                mut res = {}
+                if dict_has(resolution_cache, cache_key) {
+                    res = resolution_cache[cache_key]
+                    resolution_hits = resolution_hits + 1
+                } else {
+                    res = resolve_import_with_inventory(imp["path"], file, roots, aliases, cfg["go_module"], dict_get(cfg, "resolution_inventory", false))
+                    resolution_cache[cache_key] = res
+                    resolution_misses = resolution_misses + 1
+                }
+                mut to_zone = "unknown"
+                if res["status"] == "internal" {
+                    let target_zone_result = cached_zone_result(res["resolved"], zones, zone_names, zone_cache)
+                    to_zone = target_zone_result["zone"]
+                    zone_cache = target_zone_result["cache"]
+                    if target_zone_result["hit"] {
+                        zone_hits = zone_hits + 1
+                    } else {
+                        zone_misses = zone_misses + 1
+                    }
+                    if file_zone != to_zone {
+                        let edge_key = file_zone + "|" + to_zone
+                        if arr_has(observed_edges, edge_key) == false {
+                            observed_edges = push(observed_edges, edge_key)
+                        }
+                    }
+                }
+                let decision = decide_dependency(file, file_zone, imp, res, to_zone, cfg)
+                let v = decision["violation"]
+                if dict_has(v, "severity") {
+                    let ignored = decision["ignore"]
+                    if ignored["ignored"] {
+                        ignored_violations = push(ignored_violations, { "file": v["file"], "line": v["line"], "import": v["import"], "reason": ignored["reason"], "expires": ignored["expires"] })
+                    } else {
+                        violations = push(violations, v)
+                    }
+                }
+            }
+            mi = mi + 1
+        }
+        fi = fi + 1
+    }
+
+    return {
+        "files_scanned": fc,
+        "imports_checked": imports_checked,
+        "violations": violations,
+        "zone_files": zone_files,
+        "skipped_files": skipped_files,
+        "observed_edges": observed_edges,
+        "ignored_violations": ignored_violations,
+        "import_cache": import_cache,
+        "metrics": {
+            "resolution_cache_hits": resolution_hits,
+            "resolution_cache_misses": resolution_misses,
+            "zone_cache_hits": zone_hits,
+            "zone_cache_misses": zone_misses,
+            "import_cache_hits": import_cache_hits,
+            "import_cache_misses": import_cache_misses
+        }
+    }
+}
+
+// Read-only snapshot integrations must supply private source copies and an
+// authoritative file inventory. This confines resolution lookups; it is not an
+// OS sandbox or a replacement for the caller's bounded, beneath-root reads.
+export func analyze_snapshot(files, cfg, inventory) {
+    if type_of(inventory) != "dict" { throw("snapshot inventory must be a dictionary") }
+    if len(keys(cfg["parser_adapters"])) > 0 { throw("snapshot analysis does not execute parser adapters") }
+    if cfg["use_cache"] { throw("snapshot analysis does not use persistent extraction caches") }
+    let file_count = len(files)
+    mut file_index = 0
+    while file_index < file_count {
+        if dict_has(inventory, files[file_index]) == false { throw("snapshot source is missing from inventory") }
+        file_index = file_index + 1
+    }
+    mut snapshot_cfg = cfg
+    snapshot_cfg["resolution_inventory"] = inventory
+    return analyze_files(files, snapshot_cfg)
+}
+
+// Deterministic contiguous sharding. This is intentionally sequential because
+// the current Kujo process primitive waits synchronously; it establishes merge
+// semantics for future native concurrency without shell/background execution.
+export func analyze_sharded(files, cfg, shard_count) {
+    if cfg["max_files"] > 0 && len(files) > cfg["max_files"] { throw("resource limit exceeded: max_files") }
+    if shard_count <= 1 || len(files) == 0 { return analyze_files(files, cfg) }
+    mut shard_cfg = cfg
+    mut combined = empty_result()
+    let total = len(files)
+    let width = ceil(total / shard_count)
+    mut offset = 0
+    while offset < total {
+        let end = min(offset + width, total)
+        // Keep a positive remaining ceiling: zero means unlimited. If the
+        // budget is exhausted, allow one import only to detect overflow, then
+        // reject the combined result before publishing any partial analysis.
+        if cfg["max_imports"] > 0 {
+            shard_cfg["max_imports"] = max(1, cfg["max_imports"] - combined["imports_checked"])
+        }
+        let part = analyze_files(slice(files, offset, end), shard_cfg)
+        shard_cfg["import_cache"] = part["import_cache"]
+        combined = merge_results(combined, part)
+        if cfg["max_imports"] > 0 && combined["imports_checked"] > cfg["max_imports"] { throw("resource limit exceeded: max_imports") }
+        offset = end
+    }
+    return combined
+}
+
+func empty_result() {
+    return {
+        "files_scanned": 0, "imports_checked": 0, "violations": [],
+        "zone_files": {}, "skipped_files": [], "observed_edges": [],
+        "ignored_violations": [], "import_cache": {},
+        "metrics": { "resolution_cache_hits": 0, "resolution_cache_misses": 0, "zone_cache_hits": 0, "zone_cache_misses": 0, "import_cache_hits": 0, "import_cache_misses": 0 }
+    }
+}
+
+export func merge_results(left, right) {
+    return {
+        "files_scanned": left["files_scanned"] + right["files_scanned"],
+        "imports_checked": left["imports_checked"] + right["imports_checked"],
+        "violations": concat(left["violations"], right["violations"]),
+        "zone_files": merge_counts(left["zone_files"], right["zone_files"]),
+        "skipped_files": concat(left["skipped_files"], right["skipped_files"]),
+        "observed_edges": merge_unique(left["observed_edges"], right["observed_edges"]),
+        "ignored_violations": concat(left["ignored_violations"], right["ignored_violations"]),
+        "import_cache": right["import_cache"],
+        "metrics": merge_counts(left["metrics"], right["metrics"])
+    }
+}
+
+func merge_counts(left, right) {
+    mut out = left
+    let names = keys(right)
+    let n = len(names)
+    mut i = 0
+    while i < n {
+        let name = names[i]
+        out[name] = dict_get(out, name, 0) + right[name]
+        i = i + 1
+    }
+    return out
+}
+
+func merge_unique(left, right) {
+    mut out = left
+    let n = len(right)
+    mut i = 0
+    while i < n {
+        if arr_has(out, right[i]) == false { out = push(out, right[i]) }
+        i = i + 1
+    }
+    return out
+}
+
+// Relative and Rust module imports depend on the importing file. Other imports
+// resolve identically within one run because roots and aliases are immutable.
+func resolution_key(raw, file) {
+    if starts_with(raw, ".") || file_ext(file) == ".rs" {
+        return to_json([file, raw])
+    }
+    return to_json([file_ext(file), raw])
+}
+
+func cached_zone_result(path, zones, zone_names, cache) {
+    if dict_has(cache, path) {
+        return { "zone": cache[path], "hit": true, "cache": cache }
+    }
+    let matched = match_zone(path, zones, zone_names)
+    cache[path] = matched
+    return { "zone": matched, "hit": false, "cache": cache }
+}
+
+// Increment a per-zone file counter.
+func bump(counts, zone) {
+    if dict_has(counts, zone) {
+        counts[zone] = counts[zone] + 1
+        return counts
+    }
+    counts[zone] = 1
+    return counts
+}

@@ -1,0 +1,125 @@
+// Disposable built-in extraction cache. Retention is per completed scan,
+// deterministic in scan order, and bounded independently of source limits.
+from src.util import dict_has, dict_get, utf8_byte_length
+from src.imports import extract_for_ext, detect_imports_with_adapters
+from src.parser_adapters import adapter_for
+from src.output import write_safe
+from src.paths import normalize_sep, file_ext
+
+func cache_path() { return ".fence/cache-v1.json" }
+export func cache_max_bytes() { return 4194304 }
+export func cache_max_entries() { return 10000 }
+
+export func empty_cache(adapters) {
+    return { "schema_version": 1, "extractor_version": 3,
+        "adapter_fingerprint": sha256(to_json(adapters)), "entries": {},
+        "next_entries": {}, "retained_bytes": 2, "retained_count": 0 }
+}
+
+export func load_cache(adapters) {
+    mut fresh = empty_cache(adapters)
+    if cache_directory_safe() == false { return fresh }
+    if file_exists(cache_path()) == false { return fresh }
+    mut parsed = {}
+    try {
+        if file_size(cache_path()) > cache_max_bytes() { return fresh }
+        let content = read_file(cache_path())
+        if utf8_byte_length(content) > cache_max_bytes() { return fresh }
+        parsed = parse_json(content)
+    } except e { return fresh }
+    if type_of(parsed) != "dict" { return fresh }
+    if dict_get(parsed, "schema_version", 0) != 1 { return fresh }
+    if dict_get(parsed, "extractor_version", 0) != 3 { return fresh }
+    if dict_get(parsed, "adapter_fingerprint", "") != fresh["adapter_fingerprint"] { return fresh }
+    if type_of(dict_get(parsed, "entries", 0)) != "dict" { return fresh }
+    if len(keys(parsed["entries"])) > cache_max_entries() { return fresh }
+    fresh["entries"] = parsed["entries"]
+    return fresh
+}
+
+export func cached_imports(file, adapters, cache) {
+    // An adapter can depend on executable bytes, scripts, environment and data.
+    // Argv hashing cannot identify that closure: always execute configured adapters.
+    if len(adapter_for(file, adapters)) > 0 {
+        return { "result": detect_imports_with_adapters(file, adapters), "cache": cache, "hit": false }
+    }
+    mut content = ""
+    try { content = read_file(file) } except e {
+        return { "result": { "ok": false, "imports": [], "error": "unreadable source file", "file": file, "detector": "builtin" }, "cache": cache, "hit": false }
+    }
+    // Hash and extract the same source snapshot, eliminating the digest/read race.
+    let digest = sha256(content)
+    let entries = cache["entries"]
+    mut hit = false
+    mut items = []
+    if dict_has(entries, file) && valid_cache_entry(entries[file], digest) {
+        items = entries[file]["imports"]
+        hit = true
+    } else { items = extract_for_ext(file_ext(file), content) }
+    let entry = { "sha256": digest, "imports": items }
+    let retained = retain_entry(cache, file, entry)
+    return { "result": { "ok": true, "imports": items, "error": "", "file": file, "detector": "builtin" }, "cache": retained, "hit": hit }
+}
+
+func retain_entry(cache, file, entry) {
+    let count = dict_get(cache, "retained_count", 0)
+    if count >= cache_max_entries() { return cache }
+    mut next = dict_get(cache, "next_entries", {})
+    if dict_has(next, file) { return cache }
+    let size = utf8_byte_length(to_json(file)) + utf8_byte_length(to_json(entry)) + 2
+    let bytes = dict_get(cache, "retained_bytes", 2)
+    // Reserve fixed envelope space. Oversized entries affect only reuse, never analysis.
+    if bytes + size > cache_max_bytes() - 4096 { return cache }
+    next[file] = entry
+    cache["next_entries"] = next
+    cache["retained_bytes"] = bytes + size
+    cache["retained_count"] = count + 1
+    return cache
+}
+
+export func cache_document(cache) {
+    return { "schema_version": 1, "extractor_version": 3,
+        "adapter_fingerprint": cache["adapter_fingerprint"],
+        "entries": dict_get(cache, "next_entries", {}) }
+}
+
+export func save_cache(cache) {
+    let written = write_safe(cache_path(), to_json(cache_document(cache)), true)
+    if written["ok"] == false { return { "ok": false, "error": written["error"], "path": cache_path() } }
+    return { "ok": true, "error": "", "path": cache_path() }
+}
+
+func cache_directory_safe() {
+    if path_exists(".fence") == false { return true }
+    mut absolute = ""
+    mut cwd = ""
+    try {
+        absolute = normalize_sep(path_absolute(".fence"))
+        if file_exists(cache_path()) { absolute = normalize_sep(path_absolute(cache_path())) }
+        cwd = normalize_sep(path_absolute("."))
+    } except e { return false }
+    if absolute == cwd { return true }
+    return starts_with(absolute, cwd + "/")
+}
+
+// Cache JSON is disposable input, not a trusted typed import array. Corruption
+// falls back to extraction rather than crashing or changing rule evaluation.
+func valid_cache_entry(entry, digest) {
+    if type_of(entry) != "dict" { return false }
+    if dict_get(entry, "sha256", "") != digest { return false }
+    let items = dict_get(entry, "imports", 0)
+    if type_of(items) != "array" { return false }
+    mut i = 0
+    while i < len(items) {
+        let item = items[i]
+        if type_of(item) != "dict" { return false }
+        if type_of(dict_get(item, "path", 0)) != "string" || type_of(dict_get(item, "line", 0)) != "int" { return false }
+        if item["line"] < 1 { return false }
+        if type_of(dict_get(item, "kind", 0)) != "string" || type_of(dict_get(item, "raw", 0)) != "string" { return false }
+        let confidence = dict_get(item, "confidence", "")
+        if confidence != "exact" && confidence != "best_effort" { return false }
+        if type_of(dict_get(item, "detector", 0)) != "string" { return false }
+        i = i + 1
+    }
+    return true
+}

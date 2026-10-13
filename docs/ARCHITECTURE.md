@@ -4,7 +4,7 @@
 Paperclip issue/project/run context
   -> @kujolang/paperclip worker (typed validation and workspace resolution)
   -> @kujolang/kujo-runtime (configured, bundled, then optional PATH fallback)
-  -> allowlisted pinned component (ChangeBucket, PatchBrief, CaseFile, Scent, Scout, Spec)
+  -> allowlisted pinned component (ChangeBucket, PatchBrief, CaseFile, Scent, Scout, Spec, Fence)
   -> bounded machine output
   -> normalized schema v1
   -> Paperclip namespaced evidence database and native detail tab
@@ -60,4 +60,15 @@ executes declared checks or imports workspace modules. The report separates inpu
 admission from native validation and preserves not-run criteria/checks. Only
 selected redacted summaries are retained as observed `spec-latest` records; this
 is observed contract validation, not observed check execution. The existing
-20-record/30-day limit spans all seven artifact kinds.
+20-record/30-day limit spans all eight artifact kinds.
+
+
+Fence is the seventh pinned component. A fixed host reader uses the native
+whole-file beneath-root API, rejects symlinks and limits bytes, then stages a
+private Git-visible snapshot. Canonical inventory selection, configuration
+validation, import resolution and boundary analysis remain in Fence. A fixed
+bridge refuses parser commands and escaping roots/aliases, uses isolated imports,
+and runs without caching or project writes. Omitted policy files block fallback;
+selected source omissions prevent a full-coverage pass. Snapshot hashes and
+canonical provenance accompany redacted `fence-latest` records. See
+[Verification workflows](VERIFICATION.md) for exact bounds and result semantics.

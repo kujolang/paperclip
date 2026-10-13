@@ -254,3 +254,42 @@ test("verification import state cannot follow a pending request across company n
   await expect(page.getByText("Imported · partial")).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Import evaluation result" })).toBeDisabled();
 });
+
+
+test("architecture inspection shows incomplete coverage, findings, threshold semantics and scoped action", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 1200 });
+  await page.goto("/?surface=task&entity=issue&verification=1&fence=partial&theme=dark");
+  const section = page.getByRole("region", { name: "Architecture boundaries", exact: true });
+  await expect(section.getByText("Architecture inspection: partial · STALE — inspect again", { exact: true })).toBeVisible();
+  await expect(section.getByText("Declared fail_on: none", { exact: false })).toContainText("Threshold result: passed");
+  await expect(section.getByText("src/ui/large.ts: oversize", { exact: true })).toBeVisible();
+  await expect(section.getByText("error: src/ui/view.ts:1", { exact: true })).toBeVisible();
+  await expect(section.getByText("Best-effort import boundaries", { exact: false })).toContainText("not that the project is verified");
+  await section.getByRole("button", { name: "Inspect architecture" }).click();
+  await expect.poll(() => page.evaluate(() => window.__KUJO_ACTIONS__?.at(-1))).toMatchObject({ action: "inspect-architecture", input: { entityType: "issue", entityId: "issue-fixture" } });
+  await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  // Keep the reviewed Linux and macOS text rasterization baselines separate.
+  await expect(section).toHaveScreenshot(`architecture-boundaries-${process.platform}.png`, { animations: "disabled", maxDiffPixelRatio: 0.02 });
+});
+
+test("architecture admission honors runtime, profiles and read-only run views", async ({ page }) => {
+  await page.goto("/?surface=detail&entity=project&verification=1&runtime=broken");
+  await expect(page.getByRole("button", { name: "Inspect architecture", exact: true })).toBeDisabled();
+  await page.goto("/?surface=detail&entity=project&verification=1&profile=build");
+  await expect(page.getByRole("region", { name: "Architecture boundaries", exact: true })).toHaveCount(0);
+  await page.goto("/?surface=detail&entity=run&verification=1");
+  await expect(page.getByRole("button", { name: "Inspect architecture", exact: true })).toHaveCount(0);
+  await page.goto("/?surface=detail&entity=project&verification=1&fence=passed");
+  await expect(page.getByRole("region", { name: "Architecture boundaries", exact: true }).getByText("1 imports checked · 1 errors · 0 warnings · 1 ignored findings", { exact: true })).toBeVisible();
+});
+
+test("pending architecture errors cannot cross company navigation", async ({ page }) => {
+  await page.goto("/?surface=detail&entity=project&verification=1");
+  await page.evaluate(() => { window.__KUJO_DELAY_FENCE__ = true; });
+  await page.getByRole("button", { name: "Inspect architecture", exact: true }).click();
+  await expect.poll(() => page.evaluate(() => Boolean(window.__KUJO_RESOLVE_FENCE__))).toBe(true);
+  await page.evaluate(() => window.__KUJO_NAVIGATE__?.("other-company"));
+  await page.evaluate(() => window.__KUJO_RESOLVE_FENCE__?.());
+  await expect(page.getByText("private delayed architecture error")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Inspect architecture", exact: true })).toBeEnabled();
+});
