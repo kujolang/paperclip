@@ -1224,5 +1224,354 @@
         "executes_code": false
       }
     }
+  },
+  {
+    "exportName": "evalTool",
+    "id": "kujo.paperclip.eval.manage",
+    "feature": "execution",
+    "canonicalIds": [
+      "kujo.eval.suite.run"
+    ],
+    "components": [
+      "eval"
+    ],
+    "tool": {
+      "name": "manage-evaluation",
+      "displayName": "Run Approved Evaluation",
+      "description": "Inspect an issue Eval suite, request human approval, start the approved frozen inputs, or list/read/cancel retained executions. Requires the current assigned issue run. Never accepts commands, workspace paths or approval IDs. Approval is resolved by a human on the issue; preparation never executes tests. Cancellation remains available after disabling execution.",
+      "parametersSchema": {
+        "oneOf": [
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "issueId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "operation": {
+                "const": "inspect"
+              },
+              "suite": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 500
+              }
+            },
+            "required": [
+              "issueId",
+              "operation",
+              "suite"
+            ]
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "issueId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "operation": {
+                "const": "prepare"
+              },
+              "suite": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 500
+              },
+              "submissionId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              }
+            },
+            "required": [
+              "issueId",
+              "operation",
+              "suite",
+              "submissionId"
+            ]
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "issueId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "operation": {
+                "const": "start"
+              },
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              }
+            },
+            "required": [
+              "issueId",
+              "operation",
+              "id"
+            ]
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "issueId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "operation": {
+                "const": "status"
+              },
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              }
+            },
+            "required": [
+              "issueId",
+              "operation",
+              "id"
+            ]
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "issueId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "operation": {
+                "const": "list"
+              }
+            },
+            "required": [
+              "issueId",
+              "operation"
+            ]
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "issueId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "operation": {
+                "const": "cancel"
+              },
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              }
+            },
+            "required": [
+              "issueId",
+              "operation",
+              "id"
+            ]
+          }
+        ]
+      }
+    },
+    "definition": {
+      "schema": "kujo.ability/v1",
+      "id": "kujo.paperclip.eval.manage",
+      "version": "1.0.0",
+      "title": "Run Approved Evaluation",
+      "description": "Inspect an issue Eval suite, request human approval, start the approved frozen inputs, or list/read/cancel retained executions. Requires the current assigned issue run. Never accepts commands, workspace paths or approval IDs. Approval is resolved by a human on the issue; preparation never executes tests. Cancellation remains available after disabling execution.",
+      "input_schema": {
+        "oneOf": [
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "issueId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "operation": {
+                "const": "inspect"
+              },
+              "suite": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 500
+              }
+            },
+            "required": [
+              "issueId",
+              "operation",
+              "suite"
+            ]
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "issueId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "operation": {
+                "const": "prepare"
+              },
+              "suite": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 500
+              },
+              "submissionId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              }
+            },
+            "required": [
+              "issueId",
+              "operation",
+              "suite",
+              "submissionId"
+            ]
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "issueId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "operation": {
+                "const": "start"
+              },
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              }
+            },
+            "required": [
+              "issueId",
+              "operation",
+              "id"
+            ]
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "issueId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "operation": {
+                "const": "status"
+              },
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              }
+            },
+            "required": [
+              "issueId",
+              "operation",
+              "id"
+            ]
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "issueId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "operation": {
+                "const": "list"
+              }
+            },
+            "required": [
+              "issueId",
+              "operation"
+            ]
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "issueId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "operation": {
+                "const": "cancel"
+              },
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              }
+            },
+            "required": [
+              "issueId",
+              "operation",
+              "id"
+            ]
+          }
+        ]
+      },
+      "output_schema": {
+        "type": "object",
+        "additionalProperties": true
+      },
+      "effects": [
+        {
+          "kind": "read",
+          "resource": "kujo.project.workspace"
+        },
+        {
+          "kind": "write",
+          "resource": "kujo.paperclip.execution"
+        },
+        {
+          "kind": "external",
+          "resource": "kujo.project.execution"
+        },
+        {
+          "kind": "external",
+          "resource": "kujo.suite.network"
+        }
+      ],
+      "idempotency": {
+        "mode": "keyed"
+      },
+      "semantics": {
+        "open_world": true,
+        "destructive": true,
+        "executes_code": true
+      }
+    }
   }
 ]
