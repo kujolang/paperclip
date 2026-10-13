@@ -52,8 +52,7 @@ is missing, incompatible, or not Kujo. Correct the configuration, then select
 5. Generate a **Review Pack** to inspect scope, risk, and suggested checks.
 6. If a command fails, save its bounded output as **Failure Evidence**.
 
-Kujo stores the latest result in Paperclip plugin state. It does not write reports into
-the project repository.
+Kujo retains up to 20 results per company/entity for 30 days in its Paperclip database namespace. Inspect, compare, or download redacted records in **Evidence history**. On an issue, an authenticated human can explicitly attach a record as an issue document. Kujo does not write reports into the project repository.
 
 ## What Kujo adds
 
@@ -72,12 +71,18 @@ plugin does not download component code while installing or running.
 
 Select a Git-visible `.kujo` file in **Build with Kujo**, then choose **Check and lint source** or **Preview formatting**. Diagnostics identify the file and location. Formatting shows the redacted original and proposed output without applying changes. These are single-file source checks; they do not execute project code or establish that imports, project tests, or runtime behavior work. Files are limited to 64 KiB, and each source operation has a bounded runtime window.
 
+## Evidence history
+
+The upcoming release requires Paperclip database namespace migrations and authenticated issue-document actions. Upgrade the host before installing it. Legacy latest records migrate on first access, with missing input/definition provenance explicitly marked unknown. Retained payloads have SHA-256 integrity checks; a redacted export carries its own digest. Suggested tests remain suggestions, and supplied failure logs remain supplied evidence.
+
 ## Agent tools
 
-Paperclip agents can call seven tools:
+Paperclip agents can call nine tools:
 
 | Tool | Use |
 | --- | --- |
+| `kujolang.paperclip:list-evidence` | List retained receipts in the current project or run. |
+| `kujolang.paperclip:get-evidence` | Read one redacted export, bounded to 64 KiB. |
 | `kujolang.paperclip:check-kujo-source` | Check and lint one eligible project-relative `.kujo` source. |
 | `kujolang.paperclip:preview-kujo-format` | Explicitly read and preview redacted formatting without writing files. |
 | `kujolang.paperclip:understand-repository` | Inspect the host-resolved repository without accepting a caller path or changing project files. |
