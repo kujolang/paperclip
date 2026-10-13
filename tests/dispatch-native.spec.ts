@@ -1,3 +1,4 @@
+import { readDecisionObservation } from "../src/features/dispatch/decision-observation.js";
 import { access, copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -57,6 +58,13 @@ describe.skipIf(!posix)("bundled canonical Dispatch", () => {
     const completed = readDispatchControlView(terminal, run.run_id); expect(completed.available && completed.run_status).toBe("completed");
     if (template === "approval-handoff") {
       const after = await readFile(statePath, "utf8");
+      const observationOutput = await f.invoke({ operation: "inspect-approval", decision });
+      expect(observationOutput.exitCode, observationOutput.stdout + observationOutput.stderr).toBe(0);
+      const observed = readDecisionObservation(observationOutput, decision);
+      expect(observed).toMatchObject({ match: "exact", decision_status: "applied", run_status: "completed" });
+      const changed = { ...decision, response: "Different response" };
+      expect(readDecisionObservation(await f.invoke({ operation: "inspect-approval", decision: changed }), changed)).toMatchObject({ match: "conflict", decision_status: null });
+      expect(await readFile(statePath, "utf8")).toBe(after);
       const repeated = await f.invoke({ operation: "decide-approval", decision }); expect(repeated.exitCode, repeated.stderr).toBe(0); expect(JSON.parse(repeated.stdout).status).toBe("already_applied");
       const conflict = await f.invoke({ operation: "decide-approval", decision: { ...decision, response: "Changed review" } });
       expect(conflict.exitCode).not.toBe(0); expect(conflict.stdout + conflict.stderr).toContain("decision_conflict"); expect(await readFile(statePath, "utf8")).toBe(after);
