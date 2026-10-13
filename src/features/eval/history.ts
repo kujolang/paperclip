@@ -43,7 +43,7 @@ export async function publishEvaluation(ctx: PluginContext, scope: ExecutionScop
 /** Publish a terminal request without executing code. The two immutable records
  * are inserted in one statement; a separate durable acknowledgment makes lost
  * responses retryable. Cleared/pruned acknowledged records are never recreated. */
-export async function publishExecutionEvidence(ctx: PluginContext, scope: ExecutionScope, record: ExecutionRecord, value: { target: { companyId: string; entityType: "issue"; entityId: string }; planId: string; outcomeId: string; plan: Record<string, unknown>; outcome: Record<string, unknown> & { classification: string }; inputDigest: string; definitionDigest: string }, kind: "evaluation" | "source-execution"): Promise<EvaluationHistory> {
+export async function publishExecutionEvidence(ctx: PluginContext, scope: ExecutionScope, record: ExecutionRecord, value: { target: { companyId: string; entityType: "issue"; entityId: string }; planId: string; outcomeId: string; plan: Record<string, unknown>; outcome: Record<string, unknown> & { classification: string }; inputDigest: string; definitionDigest: string }, kind: "evaluation" | "source-execution" | "starter-creation"): Promise<EvaluationHistory> {
   if (active.has(record.state)) return { status: "not-terminal", notice: "The outcome has not settled." };
   const { executions, artifacts } = tables(ctx);
   const args = [scope.companyId, scope.issueId, record.id];

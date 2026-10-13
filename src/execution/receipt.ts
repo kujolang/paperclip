@@ -8,6 +8,7 @@ const active = new Set(["preparing", "pending", "running", "cancel_requested"]);
  * it does not claim a process start timestamp. Never consult the current catalog. */
 export function executionAbilityReceipt(scope: ExecutionScope, record: ExecutionRecord) {
   const evaluation = record.request.plan.operation === "eval.run";
+  const creation = record.request.plan.operation === "starter.create";
   const binding = record.request.plan.abilityReceipt;
   if (!binding || active.has(record.state)) return null;
   const started = Date.parse(record.createdAt), completed = Date.parse(record.finishedAt ?? "");
@@ -18,17 +19,17 @@ export function executionAbilityReceipt(scope: ExecutionScope, record: Execution
   const receipt = {
     schema: "kujo.ability.receipt/v1", receipt_id: `ability_receipt_${key}`, invocation_id: record.id,
     ability_id: binding.abilityId, ability_version: binding.abilityVersion, definition_digest: binding.definitionDigest,
-    handler_id: evaluation ? "kujo.paperclip.eval.host" : "kujo.paperclip.source.host", handler_version: binding.handlerVersion, status,
+    handler_id: evaluation ? "kujo.paperclip.eval.host" : creation ? "kujo.paperclip.starter.host" : "kujo.paperclip.source.host", handler_version: binding.handlerVersion, status,
     result: record.result,
     error: status === "succeeded" ? null : {
-      code: record.state === "uncertain" ? "execution_outcome_uncertain" : `${evaluation ? "evaluation" : "source"}_${record.state}`,
-      message: record.state === "uncertain" ? "Outcome is uncertain; reconcile effects before requesting another run." : evaluation ? "Evaluation request did not complete successfully; inspect its execution state and native result." : "Source/test request did not complete successfully; inspect the execution state and native output.",
+      code: record.state === "uncertain" ? "execution_outcome_uncertain" : `${evaluation ? "evaluation" : creation ? "starter" : "source"}_${record.state}`,
+      message: record.state === "uncertain" ? "Outcome is uncertain; reconcile effects before requesting another run." : evaluation ? "Evaluation request did not complete successfully; inspect its execution state and native result." : creation ? "Starter creation did not complete; inspect retained files before any new request." : "Source/test request did not complete successfully; inspect the execution state and native output.",
       details: { execution_state: record.state, diagnostic: record.diagnostic },
     },
     policy_decision: {
       schema: "kujo.ability.policy-decision/v1", decision_id: `policy_${record.requestDigest}`, outcome: "approval_required",
       reason: "Host company/profile admission requires a matching human-only confirmation before execution.",
-      requirements: ["paperclip.human-only-confirmation"], policy_id: evaluation ? "kujo.paperclip.eval.admission" : "kujo.paperclip.source.admission", policy_version: "1.0.0",
+      requirements: ["paperclip.human-only-confirmation"], policy_id: evaluation ? "kujo.paperclip.eval.admission" : creation ? "kujo.paperclip.starter.admission" : "kujo.paperclip.source.admission", policy_version: "1.0.0",
     },
     approval_id: record.approvedBy ? record.interactionId ?? "" : "",
     idempotency: { mode: "keyed", state: record.state === "uncertain" ? "reconciliation_required" : "completed",
@@ -41,7 +42,7 @@ export function executionAbilityReceipt(scope: ExecutionScope, record: Execution
     metadata: {
       serializer_version: binding.serializerVersion, company_id: scope.companyId, issue_id: scope.issueId,
       project_id: record.request.plan.projectId, workspace_id: record.request.plan.workspaceId,
-      execution_state: record.state, ...(evaluation ? { evaluation_classification: record.result?.classification ?? null } : { operation: record.request.plan.operation, process_classification: record.result?.classification ?? null }),
+      execution_state: record.state, ...(evaluation ? { evaluation_classification: record.result?.classification ?? null } : creation ? { operation: record.request.plan.operation, publication_classification: record.result?.classification ?? null } : { operation: record.request.plan.operation, process_classification: record.result?.classification ?? null }),
       timing_basis: "durable-request-lifecycle-including-approval-wait", process_duration_measured: false,
       input_digest: record.request.plan.inputDigest, suite_digest: record.request.plan.definitionDigest,
       component_digest: record.request.plan.componentDigest, runtime_digest: record.request.plan.runtimeDigest,

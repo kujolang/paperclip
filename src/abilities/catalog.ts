@@ -12,7 +12,7 @@ type Projection = {
 const entries: readonly Projection[] = projections;
 export function projectionSelected(projection: Projection, profile: PluginConfig["capabilityProfile"]): boolean {
   if (projection.alwaysAvailable || profile === "installed" || profile === "full") return true;
-  if (profile === "build") return ["language", "context", "understand", "sourceExecution"].includes(projection.feature ?? "");
+  if (profile === "build") return ["language", "context", "understand", "sourceExecution", "projectCreation"].includes(projection.feature ?? "");
   if (projection.profiles) return projection.profiles.includes(profile);
   const selected = canonicalProfiles.find((item) => item.id === `kujo.profile.${profile}`);
   const ids: readonly string[] = selected?.resolvedAbilityIds ?? [];

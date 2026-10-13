@@ -6,16 +6,17 @@ const digest = z.string().regex(/^[a-f0-9]{64}$/);
 export const executionScopeSchema = z.object({ companyId: identity, issueId: identity }).strict();
 export type ExecutionScope = z.infer<typeof executionScopeSchema>;
 export const executionPlanSchema = z.object({
-  operation: z.enum(["eval.run", "source.run", "source.test", "source.fixtures"]),
+  operation: z.enum(["eval.run", "source.run", "source.test", "source.fixtures", "starter.create"]),
   // Frozen at preparation. Absent on legacy requests; never backfill from a
   // newer catalog when rendering an old immutable outcome.
   abilityReceipt: z.object({
     serializerVersion: z.literal(1),
-    abilityId: z.enum(["kujo.eval.suite.run", "kujo.paperclip.source.execute"]),
+    abilityId: z.enum(["kujo.eval.suite.run", "kujo.paperclip.source.execute", "kujo.paperclip.starter.create"]),
     abilityVersion: z.string().regex(/^\d+\.\d+\.\d+$/),
     definitionDigest: digest,
     handlerVersion: z.literal("1.0.0"),
   }).strict().optional(),
+  starter: z.object({ kind: z.enum(["script", "agent", "api", "mcp"]), name: z.string().regex(/^[a-z][a-z0-9_-]{0,63}$/), digest }).strict().optional(),
   projectId: identity,
   workspaceId: identity,
   suite: z.string().min(1).max(500),

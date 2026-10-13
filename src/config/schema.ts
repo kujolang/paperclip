@@ -17,7 +17,8 @@ export const pluginConfigSchema = z.object({
     verification: z.boolean().default(false),
     execution: z.boolean().default(false),
     sourceExecution: z.boolean().default(false),
-  }).strict().default({ review: true, failureEvidence: true, context: true, understand: true, language: true, examples: true, verification: false, execution: false, sourceExecution: false }),
+    projectCreation: z.boolean().default(false),
+  }).strict().default({ review: true, failureEvidence: true, context: true, understand: true, language: true, examples: true, verification: false, execution: false, sourceExecution: false, projectCreation: false }),
   limits: z.object({
     timeoutMs: z.number().int().min(1_000).max(27_000).default(DEFAULT_LIMITS.timeoutMs),
     maxStdoutBytes: z.number().int().min(1_024).max(10_000_000).default(DEFAULT_LIMITS.maxStdoutBytes),
@@ -60,6 +61,7 @@ export const instanceConfigJsonSchema = {
         examples: { type: "boolean", title: "Bundled Kujo example", default: true },
         execution: { type: "boolean", title: "Human-approved Eval execution", default: false },
         sourceExecution: { type: "boolean", title: "Human-approved Kujo run/test", default: false },
+        projectCreation: { type: "boolean", title: "Human-approved Kujo project creation", default: false },
         verification: { type: "boolean", title: "Verification", default: false },
       },
     },
