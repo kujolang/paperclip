@@ -35,7 +35,7 @@
     "ui": "./dist/ui"
   },
   "scripts": {
-    "build": "npm run abilities:verify && node esbuild.config.mjs",
+    "build": "npm run abilities:verify && npm run verification:verify && node esbuild.config.mjs",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:ui": "playwright test",
@@ -44,17 +44,20 @@
     "components:verify": "node scripts/verify-components.mjs",
     "repository:verify": "node scripts/verify-repository.mjs",
     "supply-chain:verify": "node scripts/verify-supply-chain.mjs",
-    "verify": "npm run repository:verify && npm run abilities:verify && npm run typecheck && npm test && npm run components:verify && npm run supply-chain:verify && npm run build && npm run pack:verify",
+    "verify": "npm run repository:verify && npm run abilities:verify && npm run verification:verify && npm run typecheck && npm test && npm run components:verify && npm run supply-chain:verify && npm run build && npm run pack:verify",
     "pack:verify": "node scripts/verify-package.mjs",
     "release:dry-run": "npm run verify && npm run test:ui",
     "prepublishOnly": "npm run verify",
     "abilities:sync": "node scripts/sync-abilities.mjs",
     "abilities:generate": "node scripts/generate-abilities.mjs",
-    "abilities:verify": "node scripts/generate-abilities.mjs --check"
+    "abilities:verify": "node scripts/generate-abilities.mjs --check",
+    "verification:verify": "node scripts/verify-verification-contract.mjs"
   },
   "dependencies": {
     "@kujolang/kujo-runtime": "1.8.1",
     "@paperclipai/plugin-sdk": "2026.1012.0",
+    "ajv": "8.20.0",
+    "ajv-formats": "3.0.1",
     "zod": "4.6.5"
   },
   "peerDependencies": {

@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "sources": [
+    {
+      "repository": "https://github.com/kujolang/kujo",
+      "commit": "6695bd9beac4787c9d2db768e9f61dfdb26a95a5",
+      "files": [
+        {
+          "sourcePath": "schemas/workflow-control/evaluation-result-v1.schema.json",
+          "path": "bundled/verification-contract/evaluation-result.schema.json",
+          "sha256": "ca5147241fea8c1390ab09ffa6beaeedf0d94c4bb75b9e27f3f6923821848d87"
+        },
+        {
+          "sourcePath": "tests/fixtures/workflow_control/evaluation-result.valid.json",
+          "path": "bundled/verification-contract/evaluation-result.example.json",
+          "sha256": "964adc5db18f20275e8f2e1bccba90c754f5b5962019335000ef26a77b7c1303"
+        },
+        {
+          "sourcePath": "LICENSE",
+          "path": "bundled/verification-contract/LICENSE",
+          "sha256": "4b6449939f8dce26dc5fb87756740a5977da9085517af127d9e634e6a6492506"
+        }
+      ]
+    }
+  ]
+}

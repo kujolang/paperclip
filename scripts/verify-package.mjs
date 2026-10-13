@@ -12,6 +12,8 @@ const allowedFiles = new Set(["CHANGELOG.md", "LICENSE", "README.md", "SECURITY.
 for (const required of [
   "dist/manifest.js",
   "bundled/ability-sources.lock.json",
+  "bundled/verification-sources.lock.json",
+  "bundled/verification-contract/evaluation-result.schema.json",
   "bundled/ability-contract/index.ts",
   "bundled/ability-catalog/abilities.json",
   "bundled/ability-catalog/profiles.json",
