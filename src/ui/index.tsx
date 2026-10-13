@@ -6,6 +6,7 @@ import {
   usePluginData,
   type PluginDetailTabProps,
 } from "@paperclipai/plugin-sdk/ui";
+import { EvaluationPanel } from "./evaluation.js";
 import type { ReviewPack } from "../features/review/schema.js";
 import type { FailureEvidence } from "../features/failure/schema.js";
 import type { ContextPack } from "../features/context/schema.js";
@@ -27,7 +28,7 @@ import type { ShipcheckReport } from "../features/shipcheck/schema.js";
 import type { ConcordReport } from "../features/concord/schema.js";
 import type { FenceReport } from "../features/fence/schema.js";
 
-type Detail = { shipcheck?: ShipcheckReport | null; concord?: ConcordReport | null; fence?: FenceReport | null; spec?: SpecReport | null; specs?: { files: string[]; truncated: boolean }; verification?: VerificationReport | null; verificationEnabled?: boolean; catalog?: CapabilityCatalog; history?: EvidenceMetadata[]; language?: LanguageReport | null; sources?: { files: string[]; truncated: boolean }; understanding?: Understanding | null; review: ReviewPack | null; failure: FailureEvidence | null; context: ContextPack | null; readiness?: DoctorReport; workspace?: WorkspaceReadiness; suggestedTask?: string };
+type Detail = { executionActive?: boolean; shipcheck?: ShipcheckReport | null; concord?: ConcordReport | null; fence?: FenceReport | null; spec?: SpecReport | null; specs?: { files: string[]; truncated: boolean }; verification?: VerificationReport | null; verificationEnabled?: boolean; catalog?: CapabilityCatalog; history?: EvidenceMetadata[]; language?: LanguageReport | null; sources?: { files: string[]; truncated: boolean }; understanding?: Understanding | null; review: ReviewPack | null; failure: FailureEvidence | null; context: ContextPack | null; readiness?: DoctorReport; workspace?: WorkspaceReadiness; suggestedTask?: string };
 type PanelProps = PluginDetailTabProps & { compact?: boolean };
 
 const colors = {
@@ -664,6 +665,8 @@ function KujoPanel({ context, compact = false }: PanelProps) {
         {data?.readiness?.runtime.repair ?? "Kujo readiness has not been verified. Check runtime and component health in plugin settings."}
         <ActionButton tone="secondary" onClick={() => { void refresh(); }}>Check again</ActionButton>
       </div>}
+
+      {context.entityType === "issue" && (data?.executionActive || data?.catalog?.capabilities.some(item => item.tool === "manage-evaluation" && item.enabled)) && <EvaluationPanel key={`eval:${targetKey}`} issueId={context.entityId} enabled={!!data?.catalog?.capabilities.find(item => item.tool === "manage-evaluation")?.enabled} ready={data?.catalog?.capabilities.find(item => item.tool === "manage-evaluation")?.status === "ready"} />}
 
       {actionError && <div role="alert" style={{ ...card, borderColor: colors.danger, color: colors.danger }}>{actionError}</div>}
 

@@ -70,7 +70,7 @@ Kujo retains up to 20 results per company/entity for 30 days in its Paperclip da
 
 The ten component snapshots are pinned, checksummed, and shipped with the plugin. The
 plugin does not download component code while installing or running. The Eval snapshot
-is an internal execution integration; public Eval controls are still being built.
+provides human-approved execution on issue workspaces.
 
 ## Build with Kujo
 
@@ -79,6 +79,27 @@ Select a Git-visible `.kujo` file in **Build with Kujo**, then choose **Check an
 ## Evidence history
 
 The upcoming release requires Paperclip database namespace migrations and authenticated issue-document actions. Upgrade the host before installing it. Legacy latest records migrate on first access, with missing input/definition provenance explicitly marked unknown. Retained payloads have SHA-256 integrity checks; a redacted export carries its own digest. Suggested tests remain suggestions, and supplied failure logs remain supplied evidence.
+
+## Run approved evaluations
+
+Enable **Human-approved Eval execution** in company settings and select Installed,
+Ship or Full. On an issue, **Run an evaluation** previews a Git-visible JSON Eval
+suite. Select **Request approval**, review and accept its human-only confirmation
+in the issue thread, then select **Start approved evaluation**. Approval never
+starts a run automatically. Changed inputs or settings require a new request.
+
+Suites can run commands, use the network and write files. Inputs are bounded
+private copies of Git-visible text; ignored dependencies and external resources
+are not frozen. Omitted inputs make a native pass explicitly partial. Receipts
+preserve canonical failed/skipped checks and uncertainty; a successful process
+exit alone is not evidence that the project passed. Use **Refresh requests** to
+recover retained requests after reload, inspect their receipts or cancel active
+work. Cancellation remains available after disabling execution.
+
+Agents use `manage-evaluation` with an issue ID verified against their host-owned
+assignment and current run. They can request approval but cannot accept it, and
+can start/cancel only their own run's requests. See [Approved execution](docs/EXECUTION.md)
+for inputs, limits and recovery behavior.
 
 ## Verification evidence
 
@@ -102,10 +123,11 @@ The plugin ships pinned, checksummed Ability contracts/catalogs and generates it
 
 ## Agent tools
 
-Paperclip agents can call fifteen tools:
+Paperclip agents can call sixteen tools:
 
 | Tool | Use |
 | --- | --- |
+| `kujolang.paperclip:manage-evaluation` | Inspect, prepare, start, read or cancel an approved Eval suite on the assigned issue/current run. Human approval is required before execution. |
 | `kujolang.paperclip:inspect-release-readiness` | Inspect native release metadata signals and coverage; never executes tests or certifies a release. |
 | `kujolang.paperclip:inspect-artifact-drift` | Inspect artifact alignment with native Concord; no project commands, examples or tests run. |
 | `kujolang.paperclip:inspect-architecture` | Inspect a bounded snapshot against the workspace Fence policy; no project commands or tests run. |
@@ -218,6 +240,6 @@ Read [AGENTS.md](AGENTS.md) before agent-assisted changes and
 MIT. Bundled Kujo components keep their canonical MIT licenses and recorded
 provenance.
 
-Development status: the internal [approved execution foundation](docs/EXECUTION.md)
+Development status: the [approved execution workflow](docs/EXECUTION.md)
 includes company-scoped host admission, bounded suite previews, durable request limits
-and an opt-in authenticated host acceptance harness. Eval run tools and long-running workflows are not exposed yet.
+and an opt-in authenticated host acceptance harness. Public Eval controls are available on issues; long-running workflow integrations remain unfinished.
