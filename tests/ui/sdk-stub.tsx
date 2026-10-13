@@ -52,7 +52,7 @@ export function usePluginAction(action: string) {
       const params = input as { operation: string; suite?: string; id?: string };
       if (window.__KUJO_DELAY_EVAL__) { await new Promise<void>(resolve => { window.__KUJO_RESOLVE_EVAL__ = resolve; }); throw new Error("private delayed Eval result"); }
       const requests = window.__KUJO_EVAL_REQUESTS__ ??= [];
-      if (params.operation === "list") return { requests };
+      if (params.operation === "list") return { requests, history: { pending: new URLSearchParams(location.search).get("historyPending") === "1" } };
       if (params.operation === "inspect") return { plan: { preview: "json_value_equals", effects: ["execute_project", "network"] }, coverage: { complete: false, notice: "Dependencies are not frozen" } };
       if (params.operation === "prepare") { const item = { id: "execution_fixture", suite: params.suite, state: "pending", plan: { preview: "json_value_equals" }, result: null }; requests.push(item); return item; }
       const item = requests.find(record => record.id === params.id)!;

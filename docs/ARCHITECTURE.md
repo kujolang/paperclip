@@ -92,3 +92,13 @@ Eval is the tenth pinned component. Its internal frozen-input execution primitiv
 uses the canonical CLI and result schema, with exact input/component/runtime
 bindings and bounded native receipt collection. It is not registered as a public
 tool. See [execution integration](EXECUTION.md) for approval and admission status.
+
+
+Terminal Eval history publication inserts the observed plan/outcome pair in one
+host-compatible INSERT, locking its execution row. A separate matching-digest
+acknowledgment makes lost responses recoverable; clear marks terminal rows under
+the same lock before deleting artifacts. Publication never starts execution.
+The additive004 migration stores that acknowledgment. Bounded reconciliation
+processes four terminal rows per issue refresh, and independently retained parent
+references carry their digest even after pruning. These are ledger observations,
+not canonical Ability invocation receipts. See [execution history](EXECUTION.md#retained-execution-history).

@@ -82,6 +82,13 @@ Select a Git-visible `.kujo` file in **Build with Kujo**, then choose **Check an
 
 ## Evidence history
 
+Terminal Eval requests retain linked request-plan and outcome records here. You
+can select the related plan, compare outcomes, export both records, or explicitly
+attach them to the issue. Pending history saves can be retried without rerunning
+the suite. These observed records are not canonical Ability invocation receipts;
+see [execution history](docs/EXECUTION.md#retained-execution-history) for retention
+and clear behavior.
+
 The upcoming release requires Paperclip database namespace migrations and authenticated issue-document actions. Upgrade the host before installing it. Legacy latest records migrate on first access, with missing input/definition provenance explicitly marked unknown. Retained payloads have SHA-256 integrity checks; a redacted export carries its own digest. Suggested tests remain suggestions, and supplied failure logs remain supplied evidence.
 
 ## Run approved evaluations

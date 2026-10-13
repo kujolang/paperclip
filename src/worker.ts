@@ -1,8 +1,8 @@
 import { definePlugin, runWorker, type PluginContext, type ToolRunContext } from "@paperclipai/plugin-sdk";
 import { z } from "zod";
-import { registerEvaluation } from "./features/eval/bridge.js";
+import { registerEvaluation, requireAgentIssue } from "./features/eval/bridge.js";
 import { parsePluginConfig } from "./config/schema.js";
-import { shipcheckTool, concordTool, fenceTool, specTool, importVerificationTool, catalogTool, listEvidenceTool, readEvidenceTool, languageTool, formatTool, understandTool, contextContentTool, contextTool, failureTool, reviewTool } from "./manifest.js";
+import { evalTool, shipcheckTool, concordTool, fenceTool, specTool, importVerificationTool, catalogTool, listEvidenceTool, readEvidenceTool, languageTool, formatTool, understandTool, contextContentTool, contextTool, failureTool, reviewTool } from "./manifest.js";
 import { generateReviewPack } from "./features/review/generate.js";
 import { reviewPackSchema, type ReviewPack } from "./features/review/schema.js";
 import { captureFailure } from "./features/failure/capture.js";
@@ -84,8 +84,20 @@ async function configFor(ctx: PluginContext, companyId: string, tool?: { name: s
 const historyTarget = z.object({ entityType: z.enum(["project", "issue", "run"]), entityId: z.string().min(1), evidenceId: z.string().min(1).max(100), otherId: z.string().min(1).max(100).optional() }).strict();
 function evidenceEnabled(config: ReturnType<typeof parsePluginConfig>, kind: ArtifactKind) {
   const tool = { "review-latest": reviewTool, "context-latest": contextTool, "failure-latest": failureTool, "understand-latest": understandTool,
-    "language-latest": languageTool, "verification-latest": importVerificationTool, "spec-latest": specTool, "fence-latest": fenceTool, "concord-latest": concordTool, "shipcheck-latest": shipcheckTool } as const;
+    "language-latest": languageTool, "verification-latest": importVerificationTool, "spec-latest": specTool, "fence-latest": fenceTool, "concord-latest": concordTool, "shipcheck-latest": shipcheckTool, "evaluation-plan": evalTool, "evaluation-result": evalTool } as const;
   return toolEnabled(config, tool[kind]);
+}
+
+async function exportWithParent(ctx: PluginContext, target: StateTarget, record: NonNullable<Awaited<ReturnType<typeof getEvidence>>>, config: ReturnType<typeof parsePluginConfig>) {
+  const exported = exportEvidence(record);
+  if (!record.receipt.parentId) return exported;
+  const parent = await getEvidence(ctx, target, record.receipt.parentId);
+  if (!parent || !evidenceEnabled(config, parent.receipt.kind)) return { ...exported, parent: { status: "unavailable", id: record.receipt.parentId } };
+  if (record.receipt.kind === "evaluation-result") {
+    const reference = record.payload.planEvidence as { id?: string; digest?: string } | undefined;
+    if (reference?.id !== parent.receipt.id || reference.digest !== parent.receipt.digest) throw new Error("Evaluation parent evidence integrity failed");
+  }
+  return { ...exported, parent: { status: "retained", ...exportEvidence(parent) } };
 }
 
 async function audit(ctx: PluginContext, entry: {
@@ -266,8 +278,10 @@ function registerTools(ctx: PluginContext) {
   });
   for (const tool of [listEvidenceTool, readEvidenceTool]) ctx.tools.register(tool.name, tool, async (params, runCtx) => {
     try {
-      const input = z.object({ scope: z.enum(["project", "run"]).default("project"), ...(tool.name === "get-evidence" ? { evidenceId: z.string().min(1).max(100) } : {}) }).strict().parse(params);
-      const entityId = input.scope === "run" ? runCtx.runId : runCtx.projectId;
+      const input = z.object({ scope: z.enum(["project", "run", "issue"]).default("project"), issueId: z.string().min(1).max(200).optional(), ...(tool.name === "get-evidence" ? { evidenceId: z.string().min(1).max(100) } : {}) }).strict().parse(params);
+      if ((input.scope === "issue") !== (input.issueId !== undefined)) throw new Error("Only issue scope requires an issueId");
+      if (input.scope === "issue") await requireAgentIssue(ctx, input.issueId!, runCtx);
+      const entityId = input.scope === "issue" ? input.issueId! : input.scope === "run" ? runCtx.runId : runCtx.projectId;
       if (!entityId || !runCtx.companyId) throw new Error("Host project/run and company context are required");
       const target: StateTarget = { companyId: runCtx.companyId, entityType: input.scope, entityId };
       const config = await configFor(ctx, target.companyId);
@@ -278,7 +292,7 @@ function registerTools(ctx: PluginContext) {
       }
       const record = await getEvidence(ctx, target, z.string().parse(input.evidenceId));
       if (!record || !evidenceEnabled(config, record.receipt.kind)) throw new Error("Evidence is unavailable or its feature is disabled");
-      const data = exportEvidence(record), content = JSON.stringify(data);
+      const data = await exportWithParent(ctx, target, record, config), content = JSON.stringify(data);
       if (Buffer.byteLength(content) > 65_536) throw new Error("Evidence exceeds the 64 KiB agent read limit; inspect or download it in the Kujo panel");
       return { content, data };
     } catch (error) { return { error: normalizeError(error).message }; }
@@ -474,10 +488,11 @@ function registerUiBridge(ctx: PluginContext, executions: ReturnType<typeof regi
       ? { ...shipcheck, stale: shipcheck.stale || !(await isSnapshotCurrent(workspace.path, shipcheck.snapshot)) } : null;
     const specs = toolEnabled(config, specTool) && workspace ? await discoverSpecs(workspace.path).catch(() => ({ files: [], truncated: false })) : { files: [], truncated: false };
     await ensureHistory(ctx, target);
+    const executionHistory = target.entityType === "issue" ? await executions.reconcileHistory({ companyId: target.companyId, issueId: target.entityId }) : null;
     const history = (await listEvidence(ctx, target)).filter((record) => evidenceEnabled(config, record.kind));
     const readiness = await doctor(config);
     const executionActive = target.entityType === "issue" && (await executions.recoveryList({ companyId: target.companyId, issueId: target.entityId })).some(record => ["preparing", "pending", "running", "cancel_requested"].includes(record.state));
-    return { executionActive, catalog: capabilityCatalog(config, readiness, true), shipcheck: ownedShipcheck, concord: ownedConcord, fence: ownedFence, spec: ownedSpec, specs, verification, verificationEnabled: config.features.verification, history, language: ownedLanguage, sources, understanding: ownedUnderstanding, review: ownedReview, failure: ownedFailure, context: ownedContext, readiness, workspace: inspection?.readiness, suggestedTask };
+    return { executionHistory, executionActive, catalog: capabilityCatalog(config, readiness, true), shipcheck: ownedShipcheck, concord: ownedConcord, fence: ownedFence, spec: ownedSpec, specs, verification, verificationEnabled: config.features.verification, history, language: ownedLanguage, sources, understanding: ownedUnderstanding, review: ownedReview, failure: ownedFailure, context: ownedContext, readiness, workspace: inspection?.readiness, suggestedTask };
   });
 
   ctx.actions.register("inspect-release-readiness", async (params, actionCtx) => {
@@ -627,7 +642,7 @@ function registerUiBridge(ctx: PluginContext, executions: ReturnType<typeof regi
       if (!other || !evidenceEnabled(config, other.receipt.kind)) throw new Error("Comparison evidence is unavailable or its feature is disabled");
       return compareEvidence(record, other);
     }
-    const exported = exportEvidence(record);
+    const exported = await exportWithParent(ctx, target, record, config);
     if (operation === "attach-evidence") {
       if (!await ctx.issues.get(target.entityId, target.companyId)) throw new Error("Issue was not found in this company");
       const body = `# Kujo evidence\n\n${exported.notice}\n\n\`\`\`json\n${JSON.stringify(exported, null, 2)}\n\`\`\``;

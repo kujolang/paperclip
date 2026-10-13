@@ -8,7 +8,8 @@ import { redactText } from "../features/failure/redact.js";
 export const EVIDENCE_NAMESPACE = "plugin_kujo_evidence_c15d42de56";
 export const HISTORY_LIMIT = 20;
 export const HISTORY_DAYS = 30;
-export const ARTIFACT_KINDS = ["review-latest", "context-latest", "failure-latest", "understand-latest", "language-latest", "verification-latest", "spec-latest", "fence-latest", "concord-latest", "shipcheck-latest"] as const;
+export const LEGACY_ARTIFACT_KINDS = ["review-latest", "context-latest", "failure-latest", "understand-latest", "language-latest", "verification-latest", "spec-latest", "fence-latest", "concord-latest", "shipcheck-latest"] as const;
+export const ARTIFACT_KINDS = [...LEGACY_ARTIFACT_KINDS, "evaluation-plan", "evaluation-result"] as const;
 export type ArtifactKind = typeof ARTIFACT_KINDS[number];
 export type ReceiptOptions = { inputs?: unknown; definition?: unknown; parentId?: string; legacy?: boolean; projection?: ProjectionReceipt };
 export const evidenceMetadataSchema = z.object({
@@ -100,6 +101,14 @@ export async function latestEvidence(ctx: PluginContext, target: StateTarget, ki
 }
 
 export async function clearHistory(ctx: PluginContext, target: StateTarget) {
+  if (target.entityType === "issue") {
+    table(ctx);
+    // Suppress republishing settled execution evidence before deleting history.
+    // The publisher locks this same row during its atomic parent/child insert.
+    await ctx.db.execute(`UPDATE ${EVIDENCE_NAMESPACE}.executions SET history_published_at = clock_timestamp()
+      WHERE company_id = $1 AND issue_id = $2 AND history_published_at IS NULL
+      AND state NOT IN ('preparing', 'pending', 'running', 'cancel_requested')`, [target.companyId, target.entityId]);
+  }
   await ctx.db.execute(`DELETE FROM ${table(ctx)} WHERE ${scoped}`, targetParams(target));
 }
 
@@ -124,7 +133,7 @@ export function compareEvidence(left: Awaited<ReturnType<typeof getEvidence>>, r
     const footprint = payload.footprint as Record<string, unknown> | undefined;
     const intelligence = payload.intelligence as Record<string, unknown> | undefined;
     const contract = payload.contract as Record<string, unknown> | null | undefined;
-    return { classification: payload.classification, sourceKind: payload.sourceKind, claimedChecks: (payload.result as Record<string, unknown> | undefined)?.checks, check: payload.check, lint: payload.lint, status: payload.status, staleAtCreation: payload.stale,
+    return { executionState: payload.executionState, nativeChecks: ((payload.evaluation as Record<string, unknown> | null)?.result as Record<string, unknown> | undefined)?.checks, classification: payload.classification, sourceKind: payload.sourceKind, claimedChecks: (payload.result as Record<string, unknown> | undefined)?.checks, check: payload.check, lint: payload.lint, status: payload.status, staleAtCreation: payload.stale,
       contractValidation: (payload.validation as Record<string, unknown> | undefined)?.status,
       acceptanceCriteria: Array.isArray(contract?.criteria) ? contract.criteria.length : undefined,
       declaredChecks: Array.isArray(contract?.checks) ? contract.checks.length : undefined,

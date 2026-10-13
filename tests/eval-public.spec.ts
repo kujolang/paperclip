@@ -53,7 +53,9 @@ describe("public Eval workflow", () => {
     await expect(f.action({ operation: "start", id: prepared.id })).rejects.toThrow(/human approval/);
     f.approve();
     const finished = await f.action({ operation: "start", id: prepared.id });
-    expect(finished).toMatchObject({ state: "succeeded", result: { classification: "passed" } });
+    expect(finished).toMatchObject({ state: "succeeded", result: { classification: "passed" }, history: { status: "retained" } });
+    const exported = await f.h.performAction<{ parent: { status: string }; payload: { executionState: string } }>("export-evidence", { entityType: "issue", entityId: "issue", evidenceId: finished.history!.outcomeId }, human);
+    expect(exported).toMatchObject({ parent: { status: "retained" }, payload: { executionState: "succeeded" } });
     expect(await f.action({ operation: "start", id: prepared.id })).toEqual(finished);
     expect((await f.action({ operation: "list" }) as unknown as { requests: unknown[] }).requests).toHaveLength(1);
     await expect(f.h.performAction("manage-evaluation", { operation: "status", issueId: "issue", id: prepared.id }, { companyId: "other", actor: { type: "user", userId: "board", companyId: "other" } })).rejects.toThrow(/not found/);
@@ -66,7 +68,14 @@ describe("public Eval workflow", () => {
     expect(prepared.requester).toEqual({ kind: "agent", id: "agent", runId: "run" });
     expect((await f.tool({ operation: "start", id: prepared.id })).error).toContain("human approval");
     f.approve();
-    expect((await f.tool({ operation: "start", id: prepared.id })).data).toMatchObject({ state: "succeeded", result: { classification: "passed" } });
+    const completed = (await f.tool({ operation: "start", id: prepared.id })).data as EvaluationView;
+    expect(completed).toMatchObject({ state: "succeeded", result: { classification: "passed" }, history: { status: "retained" } });
+    const listedHistory = await f.h.executeTool("list-evidence", { scope: "issue", issueId: "issue" }, run);
+    expect(listedHistory.data).toMatchObject({ records: expect.arrayContaining([expect.objectContaining({ kind: "evaluation-result" })]) });
+    const readHistory = await f.h.executeTool("get-evidence", { scope: "issue", issueId: "issue", evidenceId: completed.history!.outcomeId }, run);
+    expect(readHistory.data).toMatchObject({ parent: { status: "retained" }, payload: { classification: "passed" } });
+    expect((await f.h.executeTool("list-evidence", { scope: "issue", issueId: "issue" }, { ...run, runId: "old" })).error).toContain("assigned issue");
+    expect((await f.h.executeTool("list-evidence", { scope: "project", issueId: "issue" }, run)).error).toContain("Only issue scope");
     const humanRequest = await f.action({ operation: "prepare", suite: "eval.json", submissionId: "human" });
     expect((await f.tool({ operation: "cancel", id: humanRequest.id })).error).toContain("requesting agent run");
     f.h.ctx.config.get = async () => ({ features: { execution: false } });

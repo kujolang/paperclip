@@ -137,7 +137,7 @@ Each receipt records source kind (observed, supplied, or migrated legacy), a res
 
 **Attach to this issue** explicitly creates an issue document and requires a host-authenticated human in the same company. Agent calls cannot authorize attachment by passing actor or company fields. Only records retained against that exact issue can be attached. Documents above 400 KB are rejected; use the download instead. Attached documents are separate Paperclip records and remain governed by the host's retention policy.
 
-Retention uses database insertion time: at most 20 records across all eight artifact kinds per company/entity, with records older than 30 days inaccessible and removed on the next history read or append. There is no background expiry sweep. Each payload is limited to 5 MB. **Clear Kujo data** removes retained history and legacy latest keys for the selected project/issue; it does not remove documents already attached to issues. No generic SQL or arbitrary file access is exposed.
+Retention uses database insertion time (terminal completion time for Eval plan/outcome pairs): at most 20 records across all artifact kinds per company/entity, with records older than 30 days inaccessible and removed on the next history read or append. There is no background expiry sweep. Each payload is limited to 5 MB. **Clear Kujo data** removes retained history and legacy latest keys for the selected project/issue; it does not remove documents already attached to issues. No generic SQL or arbitrary file access is exposed.
 
 Agents can use `kujolang.paperclip:list-evidence` with `{ "scope": "project" }` (default) or `{ "scope": "run" }`, then `kujolang.paperclip:get-evidence` with the same scope and an `evidenceId`. IDs for the project/run/company come from the authenticated host context. Reads above 64 KiB are rejected with a panel-download hint; the tools never attach documents.
 
@@ -222,3 +222,13 @@ Agents call `kujolang.paperclip:manage-evaluation` with `operation` and `issueId
 fields. The issue must belong to the current assigned host run. Preparation never
 executes checks, and agents cannot approve their own requests. See
 [Execution](EXECUTION.md) for coverage, retention and uncertainty limits.
+
+
+Terminal Eval requests automatically add an observed request plan and linked outcome
+to Evidence history. Select an outcome to navigate to its retained plan. Export and
+explicit issue attachment include the parent when available; missing parents are
+reported rather than reconstructed. Refresh pending history saves without rerunning
+the evaluation. Clearing history suppresses republication of existing terminal
+requests; active requests may still produce new outcomes. See
+[execution history](EXECUTION.md#retained-execution-history) for exact limits and
+agent issue-read authorization.

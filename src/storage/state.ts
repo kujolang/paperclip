@@ -1,6 +1,6 @@
 import type { PluginContext, PluginStateScopeKind } from "@paperclipai/plugin-sdk";
 import type { z } from "zod";
-import { appendEvidence, ARTIFACT_KINDS, clearHistory, latestEvidence, type ArtifactKind, type ReceiptOptions } from "./history.js";
+import { appendEvidence, ARTIFACT_KINDS, LEGACY_ARTIFACT_KINDS, clearHistory, latestEvidence, type ArtifactKind, type ReceiptOptions } from "./history.js";
 import { reviewPackSchema } from "../features/review/schema.js";
 import { contextPackSchema } from "../features/context/schema.js";
 import { failureEvidenceSchema } from "../features/failure/schema.js";
@@ -32,7 +32,7 @@ export async function ensureHistory(ctx: PluginContext, target: StateTarget): Pr
   const task = (async () => {
     const marker = scope(target, "kujo-artifacts", "history-migrated-v1");
     if (await ctx.state.get(marker) === true) return;
-    for (const kind of ARTIFACT_KINDS) {
+    for (const kind of LEGACY_ARTIFACT_KINDS) {
       const oldKey = scope(target, "kujo-artifacts", kind);
       const value = await ctx.state.get(oldKey);
       const parsed = schemas[kind].safeParse(value);
