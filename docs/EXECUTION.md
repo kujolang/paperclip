@@ -507,9 +507,9 @@ controls. This foundation does not implement a second workflow replay engine.
 The internal `openWorkflowStorage` primitive reserves native runner data outside
 both project workspaces and installed packages. It requires an existing absolute,
 operator-owned directory with mode `0700` on Linux or macOS. It creates no default
-location and is not yet connected to production settings, tools or jobs. Dispatch
-itself is not bundled or exposed by this change; existing Windows features remain
-supported, while this POSIX runner primitive explicitly rejects Windows.
+location and is not yet connected to production settings, tools or jobs. The pinned Dispatch command foundation is described below; no production workflow
+tool is exposed yet. Existing Windows features remain supported, while this
+POSIX runner primitive explicitly rejects Windows.
 
 Reservations are segregated by installation, company, issue and execution ID.
 An exclusive directory creation admits one owner; a synced `0600` marker binds
@@ -547,6 +547,42 @@ node scripts/acceptance/dispatch-storage.mjs \
 
 The script removes its owned fixture after success and retains it on failure.
 The required canonical pin and final state digest are included in `proof.json`.
-Production integration still needs operator storage configuration, pinned runner
-packaging, scoped host approval and scheduled pickup, lifecycle reconciliation,
+Production integration still needs operator storage configuration,
+scoped host approval and scheduled pickup, lifecycle reconciliation,
 and retention of active/paused/uncertain runs without deleting their state.
+
+### Pinned Dispatch native commands
+
+Bundle `0.10.0` adds Dispatch `1.3.0` at
+`ac2609b8ef14cbf8fbec5df5dfc1789fa4fa25b8`: CLI, canonical source modules,
+fixture sources, workflow examples, schemas, metadata and license. No external AI
+SDK, provider credentials, container runtime or participant SDK is installed by
+this snapshot. Dispatch native workflows are qualified on Linux/macOS only.
+Existing plugin features retain their Windows support.
+
+The internal `prepareDispatchInvocation` materializer recovers an existing owned
+storage reservation, validates the bundled component, copies its exact checksummed
+bytes into a private directory, and returns a shell-free isolated-import invocation.
+The resulting binding includes command, component, runtime and policy digests.
+The host must compare these with human approval and persistent ownership before
+execution; the materializer grants no authority. Decision actors must come from
+authenticated host context. Native output remains private input to later bounded,
+validated and redacted host projections.
+
+Its first command set lists templates/runs, starts an explicitly offline fixture,
+inspects a run, and submits a typed v2 retained-evidence decision. No arbitrary
+command, path, provider, environment, `--yes`, retry or input amendment is passed
+through. Native Dispatch validates current boundaries and decision replay; this
+adapter does not reproduce that logic. Commands retain the existing 27-second
+process ceiling. Timeout or lost observation does not authorize another start.
+Disposing the private code snapshot leaves native run state intact.
+
+Bundled integration tests use distinct supervised native processes and private
+storage for each operation. They qualify canonical template discovery, offline
+approval pause, later inspection, workspace import exclusion, v2 stale-revision
+rejection, one-boundary approval, the next gate staying paused, identical decision
+replay suppression and conflicting decision rejection. Test fixtures preserve the
+canonical source pin; neither the canonical checkout nor live credentials are
+needed for those tests. This is still an internal foundation: production host
+storage readiness, approved start/resume/cancel controls, schedules, lifetime
+reconciliation, retention and live-provider admission remain unfinished.
