@@ -75,12 +75,21 @@ Select a Git-visible `.kujo` file in **Build with Kujo**, then choose **Check an
 
 The upcoming release requires Paperclip database namespace migrations and authenticated issue-document actions. Upgrade the host before installing it. Legacy latest records migrate on first access, with missing input/definition provenance explicitly marked unknown. Retained payloads have SHA-256 integrity checks; a redacted export carries its own digest. Suggested tests remain suggestions, and supplied failure logs remain supplied evidence.
 
+## Explore Kujo
+
+**Explore Kujo** shows the installed Paperclip adapters, feature/profile selection, platform support, runtime readiness and call-time authorization boundary. Expand the canonical catalog to discover 38 reviewed Kujo Ability definitions. Entries marked **Not integrated yet** are discovery references; their presence does not install a tool or make it executable.
+
+The default `installed` profile preserves all existing tools. Optional `essentials`, `review`, `ship` and `full` selections use the pinned canonical profile memberships; `build` selects Paperclip's source, context and repository-understanding tools. Feature switches still apply. Change the company profile in plugin settings. No profile grants execution approval.
+
+The plugin ships pinned, checksummed Ability contracts/catalogs and generates its manifest tool declarations from reviewed Paperclip projections. Canonical local path/output parameters are not passed through: Paperclip resolves company/workspace identity and retains its own evidence. See [Ability integration](docs/ABILITIES.md).
+
 ## Agent tools
 
-Paperclip agents can call nine tools:
+Paperclip agents can call ten tools:
 
 | Tool | Use |
 | --- | --- |
+| `kujolang.paperclip:list-capabilities` | Discover scoped tool readiness, profiles and optional ecosystem integrations. |
 | `kujolang.paperclip:list-evidence` | List retained receipts in the current project or run. |
 | `kujolang.paperclip:get-evidence` | Read one redacted export, bounded to 64 KiB. |
 | `kujolang.paperclip:check-kujo-source` | Check and lint one eligible project-relative `.kujo` source. |

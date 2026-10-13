@@ -39,3 +39,10 @@ arbitrary source execution or change the Verification setting.
 `features.understand` defaults to `true`; disable it to prevent repository maps through both the panel and agent tool. Doctor distinguishes disabled from blocked Scout readiness.
 
 `features.language` defaults to `true` and controls both source diagnostics and formatting previews, including both agent tools. Previews return source text after defensive redaction; disable this feature when that explicit read workflow is not wanted.
+
+
+## Capability profile
+
+`capabilityProfile` defaults to `installed`, which preserves every implemented tool subject to its feature switch. `essentials`, `review`, `ship` and `full` follow canonical Kujo profile inheritance for projections with canonical bindings. A compound Review Pack requires both PatchBrief and ChangeBucket, so Essentials does not enable it. `build` selects source diagnostics/preview, Scout and Scent. `ship` adds implemented CaseFile evidence; it does not run project tests or install Eval. `full` enables all implemented projections but cannot activate missing adapters or override disabled features.
+
+Catalog and retained-history discovery remain available under every profile; history still respects the effective feature selection. The bundled fixed example remains controlled by `features.examples`. Profile selection is company-scoped, enforced by the worker for both UI actions and agent tools, and is separate from the host's authorization decision.

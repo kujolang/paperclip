@@ -35,7 +35,7 @@
     "ui": "./dist/ui"
   },
   "scripts": {
-    "build": "node esbuild.config.mjs",
+    "build": "npm run abilities:verify && node esbuild.config.mjs",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:ui": "playwright test",
@@ -44,10 +44,13 @@
     "components:verify": "node scripts/verify-components.mjs",
     "repository:verify": "node scripts/verify-repository.mjs",
     "supply-chain:verify": "node scripts/verify-supply-chain.mjs",
-    "verify": "npm run repository:verify && npm run typecheck && npm test && npm run components:verify && npm run supply-chain:verify && npm run build && npm run pack:verify",
+    "verify": "npm run repository:verify && npm run abilities:verify && npm run typecheck && npm test && npm run components:verify && npm run supply-chain:verify && npm run build && npm run pack:verify",
     "pack:verify": "node scripts/verify-package.mjs",
     "release:dry-run": "npm run verify && npm run test:ui",
-    "prepublishOnly": "npm run verify"
+    "prepublishOnly": "npm run verify",
+    "abilities:sync": "node scripts/sync-abilities.mjs",
+    "abilities:generate": "node scripts/generate-abilities.mjs",
+    "abilities:verify": "node scripts/generate-abilities.mjs --check"
   },
   "dependencies": {
     "@kujolang/kujo-runtime": "1.8.1",

@@ -38,9 +38,9 @@ test("run detail tab is read-only", async ({ page }) => {
   await page.goto("/?surface=detail&entity=run&state=populated");
 
   await expect(page.getByRole("img", { name: "Kujo logo" })).toBeVisible();
-  await expect(page.getByText("Review Pack")).toBeVisible();
-  await expect(page.getByText("Failure Evidence")).toBeVisible();
-  await expect(page.getByText("Context Pack")).toBeVisible();
+  await expect(page.getByText("Review Pack", { exact: true })).toBeVisible();
+  await expect(page.getByText("Failure Evidence", { exact: true })).toBeVisible();
+  await expect(page.getByText("Context Pack", { exact: true })).toBeVisible();
   await expect(page.getByText("Create a reviewable work record")).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Clear Kujo data" })).toHaveCount(0);
 });
@@ -168,4 +168,30 @@ test("a pending history read cannot appear after company navigation", async ({ p
   await expect(page.getByLabel("Evidence record")).toHaveValue("");
   await page.evaluate(() => { window.__KUJO_RESOLVE_HISTORY__?.(); });
   await expect(page.getByLabel("Evidence result")).toHaveCount(0);
+});
+
+
+test("capability discovery separates profile selection, host authorization and missing adapters", async ({ page }) => {
+  await page.goto("/?surface=task&entity=issue&profile=essentials");
+  const explorer = page.getByRole("region", { name: "Explore Kujo capabilities" });
+  await expect(page.getByRole("button", { name: /Generate Review Pack/ })).toBeDisabled();
+  const review = explorer.locator("details").filter({ hasText: "Generate Review Pack" });
+  await review.locator("summary").click();
+  await expect(review.getByText("Not selected by the company's capability profile.")).toBeVisible();
+  await expect(review.getByText("Authorization: checked on call")).toBeVisible();
+  await explorer.getByRole("button", { name: "Explore 38 canonical capabilities" }).click();
+  await expect(page.getByLabel("Canonical ecosystem catalog")).toBeVisible();
+  await expect(page.getByLabel("Canonical ecosystem catalog").locator("summary").filter({ hasText: /RAG/ }).first()).toContainText("Not integrated yet");
+  await explorer.getByRole("button", { name: "Hide ecosystem catalog" }).click();
+  await expect(explorer).toHaveScreenshot("capability-catalog.png", { animations: "disabled", maxDiffPixelRatio: 0.02 });
+});
+
+test("capability discovery fits a narrow viewport and resets on company navigation", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 1200 });
+  await page.goto("/?surface=detail&entity=project&theme=dark");
+  const explorer = page.getByRole("region", { name: "Explore Kujo capabilities" });
+  await explorer.getByRole("button", { name: "Explore 38 canonical capabilities" }).click();
+  await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  await page.evaluate(() => window.__KUJO_NAVIGATE__?.("other-company"));
+  await expect(page.getByLabel("Canonical ecosystem catalog")).toHaveCount(0);
 });

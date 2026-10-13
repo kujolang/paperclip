@@ -2,6 +2,7 @@ import { z } from "zod";
 import { DEFAULT_LIMITS } from "./defaults.js";
 
 export const pluginConfigSchema = z.object({
+  capabilityProfile: z.enum(["installed", "essentials", "review", "ship", "full", "build"]).default("installed"),
   runtime: z.object({
     binary: z.string().trim().min(1).nullable().default(null),
     allowSystemPathFallback: z.boolean().default(true),
@@ -36,6 +37,7 @@ export const instanceConfigJsonSchema = {
   type: "object",
   additionalProperties: false,
   properties: {
+    capabilityProfile: { type: "string", enum: ["installed", "essentials", "review", "ship", "full", "build"], default: "installed", title: "Kujo capability profile" },
     runtime: {
       type: "object",
       additionalProperties: false,

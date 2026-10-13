@@ -20,7 +20,7 @@ Artifacts use company/entity-scoped database rows: Review and Context Packs are 
 
 - npm packages and runtime resolver API documented in the Kujo runtime repository
 - Paperclip manifest API version 1 and minimum host version `2026.824.1`
-- nine namespaced agent tools declared in the manifest and worker
+- ten namespaced agent tools declared in the manifest and worker
 - component lock schema version 1
 - Review Pack, Failure Evidence, and Context Pack schema version 1
 - additive JSON compatibility within a plugin major version
@@ -39,3 +39,10 @@ The host applies `migrations/001_evidence.sql` transactionally in the determinis
 Stable evidence IDs combine company, entity, kind and artifact ID. Insert conflicts cannot replace payload, inputs, definition or parent provenance; there is no update API. Payload digests detect corruption on reads, but this is not protection against an administrator rewriting both data and digest. Appends and reads enforce bounded retention. Latest views read the retained rows rather than keeping an unbounded second copy. Legacy state is removed only after successful archival, with a migration marker preventing resurrection after clearing.
 
 Issue documents require the additional `issue.documents.write` capability and a host-authenticated user action; generation never attaches records automatically. Database namespace read/write/migrate capabilities support evidence persistence. The SDK harness uses real PostgreSQL for SQL behavior; mocked host action tests and browser fixtures are not a substitute for final real-host install acceptance.
+
+
+## Canonical Ability projections
+
+`bundled/ability-sources.lock.json` pins the canonical Ability TypeScript contract and CMD catalog/profile snapshots. `scripts/sync-abilities.mjs` requires clean source checkouts at those commits; runtime never downloads definitions or component code. `scripts/generate-abilities.mjs` verifies source hashes, canonical definition digests, profile inheritance and host projection identities, then deterministically generates `src/abilities/generated.ts`. Build/verification reject drift.
+
+`src/abilities/projections.json` owns Paperclip input schemas, adapter identities and storage effects. Exact canonical definitions are preserved separately, with canonical identities/digests linked from the host projection. This avoids falsely claiming that a canonical local-directory API and a tenant-scoped Paperclip tool share the same inputs, effects or idempotency behavior. Persisted evidence adds `kujoProjection` provenance; this additive metadata is not a canonical execution receipt or approval grant.

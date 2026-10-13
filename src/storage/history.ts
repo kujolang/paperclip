@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { z } from "zod";
+import type { ProjectionReceipt } from "../abilities/catalog.js";
 import type { StateTarget } from "./state.js";
 import { redactText } from "../features/failure/redact.js";
 
@@ -9,7 +10,7 @@ export const HISTORY_LIMIT = 20;
 export const HISTORY_DAYS = 30;
 export const ARTIFACT_KINDS = ["review-latest", "context-latest", "failure-latest", "understand-latest", "language-latest"] as const;
 export type ArtifactKind = typeof ARTIFACT_KINDS[number];
-export type ReceiptOptions = { inputs?: unknown; definition?: unknown; parentId?: string; legacy?: boolean };
+export type ReceiptOptions = { inputs?: unknown; definition?: unknown; parentId?: string; legacy?: boolean; projection?: ProjectionReceipt };
 export const evidenceMetadataSchema = z.object({
   id: z.string(), kind: z.enum(ARTIFACT_KINDS), artifactId: z.string(), storedAt: z.string(),
   sourceKind: z.enum(["observed", "supplied", "legacy", "imported"]), result: z.string(),
@@ -49,7 +50,7 @@ export async function pruneHistory(ctx: PluginContext, target: StateTarget) {
 }
 
 export async function appendEvidence(ctx: PluginContext, target: StateTarget, kind: ArtifactKind, value: unknown, options: ReceiptOptions = {}): Promise<void> {
-  const payload = z.record(z.string(), z.unknown()).parse(value);
+  const payload: Record<string, unknown> = { ...z.record(z.string(), z.unknown()).parse(value), ...(options.projection ? { kujoProjection: options.projection } : {}) };
   const artifactId = z.string().min(1).max(200).parse(payload.id);
   const serialized = canonicalJson(payload);
   const bytes = Buffer.byteLength(serialized);

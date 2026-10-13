@@ -17,9 +17,10 @@ import type { Understanding } from "../features/understand/schema.js";
 
 import type { LanguageReport, FormatPreview } from "../features/language/schema.js";
 
+import type { CapabilityCatalog } from "../abilities/catalog.js";
 import type { EvidenceMetadata } from "../storage/history.js";
 
-type Detail = { history?: EvidenceMetadata[]; language?: LanguageReport | null; sources?: { files: string[]; truncated: boolean }; understanding?: Understanding | null; review: ReviewPack | null; failure: FailureEvidence | null; context: ContextPack | null; readiness?: DoctorReport; workspace?: WorkspaceReadiness; suggestedTask?: string };
+type Detail = { catalog?: CapabilityCatalog; history?: EvidenceMetadata[]; language?: LanguageReport | null; sources?: { files: string[]; truncated: boolean }; understanding?: Understanding | null; review: ReviewPack | null; failure: FailureEvidence | null; context: ContextPack | null; readiness?: DoctorReport; workspace?: WorkspaceReadiness; suggestedTask?: string };
 type PanelProps = PluginDetailTabProps & { compact?: boolean };
 
 const colors = {
@@ -285,6 +286,38 @@ function ContextSection({ context }: { context: ContextPack | null }) {
   );
 }
 
+function CapabilityExplorer({ catalog }: { catalog: CapabilityCatalog }) {
+  const [expanded, setExpanded] = useState(false);
+  return <section style={{ ...card, overflowWrap: "anywhere" }} aria-label="Explore Kujo capabilities">
+    <SectionTitle title="Explore Kujo" detail="Find the tools available for this company and discover the wider Kujo ecosystem." />
+    <div style={muted}>Profile: <strong>{catalog.profile}</strong>. Change the capability profile in Kujo plugin settings. Authorization is checked when an operation is requested.</div>
+    <div style={{ display: "grid", gap: 8 }}>
+      {catalog.capabilities.map((item) => <details key={item.id} style={{ borderTop: `1px solid ${colors.border}`, paddingTop: 8 }}>
+        <summary><strong>{item.title}</strong> · {item.status}</summary>
+        <p style={muted}>{item.description}</p>
+        <div>{item.reason}</div>
+        <div style={muted}>Installed: yes · Enabled: {item.enabled ? "yes" : "no"} · Platform supported: {item.supported ? "yes" : "no"}</div>
+        <div style={muted}>Authorization: checked on call</div>
+        <code>kujolang.paperclip:{item.tool}</code>
+        <div style={muted}>Effects: {item.effects.map((effect) => `${effect.kind} ${effect.resource}`).join("; ")}</div>
+        {item.canonicalIds.length > 0 && <div style={muted}>Canonical capabilities: {item.canonicalIds.join(", ")}</div>}
+        <div style={muted}>Projection: {item.id}<br />Definition SHA-256: {item.definitionDigest}</div>
+      </details>)}
+    </div>
+    <ActionButton tone="secondary" onClick={() => setExpanded(!expanded)}>{expanded ? "Hide ecosystem catalog" : `Explore ${catalog.ecosystem.length} canonical capabilities`}</ActionButton>
+    {expanded && <div aria-label="Canonical ecosystem catalog" style={{ display: "grid", gap: 8 }}>
+      <div style={muted}>Entries without a Paperclip adapter are discovery references. Profile selection does not install or authorize them.</div>
+      {catalog.ecosystem.map((item) => <details key={item.id} style={{ borderTop: `1px solid ${colors.border}`, paddingTop: 8 }}>
+        <summary><strong>{item.title}</strong> · {item.status === "projected" ? "Paperclip adapter available" : "Not integrated yet"}</summary>
+        <p>{item.description}</p><div style={muted}>{item.reason}</div>
+        <code>{item.id}@{item.version}</code>
+        <div style={muted}>Canonical effects: {item.effects.map((effect) => `${effect.kind} ${effect.resource}`).join("; ")}</div>
+        <div style={muted}>Source: {item.source} · Definition SHA-256: {item.definitionDigest}</div>
+      </details>)}
+    </div>}
+  </section>;
+}
+
 function EvidenceHistory({ context, records }: { context: PanelProps["context"]; records: EvidenceMetadata[] }) {
   const inspect = usePluginAction("inspect-evidence");
   const exportRecord = usePluginAction("export-evidence");
@@ -493,6 +526,8 @@ function KujoPanel({ context, compact = false }: PanelProps) {
         {data.understanding.warnings.map((warning, index) => <div key={index} style={muted}>{warning}</div>)}
         <div style={muted}>Next: use the task below to select relevant Context Pack files, then review their content before planning changes.</div>
       </section>}
+
+      {data?.catalog && <CapabilityExplorer key={`catalog:${targetKey}`} catalog={data.catalog} />}
 
       <EvidenceHistory key={targetKey} context={context} records={data?.history ?? []} />
 
