@@ -140,3 +140,7 @@ Both application starters share integrity-checked staging and the bounded source
 collector, carry canonical source provenance, and preserve upstream source bytes.
 MCP consumer tests exercise authenticated standard JSON-RPC and scope/write guards
 against the materialized files in an owned temporary server.
+
+The MCP pin includes the canonical Windows separator repair from kujolang/mcp#13.
+Permission comparisons normalize native Windows separators while preserving literal
+POSIX backslashes; the plugin carries the upstream fix without a local fork.

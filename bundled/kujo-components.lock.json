@@ -489,7 +489,7 @@
     {
       "id": "mcp",
       "repository": "https://github.com/kujolang/mcp",
-      "gitCommit": "be4941d14424dd59f21e13ff23cf9dfaa441bcb4",
+      "gitCommit": "922ae79537991a382ad87c13c49130390813b4fa",
       "version": "1.3.1",
       "entrypoint": "server.kujo",
       "files": [
@@ -518,11 +518,11 @@
         "mcp-server.json": "85f65c1fe203ab4de6b73f424f3af6230eae6c94d32685dd998016f3c082670b",
         "README.md": "57886f9c8cea781feaa203ae0f805cbe4ed04760d3037cbc8ed2017db3550158",
         "src/server/runtime.kujo": "a647be08198d3e79e0f47484121e53a223f00e4f1c20a48668507dc0af440c1d",
-        "src/core/framework.kujo": "255882bbc72d4f93e5513114e9c5bf63e18d040d771f9c3f02f850e0d25ca1c3",
+        "src/core/framework.kujo": "41960457527679b621afec6fb420bb889edd252171d30da12a0bade1388ba0d3",
         "src/tools/registry.kujo": "83381ae25ae4067478e9e34ada4e86548399cdf8027379e2c4a718a588808a1e",
         "src/resources/registry.kujo": "3923e6258aa2284712607278071084f82b992e75c00f443aa5bdfd265d45e17c",
         "docs/mcp-reference.md": "435102985e7c987a033cab99f35b278a903e3bc79f43df8c5a240294ac9bea3e",
-        "docs/security-model.md": "3433860f314199ae5ba7d6ffee42b75f230703c94950f6a2cfaeac07b5d183a3",
+        "docs/security-model.md": "f28dc7e9b65ff34f10699e78c896dc5cc4c2c0cbe8990b2a888cf97b0c78c094",
         "demo/README.md": "d511be2809d21fd97d2a879852644c096947276d0c55d2b5357fcfee383a7950",
         "demo/docs/README.md": "38d87fa345eb027737ad6add85bf72f9bad6a8f7deef826b6911d81fe06959ea",
         "demo/docs/guide.md": "2dca424abcaa8ea74031d679a31845aede7f879274e72bb1d380c3e28640cddc",

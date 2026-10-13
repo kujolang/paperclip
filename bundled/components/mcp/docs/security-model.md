@@ -29,7 +29,7 @@ This document defines trust boundaries, threat assumptions, and hardening defaul
 
 - Startup fails fast on invalid `mcp-server.json` structure or required key/value violations.
 - Request-shape validation returns deterministic JSON-RPC errors for missing/invalid envelope fields.
-- Canonical path boundary checks reject traversal and sibling-prefix bypasses.
+- Canonical path boundary checks reject traversal and sibling-prefix bypasses. Windows canonical separators are normalized for boundary and relative-pattern comparisons; POSIX backslashes remain literal filename characters.
 - `read_only_patterns` enforce deny rules for write operations.
 - `max_file_size` is enforced in both read and write helper paths.
 - Configurable host policy and optional `bearer`/`api_key` auth checks are available.

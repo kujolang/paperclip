@@ -336,7 +336,7 @@
       "id": "mcp",
       "repository": "https://github.com/kujolang/mcp",
       "sourceDirectory": "mcp",
-      "gitCommit": "be4941d14424dd59f21e13ff23cf9dfaa441bcb4",
+      "gitCommit": "922ae79537991a382ad87c13c49130390813b4fa",
       "version": "1.3.1",
       "entrypoint": "server.kujo",
       "files": [

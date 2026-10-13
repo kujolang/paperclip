@@ -50,7 +50,9 @@ it("materialized MCP starter supports authenticated JSON-RPC and rejects forbidd
     expect((await fetch(base, { method: "POST", headers: { "Content-Type": "application/json" }, body: '{"jsonrpc":"2.0","id":1,"method":"tools/list"}', signal: AbortSignal.timeout(3000) })).status).toBe(401);
     expect((await rpc("initialize", { protocolVersion: "2025-11-25", capabilities: {}, clientInfo: { name: "starter-fixture", version: "1.0.0" } })).result?.protocolVersion).toBe("2025-11-25");
     expect((await rpc("tools/list")).result?.tools?.some(tool => tool.name === "read_project_docs")).toBe(true);
-    expect(JSON.stringify((await rpc("tools/call", { name: "read_project_docs", arguments: { file_name: "README" } })).result)).toContain("README.md");
+    const docs = await rpc("tools/call", { name: "read_project_docs", arguments: { file_name: "README" } });
+    expect(docs.error).toBeUndefined();
+    expect(JSON.stringify(docs.result)).toContain("README.md");
     expect((await rpc("resources/list")).result?.resources?.length).toBeGreaterThan(0);
     expect((await rpc("resources/read", { uri: "project://docs" })).error).toBeUndefined();
     const denied = await rpc("tools/call", { name: "read_text_range", arguments: { file_path: "../outside.md", start_line: 1, end_line: 2 } });

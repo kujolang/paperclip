@@ -52,10 +52,25 @@ export func obj_schema(desc, props, required) {
 # Permission Helpers
 # =============================================================================
 
+# Compare canonical paths with a single separator only on Windows. On POSIX,
+# backslashes are valid filename characters and must not become boundaries.
+func canonical_check_path(fp) {
+    resolved := path_absolute(fp)
+    if path_join("a", "b") == "a\\b" {
+        return replace(resolved, "\\", "/")
+    }
+    return resolved
+}
+
+func boundary_prefix(allowed_abs) {
+    if ends_with(allowed_abs, "/") { return allowed_abs }
+    return allowed_abs + "/"
+}
+
 func normalize_path_for_check(fp) {
     try {
         if path_exists(fp) {
-            return {"ok": true, "path": path_absolute(fp), "reason": ""}
+            return {"ok": true, "path": canonical_check_path(fp), "reason": ""}
         }
 
         parent := dirname(fp)
@@ -65,8 +80,8 @@ func normalize_path_for_check(fp) {
         }
 
         base := basename(fp)
-        parent_abs := path_absolute(parent)
-        return {"ok": true, "path": parent_abs + "/" + base, "reason": ""}
+        parent_abs := canonical_check_path(parent)
+        return {"ok": true, "path": boundary_prefix(parent_abs) + base, "reason": ""}
     } except err {
         return {"ok": false, "path": "", "reason": "Path cannot be resolved for permission check"}
     }
@@ -76,7 +91,7 @@ func is_within_allowed_boundary(candidate_abs, allowed_abs) {
     if candidate_abs == allowed_abs {
         return true
     }
-    return starts_with(candidate_abs, allowed_abs + "/")
+    return starts_with(candidate_abs, boundary_prefix(allowed_abs))
 }
 
 func normalize_allowed_dirs_for_check(allowed_input) {
@@ -90,7 +105,7 @@ func normalize_allowed_dirs_for_check(allowed_input) {
             }
 
             try {
-                dirs := push(dirs, path_absolute(dir_text))
+                dirs := push(dirs, canonical_check_path(dir_text))
             } except err {
                 return {"ok": false, "dirs": [], "error": "Allowed directory cannot be resolved"}
             }
@@ -102,7 +117,7 @@ func normalize_allowed_dirs_for_check(allowed_input) {
         }
 
         try {
-            dirs := push(dirs, path_absolute(dir_text))
+            dirs := push(dirs, canonical_check_path(dir_text))
         } except err {
             return {"ok": false, "dirs": [], "error": "Allowed directory cannot be resolved"}
         }
@@ -203,8 +218,9 @@ export func check_path(fp, allowed_dir, read_only_pats, write_mode) {
 
     if write_mode {
         candidate_rel := ""
-        if starts_with(candidate_abs, matched_allowed_abs + "/") {
-            candidate_rel := substring(candidate_abs, len(matched_allowed_abs) + 1, len(candidate_abs))
+        prefix := boundary_prefix(matched_allowed_abs)
+        if starts_with(candidate_abs, prefix) {
+            candidate_rel := substring(candidate_abs, len(prefix), len(candidate_abs))
         }
         candidate_name := basename(candidate_abs)
 
