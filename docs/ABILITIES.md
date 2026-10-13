@@ -44,3 +44,5 @@ npm run verify
 ```
 
 Review the source/projection diffs and effects before changing pins. Generated manifest declarations come from `src/abilities/projections.json`; do not edit `generated.ts`. Generation validates canonical contracts through the pinned Ability TypeScript SDK, detects profile cycles/missing IDs, and checks byte-for-byte output drift. There are no install-time or runtime catalog downloads.
+
+`import-verification` is a Paperclip-only projection of the canonical evaluation-result data format. It has no canonical Ability execution binding, does not register Eval/Fence/Concord/ShipCheck runners, and cannot turn imported evidence into an observed execution receipt. It requires no native runtime, is feature-gated, and is selected by installed/full/review/ship profiles.

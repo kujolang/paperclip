@@ -18,7 +18,7 @@ Bundled runtime resolution is the normal choice. Use an override only for contro
 | `features.review` | `true` | Enable Review Pack tools and actions. |
 | `features.failureEvidence` | `true` | Enable Failure Evidence tools and actions. |
 | `features.context` | `true` | Enable Context Pack tools and actions. |
-| `features.verification` | `false` | Reserve the experimental verification surface. Enabling it produces a warning in `0.1.x`. |
+| `features.verification` | `false` | Enable bounded imports of canonical evaluation results. Defaults off; available in installed/full/review/ship profiles. Does not run checks. |
 
 ## Process limits
 

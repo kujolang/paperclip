@@ -6,6 +6,8 @@ declare global {
   interface Window {
     __KUJO_NAVIGATE__?: (companyId: string) => void;
     __KUJO_DELAY_FORMAT__?: boolean;
+    __KUJO_DELAY_IMPORT__?: boolean;
+    __KUJO_RESOLVE_IMPORT__?: () => void;
     __KUJO_DELAY_HISTORY__?: boolean;
     __KUJO_RESOLVE_HISTORY__?: () => void;
     __KUJO_RESOLVE_FORMAT__?: () => void;
@@ -41,6 +43,10 @@ export function usePluginAction(action: string) {
     if (action === "inspect-evidence" || action === "export-evidence") return { receipt: { id: "before" }, payload: { check: "passed", scope: "Source checks only" }, exportDigest: "safe-export-digest" };
     if (action === "compare-evidence") return { sameInputs: null, samePayload: false, left: { check: "passed" }, right: { check: "failed" } };
     if (action === "attach-evidence") return { status: "attached", documentId: "document" };
+    if (action === "import-verification") {
+      if (window.__KUJO_DELAY_IMPORT__) await new Promise<void>((resolve) => { window.__KUJO_RESOLVE_IMPORT__ = resolve; });
+      return { classification: "partial", result: { evaluator: { name: "eval", version: "2.0.0" }, checks: { passed: 3, failed: 0, warned: 0, skipped: 1 }, verdict: "pass", subject: { run_id: "supplied-run" }, finished_at: "2026-10-12T00:00:00Z" }, generatedAt: "2026-10-12T01:00:00Z", referenceCount: 2 };
+    }
     if (action === "run-example") return { status: "passed", checked: true, runtimeVersion: "1.8.1", source: "print(36)", output: '{"items":2,"language":"Kujo","total":36}' };
   };
 }

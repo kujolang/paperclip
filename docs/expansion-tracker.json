@@ -49,14 +49,16 @@
       "requirement": "Canonical definitions, profiles, generated manifest tool declarations, installed/enabled/authorized/supported states",
       "status": "in_progress",
       "evidence": [
-        "Pinned38 canonical Ability definitions and four canonical profiles, reused the canonical TypeScript contract validator/digest, and generated ten reviewed Paperclip tool declarations. Company profiles are enforced by both UI and agent handlers; discovery separates installed, enabled, supported, runtime readiness and call-time authorization. New evidence includes additive projection/canonical digests. Local83 tests and16 browser scenarios pass; hosted CI and fresh consumer acceptance are pending. Canonical execution receipts and broader adapters remain pending."
+        "Pinned38 canonical Ability definitions and four canonical profiles, reused the canonical TypeScript contract validator/digest, and generated ten reviewed Paperclip tool declarations. Company profiles are enforced by both UI and agent handlers; discovery separates installed, enabled, supported, runtime readiness and call-time authorization. New evidence includes additive projection/canonical digests. Local83 tests and16 browser scenarios pass; PR44 merged at23deaa7; all five native platforms, SDK minimum/latest, browser, dependency review and CodeQL passed. A fresh local tarball consumer passed canonical discovery, profile enforcement, PostgreSQL restart, redaction and tenant isolation. Canonical execution receipts and broader adapters remain pending."
       ]
     },
     {
       "id": "verification",
       "requirement": "Spec acceptance, Eval, Fence, Concord, ShipCheck with real result classifications and imported evidence",
-      "status": "pending",
-      "evidence": []
+      "status": "in_progress",
+      "evidence": [
+        "Bounded imports of canonical evaluation-result JSON implemented with pinned schema validation, imported provenance, redacted summaries, truthful empty/skipped/partial/blocked/error classifications and profile/tenant enforcement. Local97 tests and18 browser scenarios pass; fresh tarball consumer passed a real Eval report, separate-process PostgreSQL restart, runtime-independent import and tenant isolation. Hosted CI/merge remain pending. Spec views, native Fence/Concord/ShipCheck checks and approved Eval execution remain pending."
+      ]
     },
     {
       "id": "execution",

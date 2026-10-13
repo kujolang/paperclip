@@ -49,6 +49,7 @@ const detailData = parameters.get("state") === "populated"
   : { review: null, failure: null, context: null };
 window.__KUJO_FIXTURE_DATA__ = {
   ...detailData,
+  verificationEnabled: parameters.get("verification") === "1",
   history: parameters.get("history") ? ["before", "after"].map((id, index) => ({ id, kind: "language-latest", artifactId: id, storedAt: `2026-10-12 12:0${index}:00+00`, sourceKind: "observed", result: index ? "failed" : "observed", digest: "a".repeat(64), inputDigest: null, definitionDigest: null, parentId: null, payloadBytes: 500 })) : [],
   understanding: parameters.get("map") ? {
     status: "partial", stale: true, provenance: { componentVersion: "1.1.0" },
@@ -87,7 +88,7 @@ const fixture = window.__KUJO_FIXTURE_DATA__ as { readiness: DoctorReport; catal
 fixture.readiness.runtime.platform = "linux";
 fixture.readiness.runtime.arch = "x64";
 fixture.readiness.components = ["scout", "context", "failure-evidence", "changebucket", "patchbrief"].map((id) => ({ id: id as DoctorReport["components"][number]["id"], version: "1.0.0", integrity: "ok" }));
-const fixtureConfig = applyCapabilityProfile(parsePluginConfig({ capabilityProfile: parameters.get("profile") ?? "installed" }));
+const fixtureConfig = applyCapabilityProfile(parsePluginConfig({ capabilityProfile: parameters.get("profile") ?? "installed", features: { verification: parameters.get("verification") === "1" } }));
 for (const feature of Object.keys(fixture.readiness.capabilities) as Array<keyof DoctorReport["capabilities"]>) if (!fixtureConfig.features[feature]) fixture.readiness.capabilities[feature] = "disabled";
 fixture.catalog = capabilityCatalog(fixtureConfig, fixture.readiness, true);
 window.__KUJO_ACTIONS__ = [];
