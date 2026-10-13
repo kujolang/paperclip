@@ -1,8 +1,8 @@
-import { beforeAll, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { importVerification } from "../src/features/verification/import.js";
-import { createTestHarness, testDatabase } from "./helpers/harness.js";
+import { createTestHarness } from "./helpers/harness.js";
 import { getEvidence, listEvidence } from "../src/storage/history.js";
 import { capabilityCatalog } from "../src/abilities/catalog.js";
 import { parsePluginConfig } from "../src/config/schema.js";
@@ -12,7 +12,6 @@ import plugin from "../src/worker.js";
 
 const fixture = JSON.parse(readFileSync(new URL("../bundled/verification-contract/evaluation-result.example.json", import.meta.url), "utf8"));
 function result(overrides: Record<string, unknown> = {}) { return JSON.stringify({ ...fixture, ...overrides }); }
-beforeAll(async () => { await testDatabase(); }, 30_000);
 
 describe("canonical evaluation imports", () => {
   it("accepts the pinned canonical example and stores a summary, not referenced files or an execution claim", () => {

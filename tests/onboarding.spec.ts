@@ -1,9 +1,9 @@
-import { beforeAll, afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
-import { createTestHarness, testDatabase } from "./helpers/harness.js";
+import { createTestHarness } from "./helpers/harness.js";
 import type { PluginWorkspace } from "@paperclipai/plugin-sdk";
 import manifest from "../src/manifest.js";
 import plugin from "../src/worker.js";
@@ -11,8 +11,6 @@ import { inspectWorkspace } from "../src/paperclip/workspace.js";
 import { runBundledExample } from "../src/features/onboarding/example.js";
 import { parsePluginConfig } from "../src/config/schema.js";
 
-// PostgreSQL/WASM initialization is fixture setup, not part of the first-use assertion timeout.
-beforeAll(async () => { await testDatabase(); }, 30_000);
 const roots: string[] = [];
 afterEach(async () => { vi.restoreAllMocks(); await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))); });
 const target = { entityType: "project" as const, entityId: "project", companyId: "company" };
