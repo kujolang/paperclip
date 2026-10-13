@@ -5,6 +5,8 @@ export type PluginDetailTabProps = {
 declare global {
   interface Window {
     __KUJO_NAVIGATE__?: (companyId: string) => void;
+    __KUJO_DELAY_SHIPCHECK__?: boolean;
+    __KUJO_RESOLVE_SHIPCHECK__?: () => void;
     __KUJO_DELAY_CONCORD__?: boolean;
     __KUJO_RESOLVE_CONCORD__?: () => void;
     __KUJO_DELAY_FENCE__?: boolean;
@@ -52,6 +54,10 @@ export function usePluginAction(action: string) {
     if (action === "import-verification") {
       if (window.__KUJO_DELAY_IMPORT__) await new Promise<void>((resolve) => { window.__KUJO_RESOLVE_IMPORT__ = resolve; });
       return { classification: "partial", result: { evaluator: { name: "eval", version: "2.0.0" }, checks: { passed: 3, failed: 0, warned: 0, skipped: 1 }, verdict: "pass", subject: { run_id: "supplied-run" }, finished_at: "2026-10-12T00:00:00Z" }, generatedAt: "2026-10-12T01:00:00Z", referenceCount: 2 };
+    }
+    if (action === "inspect-release-readiness") {
+      if (window.__KUJO_DELAY_SHIPCHECK__) { await new Promise<void>((resolve) => { window.__KUJO_RESOLVE_SHIPCHECK__ = resolve; }); throw new Error("private delayed readiness error"); }
+      return { status: "partial", reportId: "fixture-shipcheck" };
     }
     if (action === "inspect-artifact-drift") {
       if (window.__KUJO_DELAY_CONCORD__) { await new Promise<void>((resolve) => { window.__KUJO_RESOLVE_CONCORD__ = resolve; }); throw new Error("private delayed artifact drift error"); }

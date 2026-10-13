@@ -1,0 +1,49 @@
+# src/scan.kujo — Orchestrates all release-readiness checks and returns results.
+
+from src.checks import check_git_repo, check_readme, check_license, check_gitignore
+from src.checks import check_tests, check_lint_command, check_format_command, check_ci_config
+from src.checks import check_readme_has_install, check_readme_has_usage, check_examples, check_docs
+from src.checks import check_version_metadata, check_changelog, check_kennel_manifest, check_entry_point
+from src.checks import detect_project_type, detect_version
+
+export func run_scan(dir) {
+	mut results := []
+
+	# Repo health
+	results = push_check(results, check_git_repo(dir))
+	results = push_check(results, check_readme(dir))
+	results = push_check(results, check_license(dir))
+	results = push_check(results, check_gitignore(dir))
+
+	# Code quality
+	results = push_check(results, check_tests(dir))
+	results = push_check(results, check_lint_command(dir))
+	results = push_check(results, check_format_command(dir))
+	results = push_check(results, check_ci_config(dir))
+
+	# Documentation
+	results = push_check(results, check_readme_has_install(dir))
+	results = push_check(results, check_readme_has_usage(dir))
+	results = push_check(results, check_examples(dir))
+	results = push_check(results, check_docs(dir))
+
+	# Release metadata
+	results = push_check(results, check_version_metadata(dir))
+	results = push_check(results, check_changelog(dir))
+	results = push_check(results, check_kennel_manifest(dir))
+	results = push_check(results, check_entry_point(dir))
+
+	project_type := detect_project_type(dir)
+
+	return {
+		"tool": "shipcheck",
+		"version": "1.0.0",
+		"dir": dir,
+		"project_type": project_type,
+		"checks": results
+	}
+}
+
+func push_check(results, check) {
+	return push(results, check)
+}

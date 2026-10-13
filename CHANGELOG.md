@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Add native ShipCheck release readiness signals, scoped tool/UI/history and explicit metadata-only gate semantics.
+- Enforce per-tool profile admission within shared feature groups so Essentials can use ShipCheck without enabling other verification adapters.
+
 - Add native Concord artifact drift inspection, explicit coverage and reference admission, project/issue UI, agent tool and scoped evidence history.
 - Share the bounded snapshot reader with Fence and pin the eighth canonical component with verified provenance.
 
@@ -17,6 +20,9 @@
 - Keep the four pinned components and existing Context Pack, Review Pack, and Failure Evidence contracts unchanged; broader Kujo feature expansion is a separate release.
 
 ## Unreleased
+
+- Add native ShipCheck release readiness signals, scoped tool/UI/history and explicit metadata-only gate semantics.
+- Enforce per-tool profile admission within shared feature groups so Essentials can use ShipCheck without enabling other verification adapters.
 
 - Add native Fence architecture inspection with a scoped tool and project/issue UI. Preserve configured thresholds, findings, ownership, exceptions and partial coverage in retained evidence; refuse parser commands and keep workspace reads bounded.
 

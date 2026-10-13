@@ -20,8 +20,14 @@ export function projectionSelected(projection: Projection, profile: PluginConfig
 }
 export function applyCapabilityProfile(config: PluginConfig): PluginConfig {
   const features = { ...config.features };
-  for (const projection of entries) if (projection.feature && !projectionSelected(projection, config.capabilityProfile)) features[projection.feature] = false;
+  for (const feature of new Set(entries.flatMap((entry) => entry.feature ? [entry.feature] : []))) {
+    if (!entries.some((entry) => entry.feature === feature && projectionSelected(entry, config.capabilityProfile))) features[feature] = false;
+  }
   return { ...config, features };
+}
+export function toolEnabled(config: PluginConfig, tool: { name: string }): boolean {
+  const entry = entries.find((entry) => entry.tool.name === tool.name);
+  return !!entry && projectionSelected(entry, config.capabilityProfile) && (!entry.feature || config.features[entry.feature]);
 }
 export function projectionReceipt(tool: { name: string }) {
   const entry = projections.find((item) => item.tool.name === tool.name);

@@ -199,3 +199,12 @@ Agents call `kujolang.paperclip:inspect-architecture` with `{}`. Findings identi
 ## Inspect artifact drift
 
 Enable Verification and select **Inspect artifact drift** in a project or issue. Agents call `kujolang.paperclip:inspect-artifact-drift` with `{}`; the host supplies workspace and company identity. Concord compares recognizable project artifacts and retains severity, confidence, source/target, expected/observed differences and suggested fixes. Review partial coverage and stale indicators before using findings. It never executes examples or declared evaluations. See [Verification](VERIFICATION.md#native-artifact-drift) for limits and result classifications.
+
+## Inspect release readiness
+
+Enable Verification and select **Inspect release readiness** in a project or issue.
+Agents call `kujolang.paperclip:inspect-release-readiness` with `{}`. Review missing
+metadata signals, warnings and omitted inputs; expand passing signals for details.
+Essentials can use this tool while other verification projections remain excluded.
+ShipCheck detects test/lint/CI declarations but never executes them or certifies a
+release. See [Verification](VERIFICATION.md#native-release-readiness).

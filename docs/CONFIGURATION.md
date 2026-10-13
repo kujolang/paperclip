@@ -18,7 +18,7 @@ Bundled runtime resolution is the normal choice. Use an override only for contro
 | `features.review` | `true` | Enable Review Pack tools and actions. |
 | `features.failureEvidence` | `true` | Enable Failure Evidence tools and actions. |
 | `features.context` | `true` | Enable Context Pack tools and actions. |
-| `features.verification` | `false` | Enable native task-contract validation and bounded imports of canonical evaluation results. Defaults off; available in installed/full/review/ship profiles. Neither operation executes declared checks. Spec requires a working runtime; imports do not. |
+| `features.verification` | `false` | Enable native Spec/Fence/Concord/ShipCheck inspections and bounded evaluation-result imports. Defaults off. Installed/review/ship/full select these tools; Essentials selects only ShipCheck. Each tool and its retained evidence enforce profile admission independently. Native inspections require a runtime; imports do not. None executes project tests. |
 
 ## Process limits
 

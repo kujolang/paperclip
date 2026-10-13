@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "bundleVersion": "0.5.0",
+  "bundleVersion": "0.6.0",
   "runtime": {
     "minimumVersion": "1.8.1"
   },
@@ -228,6 +228,31 @@
           "name": "analysis",
           "format": "json",
           "schema": "schemas/concord-analysis.schema.json"
+        }
+      ]
+    },
+    {
+      "id": "shipcheck",
+      "repository": "https://github.com/kujolang/shipcheck",
+      "sourceDirectory": "shipcheck",
+      "gitCommit": "0a9f5795e9498f3698d5da6bb66642544251dd37",
+      "version": "1.0.0",
+      "entrypoint": "shipcheck.kujo",
+      "files": [
+        "LICENSE",
+        "shipcheck.kujo",
+        "src/checks.kujo",
+        "src/display.kujo",
+        "src/git.kujo",
+        "src/report.kujo",
+        "src/scan.kujo",
+        "schemas/shipcheck-report.schema.json"
+      ],
+      "outputContracts": [
+        {
+          "name": "analysis",
+          "format": "json",
+          "schema": "schemas/shipcheck-report.schema.json"
         }
       ]
     }

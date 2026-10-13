@@ -51,3 +51,10 @@ The `inspect-artifact-drift` projection maps to `kujo.concord.artifacts.scan` wi
 empty strict input. Canonical directory parameters are replaced by Paperclip-owned
 workspace identity. It requires Verification and an installed/review/ship/full
 profile, retains scoped evidence, and does not execute project code.
+
+The `inspect-release-readiness` projection maps to `kujo.shipcheck.repository.scan`
+with strict empty input, host-owned workspace identity and scoped evidence writes.
+It is selected by Essentials and its inherited profiles. A shared feature stays
+enabled when any selected projection needs it; individual handlers, UI sections,
+Doctor capabilities and history reads still enforce the specific tool's profile.
+This does not grant Essentials access to other Verification projections.

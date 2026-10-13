@@ -239,7 +239,11 @@ test("verification imports show external claims and remain available without a r
   await expect(section.getByText("Imported · partial")).toBeVisible();
   await expect(section.getByText("Claimed checks: 3 passed · 0 failed · 0 warned · 1 skipped")).toBeVisible();
   await expect(section.getByLabel("Evaluation result JSON")).toHaveValue("");
-  await expect(section).toHaveScreenshot(`verification-import-${process.platform}.png`, { animations: "disabled", maxDiffPixelRatio: 0.02 });
+  // Align this component crop to whole pixels; preceding cards can otherwise
+  // shift its fractional origin and produce a one-pixel image-height change.
+  const fraction = await section.evaluate((element) => element.getBoundingClientRect().top % 1);
+  await section.evaluate((element, offset) => { (element as HTMLElement).style.transform = `translateY(${-offset}px)`; }, fraction);
+  await expect(section).toHaveScreenshot("verification-import.png", { animations: "disabled", maxDiffPixelRatio: 0.02 });
 });
 
 test("verification import state cannot follow a pending request across company navigation", async ({ page }) => {
@@ -331,4 +335,47 @@ test("pending artifact drift errors cannot cross company navigation", async ({ p
   await page.evaluate(() => window.__KUJO_RESOLVE_CONCORD__?.());
   await expect(page.getByText("private delayed artifact drift error")).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Inspect artifact drift", exact: true })).toBeEnabled();
+});
+
+
+test("release readiness shows signal-only gate semantics, partial coverage and scoped action", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 1200 });
+  await page.goto("/?surface=task&entity=issue&verification=1&shipcheck=partial&theme=dark");
+  const section = page.getByRole("region", { name: "Release readiness", exact: true });
+  await expect(section.getByText("Release signals: partial · STALE — inspect again", { exact: true })).toBeVisible();
+  await expect(section.getByText("Native metadata gate: passed", { exact: false })).toContainText("1 warning");
+  await expect(section.getByText("README.md: oversize", { exact: true })).toBeVisible();
+  await expect(section.getByText("Readiness signals from bounded", { exact: false })).toContainText("not release certification");
+  await section.screenshot({ path: "test-results/release-readiness-panel.png" });
+  await section.getByText("Signals present (15)", { exact: true }).click();
+  await expect(section.getByText("tests-exist: signal present", { exact: true })).toBeVisible();
+  await section.getByRole("button", { name: "Inspect release readiness" }).click();
+  await expect.poll(() => page.evaluate(() => window.__KUJO_ACTIONS__?.at(-1))).toMatchObject({ action: "inspect-release-readiness", input: { entityType: "issue", entityId: "issue-fixture" } });
+  await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+});
+
+test("Essentials admits ShipCheck without exposing other verification actions", async ({ page }) => {
+  await page.goto("/?surface=detail&entity=project&verification=1&profile=essentials&shipcheck=warnings");
+  await expect(page.getByRole("button", { name: "Inspect release readiness", exact: true })).toBeEnabled();
+  for (const name of ["Artifact drift", "Architecture boundaries", "Task contract", "Verification evidence"]) await expect(page.getByRole("region", { name, exact: true })).toHaveCount(0);
+  for (const name of ["Inspect architecture", "Inspect artifact drift", "Import evaluation result", "Inspect task contract"]) {
+    await expect(page.getByRole("button", { name, exact: true })).toHaveCount(0);
+  }
+  await page.goto("/?surface=detail&entity=project&verification=1&runtime=broken");
+  await expect(page.getByRole("button", { name: "Inspect release readiness", exact: true })).toBeDisabled();
+  await page.goto("/?surface=detail&entity=project&verification=1&profile=build");
+  await expect(page.getByRole("region", { name: "Release readiness", exact: true })).toHaveCount(0);
+  await page.goto("/?surface=detail&entity=run&verification=1");
+  await expect(page.getByRole("button", { name: "Inspect release readiness", exact: true })).toHaveCount(0);
+});
+
+test("pending readiness errors cannot cross company navigation", async ({ page }) => {
+  await page.goto("/?surface=detail&entity=project&verification=1");
+  await page.evaluate(() => { window.__KUJO_DELAY_SHIPCHECK__ = true; });
+  await page.getByRole("button", { name: "Inspect release readiness", exact: true }).click();
+  await expect.poll(() => page.evaluate(() => Boolean(window.__KUJO_RESOLVE_SHIPCHECK__))).toBe(true);
+  await page.evaluate(() => window.__KUJO_NAVIGATE__?.("other-company"));
+  await page.evaluate(() => window.__KUJO_RESOLVE_SHIPCHECK__?.());
+  await expect(page.getByText("private delayed readiness error")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Inspect release readiness", exact: true })).toBeEnabled();
 });

@@ -1,5 +1,6 @@
 import { capabilityCatalog, applyCapabilityProfile, type CapabilityCatalog } from "../../src/abilities/catalog.js";
 import { parsePluginConfig } from "../../src/config/schema.js";
+import { SHIPCHECK_SCOPE, SHIPCHECK_CHECKS } from "../../src/features/shipcheck/schema.js";
 import { CONCORD_SCOPE } from "../../src/features/concord/schema.js";
 import { FENCE_SCOPE } from "../../src/features/fence/schema.js";
 import type { DoctorReport } from "../../src/health/doctor.js";
@@ -61,6 +62,15 @@ window.__KUJO_FIXTURE_DATA__ = {
       nonGoals: ["Deploying the release"], approvalPoints: ["Maintainer reviews release evidence"] },
     scope: "Contract validation only. Acceptance criteria and declared checks have not been executed or proved; approval points are declarations, not granted approvals.",
   } : null,
+  shipcheck: parameters.get("shipcheck") ? {
+    id: "fixture-shipcheck", status: parameters.get("shipcheck") === "warnings" ? "warnings" : "partial", stale: true,
+    message: "Review copied-artifact coverage before using the gate.", provenance: { version: "1.0.0" },
+    coverage: { copied: 8, gitVisible: 9, truncated: false, rejectedNames: 0, omitted: parameters.get("shipcheck") === "warnings" ? [] : [{ path: "README.md", reason: "oversize" }] },
+    report: { project_type: "kujo", summary: { total_checks: 16, passed: 15, failed_errors: 0, warnings: 1, gate_passed: 1 },
+      checks: SHIPCHECK_CHECKS.map((name) => name === "license" ? { name, passed: 0, severity: "warning", message: "No LICENSE file found", detail: "Consider adding a LICENSE file" }
+        : { name, passed: 1, severity: "info", message: name === "git-repo" ? "Git repository detected" : name === "tests-exist" ? "Test directory found: tests/" : "Readiness signal present", detail: name === "tests-exist" ? "Presence only; no tests executed." : "" }), },
+    scope: SHIPCHECK_SCOPE,
+  } : null,
   concord: parameters.get("concord") ? {
     id: "fixture-concord", status: parameters.get("concord") === "blocked" ? "blocked" : "partial", stale: true,
     message: "Review coverage before accepting drift leads.", provenance: { version: "1.0.0" },
@@ -117,12 +127,13 @@ window.__KUJO_FIXTURE_DATA__ = {
 const fixture = window.__KUJO_FIXTURE_DATA__ as { readiness: DoctorReport; catalog?: CapabilityCatalog; verificationEnabled: boolean };
 fixture.readiness.runtime.platform = "linux";
 fixture.readiness.runtime.arch = "x64";
-fixture.readiness.components = ["scout", "context", "failure-evidence", "changebucket", "patchbrief", "spec", "fence", "concord"].map((id) => ({ id: id as DoctorReport["components"][number]["id"], version: "1.0.0", integrity: "ok" }));
+fixture.readiness.components = ["scout", "context", "failure-evidence", "changebucket", "patchbrief", "spec", "fence", "concord", "shipcheck"].map((id) => ({ id: id as DoctorReport["components"][number]["id"], version: "1.0.0", integrity: "ok" }));
 const fixtureConfig = applyCapabilityProfile(parsePluginConfig({ capabilityProfile: parameters.get("profile") ?? "installed", features: { verification: parameters.get("verification") === "1" } }));
-for (const feature of Object.keys(fixture.readiness.capabilities) as Array<keyof DoctorReport["capabilities"]>) if (!fixtureConfig.features[(feature === "spec" || feature === "fence" || feature === "concord") ? "verification" : feature]) fixture.readiness.capabilities[feature] = "disabled";
+for (const feature of Object.keys(fixture.readiness.capabilities) as Array<keyof DoctorReport["capabilities"]>) if (!fixtureConfig.features[(feature === "spec" || feature === "fence" || feature === "concord" || feature === "shipcheck") ? "verification" : feature]) fixture.readiness.capabilities[feature] = "disabled";
 fixture.readiness.capabilities.spec = !fixtureConfig.features.verification ? "disabled" : fixture.readiness.runtime.status === "ok" ? "ready" : "blocked";
 fixture.readiness.capabilities.fence = fixture.readiness.capabilities.spec;
 fixture.readiness.capabilities.concord = fixture.readiness.capabilities.spec;
+fixture.readiness.capabilities.shipcheck = fixture.readiness.capabilities.spec;
 fixture.verificationEnabled = fixtureConfig.features.verification;
 fixture.catalog = capabilityCatalog(fixtureConfig, fixture.readiness, true);
 window.__KUJO_ACTIONS__ = [];

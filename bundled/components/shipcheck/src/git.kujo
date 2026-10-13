@@ -1,0 +1,13 @@
+# Bounded read-only Git inspection. Paths remain argv data on every platform.
+# Failed or incomplete Git output cannot establish readiness or release history.
+export func git_output(dir, arguments) {
+	try {
+		result := spawn_process(concat(["git", "-C", dir], arguments), {"timeout_ms": 5000, "max_output_bytes": 1048576})
+		if result.success && !result.timed_out && !result.stdout_truncated && !result.stderr_truncated {
+			return result.stdout
+		}
+	} except error {
+		return ""
+	}
+	return ""
+}

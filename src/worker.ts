@@ -1,7 +1,7 @@
 import { definePlugin, runWorker, type PluginContext, type ToolRunContext } from "@paperclipai/plugin-sdk";
 import { z } from "zod";
 import { parsePluginConfig } from "./config/schema.js";
-import { concordTool, fenceTool, specTool, importVerificationTool, catalogTool, listEvidenceTool, readEvidenceTool, languageTool, formatTool, understandTool, contextContentTool, contextTool, failureTool, reviewTool } from "./manifest.js";
+import { shipcheckTool, concordTool, fenceTool, specTool, importVerificationTool, catalogTool, listEvidenceTool, readEvidenceTool, languageTool, formatTool, understandTool, contextContentTool, contextTool, failureTool, reviewTool } from "./manifest.js";
 import { generateReviewPack } from "./features/review/generate.js";
 import { reviewPackSchema, type ReviewPack } from "./features/review/schema.js";
 import { captureFailure } from "./features/failure/capture.js";
@@ -12,7 +12,7 @@ import { getContextContent } from "./features/context/content.js";
 import { inspectWorkspace, resolveProjectWorkspace, resolveWorkspace } from "./paperclip/workspace.js";
 import { clearArtifacts, ensureHistory, loadArtifact, saveArtifact, type StateTarget } from "./storage/state.js";
 import { listEvidence, getEvidence, exportEvidence, compareEvidence, type ArtifactKind } from "./storage/history.js";
-import { applyCapabilityProfile, capabilityCatalog, projectionReceipt } from "./abilities/catalog.js";
+import { toolEnabled, applyCapabilityProfile, capabilityCatalog, projectionReceipt } from "./abilities/catalog.js";
 import { doctor } from "./health/doctor.js";
 import { normalizeError } from "./runtime/errors.js";
 import { terminateActiveKujoProcesses } from "./runtime/execute-kujo.js";
@@ -29,6 +29,8 @@ import { languageReportSchema } from "./features/language/schema.js";
 import { importVerification, verificationInput, verificationReportSchema } from "./features/verification/import.js";
 import { discoverSpecs, inspectSpec, specInputSchema, specReportSchema } from "./features/spec/inspect.js";
 
+import { inspectShipcheck } from "./features/shipcheck/inspect.js";
+import { shipcheckReportSchema } from "./features/shipcheck/schema.js";
 import { inspectConcord } from "./features/concord/inspect.js";
 import { concordReportSchema } from "./features/concord/schema.js";
 import { inspectFence } from "./features/fence/inspect.js";
@@ -72,14 +74,17 @@ function actionParams(params: Record<string, unknown>): Record<string, unknown> 
   return pluginParams;
 }
 
-async function configFor(ctx: PluginContext, companyId: string) {
-  return applyCapabilityProfile(parsePluginConfig(await ctx.config.get(companyId)));
+async function configFor(ctx: PluginContext, companyId: string, tool?: { name: string }) {
+  const config = applyCapabilityProfile(parsePluginConfig(await ctx.config.get(companyId)));
+  if (tool && !toolEnabled(config, tool)) throw new Error("This tool is disabled by configuration or profile");
+  return config;
 }
 
 const historyTarget = z.object({ entityType: z.enum(["project", "issue", "run"]), entityId: z.string().min(1), evidenceId: z.string().min(1).max(100), otherId: z.string().min(1).max(100).optional() }).strict();
 function evidenceEnabled(config: ReturnType<typeof parsePluginConfig>, kind: ArtifactKind) {
-  const feature = { "review-latest": "review", "context-latest": "context", "failure-latest": "failureEvidence", "understand-latest": "understand", "language-latest": "language", "verification-latest": "verification", "spec-latest": "verification", "fence-latest": "verification", "concord-latest": "verification" } as const;
-  return config.features[feature[kind]];
+  const tool = { "review-latest": reviewTool, "context-latest": contextTool, "failure-latest": failureTool, "understand-latest": understandTool,
+    "language-latest": languageTool, "verification-latest": importVerificationTool, "spec-latest": specTool, "fence-latest": fenceTool, "concord-latest": concordTool, "shipcheck-latest": shipcheckTool } as const;
+  return toolEnabled(config, tool[kind]);
 }
 
 async function audit(ctx: PluginContext, entry: {
@@ -145,7 +150,7 @@ async function reviewForProject(ctx: PluginContext, runCtx: ToolRunContext, para
 }
 
 async function importForTarget(ctx: PluginContext, target: StateTarget, json: string) {
-  const config = await configFor(ctx, target.companyId);
+  const config = await configFor(ctx, target.companyId, importVerificationTool);
   if (!config.features.verification) throw new Error("Verification imports are disabled by configuration or profile");
   const entity = target.entityType === "project" ? await ctx.projects.get(target.entityId, target.companyId)
     : target.entityType === "issue" ? await ctx.issues.get(target.entityId, target.companyId) : null;
@@ -158,7 +163,7 @@ async function importForTarget(ctx: PluginContext, target: StateTarget, json: st
 
 async function inspectContractFor(ctx: PluginContext, target: StateTarget, params: z.infer<typeof specInputSchema>) {
   if (target.entityType === "run") throw new Error("Choose a project or issue contract");
-  const config = await configFor(ctx, target.companyId);
+  const config = await configFor(ctx, target.companyId, specTool);
   const workspace = await resolveWorkspace(ctx, { ...target, entityType: target.entityType });
   const report = await inspectSpec({ ...params, config, cwd: workspace.path, projectId: workspace.projectId, workspaceId: workspace.id });
   await saveArtifact(ctx, target, "spec-latest", report, { inputs: { params, config, sourceDigest: report.sourceDigest }, definition: specTool, projection: projectionReceipt(specTool) });
@@ -168,7 +173,7 @@ async function inspectContractFor(ctx: PluginContext, target: StateTarget, param
 
 async function inspectArchitectureFor(ctx: PluginContext, target: StateTarget) {
   if (target.entityType === "run") throw new Error("Choose a project or issue workspace");
-  const config = await configFor(ctx, target.companyId);
+  const config = await configFor(ctx, target.companyId, fenceTool);
   const workspace = await resolveWorkspace(ctx, { ...target, entityType: target.entityType });
   const report = await inspectFence({ config, cwd: workspace.path, projectId: workspace.projectId, workspaceId: workspace.id });
   await saveArtifact(ctx, target, "fence-latest", report, { inputs: { config, inputDigest: report.inputDigest }, definition: fenceTool, projection: projectionReceipt(fenceTool) });
@@ -178,7 +183,7 @@ async function inspectArchitectureFor(ctx: PluginContext, target: StateTarget) {
 
 async function inspectArtifactDriftFor(ctx: PluginContext, target: StateTarget) {
   if (target.entityType === "run") throw new Error("Choose a project or issue workspace");
-  const config = await configFor(ctx, target.companyId);
+  const config = await configFor(ctx, target.companyId, concordTool);
   const workspace = await resolveWorkspace(ctx, { ...target, entityType: target.entityType });
   const report = await inspectConcord({ config, cwd: workspace.path, projectId: workspace.projectId, workspaceId: workspace.id });
   await saveArtifact(ctx, target, "concord-latest", report, { inputs: { config, inputDigest: report.inputDigest }, definition: concordTool, projection: projectionReceipt(concordTool) });
@@ -186,7 +191,28 @@ async function inspectArtifactDriftFor(ctx: PluginContext, target: StateTarget) 
   return report;
 }
 
+async function inspectReleaseReadinessFor(ctx: PluginContext, target: StateTarget) {
+  if (target.entityType === "run") throw new Error("Choose a project or issue workspace");
+  const config = await configFor(ctx, target.companyId, shipcheckTool);
+  const workspace = await resolveWorkspace(ctx, { ...target, entityType: target.entityType });
+  const report = await inspectShipcheck({ config, cwd: workspace.path, projectId: workspace.projectId, workspaceId: workspace.id });
+  await saveArtifact(ctx, target, "shipcheck-latest", report, { inputs: { config, inputDigest: report.inputDigest }, definition: shipcheckTool, projection: projectionReceipt(shipcheckTool) });
+  await audit(ctx, { ...target, operation: "shipcheck.inspected", artifactId: report.id });
+  return report;
+}
+
 function registerTools(ctx: PluginContext) {
+  ctx.tools.register(shipcheckTool.name, shipcheckTool, async (raw, runCtx) => {
+    try {
+      z.object({}).strict().parse(raw);
+      const report = await inspectReleaseReadinessFor(ctx, { entityType: "project", entityId: runCtx.projectId, companyId: runCtx.companyId });
+      const { snapshot: _snapshot, ...data } = report;
+      return { content: JSON.stringify(data), data };
+    } catch (error) {
+      const normalized = normalizeError(error);
+      return { error: normalized.message, data: { code: normalized.code } };
+    }
+  });
   ctx.tools.register(concordTool.name, concordTool, async (raw, runCtx) => {
     try {
       z.object({}).strict().parse(raw);
@@ -408,16 +434,17 @@ function registerUiBridge(ctx: PluginContext) {
     const suggestedTask = issue
       ? `${issue.title}\n\n${issue.description ?? ""}`.trim().slice(0, 10_000)
       : "Understand this repository and identify the best starting points for the next change.";
-    const [review, failure, context, understanding, language, verification, spec, fence, concord] = await Promise.all([
+    const [review, failure, context, understanding, language, verification, spec, fence, concord, shipcheck] = await Promise.all([
       config.features.review ? loadArtifact(ctx, target, "review-latest", reviewPackSchema) : null,
       config.features.failureEvidence ? loadArtifact(ctx, target, "failure-latest", failureEvidenceSchema) : null,
       config.features.context ? loadArtifact(ctx, target, "context-latest", contextPackSchema) : null,
       config.features.understand ? loadArtifact(ctx, target, "understand-latest", understandingSchema) : null,
       config.features.language ? loadArtifact(ctx, target, "language-latest", languageReportSchema) : null,
-      config.features.verification ? loadArtifact(ctx, target, "verification-latest", verificationReportSchema) : null,
-      config.features.verification ? loadArtifact(ctx, target, "spec-latest", specReportSchema) : null,
-      config.features.verification ? loadArtifact(ctx, target, "fence-latest", fenceReportSchema) : null,
-      config.features.verification ? loadArtifact(ctx, target, "concord-latest", concordReportSchema) : null,
+      evidenceEnabled(config, "verification-latest") ? loadArtifact(ctx, target, "verification-latest", verificationReportSchema) : null,
+      evidenceEnabled(config, "spec-latest") ? loadArtifact(ctx, target, "spec-latest", specReportSchema) : null,
+      evidenceEnabled(config, "fence-latest") ? loadArtifact(ctx, target, "fence-latest", fenceReportSchema) : null,
+      evidenceEnabled(config, "concord-latest") ? loadArtifact(ctx, target, "concord-latest", concordReportSchema) : null,
+      evidenceEnabled(config, "shipcheck-latest") ? loadArtifact(ctx, target, "shipcheck-latest", shipcheckReportSchema) : null,
     ]);
     const ownedReview = review && (
       (target.entityType === "project" && review.projectId === target.entityId) ||
@@ -442,11 +469,20 @@ function registerUiBridge(ctx: PluginContext) {
       ? { ...fence, stale: fence.stale || !(await isSnapshotCurrent(workspace.path, fence.snapshot)) } : null;
     const ownedConcord = concord && workspace && concord.projectId === workspace.projectId && concord.workspaceId === workspace.id
       ? { ...concord, stale: concord.stale || !(await isSnapshotCurrent(workspace.path, concord.snapshot)) } : null;
-    const specs = config.features.verification && workspace ? await discoverSpecs(workspace.path).catch(() => ({ files: [], truncated: false })) : { files: [], truncated: false };
+    const ownedShipcheck = shipcheck && workspace && shipcheck.projectId === workspace.projectId && shipcheck.workspaceId === workspace.id
+      ? { ...shipcheck, stale: shipcheck.stale || !(await isSnapshotCurrent(workspace.path, shipcheck.snapshot)) } : null;
+    const specs = toolEnabled(config, specTool) && workspace ? await discoverSpecs(workspace.path).catch(() => ({ files: [], truncated: false })) : { files: [], truncated: false };
     await ensureHistory(ctx, target);
     const history = (await listEvidence(ctx, target)).filter((record) => evidenceEnabled(config, record.kind));
     const readiness = await doctor(config);
-    return { catalog: capabilityCatalog(config, readiness, true), concord: ownedConcord, fence: ownedFence, spec: ownedSpec, specs, verification, verificationEnabled: config.features.verification, history, language: ownedLanguage, sources, understanding: ownedUnderstanding, review: ownedReview, failure: ownedFailure, context: ownedContext, readiness, workspace: inspection?.readiness, suggestedTask };
+    return { catalog: capabilityCatalog(config, readiness, true), shipcheck: ownedShipcheck, concord: ownedConcord, fence: ownedFence, spec: ownedSpec, specs, verification, verificationEnabled: config.features.verification, history, language: ownedLanguage, sources, understanding: ownedUnderstanding, review: ownedReview, failure: ownedFailure, context: ownedContext, readiness, workspace: inspection?.readiness, suggestedTask };
+  });
+
+  ctx.actions.register("inspect-release-readiness", async (params, actionCtx) => {
+    if (!actionCtx.companyId) throw new Error("Company context is required");
+    const value = actionTarget.parse(actionParams(params));
+    const report = await inspectReleaseReadinessFor(ctx, { ...value, companyId: actionCtx.companyId });
+    return { status: report.status, reportId: report.id };
   });
 
   ctx.actions.register("inspect-artifact-drift", async (params, actionCtx) => {
