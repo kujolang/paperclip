@@ -5,7 +5,7 @@ import { canonicalDefinitions, canonicalProfiles, projections } from "./generate
 type Feature = keyof PluginConfig["features"];
 type Projection = {
   id: string; feature: Feature | null; canonicalIds: readonly string[]; components: readonly string[];
-  profiles?: readonly string[]; alwaysAvailable?: boolean; definitionDigest: string;
+  requiresRuntime?: boolean; profiles?: readonly string[]; alwaysAvailable?: boolean; definitionDigest: string;
   definition: { id: string; version: string; title: string; description: string; effects: readonly { kind: string; resource: string }[] };
   tool: { name: string; displayName: string; description: string };
 };
@@ -36,7 +36,7 @@ export function capabilityCatalog(config: PluginConfig, report: DoctorReport, in
   const capabilities = entries.map((entry) => {
     const selectedByProfile = projectionSelected(entry, config.capabilityProfile);
     const enabled = selectedByProfile && (!entry.feature || config.features[entry.feature]);
-    const requiresRuntime = entry.feature !== null;
+    const requiresRuntime = entry.requiresRuntime ?? entry.feature !== null;
     const supported = !requiresRuntime || supportedRuntime;
     const componentsReady = entry.components.every((id) => report.components.some((component) => component.id === id && component.integrity === "ok"));
     const ready = supported && enabled && componentsReady && (!requiresRuntime || report.runtime.status === "ok");

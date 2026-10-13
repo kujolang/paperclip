@@ -7,12 +7,14 @@ import { failureEvidenceSchema } from "../features/failure/schema.js";
 import { understandingSchema } from "../features/understand/schema.js";
 import { languageReportSchema } from "../features/language/schema.js";
 
+import { verificationReportSchema } from "../features/verification/import.js";
+
 export type StateTarget = { entityType: "project" | "issue" | "run"; entityId: string; companyId: string };
 function scope(target: StateTarget, namespace: string, stateKey: string) {
   return { scopeKind: target.entityType as PluginStateScopeKind, scopeId: target.entityId, namespace: `${namespace}:${target.companyId}`, stateKey };
 }
 const schemas = { "review-latest": reviewPackSchema, "context-latest": contextPackSchema, "failure-latest": failureEvidenceSchema,
-  "understand-latest": understandingSchema, "language-latest": languageReportSchema };
+  "understand-latest": understandingSchema, "language-latest": languageReportSchema, "verification-latest": verificationReportSchema };
 function isArtifactKind(kind: string): kind is ArtifactKind { return (ARTIFACT_KINDS as readonly string[]).includes(kind); }
 const migrations = new WeakMap<PluginContext, Map<string, Promise<void>>>();
 

@@ -3375,6 +3375,92 @@ export const projections = [
         "source": "scent"
       }
     ]
+  },
+  {
+    "exportName": "importVerificationTool",
+    "id": "kujo.paperclip.verification.import",
+    "feature": "verification",
+    "canonicalIds": [],
+    "components": [],
+    "requiresRuntime": false,
+    "profiles": [
+      "review",
+      "ship"
+    ],
+    "tool": {
+      "name": "import-verification",
+      "displayName": "Import Verification Evidence",
+      "description": "Retain a redacted summary of supplied canonical evaluation-result JSON in the current project. Classifies skipped, partial, blocked and failed claims explicitly. Does not execute checks, authenticate the producer, or verify referenced evidence.",
+      "parametersSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "json"
+        ],
+        "properties": {
+          "json": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 65536,
+            "description": "Supplied kujo.evaluation-result/v1 JSON, at most 64 KiB. References are not opened."
+          }
+        }
+      }
+    },
+    "definition": {
+      "schema": "kujo.ability/v1",
+      "id": "kujo.paperclip.verification.import",
+      "version": "1.0.0",
+      "title": "Import Verification Evidence",
+      "description": "Retain a redacted summary of supplied canonical evaluation-result JSON in the current project. Classifies skipped, partial, blocked and failed claims explicitly. Does not execute checks, authenticate the producer, or verify referenced evidence.",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "json"
+        ],
+        "properties": {
+          "json": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 65536,
+            "description": "Supplied kujo.evaluation-result/v1 JSON, at most 64 KiB. References are not opened."
+          }
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "additionalProperties": true
+      },
+      "effects": [
+        {
+          "kind": "read",
+          "resource": "paperclip.company.entity"
+        },
+        {
+          "kind": "read",
+          "resource": "kujo.paperclip.evidence"
+        },
+        {
+          "kind": "write",
+          "resource": "kujo.paperclip.evidence"
+        },
+        {
+          "kind": "write",
+          "resource": "kujo.paperclip.activity"
+        }
+      ],
+      "idempotency": {
+        "mode": "none"
+      },
+      "semantics": {
+        "open_world": false,
+        "destructive": false,
+        "executes_code": false
+      }
+    },
+    "definitionDigest": "ecbcf0b7ad700f0ec6aee8fedbcc9750f56142cfcd162c1e5bbf7760012bb82a",
+    "canonicalDefinitions": []
   }
 ] as const;
 export const catalogTool = projections[0].tool;
@@ -3387,4 +3473,5 @@ export const reviewTool = projections[6].tool;
 export const failureTool = projections[7].tool;
 export const contextTool = projections[8].tool;
 export const contextContentTool = projections[9].tool;
+export const importVerificationTool = projections[10].tool;
 export const projectedTools = projections.map((entry) => entry.tool);

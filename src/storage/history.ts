@@ -8,7 +8,7 @@ import { redactText } from "../features/failure/redact.js";
 export const EVIDENCE_NAMESPACE = "plugin_kujo_evidence_c15d42de56";
 export const HISTORY_LIMIT = 20;
 export const HISTORY_DAYS = 30;
-export const ARTIFACT_KINDS = ["review-latest", "context-latest", "failure-latest", "understand-latest", "language-latest"] as const;
+export const ARTIFACT_KINDS = ["review-latest", "context-latest", "failure-latest", "understand-latest", "language-latest", "verification-latest"] as const;
 export type ArtifactKind = typeof ARTIFACT_KINDS[number];
 export type ReceiptOptions = { inputs?: unknown; definition?: unknown; parentId?: string; legacy?: boolean; projection?: ProjectionReceipt };
 export const evidenceMetadataSchema = z.object({
@@ -34,6 +34,7 @@ export function canonicalJson(value: unknown): string {
 }
 export function evidenceDigest(value: unknown) { return createHash("sha256").update(canonicalJson(value)).digest("hex"); }
 function resultLabel(kind: ArtifactKind, payload: Record<string, unknown>) {
+  if (kind === "verification-latest") return `imported ${payload.classification}`;
   if (kind === "failure-latest") return "supplied failure";
   if (payload.check === "failed" || payload.lint === "failed") return "failed";
   if (payload.lint === "warnings") return "warnings";
@@ -66,7 +67,7 @@ export async function appendEvidence(ctx: PluginContext, target: StateTarget, ki
   const inserted = await ctx.db.execute(`INSERT INTO ${table(ctx)}
     (id, company_id, entity_type, entity_id, kind, artifact_id, source_kind, result, digest, input_digest, definition_digest, parent_id, payload_bytes, payload)
     VALUES ($4, $1, $2, $3, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14::jsonb) ON CONFLICT DO NOTHING`,
-    [...targetParams(target), id, kind, artifactId, options.legacy ? "legacy" : kind === "failure-latest" ? "supplied" : "observed",
+    [...targetParams(target), id, kind, artifactId, options.legacy ? "legacy" : kind === "failure-latest" ? "supplied" : kind === "verification-latest" ? "imported" : "observed",
       resultLabel(kind, payload), digest, inputDigest, definitionDigest, options.parentId ?? null, bytes, serialized]);
   if (inserted.rowCount === 0) {
     const stored = await getEvidence(ctx, target, id);
@@ -118,7 +119,7 @@ export function compareEvidence(left: Awaited<ReturnType<typeof getEvidence>>, r
   const summarize = (payload: Record<string, unknown>) => {
     const footprint = payload.footprint as Record<string, unknown> | undefined;
     const intelligence = payload.intelligence as Record<string, unknown> | undefined;
-    return { check: payload.check, lint: payload.lint, status: payload.status, staleAtCreation: payload.stale,
+    return { classification: payload.classification, sourceKind: payload.sourceKind, claimedChecks: (payload.result as Record<string, unknown> | undefined)?.checks, check: payload.check, lint: payload.lint, status: payload.status, staleAtCreation: payload.stale,
       filesChanged: footprint?.filesChanged, churn: footprint?.churn, risk: footprint?.riskLevel,
       selectedFiles: Array.isArray(payload.files) ? payload.files.length : undefined,
       diagnostics: Array.isArray(payload.diagnostics) ? payload.diagnostics.length : undefined,

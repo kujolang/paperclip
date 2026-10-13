@@ -849,5 +849,89 @@
         "executes_code": false
       }
     }
+  },
+  {
+    "exportName": "importVerificationTool",
+    "id": "kujo.paperclip.verification.import",
+    "feature": "verification",
+    "canonicalIds": [],
+    "components": [],
+    "requiresRuntime": false,
+    "profiles": [
+      "review",
+      "ship"
+    ],
+    "tool": {
+      "name": "import-verification",
+      "displayName": "Import Verification Evidence",
+      "description": "Retain a redacted summary of supplied canonical evaluation-result JSON in the current project. Classifies skipped, partial, blocked and failed claims explicitly. Does not execute checks, authenticate the producer, or verify referenced evidence.",
+      "parametersSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "json"
+        ],
+        "properties": {
+          "json": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 65536,
+            "description": "Supplied kujo.evaluation-result/v1 JSON, at most 64 KiB. References are not opened."
+          }
+        }
+      }
+    },
+    "definition": {
+      "schema": "kujo.ability/v1",
+      "id": "kujo.paperclip.verification.import",
+      "version": "1.0.0",
+      "title": "Import Verification Evidence",
+      "description": "Retain a redacted summary of supplied canonical evaluation-result JSON in the current project. Classifies skipped, partial, blocked and failed claims explicitly. Does not execute checks, authenticate the producer, or verify referenced evidence.",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "json"
+        ],
+        "properties": {
+          "json": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 65536,
+            "description": "Supplied kujo.evaluation-result/v1 JSON, at most 64 KiB. References are not opened."
+          }
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "additionalProperties": true
+      },
+      "effects": [
+        {
+          "kind": "read",
+          "resource": "paperclip.company.entity"
+        },
+        {
+          "kind": "read",
+          "resource": "kujo.paperclip.evidence"
+        },
+        {
+          "kind": "write",
+          "resource": "kujo.paperclip.evidence"
+        },
+        {
+          "kind": "write",
+          "resource": "kujo.paperclip.activity"
+        }
+      ],
+      "idempotency": {
+        "mode": "none"
+      },
+      "semantics": {
+        "open_world": false,
+        "destructive": false,
+        "executes_code": false
+      }
+    }
   }
 ]
