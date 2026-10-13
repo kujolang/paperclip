@@ -26,7 +26,7 @@ type ComponentLock = {
   components: ComponentInfo[];
 };
 
-function packageRoot(): string {
+export function packageRoot(): string {
   const here = dirname(fileURLToPath(import.meta.url));
   return resolve(here, basename(here) === "dist" ? ".." : "../..");
 }

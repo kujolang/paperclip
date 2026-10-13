@@ -41,11 +41,16 @@ actions. **Needs attention** includes repair guidance when the configured binary
 is missing, incompatible, or not Kujo. Correct the configuration, then select
 **Check again**. Disabled features remain unavailable even when the runtime is healthy.
 
-1. Open the Paperclip issue you want to work on.
-2. Generate a focused **Context Pack** before the agent reads the repository broadly.
-3. Make and test the change with the project's normal tools.
-4. Generate a **Review Pack** to inspect scope, risk, and suggested checks.
-5. If a command fails, save its bounded output as **Failure Evidence**.
+1. Open the Paperclip issue you want to work on. Kujo explains whether its workspace
+   is missing, empty, clean, or ready to review. The context task starts with the
+   issue title and description; edit it to narrow the work.
+2. Select **Try the Kujo example** to check and run a small bundled program. It
+   demonstrates structured data, a function, and JSON output without a repository,
+   network access, or credentials. View its source and result in the panel.
+3. Generate a focused **Context Pack** before the agent reads the repository broadly.
+4. Make and test the change with the project's normal tools.
+5. Generate a **Review Pack** to inspect scope, risk, and suggested checks.
+6. If a command fails, save its bounded output as **Failure Evidence**.
 
 Kujo stores the latest result in Paperclip plugin state. It does not write reports into
 the project repository.

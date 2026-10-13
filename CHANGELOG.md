@@ -8,6 +8,12 @@
 
 ## Unreleased
 
+- Keep run detail read-only by hiding the unsupported clear-data action.
+
+- Add first-use workspace guidance, company-scoped issue task defaults, and a
+  checked/runnable bundled Kujo example with source and actual output.
+- Add the `issues.read` capability and `features.examples` configuration switch.
+
 - Fix Windows selection paths and CaseFile directory creation in the canonical component sources.
 
 - Consume metadata-only Scent dry-run selection without writing temporary context artifacts.

@@ -95,3 +95,17 @@ Each path must belong to the referenced Context Pack and remain inside the works
 The plugin stores the latest normalized artifact in Paperclip plugin state for its project, issue, or run scope. It does not write reports into the project workspace.
 
 Schemas are published in `schemas/`. Consumers should ignore unknown fields added by compatible future releases.
+
+## First run without a repository
+
+Open a project or issue and select **Try the Kujo example**. The plugin checks
+the shipped source and executes it with Kujo host-effect capabilities disabled
+in a temporary directory. The panel shows the source and actual JSON output;
+it labels this as an example, not project evidence. No project files are changed.
+
+For project work, connect a readable local Git workspace in Paperclip project
+settings. Empty workspaces explain that source files are needed for context
+selection. Clean workspaces suggest context selection before a change. Issue
+titles/descriptions seed the editable task through company-scoped `issues.read`.
+Upgrades need that read capability enabled by Paperclip; issue text is treated
+as input text, not as instructions to the plugin.

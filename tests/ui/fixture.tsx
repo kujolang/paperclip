@@ -46,10 +46,16 @@ const detailData = parameters.get("state") === "populated"
   : { review: null, failure: null, context: null };
 window.__KUJO_FIXTURE_DATA__ = {
   ...detailData,
+  suggestedTask: parameters.get("issueTask") ? "Investigate the OAuth callback" : "",
+  workspace: { state: parameters.get("workspace") ?? "ready", message: parameters.get("workspace") === "missing"
+    ? "Connect a local project workspace in Paperclip project settings, then check again."
+    : parameters.get("workspace") === "empty" ? "This Git workspace is empty. Add a Kujo source file to begin selecting task context."
+    : "Your workspace is clean. Select context to understand the project before making a change." },
   readiness: {
     status: parameters.get("runtime") === "broken" ? "error" : "ok",
     runtime: { status: parameters.get("runtime") === "broken" ? "error" : "ok", repair: "Repair the configured Kujo binary in plugin settings." },
     capabilities: {
+      examples: parameters.get("runtime") === "broken" ? "blocked" : "ready",
       review: parameters.get("runtime") === "broken" ? "blocked" : "ready",
       context: parameters.get("runtime") === "broken" ? "blocked" : "ready",
       failureEvidence: parameters.get("runtime") === "broken" ? "blocked" : "ready",

@@ -1,4 +1,4 @@
-import { useState, type CSSProperties, type ReactNode } from "react";
+import { useEffect, useState, type CSSProperties, type ReactNode } from "react";
 import {
   StatusBadge,
   Spinner,
@@ -10,8 +10,10 @@ import type { ReviewPack } from "../features/review/schema.js";
 import type { FailureEvidence } from "../features/failure/schema.js";
 import type { ContextPack } from "../features/context/schema.js";
 import type { DoctorReport } from "../health/doctor.js";
+import type { WorkspaceReadiness } from "../paperclip/workspace.js";
+import type { ExampleResult } from "../features/onboarding/example.js";
 
-type Detail = { review: ReviewPack | null; failure: FailureEvidence | null; context: ContextPack | null; readiness?: DoctorReport };
+type Detail = { review: ReviewPack | null; failure: FailureEvidence | null; context: ContextPack | null; readiness?: DoctorReport; workspace?: WorkspaceReadiness; suggestedTask?: string };
 type PanelProps = PluginDetailTabProps & { compact?: boolean };
 
 const colors = {
@@ -283,12 +285,17 @@ function KujoPanel({ context, compact = false }: PanelProps) {
   const generateContext = usePluginAction("generate-context");
   const captureFailure = usePluginAction("capture-failure");
   const clearArtifacts = usePluginAction("clear-artifacts");
-  const [task, setTask] = useState("");
+  const runExample = usePluginAction("run-example");
+  const [example, setExample] = useState<ExampleResult | null>(null);
+  const [task, setTask] = useState<string | null>(null);
   const [failureTitle, setFailureTitle] = useState("");
   const [failureLog, setFailureLog] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const canGenerate = context.entityType === "project" || context.entityType === "issue";
+  const taskValue = task ?? data?.suggestedTask ?? "";
+  const workspaceAvailable = data?.workspace?.state === "ready" || data?.workspace?.state === "empty";
+  useEffect(() => { setTask(null); setExample(null); setFailureTitle(""); setFailureLog(""); }, [context.entityId, context.entityType]);
 
   async function run(label: string, fn: () => Promise<unknown>) {
     setBusy(label);
@@ -317,7 +324,7 @@ function KujoPanel({ context, compact = false }: PanelProps) {
           <strong style={{ fontSize: compact ? 17 : 20, letterSpacing: "-0.02em" }}>Kujo</strong>
           <span style={muted}>Scope the work. Review the change. Preserve the evidence.</span>
         </div>
-        <StatusBadge status={data?.readiness?.status === "ok" ? "ok" : "warning"} label={data?.readiness?.status === "ok" ? "READY" : "NEEDS ATTENTION"} />
+        <StatusBadge status={data?.readiness?.status === "ok" && (!canGenerate || workspaceAvailable) ? "ok" : "warning"} label={data?.readiness?.status === "ok" && (!canGenerate || workspaceAvailable) ? "READY" : "NEEDS ATTENTION"} />
       </header>
 
       {data?.readiness?.status !== "ok" && <div role="status" style={card}>
@@ -326,6 +333,25 @@ function KujoPanel({ context, compact = false }: PanelProps) {
       </div>}
 
       {actionError && <div role="alert" style={{ ...card, borderColor: colors.danger, color: colors.danger }}>{actionError}</div>}
+
+      {canGenerate && data?.workspace && <section style={card} aria-label="Getting started with Kujo">
+        <strong>Start with Kujo</strong>
+        <div role="status" style={muted}>{data.workspace.message}</div>
+        <div style={muted}>Try a bundled Kujo program: structured data, a function, and JSON output. It runs locally without reading or changing your project files.</div>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <ActionButton disabled={busy !== null || data.readiness?.capabilities.examples !== "ready"}
+            onClick={() => run("example", async () => { setExample(await runExample({}) as ExampleResult); })}>
+            {busy === "example" ? "Checking and running…" : "Try the Kujo example"}
+          </ActionButton>
+          {!workspaceAvailable && <ActionButton tone="secondary" onClick={() => { void refresh(); }}>Check workspace again</ActionButton>}
+        </div>
+        {example && <div>
+          <strong>Example passed · Kujo {example.runtimeVersion}</strong>
+          <div style={muted}>Bundled example, not an analysis of your project. Source check and execution both passed.</div>
+          <details><summary>View Kujo source</summary><pre style={{ overflow: "auto", fontSize: 12 }}>{example.source}</pre></details>
+          <pre aria-label="Example output" style={{ whiteSpace: "pre-wrap" }}>{example.output}</pre>
+        </div>}
+      </section>}
 
       {canGenerate && (
         <section style={card}>
@@ -337,7 +363,7 @@ function KujoPanel({ context, compact = false }: PanelProps) {
             <div style={actionCard}>
               <SectionTitle title="Review changes" detail="Measure blast radius and prepare a review handoff." />
               <div style={{ flex: 1 }} />
-              <ActionButton disabled={busy !== null || data?.readiness?.capabilities.review !== "ready"} onClick={() => run("review", () => generateReview({ entityType: context.entityType, entityId: context.entityId }))}>
+              <ActionButton disabled={busy !== null || !workspaceAvailable || data?.readiness?.capabilities.review !== "ready"} onClick={() => run("review", () => generateReview({ entityType: context.entityType, entityId: context.entityId }))}>
                 {busy === "review" ? "Generating…" : "Generate Review Pack"} <span aria-hidden="true">→</span>
               </ActionButton>
             </div>
@@ -347,7 +373,7 @@ function KujoPanel({ context, compact = false }: PanelProps) {
               <label style={{ ...eyebrow, display: "block" }}>
                 Task
                 <textarea
-                  value={task}
+                  value={taskValue}
                   onChange={(event) => setTask(event.target.value)}
                   maxLength={10_000}
                   placeholder="What should the agent investigate?"
@@ -355,7 +381,7 @@ function KujoPanel({ context, compact = false }: PanelProps) {
                   style={input}
                 />
               </label>
-              <ActionButton disabled={busy !== null || !task.trim() || data?.readiness?.capabilities.context !== "ready"} onClick={() => run("context", () => generateContext({ entityType: context.entityType, entityId: context.entityId, task, depth: "focused" }))}>
+              <ActionButton disabled={busy !== null || !workspaceAvailable || data?.workspace?.state === "empty" || !taskValue.trim() || data?.readiness?.capabilities.context !== "ready"} onClick={() => run("context", () => generateContext({ entityType: context.entityType, entityId: context.entityId, task: taskValue, depth: "focused" }))}>
                 {busy === "context" ? "Selecting…" : "Generate Context Pack"} <span aria-hidden="true">→</span>
               </ActionButton>
             </div>
@@ -383,7 +409,7 @@ function KujoPanel({ context, compact = false }: PanelProps) {
                   style={input}
                 />
               </label>
-              <ActionButton disabled={busy !== null || !failureTitle.trim() || data?.readiness?.capabilities.failureEvidence !== "ready"} onClick={() => run("failure", () => captureFailure({ entityType: context.entityType, entityId: context.entityId, title: failureTitle, log: failureLog }))}>
+              <ActionButton disabled={busy !== null || !workspaceAvailable || !failureTitle.trim() || data?.readiness?.capabilities.failureEvidence !== "ready"} onClick={() => run("failure", () => captureFailure({ entityType: context.entityType, entityId: context.entityId, title: failureTitle, log: failureLog }))}>
                 {busy === "failure" ? "Capturing…" : "Capture Failure Evidence"} <span aria-hidden="true">→</span>
               </ActionButton>
             </div>
@@ -397,7 +423,7 @@ function KujoPanel({ context, compact = false }: PanelProps) {
         <ContextSection context={data?.context ?? null} />
       </div>
 
-      {hasArtifacts && (
+      {hasArtifacts && canGenerate && (
         <div style={{ display: "flex", justifyContent: "flex-end" }}>
           <ActionButton tone="danger" disabled={busy !== null} onClick={() => run("clear", () => clearArtifacts({ entityType: context.entityType, entityId: context.entityId }))}>
             {busy === "clear" ? "Clearing…" : "Clear Kujo data"}

@@ -1,0 +1,14 @@
+# A small, local Kujo program: structured data, a function, and JSON output.
+func order_total(items) {
+    mut total := 0
+    for item in items {
+        total = total + item["price"] * item["quantity"]
+    }
+    return total
+}
+
+items := [
+    {"name": "Notebook", "price": 12, "quantity": 2},
+    {"name": "Pencil", "price": 3, "quantity": 4}
+]
+print(to_json({"language": "Kujo", "items": len(items), "total": order_total(items)}))

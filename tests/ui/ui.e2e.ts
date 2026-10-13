@@ -42,7 +42,7 @@ test("run detail tab is read-only", async ({ page }) => {
   await expect(page.getByText("Failure Evidence")).toBeVisible();
   await expect(page.getByText("Context Pack")).toBeVisible();
   await expect(page.getByText("Create a reviewable work record")).toHaveCount(0);
-  await expect(page.getByRole("button", { name: "Clear Kujo data" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Clear Kujo data" })).toHaveCount(0);
 });
 
 for (const testCase of [
@@ -66,7 +66,26 @@ test("broken runtime never claims readiness or permits generation", async ({ pag
   await expect(page.getByText("Repair the configured Kujo binary in plugin settings.")).toBeVisible();
   await page.getByLabel("Task").fill("Inspect this task");
   await page.getByLabel("Title").fill("Failure");
-  for (const name of [/Generate Review Pack/, /Generate Context Pack/, /Capture Failure Evidence/]) {
+  for (const name of [/Generate Review Pack/, /Generate Context Pack/, /Capture Failure Evidence/, /Try the Kujo example/]) {
     await expect(page.getByRole("button", { name })).toBeDisabled();
   }
+});
+
+test("missing workspace offers a real example action and setup guidance", async ({ page }) => {
+  await page.goto("/?surface=task&entity=issue&workspace=missing&issueTask=1");
+  await expect(page.getByText(/Connect a local project workspace/)).toBeVisible();
+  await expect(page.getByLabel("Task")).toHaveValue("Investigate the OAuth callback");
+  await expect(page.getByRole("button", { name: /Generate Context Pack/ })).toBeDisabled();
+  await expect(page.getByRole("button", { name: /Generate Review Pack/ })).toBeDisabled();
+  await page.getByRole("button", { name: "Try the Kujo example" }).click();
+  await expect(page.getByText(/Example passed/)).toBeVisible();
+  await expect(page.getByLabel("Example output")).toContainText('"total":36');
+  await expect.poll(() => page.evaluate(() => window.__KUJO_ACTIONS__?.[0])).toEqual({ action: "run-example", input: {} });
+});
+
+test("empty workspace explains why context cannot be selected", async ({ page }) => {
+  await page.goto("/?surface=task&entity=issue&workspace=empty&issueTask=1");
+  await expect(page.getByText(/This Git workspace is empty/)).toBeVisible();
+  await expect(page.getByRole("button", { name: /Generate Context Pack/ })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Try the Kujo example" })).toBeEnabled();
 });

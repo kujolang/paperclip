@@ -30,5 +30,6 @@ export function usePluginAction(action: string) {
   return async (input: unknown) => {
     window.__KUJO_ACTIONS__ ??= [];
     window.__KUJO_ACTIONS__.push({ action, input });
+    if (action === "run-example") return { status: "passed", checked: true, runtimeVersion: "1.8.1", source: "print(36)", output: '{"items":2,"language":"Kujo","total":36}' };
   };
 }
