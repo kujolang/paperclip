@@ -1,0 +1,157 @@
+# Concord — Manifest ↔ Docs alignment checks
+
+from src.common import read_file_safe, is_truthy
+from src.scanner import find_readme, find_manifest_files, extract_toml_field, extract_json_string_field, extract_badge_version
+from src.checks.shared import assess_artifacts
+
+export func check_manifest_docs(dir_path) {
+	mut findings := []
+
+	mut readme_path := find_readme(dir_path)
+	mut manifest_candidates := find_manifest_files(dir_path)
+
+	if len(manifest_candidates) == 0 {
+		findings = push(findings, {
+			"id": "manifest-docs-no-manifest",
+			"severity": "medium",
+			"confidence": "high",
+			"category": "manifest-docs-alignment",
+			"title": "No manifest files found",
+			"summary": "No kennel.toml, kujo.toml, or other manifest files found.",
+			"source_artifact": "(none)",
+			"target_artifact": "(none)",
+			"expected": "A manifest file should exist for the project.",
+			"actual": "No manifest files found.",
+			"suggested_fix": "Create a kennel.toml or kujo.toml for the project.",
+			"human_review_required": false
+		})
+		return findings
+	}
+
+	if readme_path == "" {
+		findings = push(findings, {
+			"id": "manifest-docs-no-readme",
+			"severity": "low",
+			"confidence": "high",
+			"category": "manifest-docs-alignment",
+			"title": "No README for manifest comparison",
+			"summary": "Manifest files exist but no README found for cross-referencing.",
+			"source_artifact": "(none)",
+			"target_artifact": "(none)",
+			"expected": "A README should exist alongside manifest files.",
+			"actual": "No README found.",
+			"suggested_fix": "Add a README.md.",
+			"human_review_required": false
+		})
+		return findings
+	}
+
+	manifest_assessment := assess_artifacts(manifest_candidates, "manifest-docs-alignment")
+	mut manifest_files := manifest_assessment["paths"]
+	mut a := 0
+	while a < len(manifest_assessment["findings"]) {
+		findings = push(findings, manifest_assessment["findings"][a])
+		a = a + 1
+	}
+	readme_assessment := assess_artifacts([readme_path], "manifest-docs-alignment")
+	a = 0
+	while a < len(readme_assessment["findings"]) {
+		findings = push(findings, readme_assessment["findings"][a])
+		a = a + 1
+	}
+	if len(manifest_files) == 0 || len(readme_assessment["paths"]) == 0 {
+		return findings
+	}
+	readme_path = readme_assessment["paths"][0]
+
+	readme_content := read_file_safe(readme_path)
+
+	mut m := 0
+	while m < len(manifest_files) {
+		manifest_path := manifest_files[m]
+		manifest_content := read_file_safe(manifest_path)
+
+		# Extract package name from manifest
+		mut manifest_name := ""
+		mut is_toml_manifest := 0
+		if is_truthy(ends_with(manifest_path, "kennel.toml")) == 1 { is_toml_manifest = 1 }
+		if is_truthy(ends_with(manifest_path, "kujo.toml")) == 1 { is_toml_manifest = 1 }
+		if is_toml_manifest == 1 {
+			manifest_name = extract_toml_field(manifest_content, "name")
+		}
+		if is_truthy(ends_with(manifest_path, "Cargo.toml")) == 1 {
+			manifest_name = extract_toml_field(manifest_content, "name")
+		}
+		if is_truthy(ends_with(manifest_path, "package.json")) == 1 {
+			manifest_name = extract_json_string_field(manifest_content, "name")
+		}
+
+		# Extract version from manifest
+		mut manifest_version := ""
+		mut is_toml_manifest2 := 0
+		if is_truthy(ends_with(manifest_path, "kennel.toml")) == 1 { is_toml_manifest2 = 1 }
+		if is_truthy(ends_with(manifest_path, "kujo.toml")) == 1 { is_toml_manifest2 = 1 }
+		if is_toml_manifest2 == 1 {
+			manifest_version = extract_toml_field(manifest_content, "version")
+		}
+		if is_truthy(ends_with(manifest_path, "Cargo.toml")) == 1 {
+			manifest_version = extract_toml_field(manifest_content, "version")
+		}
+		if is_truthy(ends_with(manifest_path, "package.json")) == 1 {
+			manifest_version = extract_json_string_field(manifest_content, "version")
+		}
+
+		# Compare name against README title
+		if manifest_name != "" {
+			# Check if README title contains the package name
+			mut readme_has_name := is_truthy(contains(to_lower(readme_content), to_lower(manifest_name)))
+			if readme_has_name == 0 {
+				findings = push(findings, {
+					"id": "manifest-docs-name-mismatch-" + to_string(m),
+					"severity": "medium",
+					"confidence": "medium",
+					"category": "manifest-docs-alignment",
+					"title": "Package name not found in README",
+					"summary": "Manifest declares name '" + manifest_name + "' but README does not mention it.",
+					"source_artifact": manifest_path,
+					"target_artifact": readme_path,
+					"expected": "Package name in manifest should appear in README.",
+					"actual": "Name '" + manifest_name + "' not found in README.",
+					"suggested_fix": "Ensure README references the correct package name.",
+					"human_review_required": true
+				})
+			}
+		}
+
+		# Compare version against README badge
+		if manifest_version != "" {
+			badge_version := extract_badge_version(readme_content)
+			mut badge_mismatch := 0
+			if badge_version != "" {
+				if badge_version != manifest_version {
+					badge_mismatch = 1
+				}
+			}
+			if badge_mismatch == 1 {
+				findings = push(findings, {
+					"id": "manifest-docs-version-badge-mismatch-" + to_string(m),
+					"severity": "high",
+					"confidence": "medium",
+					"category": "manifest-docs-alignment",
+					"title": "Manifest version differs from README badge version",
+					"summary": "Manifest declares v" + manifest_version + " but README badge shows v" + badge_version,
+					"source_artifact": manifest_path,
+					"target_artifact": readme_path,
+					"expected": "Version in manifest should match version badge in README.",
+					"actual": "Manifest: v" + manifest_version + ", Badge: v" + badge_version,
+					"suggested_fix": "Update version in manifest or README badge to match.",
+					"human_review_required": true
+				})
+			}
+		}
+
+		m = m + 1
+	}
+
+	return findings
+}

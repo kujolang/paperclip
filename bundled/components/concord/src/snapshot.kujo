@@ -1,0 +1,51 @@
+# Admission for host-owned, symlink-free private snapshots. This preflight does
+# not copy files, run checks, grant permissions, or sandbox the normal CLI.
+from src.common import read_file_safe
+from src.scanner import extract_toml_field, find_readme, extract_fenced_commands, option_reference_value
+
+export func snapshot_relative_reference(value) {
+	if len(value) == 0 || len(value) > 1000 { return false }
+	if starts_with(value, "/") || starts_with(value, "~") { return false }
+	if contains(value, "\\") == 1 || contains(value, ":") == 1 { return false }
+	if len(regex_find_all(value, "[\\x00-\\x1f\\x7f]")) > 0 { return false }
+	parts := split(value, "/")
+	for part in parts {
+		if part == ".." || part == ".git" { return false }
+	}
+	return true
+}
+
+export func validate_snapshot_references(dir_path) {
+	mut issues := []
+	for name in ["kennel.toml", "kujo.toml"] {
+		content := read_file_safe(join_path(dir_path, name))
+		entry := extract_toml_field(content, "entry")
+		if entry != "" && !snapshot_relative_reference(entry) {
+			issues = push(issues, {"artifact": name, "field": "entry", "reason": "Snapshot entry must be a portable relative path without parent traversal."})
+		}
+		if name == "kennel.toml" {
+			package_name := extract_toml_field(content, "name")
+			if package_name != "" && !snapshot_relative_reference(package_name + ".kujo") {
+				issues = push(issues, {"artifact": name, "field": "name", "reason": "Snapshot package-name entry fallback must stay relative."})
+			}
+		}
+	}
+	readme := find_readme(dir_path)
+	if readme != "" {
+		commands := extract_fenced_commands(read_file_safe(readme))
+		for command in commands {
+			references := regex_find_all(command, "(?:--dir|--output|-o|--file|-f|--config|-c)\\s+(\"[^\"]+\"|'[^']+'|\\S+)")
+			for reference in references {
+				value := option_reference_value(reference)
+				# Match the canonical example check's exclusions: output locations
+				# and illustrative /path/to values never cause filesystem probes.
+				if starts_with(reference, "--output ") || starts_with(reference, "-o ") { continue }
+				if starts_with(value, "-" ) || starts_with(value, "/path/to/") { continue }
+				if !snapshot_relative_reference(value) {
+					issues = push(issues, {"artifact": "README", "field": "example input", "reason": "Snapshot example inputs must stay relative; external paths cannot be inspected."})
+				}
+			}
+		}
+	}
+	return issues
+}

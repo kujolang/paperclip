@@ -195,3 +195,7 @@ Enable Verification, define the root `fence.json` or `fence.toml` policy, then s
 ```
 
 Agents call `kujolang.paperclip:inspect-architecture` with `{}`. Findings identify the file/line, dependency zones, declared owners and suggested remedy. Review the selected/inspected counts, omitted files, native skips and exceptions alongside the threshold result. The plugin never executes project commands or tests in this action. See [Verification workflows](VERIFICATION.md) for bounds and partial-result semantics. Results use the same scoped history, comparison, export and human-only attachment workflow as other evidence.
+
+## Inspect artifact drift
+
+Enable Verification and select **Inspect artifact drift** in a project or issue. Agents call `kujolang.paperclip:inspect-artifact-drift` with `{}`; the host supplies workspace and company identity. Concord compares recognizable project artifacts and retains severity, confidence, source/target, expected/observed differences and suggested fixes. Review partial coverage and stale indicators before using findings. It never executes examples or declared evaluations. See [Verification](VERIFICATION.md#native-artifact-drift) for limits and result classifications.

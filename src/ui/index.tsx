@@ -23,9 +23,10 @@ import type { EvidenceMetadata } from "../storage/history.js";
 import type { VerificationReport } from "../features/verification/import.js";
 import type { SpecReport } from "../features/spec/inspect.js";
 
+import type { ConcordReport } from "../features/concord/schema.js";
 import type { FenceReport } from "../features/fence/schema.js";
 
-type Detail = { fence?: FenceReport | null; spec?: SpecReport | null; specs?: { files: string[]; truncated: boolean }; verification?: VerificationReport | null; verificationEnabled?: boolean; catalog?: CapabilityCatalog; history?: EvidenceMetadata[]; language?: LanguageReport | null; sources?: { files: string[]; truncated: boolean }; understanding?: Understanding | null; review: ReviewPack | null; failure: FailureEvidence | null; context: ContextPack | null; readiness?: DoctorReport; workspace?: WorkspaceReadiness; suggestedTask?: string };
+type Detail = { concord?: ConcordReport | null; fence?: FenceReport | null; spec?: SpecReport | null; specs?: { files: string[]; truncated: boolean }; verification?: VerificationReport | null; verificationEnabled?: boolean; catalog?: CapabilityCatalog; history?: EvidenceMetadata[]; language?: LanguageReport | null; sources?: { files: string[]; truncated: boolean }; understanding?: Understanding | null; review: ReviewPack | null; failure: FailureEvidence | null; context: ContextPack | null; readiness?: DoctorReport; workspace?: WorkspaceReadiness; suggestedTask?: string };
 type PanelProps = PluginDetailTabProps & { compact?: boolean };
 
 const colors = {
@@ -414,6 +415,47 @@ function VerificationSection({ context, report, refresh }: { context: PanelProps
   </section>;
 }
 
+function ConcordSection({ context, report, ready, refresh }: { context: PanelProps["context"]; report: ConcordReport | null; ready: boolean; refresh: () => void }) {
+  const inspect = usePluginAction("inspect-artifact-drift");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const active = useRef(true);
+  useEffect(() => { active.current = true; return () => { active.current = false; }; }, []);
+  async function submit() {
+    setBusy(true); setError(null);
+    try {
+      await inspect({ entityType: context.entityType, entityId: context.entityId });
+      if (active.current) await refresh();
+    } catch (value) { if (active.current) setError(value instanceof Error ? value.message : String(value)); }
+    finally { if (active.current) setBusy(false); }
+  }
+  return <section style={{ ...card, overflowWrap: "anywhere" }} aria-label="Artifact drift">
+    <SectionTitle title="Artifact drift" detail="Keep documentation, examples and metadata aligned with your project." badge={<StatusBadge status="pending" label="DRIFT LEADS" />} />
+    <div style={muted}>Experimental Concord checks compare recognizable README, manifest, changelog, Spec, Eval, documentation and example artifacts. It reads a private snapshot without executing project commands or examples.</div>
+    <ActionButton disabled={busy || !ready} onClick={() => { void submit(); }}>{busy ? "Inspecting artifact drift…" : "Inspect artifact drift"}</ActionButton>
+    {!ready && <div style={muted}>A working Kujo runtime and intact Concord component are required. Check runtime readiness above.</div>}
+    {error && <div role="alert" style={{ color: colors.danger }}>{error}</div>}
+    {report ? <div aria-label="Artifact drift result">
+      <strong>Artifact drift: {report.status}{report.stale ? " · STALE — inspect again" : ""}</strong>
+      <p>{report.message}</p>
+      <div style={muted}>Concord {report.provenance.version} · {report.coverage.copied} files copied from {report.coverage.gitVisible} Git-visible paths. Copied files are available to native discovery; this is not a count of checked artifacts.</div>
+      {report.coverage.truncated && <p>Path inventory was truncated at 1,000 entries. Coverage is incomplete.</p>}
+      {report.coverage.rejectedNames > 0 && <p>{report.coverage.rejectedNames} nonportable or unsafe path names were excluded.</p>}
+      {report.issues.slice(0, 100).map((item, index) => <p key={index}>{item.artifact} · {item.field}: {item.reason}</p>)}
+      {report.report && <>
+        <p>{report.report.summary.total_findings} drift {report.report.summary.total_findings === 1 ? "lead" : "leads"} · Highest severity: {report.report.summary.highest_severity}</p>
+        {report.report.findings.length ? <ul>{report.report.findings.slice(0, 100).map((item, index) => <li key={index}>
+          <strong>{item.severity}: {item.title}</strong><div>{item.category} · Confidence: {item.confidence} · Human review: {item.human_review_required ? "required" : "suggested"}</div>
+          <p>{item.summary}</p><div>Source: {item.source_artifact} → Target: {item.target_artifact}</div>
+          <div>Expected: {item.expected}</div><div>Observed: {item.actual}</div><p>Suggested fix: {item.suggested_fix}</p>
+        </li>)}</ul> : <div style={muted}>No drift leads in the admitted artifact scope.</div>}
+      </>}
+      {!!report.coverage.omitted.length && <details open><summary>Files omitted ({report.coverage.omitted.length})</summary><ul>{report.coverage.omitted.slice(0, 100).map((item, index) => <li key={index}>{item.path}: {item.reason}</li>)}</ul></details>}
+      <p style={muted}>{report.scope} Lists show at most 100 items each; use Evidence history to inspect or export the full retained result.</p>
+    </div> : <div style={muted}>No artifact drift inspection yet.</div>}
+  </section>;
+}
+
 function FenceSection({ context, report, ready, refresh }: { context: PanelProps["context"]; report: FenceReport | null; ready: boolean; refresh: () => void }) {
   const inspect = usePluginAction("inspect-architecture");
   const [busy, setBusy] = useState(false);
@@ -563,7 +605,7 @@ function KujoPanel({ context, compact = false }: PanelProps) {
   if (loading) return <Spinner label="Loading Kujo workspace intelligence" />;
   if (error) return <div role="alert" style={{ ...card, color: colors.danger }}>Unable to load Kujo: {error.message}</div>;
 
-  const hasArtifacts = (data?.history?.length ?? 0) > 0 || data?.verification || data?.fence || data?.spec || data?.language || data?.understanding || Boolean(data?.review || data?.failure || data?.context);
+  const hasArtifacts = (data?.history?.length ?? 0) > 0 || data?.verification || data?.concord || data?.fence || data?.spec || data?.language || data?.understanding || Boolean(data?.review || data?.failure || data?.context);
 
   return (
     <div style={{ ...panel, ...(compact ? { marginTop: 12 } : {}) }}>
@@ -667,6 +709,7 @@ function KujoPanel({ context, compact = false }: PanelProps) {
 
       {data?.catalog && <CapabilityExplorer key={`catalog:${targetKey}`} catalog={data.catalog} />}
 
+      {data?.verificationEnabled && canGenerate && <ConcordSection key={`concord:${targetKey}:${data.concord?.id ?? "none"}`} context={context} report={data.concord ?? null} ready={data.readiness?.capabilities.concord === "ready"} refresh={refresh} />}
       {data?.verificationEnabled && canGenerate && <FenceSection key={`fence:${targetKey}:${data.fence?.id ?? "none"}`} context={context} report={data.fence ?? null} ready={data.readiness?.capabilities.fence === "ready"} refresh={refresh} />}
       {data?.verificationEnabled && canGenerate && <SpecSection key={`spec:${targetKey}:${data.spec?.id ?? "none"}`} context={context} report={data.spec ?? null} files={data.specs ?? { files: [], truncated: false }} ready={data.readiness?.capabilities.spec === "ready"} refresh={refresh} />}
       {data?.verificationEnabled && <VerificationSection key={`verification:${targetKey}:${data.verification?.id ?? "none"}`} context={context} report={data.verification ?? null} refresh={refresh} />}

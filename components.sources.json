@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "bundleVersion": "0.4.0",
+  "bundleVersion": "0.5.0",
   "runtime": {
     "minimumVersion": "1.8.1"
   },
@@ -197,6 +197,37 @@
           "name": "analysis",
           "format": "json",
           "schema": "schemas/fence-analysis.schema.json"
+        }
+      ]
+    },
+    {
+      "id": "concord",
+      "repository": "https://github.com/kujolang/concord",
+      "sourceDirectory": "concord",
+      "gitCommit": "767b28dec5532639c01259eb47d1b19af995e552",
+      "version": "1.0.0",
+      "entrypoint": "concord.kujo",
+      "files": [
+        "LICENSE",
+        "concord.kujo",
+        "src/checks/cli_docs.kujo",
+        "src/checks/example_validity.kujo",
+        "src/checks/manifest_docs.kujo",
+        "src/checks/shared.kujo",
+        "src/checks/source_of_truth.kujo",
+        "src/checks/spec_eval.kujo",
+        "src/checks/version_consistency.kujo",
+        "src/common.kujo",
+        "src/fix_tasks.kujo",
+        "src/reporter.kujo",
+        "src/scanner.kujo",
+        "src/snapshot.kujo"
+      ],
+      "outputContracts": [
+        {
+          "name": "analysis",
+          "format": "json",
+          "schema": "schemas/concord-analysis.schema.json"
         }
       ]
     }

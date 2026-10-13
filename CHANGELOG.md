@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Add native Concord artifact drift inspection, explicit coverage and reference admission, project/issue UI, agent tool and scoped evidence history.
+- Share the bounded snapshot reader with Fence and pin the eighth canonical component with verified provenance.
+
 ## 0.1.9 — 2026-10-13
 
 - Isolate canonical component imports from project modules in VM and interpreter modes.

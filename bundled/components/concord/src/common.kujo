@@ -1,0 +1,244 @@
+# Concord — common utilities (arg parsing, string helpers)
+
+export func is_truthy(value) {
+	s := to_lower(to_string(value))
+	if s == "1" { return 1 }
+	if s == "true" { return 1 }
+	return 0
+}
+
+# --- Argument parsing ---
+
+export func parse_flag(argv, flag, default_val) {
+	mut i := 0
+	while i < len(argv) {
+		if argv[i] == flag {
+			if i + 1 < len(argv) {
+				next := argv[i + 1]
+				if is_truthy(starts_with(next, "-")) == 1 {
+					return "true"
+				}
+				return next
+			}
+			return "true"
+		}
+		i = i + 1
+	}
+	return default_val
+}
+
+export func has_flag(argv, flag) {
+	mut i := 0
+	while i < len(argv) {
+		if argv[i] == flag {
+			return 1
+		}
+		i = i + 1
+	}
+	return 0
+}
+
+export func parse_subcommand(argv) {
+	if len(argv) < 1 {
+		return ""
+	}
+	first := argv[0]
+	if is_truthy(starts_with(first, "-")) == 1 {
+		return ""
+	}
+	return first
+}
+
+export func is_flag_token(value) {
+	return is_truthy(starts_with(to_string(value), "-"))
+}
+
+export func shift_args(argv) {
+	mut result := []
+	mut i := 1
+	while i < len(argv) {
+		result = push(result, argv[i])
+		i = i + 1
+	}
+	return result
+}
+
+# --- String helpers ---
+
+export func trim_space(s) {
+	return trim(s)
+}
+
+export func to_lowercase(s) {
+	return to_lower(s)
+}
+
+# Render repository- and argument-controlled text without terminal control bytes.
+# JSON output intentionally preserves original values and relies on JSON escaping.
+export func sanitize_terminal_text(value) {
+	mut text := to_string(value)
+	mut terminal_controls := parse_json("[\"\\u0007\",\"\\u0008\",\"\\u0009\",\"\\u000a\",\"\\u000b\",\"\\u000c\",\"\\u000d\",\"\\u000e\",\"\\u000f\",\"\\u001b\",\"\\u007f\"]")
+	mut terminal_escapes := ["\\u0007", "\\u0008", "\\u0009", "\\u000a", "\\u000b", "\\u000c", "\\u000d", "\\u000e", "\\u000f", "\\u001b", "\\u007f"]
+	mut i := 0
+	while i < len(terminal_controls) {
+		text = replace(text, to_string(terminal_controls[i]), to_string(terminal_escapes[i]))
+		i = i + 1
+	}
+	return text
+}
+
+export func markdown_text(value) {
+	mut text := sanitize_terminal_text(value)
+	text = replace(text, "\\", "\\\\")
+	mut markdown_escapes := ["`", "[", "]", "<", ">", "(", ")", "!"]
+	mut i := 0
+	while i < len(markdown_escapes) {
+		char := to_string(markdown_escapes[i])
+		text = replace(text, char, "\\" + char)
+		i = i + 1
+	}
+	return text
+}
+
+export func markdown_code(value) {
+	mut text := sanitize_terminal_text(value)
+	text = replace(text, "&", "&amp;")
+	text = replace(text, "<", "&lt;")
+	text = replace(text, ">", "&gt;")
+	return "<code>" + text + "</code>"
+}
+
+export func append_lines(text, lines) {
+	mut result := text
+	mut i := 0
+	while i < len(lines) {
+		result = result + lines[i] + "\n"
+		i = i + 1
+	}
+	return result
+}
+
+export func severity_emoji(severity) {
+	if severity == "critical" { return "🔴" }
+	if severity == "high" { return "🟠" }
+	if severity == "medium" { return "🟡" }
+	return "🔵"
+}
+
+export func markdown_field_row(label, value) {
+	mut clean := markdown_text(value)
+	clean = replace(clean, "|", "\\|")
+	return "| **" + label + "** | " + clean + " |"
+}
+
+# --- File helpers ---
+
+export func scan_artifact_limit_bytes() {
+	# Representative Kujo ecosystem artifacts measured below 50 KiB during the
+	# 2026-08 hardening audit. One MiB preserves ample headroom while bounding
+	# regex input and staying well below the runtime's eight MiB file-I/O cap.
+	return 1048576
+}
+
+export func artifact_exceeds_scan_limit(path) {
+	if is_truthy(file_exists(path)) == 0 { return 0 }
+	if is_truthy(path_is_dir(path)) == 1 { return 0 }
+	try {
+		return is_truthy(file_size(path) > scan_artifact_limit_bytes())
+	} except err {
+		return 1
+	}
+}
+
+export func read_file_safe(path) {
+	if is_truthy(file_exists(path)) == 0 {
+		return ""
+	}
+	if artifact_exceeds_scan_limit(path) == 1 {
+		return ""
+	}
+	try {
+		return read_file(path)
+	} except err {
+		return ""
+	}
+}
+
+export func file_has_extension(path, ext) {
+	return is_truthy(ends_with(to_lower(path), to_lower(ext)))
+}
+
+export func concord_version() {
+	return "1.0.0"
+}
+
+export func verification_exit_code(findings) {
+	if len(findings) > 0 {
+		return 3
+	}
+	return 0
+}
+
+export func scan_exit_code(findings) {
+	overall := highest_severity(findings)
+	if overall == "high" || overall == "critical" {
+		return 1
+	}
+	return 0
+}
+
+# --- Version helpers ---
+
+export func extract_version_from_text(text) {
+	# Try to find a version pattern like 1.0.0 or v1.0.0
+	mut matches := regex_find_all(text, "v?([0-9]+\\.[0-9]+\\.[0-9]+)")
+	if len(matches) > 0 {
+		value := matches[0]
+		if is_truthy(starts_with(value, "v")) == 1 {
+			return substring(value, 1, len(value))
+		}
+		return value
+	}
+	return ""
+}
+
+# Changelog version comes from a release heading, never an incidental dependency
+# version mentioned in an Unreleased note.
+export func extract_changelog_version(text) {
+	lines := split(text, "\n")
+	mut i := 0
+	while i < len(lines) {
+		matches := regex_find_all(trim_space(lines[i]), "^#{1,6}\\s+\\[?v?[0-9]+\\.[0-9]+\\.[0-9]+")
+		if len(matches) > 0 { return extract_version_from_text(matches[0]) }
+		i = i + 1
+	}
+	return ""
+}
+
+# --- Severity helpers ---
+
+export func severity_weight(sev) {
+	if sev == "critical" { return 4 }
+	if sev == "high" { return 3 }
+	if sev == "medium" { return 2 }
+	if sev == "low" { return 1 }
+	return 0
+}
+
+export func highest_severity(findings) {
+	mut max_weight := 0
+	mut i := 0
+	while i < len(findings) {
+		f := findings[i]
+		mut w := severity_weight(f["severity"])
+		if w > max_weight {
+			max_weight = w
+		}
+		i = i + 1
+	}
+	if max_weight == 4 { return "critical" }
+	if max_weight == 3 { return "high" }
+	if max_weight == 2 { return "medium" }
+	if max_weight == 1 { return "low" }
+	return "none"
+}

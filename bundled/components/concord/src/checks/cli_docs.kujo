@@ -1,0 +1,143 @@
+# Concord — CLI ↔ Docs alignment checks
+
+from src.common import read_file_safe
+from src.scanner import find_readme, find_cli_entry, find_manifest_files, extract_fenced_commands, get_cli_help_commands, command_invokes_entry, command_has_token, discover_docs_files
+from src.checks.shared import assess_artifacts, discovery_limit_finding
+
+func append_items(items, new_items) {
+	mut result := items
+	mut i := 0
+	while i < len(new_items) {
+		result = push(result, new_items[i])
+		i = i + 1
+	}
+	return result
+}
+
+export func check_cli_docs(dir_path, kujo_bin) {
+	mut findings := []
+	mut doc_paths := []
+
+	readme_path := find_readme(dir_path)
+	if readme_path == "" {
+		findings = push(findings, {
+			"id": "cli-docs-no-readme",
+			"severity": "low",
+			"confidence": "high",
+			"category": "cli-docs-alignment",
+			"title": "No README found for CLI/docs comparison",
+			"summary": "Could not find a README file in the project.",
+			"source_artifact": "(none)",
+			"target_artifact": "(none)",
+			"expected": "A README file should exist with documented commands.",
+			"actual": "No README found.",
+			"suggested_fix": "Add a README.md with usage documentation.",
+			"human_review_required": false
+		})
+	} else {
+		doc_paths = push(doc_paths, readme_path)
+	}
+
+	docs := discover_docs_files(dir_path)
+	doc_paths = append_items(doc_paths, docs["files"])
+	doc_paths = append_items(doc_paths, docs["oversized"])
+	if docs["truncated"] == 1 {
+		findings = push(findings, discovery_limit_finding("cli-docs-alignment", join_path(dir_path, "docs"), docs["max_depth"], docs["max_files"]))
+	}
+
+	doc_assessment := assess_artifacts(doc_paths, "cli-docs-alignment")
+	findings = append_items(findings, doc_assessment["findings"])
+	doc_paths = doc_assessment["paths"]
+	manifest_assessment := assess_artifacts(find_manifest_files(dir_path), "cli-docs-alignment")
+	findings = append_items(findings, manifest_assessment["findings"])
+
+	entry_script := find_cli_entry(dir_path)
+	mut entry_paths := []
+	if entry_script != "" { entry_paths = push(entry_paths, entry_script) }
+	entry_assessment := assess_artifacts(entry_paths, "cli-docs-alignment")
+	findings = append_items(findings, entry_assessment["findings"])
+	entry_paths = entry_assessment["paths"]
+	if len(entry_paths) > 0 { entry_script = entry_paths[0] } else { entry_script = "" }
+
+	mut cli_commands := []
+	if entry_script != "" { cli_commands = get_cli_help_commands(entry_script, kujo_bin) }
+
+	mut documented_command_count := 0
+	mut d := 0
+	while d < len(doc_paths) {
+		doc_path := doc_paths[d]
+		doc_commands := extract_fenced_commands(read_file_safe(doc_path))
+		documented_command_count = documented_command_count + len(doc_commands)
+		if len(cli_commands) > 0 {
+			mut i := 0
+			while i < len(doc_commands) {
+				doc_command := doc_commands[i]
+				if command_invokes_entry(doc_command, entry_script) == 1 {
+					mut found := 0
+					mut j := 0
+					while j < len(cli_commands) {
+						if command_has_token(doc_command, cli_commands[j]) == 1 {
+							found = 1
+							break
+						}
+						j = j + 1
+					}
+					if found == 0 {
+						findings = push(findings, {
+							"id": "cli-docs-mismatch-" + to_string(d) + "-" + to_string(i),
+							"severity": "high",
+							"confidence": "medium",
+							"category": "cli-docs-alignment",
+							"title": "Documented command not found in CLI source",
+							"summary": "Documentation contains a command that does not appear in the CLI command dispatch source.",
+							"source_artifact": doc_path,
+							"target_artifact": entry_script,
+							"expected": "Documented commands should match a command defined by the CLI entry point.",
+							"actual": "Command '" + doc_command + "' was documented but not found in CLI source.",
+							"suggested_fix": "Update the documentation to use current commands, or add the missing CLI command.",
+							"human_review_required": true
+						})
+					}
+				}
+				i = i + 1
+			}
+		}
+		d = d + 1
+	}
+
+	if documented_command_count == 0 {
+		findings = push(findings, {
+			"id": "cli-docs-no-commands-documented",
+			"severity": "medium",
+			"confidence": "high",
+			"category": "cli-docs-alignment",
+			"title": "No commands documented",
+			"summary": "README and recursively discovered docs contain no recognizable command examples in fenced code blocks.",
+			"source_artifact": readme_path,
+			"target_artifact": "(none)",
+			"expected": "Documentation should contain usage examples with commands.",
+			"actual": "No command examples found in bounded documentation discovery.",
+			"suggested_fix": "Add command usage examples to README or docs.",
+			"human_review_required": false
+		})
+	}
+
+	if entry_script != "" && len(cli_commands) == 0 {
+		findings = push(findings, {
+			"id": "cli-docs-source-parse-failed",
+			"severity": "low",
+			"confidence": "medium",
+			"category": "cli-docs-alignment",
+			"title": "Could not parse CLI command source",
+			"summary": "The CLI entry point exists but command dispatch source could not be parsed.",
+			"source_artifact": entry_script,
+			"target_artifact": "(none)",
+			"expected": "CLI command dispatch should be parseable for command names.",
+			"actual": "No supported command dispatch comparisons were found.",
+			"suggested_fix": "Use explicit subcommand comparisons or extend Concord's source parser.",
+			"human_review_required": false
+		})
+	}
+
+	return findings
+}

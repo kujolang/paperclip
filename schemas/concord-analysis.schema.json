@@ -1,0 +1,125 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "tool": {
+      "type": "string",
+      "const": "concord"
+    },
+    "version": {
+      "type": "string"
+    },
+    "summary": {
+      "type": "object",
+      "properties": {
+        "total_findings": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "highest_severity": {
+          "type": "string",
+          "enum": [
+            "none",
+            "low",
+            "medium",
+            "high",
+            "critical"
+          ]
+        }
+      },
+      "required": [
+        "total_findings",
+        "highest_severity"
+      ],
+      "additionalProperties": false
+    },
+    "findings": {
+      "maxItems": 10000,
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "maxLength": 20000
+          },
+          "severity": {
+            "type": "string",
+            "enum": [
+              "low",
+              "medium",
+              "high",
+              "critical"
+            ]
+          },
+          "confidence": {
+            "type": "string",
+            "enum": [
+              "low",
+              "medium",
+              "high"
+            ]
+          },
+          "category": {
+            "type": "string",
+            "maxLength": 20000
+          },
+          "title": {
+            "type": "string",
+            "maxLength": 20000
+          },
+          "summary": {
+            "type": "string",
+            "maxLength": 20000
+          },
+          "source_artifact": {
+            "type": "string",
+            "maxLength": 20000
+          },
+          "target_artifact": {
+            "type": "string",
+            "maxLength": 20000
+          },
+          "expected": {
+            "type": "string",
+            "maxLength": 20000
+          },
+          "actual": {
+            "type": "string",
+            "maxLength": 20000
+          },
+          "suggested_fix": {
+            "type": "string",
+            "maxLength": 20000
+          },
+          "human_review_required": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id",
+          "severity",
+          "confidence",
+          "category",
+          "title",
+          "summary",
+          "source_artifact",
+          "target_artifact",
+          "expected",
+          "actual",
+          "suggested_fix",
+          "human_review_required"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": [
+    "tool",
+    "version",
+    "summary",
+    "findings"
+  ],
+  "additionalProperties": true
+}

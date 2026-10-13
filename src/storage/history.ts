@@ -8,7 +8,7 @@ import { redactText } from "../features/failure/redact.js";
 export const EVIDENCE_NAMESPACE = "plugin_kujo_evidence_c15d42de56";
 export const HISTORY_LIMIT = 20;
 export const HISTORY_DAYS = 30;
-export const ARTIFACT_KINDS = ["review-latest", "context-latest", "failure-latest", "understand-latest", "language-latest", "verification-latest", "spec-latest", "fence-latest"] as const;
+export const ARTIFACT_KINDS = ["review-latest", "context-latest", "failure-latest", "understand-latest", "language-latest", "verification-latest", "spec-latest", "fence-latest", "concord-latest"] as const;
 export type ArtifactKind = typeof ARTIFACT_KINDS[number];
 export type ReceiptOptions = { inputs?: unknown; definition?: unknown; parentId?: string; legacy?: boolean; projection?: ProjectionReceipt };
 export const evidenceMetadataSchema = z.object({
@@ -34,6 +34,7 @@ export function canonicalJson(value: unknown): string {
 }
 export function evidenceDigest(value: unknown) { return createHash("sha256").update(canonicalJson(value)).digest("hex"); }
 function resultLabel(kind: ArtifactKind, payload: Record<string, unknown>) {
+  if (kind === "concord-latest") return `artifact drift ${payload.status}`;
   if (kind === "fence-latest") return `architecture ${payload.status}`;
   if (kind === "spec-latest") return `contract ${(payload.validation as { status: string }).status}`;
   if (kind === "verification-latest") return `imported ${payload.classification}`;

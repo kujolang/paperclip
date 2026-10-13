@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "bundleVersion": "0.4.0",
+  "bundleVersion": "0.5.0",
   "runtime": {
     "minimumVersion": "1.8.1"
   },
@@ -282,6 +282,53 @@
           "name": "analysis",
           "format": "json",
           "schema": "schemas/fence-analysis.schema.json"
+        }
+      ]
+    },
+    {
+      "id": "concord",
+      "repository": "https://github.com/kujolang/concord",
+      "gitCommit": "767b28dec5532639c01259eb47d1b19af995e552",
+      "version": "1.0.0",
+      "license": "MIT",
+      "entrypoint": "concord.kujo",
+      "files": [
+        "LICENSE",
+        "concord.kujo",
+        "src/checks/cli_docs.kujo",
+        "src/checks/example_validity.kujo",
+        "src/checks/manifest_docs.kujo",
+        "src/checks/shared.kujo",
+        "src/checks/source_of_truth.kujo",
+        "src/checks/spec_eval.kujo",
+        "src/checks/version_consistency.kujo",
+        "src/common.kujo",
+        "src/fix_tasks.kujo",
+        "src/reporter.kujo",
+        "src/scanner.kujo",
+        "src/snapshot.kujo"
+      ],
+      "checksums": {
+        "LICENSE": "4b6449939f8dce26dc5fb87756740a5977da9085517af127d9e634e6a6492506",
+        "concord.kujo": "1efe731d452428c178ce724fa7acbdac9a5c9e191c79aa397b5fdfb0dc998f85",
+        "src/checks/cli_docs.kujo": "34ea73a3cad833ac907f8b116f74c71835b11ae161d2f025158b882aabd6c039",
+        "src/checks/example_validity.kujo": "5e5219af546bfd8bfbddfd461db0977238b100bf01f7a6604c1b9fbb7cd121bf",
+        "src/checks/manifest_docs.kujo": "c6b96d03a6adab33e1c006272d6d0e6684b09c77471a358d52005ee124eefd73",
+        "src/checks/shared.kujo": "35c6892caf8160729097e9b34fd5e99d11574d85ebc22977880d6cd1c7e21dd4",
+        "src/checks/source_of_truth.kujo": "dd32acb4758f1fe8b661105400eefe30619ff878ecf8b08b8e5ef450f29faa2c",
+        "src/checks/spec_eval.kujo": "bacb203bcfa7f0773253478c40fccb46f39cf3801026c0a919a237fb35b271f2",
+        "src/checks/version_consistency.kujo": "7486969b12bc8073155d3668163d78a266137038923265f5790af1804388b616",
+        "src/common.kujo": "270790a906687b63d63ff5a638341b21294dc1c51bd23b7ff0ec4dcdfb674107",
+        "src/fix_tasks.kujo": "8ac2eb57b755050987130d6ae7d81ef8326d3879d006d75d8dfb929e675b0f6c",
+        "src/reporter.kujo": "12549931c14e4db9746c23cd934e342714f7be0d07dcf67c13bff8245a1a5bac",
+        "src/scanner.kujo": "f355bdbe9e19f0d6d641a05d0c5d0a42c74dac0ac5652ce5edbf1da9f5d8aec0",
+        "src/snapshot.kujo": "42238ee23f832fabece4d7d301e54c377b1cb79a906c49fd51eef8b877c804e0"
+      },
+      "outputContracts": [
+        {
+          "name": "analysis",
+          "format": "json",
+          "schema": "schemas/concord-analysis.schema.json"
         }
       ]
     }

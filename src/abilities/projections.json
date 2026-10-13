@@ -1093,5 +1093,70 @@
         "executes_code": false
       }
     }
+  },
+  {
+    "exportName": "concordTool",
+    "id": "kujo.paperclip.concord.inspect",
+    "feature": "verification",
+    "canonicalIds": [
+      "kujo.concord.artifacts.scan"
+    ],
+    "components": [
+      "concord"
+    ],
+    "profiles": [
+      "installed",
+      "review",
+      "ship",
+      "full"
+    ],
+    "tool": {
+      "name": "inspect-artifact-drift",
+      "displayName": "Inspect Artifact Drift",
+      "description": "Inspect documentation, examples, task contracts and metadata with canonical Concord in a bounded private snapshot. Reports experimental drift leads and coverage; never executes project code.",
+      "parametersSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {}
+      }
+    },
+    "definition": {
+      "schema": "kujo.ability/v1",
+      "id": "kujo.paperclip.concord.inspect",
+      "version": "1.0.0",
+      "title": "Inspect Artifact Drift",
+      "description": "Inspect documentation, examples, task contracts and metadata with canonical Concord in a bounded private snapshot. Reports experimental drift leads and coverage; never executes project code.",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {}
+      },
+      "output_schema": {
+        "type": "object",
+        "additionalProperties": true
+      },
+      "effects": [
+        {
+          "kind": "read",
+          "resource": "kujo.paperclip.workspace"
+        },
+        {
+          "kind": "write",
+          "resource": "kujo.paperclip.evidence"
+        },
+        {
+          "kind": "write",
+          "resource": "kujo.paperclip.activity"
+        }
+      ],
+      "idempotency": {
+        "mode": "none"
+      },
+      "semantics": {
+        "open_world": false,
+        "destructive": false,
+        "executes_code": false
+      }
+    }
   }
 ]

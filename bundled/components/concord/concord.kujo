@@ -1,0 +1,429 @@
+# Concord — artifact drift and alignment checker for Kujo ecosystem projects.
+#
+# Usage:
+#   ./kujo run concord.kujo scan [--dir <path>] [--format markdown|json]
+#   ./kujo run concord.kujo check <category> [--dir <path>]
+#   ./kujo run concord.kujo report [--dir <path>] [--format markdown|json]
+#   ./kujo run concord.kujo tasks [--dir <path>]
+#   ./kujo run concord.kujo version
+#   ./kujo run concord.kujo help
+
+VERSION := "1.0.0"
+VALID_CATEGORIES := "cli-docs, spec-eval, manifest, versions, examples, source-of-truth, all"
+
+from src.common import parse_flag, parse_subcommand, shift_args, highest_severity, is_truthy, is_flag_token, verification_exit_code, scan_exit_code, sanitize_terminal_text
+from src.scanner import is_git_repo, is_kujo_project
+from src.checks.cli_docs import check_cli_docs
+from src.checks.spec_eval import check_spec_eval
+from src.checks.manifest_docs import check_manifest_docs
+from src.checks.version_consistency import check_version_consistency
+from src.checks.example_validity import check_example_validity
+from src.checks.source_of_truth import check_source_of_truth
+from src.reporter import generate_markdown_report, generate_json_report
+from src.fix_tasks import generate_fix_tasks
+
+func print_lines(lines) {
+	mut i := 0
+	while i < len(lines) {
+		print(lines[i])
+		i = i + 1
+	}
+}
+
+func print_usage_hint() {
+	print("Run './kujo run concord.kujo help' for usage information.")
+}
+
+func print_usage_error(message) {
+	print("Error: " + sanitize_terminal_text(message))
+	print_usage_hint()
+}
+
+func print_unknown_category(category) {
+	print("Error: Unknown check category '" + sanitize_terminal_text(category) + "'")
+	print("Valid categories: " + VALID_CATEGORIES)
+}
+
+func write_or_print(output_path, written_message, output) {
+	if output_path != "" {
+		try {
+			write_file(output_path, output)
+			print(written_message + sanitize_terminal_text(output_path))
+			return 1
+		} except err {
+			print("Error: Could not write output file '" + sanitize_terminal_text(output_path) + "'.")
+			return 0
+		}
+	} else {
+		print(output)
+	}
+	return 1
+}
+
+func append_findings(findings, new_findings) {
+	mut result := findings
+	mut i := 0
+	while i < len(new_findings) {
+		result = push(result, new_findings[i])
+		i = i + 1
+	}
+	return result
+}
+
+func print_help() {
+	print_lines([
+		"Concord v" + VERSION,
+		"",
+		"An artifact drift and alignment checker for Kujo ecosystem projects.",
+		"",
+		"Usage:",
+		"  ./kujo run concord.kujo scan [--dir <path>] [--format markdown|json]",
+		"  ./kujo run concord.kujo check <category> [--dir <path>]",
+		"  ./kujo run concord.kujo report [--dir <path>] [--format markdown|json]",
+		"  ./kujo run concord.kujo tasks [--dir <path>]",
+		"  ./kujo run concord.kujo version",
+		"  ./kujo run concord.kujo help",
+		"  ./kujo run concord.kujo --help",
+		"  ./kujo run concord.kujo --version",
+		"",
+		"Commands:",
+		"  scan     Run all drift checks and produce a full report",
+		"  check    Run a specific check category",
+		"  report   Run all checks and generate a report",
+		"  tasks    Generate fix task cards from scan findings",
+		"  version  Print version information",
+		"  help     Print this help message",
+		"  --help   Print this help message",
+		"  --version Print version information",
+		"",
+		"Check categories:",
+		"  cli-docs       CLI ↔ Docs alignment",
+		"  spec-eval      Spec ↔ Eval alignment",
+		"  manifest       Manifest ↔ Docs alignment",
+		"  versions       Version consistency",
+		"  examples       Example validity",
+		"  source-of-truth Source-of-truth mapping",
+		"  all            All checks (same as scan)",
+		"",
+		"Options:",
+		"  --dir <path>   Target directory (default: current directory)",
+		"  --format       Output format: markdown (default) or json",
+		"  --output <path> Write report to file instead of stdout",
+		"",
+		"Exit codes:",
+		"  0  Success",
+		"  2  Invalid usage or configuration",
+		"  3  Verification/check failure (for check categories with findings)",
+		"",
+		"Examples:",
+		"  ./kujo run concord.kujo scan",
+		"  ./kujo run concord.kujo scan --dir /path/to/other-project --format json",
+		"  ./kujo run concord.kujo check cli-docs",
+		"  ./kujo run concord.kujo tasks --dir ../my-project",
+	])
+}
+
+func print_version() {
+	print_lines([
+		"Concord v" + VERSION,
+		"Artifact drift and alignment checker for Kujo ecosystem projects.",
+		"Dogfood showcase tool — early build.",
+	])
+}
+
+func get_target_dir(argv) {
+	dir_path := parse_flag(argv, "--dir", ".")
+	return dir_path
+}
+
+func get_output_format(argv) {
+	format := parse_flag(argv, "--format", "markdown")
+	return format
+}
+
+func get_check_category(rest) {
+	mut i := 0
+	while i < len(rest) {
+		arg := rest[i]
+		if arg == "--dir" || arg == "--format" || arg == "--output" {
+			i = i + 2
+			continue
+		}
+		if is_flag_token(arg) == 0 {
+			return arg
+		}
+		i = i + 1
+	}
+	return ""
+}
+
+func validate_args(subcommand, rest) {
+	mut i := 0
+	mut seen_category := 0
+	while i < len(rest) {
+		arg := rest[i]
+		if arg == "--dir" || arg == "--format" || arg == "--output" {
+			if i + 1 >= len(rest) {
+				print_usage_error("Option '" + arg + "' requires a value.")
+				return 0
+			}
+			if is_flag_token(rest[i + 1]) == 1 {
+				print_usage_error("Option '" + arg + "' requires a value.")
+				return 0
+			}
+			if arg == "--format" {
+				format := rest[i + 1]
+				if format != "markdown" && format != "json" {
+					print_usage_error("Unsupported output format '" + format + "'. Use markdown or json.")
+					return 0
+				}
+			}
+			i = i + 2
+			continue
+		}
+		if is_flag_token(arg) == 1 {
+			print_usage_error("Unknown option '" + arg + "'")
+			return 0
+		}
+		if subcommand == "check" && seen_category == 0 {
+			seen_category = 1
+			i = i + 1
+			continue
+		}
+		print_usage_error("Unexpected argument '" + arg + "'")
+		return 0
+	}
+	return 1
+}
+
+func run_all_checks(dir_path, kujo_bin) {
+	mut findings := []
+
+	findings = append_findings(findings, check_cli_docs(dir_path, kujo_bin))
+	findings = append_findings(findings, check_spec_eval(dir_path))
+	findings = append_findings(findings, check_manifest_docs(dir_path))
+	findings = append_findings(findings, check_version_consistency(dir_path))
+	findings = append_findings(findings, check_example_validity(dir_path, kujo_bin))
+	findings = append_findings(findings, check_source_of_truth(dir_path))
+
+	return findings
+}
+
+func run_check_category(category, dir_path, kujo_bin) {
+	if category == "cli-docs" {
+		return check_cli_docs(dir_path, kujo_bin)
+	}
+	if category == "spec-eval" {
+		return check_spec_eval(dir_path)
+	}
+	if category == "manifest" {
+		return check_manifest_docs(dir_path)
+	}
+	if category == "versions" {
+		return check_version_consistency(dir_path)
+	}
+	if category == "examples" {
+		return check_example_validity(dir_path, kujo_bin)
+	}
+	if category == "source-of-truth" {
+		return check_source_of_truth(dir_path)
+	}
+	if category == "all" {
+		return run_all_checks(dir_path, kujo_bin)
+	}
+	print_unknown_category(category)
+	return []
+}
+
+func print_drift_warning(overall) {
+	if overall == "high" {
+		print_lines([
+			"",
+			"⚠️  High-severity drift detected. Review findings above."
+		])
+	}
+	if overall == "critical" {
+		print_lines([
+			"",
+			"⚠️  Critical drift detected. Review findings above."
+		])
+	}
+}
+
+func handle_scan(dir_path, kujo_bin, format, output_path) {
+	mut findings := run_all_checks(dir_path, kujo_bin)
+
+	mut report_output := ""
+	if format == "json" {
+		report_output = generate_json_report(dir_path, findings)
+	} else {
+		report_output = generate_markdown_report(dir_path, findings)
+	}
+
+	if write_or_print(output_path, "Report written to: ", report_output) == 0 {
+		return 2
+	}
+
+	# Exit code based on severity
+	overall := highest_severity(findings)
+	if format == "markdown" { print_drift_warning(overall) }
+	return scan_exit_code(findings)
+}
+
+func print_check_argument_usage() {
+	print_lines([
+		"Error: 'check' requires a category argument.",
+		"Usage: ./kujo run concord.kujo check <category> [--dir <path>]",
+		"Categories: " + VALID_CATEGORIES
+	])
+}
+
+func handle_check(dir_path, kujo_bin, format, output_path, rest) {
+	category := get_check_category(rest)
+	if category == "" {
+		print_check_argument_usage()
+		return 2
+	}
+	if category != "cli-docs" && category != "spec-eval" && category != "manifest" && category != "versions" && category != "examples" && category != "source-of-truth" && category != "all" {
+		print_unknown_category(category)
+		return 2
+	}
+	mut findings := run_check_category(category, dir_path, kujo_bin)
+
+	mut check_output := ""
+	if format == "json" {
+		check_output = to_json_pretty(findings)
+	} else {
+		mut i := 0
+		while i < len(findings) {
+			f := findings[i]
+			check_output = check_output + "[" + sanitize_terminal_text(f["severity"]) + "] " + sanitize_terminal_text(f["title"]) + "\n"
+			check_output = check_output + "  " + sanitize_terminal_text(f["summary"]) + "\n"
+			check_output = check_output + "  Suggested: " + sanitize_terminal_text(f["suggested_fix"]) + "\n\n"
+			i = i + 1
+		}
+		if len(findings) == 0 {
+			check_output = "No findings for category: " + category
+		}
+	}
+	if write_or_print(output_path, "Report written to: ", check_output) == 0 {
+		return 2
+	}
+	return verification_exit_code(findings)
+}
+
+func handle_report(dir_path, kujo_bin, format, output_path) {
+	mut findings := run_all_checks(dir_path, kujo_bin)
+
+	mut report_output := ""
+	if format == "json" {
+		report_output = generate_json_report(dir_path, findings)
+	} else {
+		report_output = generate_markdown_report(dir_path, findings)
+	}
+
+	if write_or_print(output_path, "Report written to: ", report_output) == 0 {
+		return 2
+	}
+	return 0
+}
+
+func handle_tasks(dir_path, kujo_bin, output_path) {
+	mut findings := run_all_checks(dir_path, kujo_bin)
+	mut tasks_output := generate_fix_tasks(findings)
+
+	if write_or_print(output_path, "Fix tasks written to: ", tasks_output) == 0 {
+		return 2
+	}
+	return 0
+}
+
+# --- Main ---
+
+func main() {
+	mut argv := args()
+
+	if len(argv) == 0 {
+		print_help()
+		exit(0)
+	}
+
+	if argv[0] == "--help" || argv[0] == "-h" {
+		print_help()
+		exit(0)
+	}
+
+	if argv[0] == "--version" || argv[0] == "-v" {
+		print_version()
+		exit(0)
+	}
+
+	subcommand := parse_subcommand(argv)
+	rest := shift_args(argv)
+
+	# Determine ./kujo binary
+	mut kujo_bin := "kujo"
+
+	if subcommand == "version" {
+		if len(rest) > 0 {
+			print_usage_error("Unexpected argument '" + rest[0] + "'")
+			exit(2)
+		}
+		print_version()
+		exit(0)
+	}
+
+	if subcommand == "help" {
+		if len(rest) > 0 {
+			print_usage_error("Unexpected argument '" + rest[0] + "'")
+			exit(2)
+		}
+		print_help()
+		exit(0)
+	}
+
+	if subcommand == "" && is_flag_token(argv[0]) == 1 {
+		print_usage_error("Unknown option '" + argv[0] + "'")
+		exit(2)
+	}
+
+	if validate_args(subcommand, rest) == 0 {
+		exit(2)
+	}
+
+	dir_path := get_target_dir(rest)
+	format := get_output_format(rest)
+	output_path := parse_flag(rest, "--output", "")
+
+	# Validate directory
+	if is_truthy(file_exists(dir_path)) == 0 {
+		print("Error: Directory not found: " + sanitize_terminal_text(dir_path))
+		exit(2)
+	}
+	if is_truthy(path_is_dir(dir_path)) == 0 {
+		print("Error: Not a directory: " + sanitize_terminal_text(dir_path))
+		exit(2)
+	}
+
+	if subcommand == "scan" {
+		exit(handle_scan(dir_path, kujo_bin, format, output_path))
+	}
+
+	if subcommand == "check" {
+		exit(handle_check(dir_path, kujo_bin, format, output_path, rest))
+	}
+
+	if subcommand == "report" {
+		exit(handle_report(dir_path, kujo_bin, format, output_path))
+	}
+
+	if subcommand == "tasks" {
+		exit(handle_tasks(dir_path, kujo_bin, output_path))
+	}
+
+	# Unknown subcommand
+	print_usage_error("Unknown command '" + subcommand + "'")
+	exit(2)
+}
+
+main()

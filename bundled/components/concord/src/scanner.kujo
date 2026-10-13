@@ -1,0 +1,530 @@
+# Concord — artifact scanner (file discovery and detection)
+
+from src.common import read_file_safe, file_has_extension, is_truthy, trim_space, artifact_exceeds_scan_limit
+
+# --- Repository detection ---
+
+export func is_git_repo(dir_path) {
+	git_dir := join_path(dir_path, ".git")
+	if is_truthy(file_exists(git_dir)) == 0 {
+		return 0
+	}
+	# Git worktrees use a .git pointer file instead of a directory.
+	return 1
+}
+
+export func is_kujo_project(dir_path) {
+	kujo_toml := join_path(dir_path, "kujo.toml")
+	return is_truthy(file_exists(kujo_toml))
+}
+
+# --- Artifact detection ---
+
+func matches_any_extension(path, extensions) {
+	if len(extensions) == 0 { return 1 }
+	mut i := 0
+	while i < len(extensions) {
+		if file_has_extension(path, extensions[i]) == 1 { return 1 }
+		i = i + 1
+	}
+	return 0
+}
+
+func path_stays_within(root_abs, path) {
+	try {
+		candidate_abs := replace(path_absolute(path), "\\", "/")
+		root := replace(root_abs, "\\", "/")
+		if candidate_abs == root { return 1 }
+		mut prefix := root
+		if is_truthy(ends_with(prefix, "/")) == 0 { prefix = prefix + "/" }
+		return is_truthy(starts_with(candidate_abs, prefix))
+	} except err {
+		return 0
+	}
+}
+
+export func discover_files_bounded(root_path, extensions) {
+	mut files := []
+	mut oversized := []
+	if is_truthy(path_is_dir(root_path)) == 0 {
+		return {"files": files, "oversized": oversized, "visited": 0, "truncated": 0, "max_depth": 4, "max_files": 256, "max_entries": 2048}
+	}
+	root_abs := path_absolute(root_path)
+	mut pending_dirs := [root_path]
+	mut pending_depths := [0]
+	mut next_dir := 0
+	mut visited := 0
+	mut truncated := 0
+	while next_dir < len(pending_dirs) {
+		dir_path := pending_dirs[next_dir]
+		depth := pending_depths[next_dir]
+		next_dir = next_dir + 1
+		mut entries := sort(list_dir(dir_path))
+		mut i := 0
+		while i < len(entries) {
+			if visited >= 2048 || len(files) + len(oversized) >= 256 {
+				truncated = 1
+				break
+			}
+			visited = visited + 1
+			path := join_path(dir_path, entries[i])
+			if path_stays_within(root_abs, path) == 1 {
+				if is_truthy(path_is_dir(path)) == 1 {
+					if depth >= 4 {
+						truncated = 1
+					} else {
+						pending_dirs = push(pending_dirs, path)
+						pending_depths = push(pending_depths, depth + 1)
+					}
+				} else if matches_any_extension(path, extensions) == 1 {
+					if artifact_exceeds_scan_limit(path) == 1 {
+						oversized = push(oversized, path)
+					} else {
+						files = push(files, path)
+					}
+				}
+			}
+			i = i + 1
+		}
+		if truncated == 1 && (visited >= 2048 || len(files) + len(oversized) >= 256) {
+			break
+		}
+	}
+	return {
+		"files": files,
+		"oversized": oversized,
+		"visited": visited,
+		"truncated": truncated,
+		"max_depth": 4,
+		"max_files": 256,
+		"max_entries": 2048
+	}
+}
+
+export func find_readme(dir_path) {
+	mut candidates := ["README.md", "readme.md", "README", "README.txt", "README.rst"]
+	mut i := 0
+	while i < len(candidates) {
+		p := join_path(dir_path, candidates[i])
+		if is_truthy(file_exists(p)) == 1 {
+			return p
+		}
+		i = i + 1
+	}
+	return ""
+}
+
+export func find_docs_files(dir_path) {
+	docs_dir := join_path(dir_path, "docs")
+	result := discover_files_bounded(docs_dir, [".md", ".mdx", ".rst"])
+	return result["files"]
+}
+
+export func discover_docs_files(dir_path) {
+	return discover_files_bounded(join_path(dir_path, "docs"), [".md", ".mdx", ".rst"])
+}
+
+export func find_spec_files(dir_path) {
+	mut result := []
+	mut entries := list_dir(dir_path)
+	mut i := 0
+	while i < len(entries) {
+		name := entries[i]
+		mut is_spec := 0
+		if file_has_extension(name, ".spec.yml") == 1 { is_spec = 1 }
+		if file_has_extension(name, ".spec.yaml") == 1 { is_spec = 1 }
+		if is_spec == 1 {
+			result = push(result, join_path(dir_path, name))
+		}
+		i = i + 1
+	}
+	return result
+}
+
+export func discover_eval_files(dir_path) {
+	mut candidates := []
+	mut oversized := []
+	mut truncated := 0
+	mut visited := 0
+	# Check for eval suite JSON files in tests/ or eval_results/
+	mut check_dirs := [join_path(dir_path, "tests"), join_path(dir_path, "eval_results"), join_path(dir_path, "examples")]
+	mut d := 0
+	while d < len(check_dirs) {
+		check_dir := check_dirs[d]
+		discovery := discover_files_bounded(check_dir, [".json"])
+		mut discovered := discovery["files"]
+		mut j := 0
+		while j < len(discovered) {
+			full_path := discovered[j]
+			content := read_file_safe(full_path)
+			mut is_eval := 0
+			if is_truthy(contains(content, "\"checks\"")) == 1 { is_eval = 1 }
+			if is_truthy(contains(content, "\"suite\"")) == 1 { is_eval = 1 }
+			if is_truthy(contains(content, "\"tests\"")) == 1 && is_truthy(contains(content, "\"check\"")) == 1 { is_eval = 1 }
+			if is_eval == 1 { candidates = push(candidates, full_path) }
+			j = j + 1
+		}
+		mut large := discovery["oversized"]
+		j = 0
+		while j < len(large) {
+			oversized = push(oversized, large[j])
+			j = j + 1
+		}
+		visited = visited + discovery["visited"]
+		if discovery["truncated"] == 1 { truncated = 1 }
+		d = d + 1
+	}
+	return {"files": candidates, "oversized": oversized, "visited": visited, "truncated": truncated, "max_depth": 4, "max_files": 256, "max_entries": 2048}
+}
+
+export func find_eval_files(dir_path) {
+	return discover_eval_files(dir_path)["files"]
+}
+
+export func find_manifest_files(dir_path) {
+	mut result := []
+	# kennel.toml
+	kennel_toml := join_path(dir_path, "kennel.toml")
+	if is_truthy(file_exists(kennel_toml)) == 1 {
+		result = push(result, kennel_toml)
+	}
+	# kujo.toml
+	kujo_toml := join_path(dir_path, "kujo.toml")
+	if is_truthy(file_exists(kujo_toml)) == 1 {
+		result = push(result, kujo_toml)
+	}
+	# Cargo.toml (Rust projects)
+	cargo_toml := join_path(dir_path, "Cargo.toml")
+	if is_truthy(file_exists(cargo_toml)) == 1 {
+		result = push(result, cargo_toml)
+	}
+	# package.json (JS projects)
+	pkg_json := join_path(dir_path, "package.json")
+	if is_truthy(file_exists(pkg_json)) == 1 {
+		result = push(result, pkg_json)
+	}
+	return result
+}
+
+export func find_changelog(dir_path) {
+	mut candidates := ["CHANGELOG.md", "CHANGELOG", "CHANGES.md", "CHANGES", "HISTORY.md"]
+	mut i := 0
+	while i < len(candidates) {
+		p := join_path(dir_path, candidates[i])
+		if is_truthy(file_exists(p)) == 1 {
+			return p
+		}
+		i = i + 1
+	}
+	return ""
+}
+
+export func find_example_files(dir_path) {
+	return discover_example_files(dir_path)["files"]
+}
+
+export func discover_example_files(dir_path) {
+	return discover_files_bounded(join_path(dir_path, "examples"), [])
+}
+
+export func find_cli_entry(dir_path) {
+	# Prefer explicit package/project manifests before falling back to names.
+	mut manifests := [join_path(dir_path, "kennel.toml"), join_path(dir_path, "kujo.toml")]
+	mut m := 0
+	while m < len(manifests) {
+		manifest_path := manifests[m]
+		if is_truthy(file_exists(manifest_path)) == 1 {
+			content := read_file_safe(manifest_path)
+			entry := extract_toml_field(content, "entry")
+			if entry != "" {
+				entry_path := join_path(dir_path, entry)
+				if is_truthy(file_exists(entry_path)) == 1 { return entry_path }
+			}
+		}
+		m = m + 1
+	}
+
+	# Some early packages used a root-level script named after the package.
+	kennel_toml := join_path(dir_path, "kennel.toml")
+	if is_truthy(file_exists(kennel_toml)) == 1 {
+		content := read_file_safe(kennel_toml)
+		name := extract_toml_field(content, "name")
+		if name != "" {
+			named_entry := join_path(dir_path, name + ".kujo")
+			if is_truthy(file_exists(named_entry)) == 1 { return named_entry }
+		}
+	}
+
+	# Fall back to common patterns
+	mut candidates := ["main.kujo", "server.kujo", "cli.kujo", "dispatch.kujo", "scout.kujo", "watchdog.kujo"]
+	mut i := 0
+	while i < len(candidates) {
+		p := join_path(dir_path, candidates[i])
+		if is_truthy(file_exists(p)) == 1 {
+			return p
+		}
+		i = i + 1
+	}
+	return ""
+}
+
+# Check if a line starts with a known command prefix
+export func looks_like_command(line) {
+	mut s := trim_space(line)
+	if is_truthy(starts_with(s, "kujo ")) == 1 { return 1 }
+	if is_truthy(starts_with(s, "concord ")) == 1 { return 1 }
+	if is_truthy(starts_with(s, "cargo ")) == 1 { return 1 }
+	if is_truthy(starts_with(s, "spec ")) == 1 { return 1 }
+	if is_truthy(starts_with(s, "kennel ")) == 1 { return 1 }
+	if is_truthy(starts_with(s, "scout ")) == 1 { return 1 }
+	if is_truthy(starts_with(s, "git ")) == 1 { return 1 }
+	if is_truthy(starts_with(s, "bash ")) == 1 { return 1 }
+	if is_truthy(starts_with(s, "node ")) == 1 { return 1 }
+	if is_truthy(starts_with(s, "npm ")) == 1 { return 1 }
+	if is_truthy(starts_with(s, "npx ")) == 1 { return 1 }
+	if is_truthy(starts_with(s, "tribunal ")) == 1 { return 1 }
+	if is_truthy(starts_with(s, "./kujo run concord.kujo")) == 1 { return 1 }
+	return 0
+}
+
+export func extract_json_string_field(text, field_name) {
+	try {
+		value := parse_json(text)
+		if is_truthy(is_dict(value)) == 0 { return "" }
+		if is_truthy(has_key(value, field_name)) == 0 { return "" }
+		field_value := value[field_name]
+		if is_truthy(is_string(field_value)) == 0 { return "" }
+		return field_value
+	} except err {
+		return ""
+	}
+}
+
+export func extract_fenced_commands(text) {
+	# Extract commands from fenced code blocks, including CRLF and rich info strings.
+	mut result := []
+	mut normalized := replace(text, "\\r\\n", "\\n")
+	mut blocks := regex_find_all(normalized, "```[^\\n]*\\n([\\s\\S]*?)```")
+	mut tilde_blocks := regex_find_all(normalized, "~~~[^\\n]*\\n([\\s\\S]*?)~~~")
+	mut t := 0
+	while t < len(tilde_blocks) {
+		blocks = push(blocks, tilde_blocks[t])
+		t = t + 1
+	}
+	mut i := 0
+	while i < len(blocks) {
+		block := blocks[i]
+		# Split into lines and find command-like lines
+		mut lines := split(block, "\n")
+		mut j := 0
+		while j < len(lines) {
+			line := trim_space(lines[j])
+			# Look for lines that look like commands
+			if looks_like_command(line) == 1 {
+				result = push(result, line)
+			}
+			j = j + 1
+		}
+		i = i + 1
+	}
+	return result
+}
+
+export func extract_headings(text) {
+	# Extract markdown headings
+	return regex_find_all(text, "^#{1,6}\\s+(.+)$")
+}
+
+export func extract_badge_version(text) {
+	# Extract version from shield.io badges
+	mut matches := regex_find_all(text, "version-([0-9]+\\.[0-9]+\\.[0-9]+)")
+	if len(matches) > 0 {
+		mut badge := matches[0]
+		mut parts := split(badge, "version-")
+		if len(parts) > 1 {
+			return trim_space(parts[1])
+		}
+		return trim_space(badge)
+	}
+	# Try alternate badge format
+	matches = regex_find_all(text, "v([0-9]+\\.[0-9]+\\.[0-9]+)-blue")
+	if len(matches) > 0 {
+		mut badge := matches[0]
+		mut parts := split(badge, "v")
+		if len(parts) > 1 {
+			mut value := trim_space(parts[1])
+			mut value_parts := split(value, "-blue")
+			if len(value_parts) > 0 {
+				return trim_space(value_parts[0])
+			}
+			return value
+		}
+		return trim_space(badge)
+	}
+	return ""
+}
+
+# --- YAML/TOML simple extraction (regex-based, no parser) ---
+
+export func extract_yaml_field(text, field_name) {
+	mut lines := split(replace(text, "\\r\\n", "\\n"), "\n")
+	mut i := 0
+	while i < len(lines) {
+		line := trim_space(lines[i])
+		separator := index_of(line, ":")
+		if separator >= 0 {
+			key := trim_space(substring(line, 0, separator))
+			if key == field_name {
+				return extract_simple_scalar(substring(line, separator + 1, len(line)), " #")
+			}
+		}
+		i = i + 1
+	}
+	return ""
+}
+
+export func extract_toml_field(text, field_name) {
+	mut lines := split(replace(text, "\\r\\n", "\\n"), "\n")
+	mut i := 0
+	while i < len(lines) {
+		line := trim_space(lines[i])
+		separator := index_of(line, "=")
+		if separator >= 0 {
+			key := trim_space(substring(line, 0, separator))
+			if key == field_name {
+				return extract_simple_scalar(substring(line, separator + 1, len(line)), " #")
+			}
+		}
+		i = i + 1
+	}
+	return ""
+}
+
+func extract_simple_scalar(raw_value, comment_marker) {
+	mut value := trim_space(raw_value)
+	if len(value) >= 2 {
+		first := substring(value, 0, 1)
+		if first == "\"" {
+			mut parts := split(value, "\"")
+			if len(parts) > 1 { return parts[1] }
+		}
+		if first == "'" {
+			mut parts := split(value, "'")
+			if len(parts) > 1 { return parts[1] }
+		}
+	}
+	comment_at := index_of(value, comment_marker)
+	if comment_at >= 0 {
+		value = trim_space(substring(value, 0, comment_at))
+	}
+	return value
+}
+
+export func command_invokes_entry(command, entry_script) {
+	if entry_script == "" {
+		return 0
+	}
+	mut parts := split(replace(entry_script, "\\", "/"), "/")
+	entry_name := parts[len(parts) - 1]
+	mut tokens := split(trim_space(command), " ")
+	mut i := 0
+	while i + 1 < len(tokens) {
+		if tokens[i] == "run" {
+			mut candidate_parts := split(replace(strip_shell_quotes(tokens[i + 1]), "\\", "/"), "/")
+			if candidate_parts[len(candidate_parts) - 1] == entry_name {
+				return 1
+			}
+		}
+		i = i + 1
+	}
+	mut stem := entry_name
+	if is_truthy(ends_with(stem, ".kujo")) == 1 {
+		stem = substring(stem, 0, len(stem) - 5)
+	}
+	if len(tokens) > 0 {
+		mut first_parts := split(replace(strip_shell_quotes(tokens[0]), "\\", "/"), "/")
+		if first_parts[len(first_parts) - 1] == stem { return 1 }
+	}
+	return 0
+}
+
+export func command_has_token(command, token) {
+	mut tokens := split(trim_space(command), " ")
+	mut i := 0
+	while i < len(tokens) {
+		if strip_shell_quotes(tokens[i]) == token {
+			return 1
+		}
+		i = i + 1
+	}
+	return 0
+}
+
+export func strip_shell_quotes(value) {
+	mut clean := trim_space(value)
+	if len(clean) >= 2 {
+		mut first := substring(clean, 0, 1)
+		mut last := substring(clean, len(clean) - 1, len(clean))
+		if first == "\"" && last == "\"" {
+			return substring(clean, 1, len(clean) - 1)
+		}
+		if first == "'" && last == "'" {
+			return substring(clean, 1, len(clean) - 1)
+		}
+	}
+	return clean
+}
+
+export func option_reference_value(match_text) {
+	mut clean := trim_space(match_text)
+	space_at := index_of(clean, " ")
+	if space_at >= 0 {
+		clean = trim_space(substring(clean, space_at + 1, len(clean)))
+	}
+	return strip_shell_quotes(clean)
+}
+
+# --- CLI help extraction ---
+
+export func get_cli_help_commands(entry_script, kujo_bin) {
+	# Extract commands from entry script source to avoid shelling out.
+	mut cmds := []
+	if entry_script == "" {
+		return cmds
+	}
+	if is_truthy(file_exists(entry_script)) == 0 {
+		return cmds
+	}
+
+	content := read_file_safe(entry_script)
+	mut matches := regex_find_all(content, "subcommand\\s*==\\s*\"([a-z][a-z0-9_-]+)\"")
+	mut i := 0
+	while i < len(matches) {
+		parts := split(matches[i], "\"")
+		candidate := parts[1]
+		mut is_excluded := 0
+		if candidate == "help" { is_excluded = 1 }
+		if candidate == "version" { is_excluded = 1 }
+		if is_excluded == 0 {
+			cmds = push(cmds, candidate)
+		}
+		i = i + 1
+	}
+
+	return filter_unique(cmds)
+}
+
+export func filter_unique(items) {
+	mut seen := {}
+	mut result := []
+	mut i := 0
+	while i < len(items) {
+		item := items[i]
+		if has_key(seen, item) == 0 {
+			seen[item] = 1
+			result = push(result, item)
+		}
+		i = i + 1
+	}
+	return result
+}

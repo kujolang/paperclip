@@ -1,0 +1,49 @@
+# Shared check helpers for bounded artifact inspection.
+
+from src.common import artifact_exceeds_scan_limit, scan_artifact_limit_bytes
+
+export func assess_artifacts(paths, category) {
+	mut safe_paths := []
+	mut findings := []
+	mut i := 0
+	while i < len(paths) {
+		path := paths[i]
+		if artifact_exceeds_scan_limit(path) == 1 {
+			findings = push(findings, {
+				"id": category + "-artifact-too-large-" + to_string(i),
+				"severity": "high",
+				"confidence": "high",
+				"category": category,
+				"title": "Artifact exceeds Concord scan size limit",
+				"summary": "Concord skipped an artifact larger than its bounded scan limit.",
+				"source_artifact": path,
+				"target_artifact": "(none)",
+				"expected": "Scanned text artifacts should be no larger than " + to_string(scan_artifact_limit_bytes()) + " bytes.",
+				"actual": "Artifact size: " + to_string(file_size(path)) + " bytes.",
+				"suggested_fix": "Split or reduce the artifact, or review it manually before accepting the remaining scan result.",
+				"human_review_required": true
+			})
+		} else {
+			safe_paths = push(safe_paths, path)
+		}
+		i = i + 1
+	}
+	return {"paths": safe_paths, "findings": findings}
+}
+
+export func discovery_limit_finding(category, root_path, max_depth, max_files) {
+	return {
+		"id": category + "-discovery-truncated",
+		"severity": "high",
+		"confidence": "high",
+		"category": category,
+		"title": "Artifact discovery reached its safety bound",
+		"summary": "Concord stopped recursive discovery before inspecting every candidate artifact.",
+		"source_artifact": root_path,
+		"target_artifact": "(multiple)",
+		"expected": "Artifact discovery should complete within depth " + to_string(max_depth) + " and " + to_string(max_files) + " files.",
+		"actual": "The configured discovery bound was reached.",
+		"suggested_fix": "Reduce generated or deeply nested artifacts, then rerun Concord; review excluded files manually.",
+		"human_review_required": true
+	}
+}

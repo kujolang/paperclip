@@ -1,0 +1,127 @@
+# Concord — Version consistency checks
+
+from src.common import read_file_safe, extract_changelog_version, is_truthy
+from src.scanner import find_readme, find_manifest_files, find_changelog, extract_toml_field, extract_json_string_field, extract_badge_version
+from src.checks.shared import assess_artifacts
+
+export func check_version_consistency(dir_path) {
+	mut findings := []
+	mut version_sources := {}
+
+	mut readme_path := find_readme(dir_path)
+	mut manifest_files := find_manifest_files(dir_path)
+	mut changelog_path := find_changelog(dir_path)
+	mut candidates := manifest_files
+	if readme_path != "" { candidates = push(candidates, readme_path) }
+	if changelog_path != "" { candidates = push(candidates, changelog_path) }
+	assessment := assess_artifacts(candidates, "version-consistency")
+	mut safe_paths := assessment["paths"]
+	mut a := 0
+	while a < len(assessment["findings"]) {
+		findings = push(findings, assessment["findings"][a])
+		a = a + 1
+	}
+	mut safe_lookup := {}
+	a = 0
+	while a < len(safe_paths) {
+		safe_lookup[safe_paths[a]] = 1
+		a = a + 1
+	}
+	mut safe_manifests := []
+	a = 0
+	while a < len(manifest_files) {
+		if has_key(safe_lookup, manifest_files[a]) == 1 { safe_manifests = push(safe_manifests, manifest_files[a]) }
+		a = a + 1
+	}
+	manifest_files = safe_manifests
+	if readme_path != "" && has_key(safe_lookup, readme_path) == 0 { readme_path = "" }
+	if changelog_path != "" && has_key(safe_lookup, changelog_path) == 0 { changelog_path = "" }
+
+	# Collect versions from all sources
+	if readme_path != "" {
+		readme_content := read_file_safe(readme_path)
+		badge_ver := extract_badge_version(readme_content)
+		if badge_ver != "" {
+			version_sources["README badge"] = badge_ver
+		}
+	}
+
+	mut m := 0
+	while m < len(manifest_files) {
+		manifest_path := manifest_files[m]
+		manifest_content := read_file_safe(manifest_path)
+		mut m_ver := ""
+		mut is_toml_manifest := 0
+		if is_truthy(ends_with(manifest_path, "kennel.toml")) == 1 { is_toml_manifest = 1 }
+		if is_truthy(ends_with(manifest_path, "kujo.toml")) == 1 { is_toml_manifest = 1 }
+		if is_toml_manifest == 1 {
+			m_ver = extract_toml_field(manifest_content, "version")
+		}
+		if is_truthy(ends_with(manifest_path, "Cargo.toml")) == 1 {
+			m_ver = extract_toml_field(manifest_content, "version")
+		}
+		if is_truthy(ends_with(manifest_path, "package.json")) == 1 {
+			m_ver = extract_json_string_field(manifest_content, "version")
+		}
+		if m_ver != "" {
+			version_sources[manifest_path] = m_ver
+		}
+		m = m + 1
+	}
+
+	if changelog_path != "" {
+		changelog_content := read_file_safe(changelog_path)
+		cl_ver := extract_changelog_version(changelog_content)
+		if cl_ver != "" {
+			version_sources[changelog_path] = cl_ver
+		}
+	}
+
+	# Check consistency
+	if len(version_sources) < 2 {
+		# Not enough sources to compare
+		return findings
+	}
+
+	# Collect all unique versions
+	mut versions := {}
+	mut source_keys := keys(version_sources)
+	mut i := 0
+	while i < len(source_keys) {
+		v := version_sources[source_keys[i]]
+		versions[v] = 1
+		i = i + 1
+	}
+
+	mut unique_versions := keys(versions)
+
+	if len(unique_versions) > 1 {
+		# Build version detail string
+		mut detail := ""
+		mut j := 0
+		while j < len(source_keys) {
+			if detail != "" {
+				detail = detail + ", "
+			}
+			detail = detail + source_keys[j] + ": v" + version_sources[source_keys[j]]
+			j = j + 1
+		}
+
+		findings = push(findings, {
+			"id": "version-inconsistency",
+			"severity": "high",
+			"confidence": "high",
+			"category": "version-consistency",
+			"title": "Inconsistent versions across project artifacts",
+			"summary": "Different versions found across project files.",
+			"source_artifact": "(multiple)",
+			"target_artifact": "(multiple)",
+			"expected": "All version references should be consistent.",
+			"actual": detail,
+			"suggested_fix": "Update all version references to use a single consistent version.",
+			"human_review_required": true
+		})
+	}
+
+	return findings
+}
