@@ -34,7 +34,8 @@
       "status": "in_progress",
       "evidence": [
         "Source checks, lint, location links and redacted format previews merged in PR42 at2ac3932.67 tests,12 browser scenarios, all five native platforms, SDK matrix, security and a fresh local tarball consumer smoke passed. Package inspection, broader examples/starters and approved run/test/scaffold remain pending.",
-        "Package inspection adds the eleventh pinned canonical component and seventeenth scoped tool. Kennel declaration-only validation and lock parsing operate on bounded private copies without local dependency traversal, network, install or project execution. UI, profile gates, immutable evidence and explicit unverified/truncated/stale states are implemented. Exact native, browser, hosted and real-host verification is recorded on the implementation PR. Broader starters, approved run/test/scaffold and public/newcomer acceptance remain pending."
+        "Package inspection adds the eleventh pinned canonical component and seventeenth scoped tool. Kennel declaration-only validation and lock parsing operate on bounded private copies without local dependency traversal, network, install or project execution. UI, profile gates, immutable evidence and explicit unverified/truncated/stale states are implemented. Exact native, browser, hosted and real-host verification is recorded on the implementation PR. Broader starters, approved run/test/scaffold and public/newcomer acceptance remain pending.",
+        "Native script and basic fixture-agent starter previews now expose reviewable generated source and digest-bearing JSON download without workspace writes, dependency installation, credentials or generated-program execution. Scope/config/runtime and navigation guards are verified on the implementation PR. API/MCP starters and approved create/run/test remain unfinished."
       ]
     },
     {

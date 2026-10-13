@@ -52,6 +52,7 @@ const detailData = parameters.get("state") === "populated"
   : { review: null, failure: null, context: null };
 window.__KUJO_FIXTURE_DATA__ = {
   ...detailData,
+  starters: parameters.get("starters") && ["installed", "build", "full"].includes(parameters.get("profile") ?? "installed") ? [{ id: "script", title: "Local script", description: "Canonical Kujo project", prerequisites: "No credentials required." }, { id: "agent", title: "AI agent project", description: "Repository-owned agent", prerequisites: "Install pinned Kennel dependencies before running." }] : [],
   packageFiles: parameters.get("packages") ? { files: parameters.get("packages") === "empty" ? [] : ["kennel.toml"], truncated: false } : undefined,
   packages: parameters.get("packages") === "report" ? { id: "package-fixture", path: "kennel.toml", status: "warnings", stale: true, manifest: { name: "demo", version: "0.1.0", entry: "main.kujo" }, validation: { errors: [], warnings: ["Dependency does not pin a ref/tag/version/commit."] }, dependencies: [{ name: "local", kind: "path", source: "file:../local", requested: "", valid: true, diagnostic: "" }], dependencyCount: 1, lock: { status: "missing", entries: [], count: 0, version: "" }, lockAdmission: "not-git-visible", truncated: false, provenance: { version: "1.1.1" }, scope: "Dependencies, installed bytes, digests and source availability are not verified." } : null,
   verificationEnabled: parameters.get("verification") === "1",

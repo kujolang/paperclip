@@ -473,3 +473,40 @@ test("delayed package errors cannot cross company navigation", async ({ page }) 
   await page.evaluate(() => window.__KUJO_RESOLVE_PACKAGES__?.());
   await expect(page.getByText("private delayed package result")).toHaveCount(0);
 });
+
+test("canonical starter preview shows source and downloads a review without creating project files", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 1000 });
+  await page.goto("/?starters=1&workspace=missing");
+  const panel = page.getByRole("region", { name: "Kujo starters", exact: true });
+  await panel.getByLabel("Starter project name").fill("demo-project");
+  await panel.getByRole("button", { name: "Preview starter files", exact: true }).click();
+  await expect(panel.getByLabel("Starter source")).toContainText("Hello from Kujo");
+  await expect(panel.getByText("Generated programs have not run.")).toBeVisible();
+  await panel.screenshot({ path: test.info().outputPath("starter-preview.png") });
+  const download = page.waitForEvent("download");
+  await panel.getByRole("button", { name: "Download starter review JSON" }).click();
+  expect((await download).suggestedFilename()).toBe("demo-project-starter.json");
+  await panel.getByLabel("Starter", { exact: true }).selectOption("agent");
+  await expect(panel.getByText("Install pinned Kennel dependencies before running.")).toBeVisible();
+  await expect(panel.getByLabel("Starter source")).toHaveCount(0);
+  await panel.getByLabel("Starter project name").fill("../escape");
+  await expect(panel.getByRole("button", { name: "Preview starter files", exact: true })).toBeDisabled();
+  await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  await panel.screenshot({ path: test.info().outputPath("starters.png") });
+});
+
+test("starter controls enforce runtime/profile/run restrictions and discard late company results", async ({ page }) => {
+  await page.goto("/?starters=1&runtime=broken");
+  await expect(page.getByRole("button", { name: "Preview starter files", exact: true })).toBeDisabled();
+  for (const query of ["entity=run", "profile=review"]) {
+    await page.goto(`/?starters=1&${query}`);
+    await expect(page.getByRole("region", { name: "Kujo starters", exact: true })).toHaveCount(0);
+  }
+  await page.goto("/?starters=1");
+  await page.evaluate(() => { window.__KUJO_DELAY_PACKAGES__ = true; });
+  await page.getByRole("button", { name: "Preview starter files", exact: true }).click();
+  await expect.poll(() => page.evaluate(() => Boolean(window.__KUJO_RESOLVE_PACKAGES__))).toBe(true);
+  await page.evaluate(() => window.__KUJO_NAVIGATE__?.("other-company"));
+  await page.evaluate(() => window.__KUJO_RESOLVE_PACKAGES__?.());
+  await expect(page.getByText("private delayed starter result")).toHaveCount(0);
+});

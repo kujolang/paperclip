@@ -271,3 +271,35 @@ Source files remain unchanged. Sensitive-pattern redaction is defense in depth,
 not proof that arbitrary declarations contain no secrets. Kennel's bundled
 unreleased declaration API is pinned by commit; the published Kennel version alone
 does not identify those bytes.
+
+## Preview Kujo starters
+
+In a project or issue, select **Local script** or **AI agent project** under
+**Start building with Kujo**, enter a project name, and choose **Preview starter
+files**. Names are 1–64 lowercase ASCII letters, digits, hyphens or underscores,
+starting with a letter. Native reserved-name rules also apply. Inspect the
+proposed file selector and download the review JSON with file contents and SHA-256
+digests. Changing the name or starter clears the previous preview.
+
+This calls canonical `kujo init` or `kujo agent new` in a private temporary
+directory. Agent generation explicitly selects the basic profile and fixture
+provider, disables Git creation, and never requests installation or credentials.
+It includes pinned dependency declarations, instructions, schemas, capability
+policy and an evaluation. The generated README explains subsequent use; those
+commands have not run. Fixture generation needs no credentials, but running the
+agent requires its Kennel dependencies. Live providers require separate explicit
+configuration. Source/generator behavior is identified by the reported runtime
+version, rather than presented as a fixed template maintained by Paperclip.
+
+The Examples switch and Installed/Build/Full profiles govern this UI action.
+No workspace is needed; run views remain read-only. Generation is capped at five
+seconds, 64 files, 64 KiB per file, 256 KiB total and eight directory levels.
+Symlinks, hardlinks, nonregular files, binary/invalid UTF-8 output, dependency
+folders and generation-directory references fail closed. Outputs are returned to
+the requesting company view and are not stored in Evidence history or written
+into the user's workspace. They are proposed source files, not verification
+receipts. The JSON download is a review document, not an automatic installer.
+
+API and MCP starters, approval-bound project creation, and explicit project
+run/test remain separate unfinished expansion requirements. The preview does not
+replace those workflows.
