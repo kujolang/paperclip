@@ -32,11 +32,9 @@ async function workerFixture() {
   const cwd = await root(); await mkdir(join(cwd, "dist"));
   await writeFile(join(cwd, "package.json"), '{"type":"module"}');
   await copyFile(resolve("dist/runtime-supervisor.js"), join(cwd, "dist/runtime-supervisor.js"));
-  const native = join(cwd, "native.cjs"), descendant = join(cwd, "descendant.cjs");
-  await writeFile(descendant, `const fs=require('node:fs');fs.writeFileSync(${JSON.stringify(join(cwd, "descendant-pid"))},String(process.pid));setInterval(()=>fs.writeFileSync(${JSON.stringify(join(cwd, "descendant-tick"))},String(Date.now())),50);process.on('SIGTERM',()=>{});`);
-  await writeFile(native, `const fs=require('node:fs');require('node:child_process').spawn(process.execPath,[${JSON.stringify(descendant)}],{stdio:'inherit'});fs.writeFileSync(${JSON.stringify(join(cwd, "native-pid"))},String(process.pid));setInterval(()=>fs.writeFileSync(${JSON.stringify(join(cwd, "native-tick"))},String(Date.now())),50);process.on('SIGTERM',()=>{});`);
-  await build({ stdin: { contents: `import {executeSupervisedKujo} from ${JSON.stringify(resolve("src/runtime/supervised-kujo.ts"))};import {writeFileSync} from 'node:fs';process.on('message',message=>{if(message==='stall')Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,8000);});try{await executeSupervisedKujo(${JSON.stringify({ ...input(""), cwd, args: [native], timeoutMs: 20_000 })});}catch(error){writeFileSync(${JSON.stringify(join(cwd, "result"))},String(error));}finally{if(process.connected)process.disconnect();}`, resolveDir: process.cwd(), loader: "ts" }, outfile: join(cwd, "dist/worker.js"), bundle: true, platform: "node", format: "esm" });
-  const worker = fork(join(cwd, "dist/worker.js"), [], { execArgv: [], env: safeChildEnv(), stdio: ["ignore", "ignore", "ignore", "ipc"] }); workers.push(worker);
+  await writeFile(join(cwd, "invocation.json"), JSON.stringify({ ...input(""), cwd, args: [resolve("tests/fixtures/supervisor-native.cjs"), cwd], timeoutMs: 20_000 }));
+  await build({ entryPoints: [resolve("tests/fixtures/supervised-worker.ts")], outfile: join(cwd, "dist/worker.js"), bundle: true, platform: "node", format: "esm" });
+  const worker = fork(join(cwd, "dist/worker.js"), [cwd], { execArgv: [], env: safeChildEnv(), stdio: ["ignore", "ignore", "ignore", "ipc"] }); workers.push(worker);
   const nativePid = Number(await ready(join(cwd, "native-pid"))), descendantPid = Number(await ready(join(cwd, "descendant-pid")));
   await ready(join(cwd, "native-tick")); await ready(join(cwd, "descendant-tick"));
   expect(alive(nativePid)).toBe(true); expect(alive(descendantPid)).toBe(true);
@@ -56,7 +54,7 @@ describe("independently owned execution supervisor", () => {
   });
   it("rejects invalid or already-cancelled admission without executing", async () => {
     const cwd = await root(), marker = join(cwd, "unexpected");
-    const invocation = input(`require('node:fs').writeFileSync(${JSON.stringify(marker)},'executed')`);
+    const invocation = input("require('node:fs').writeFileSync(process.argv[1],'executed')"); invocation.args.push(marker);
     await expect(executeSupervisedKujo({ ...invocation, timeoutMs: Infinity })).rejects.toThrow();
     await expect(executeSupervisedKujo({ ...invocation, signal: AbortSignal.abort() })).rejects.toMatchObject({ code: "KUJO_EXEC_CANCELLED" });
     expect(await readFile(marker, "utf8").catch(() => null)).toBeNull();
@@ -82,8 +80,9 @@ describe("independently owned execution supervisor", () => {
   }, 20_000);
   it("fails closed when the packed supervisor is absent", async () => {
     const cwd = await root(); await mkdir(join(cwd, "dist")); await writeFile(join(cwd, "package.json"), '{"type":"module"}');
-    await build({ stdin: { contents: `import {executeSupervisedKujo} from ${JSON.stringify(resolve("src/runtime/supervised-kujo.ts"))};try{await executeSupervisedKujo(${JSON.stringify(input("process.stdout.write('unexpected')"))});}catch(error){process.send(String(error));}finally{process.disconnect();}`, resolveDir: process.cwd(), loader: "ts" }, outfile: join(cwd, "dist/worker.js"), bundle: true, platform: "node", format: "esm" });
-    const worker = fork(join(cwd, "dist/worker.js"), [], { execArgv: [], env: safeChildEnv(), stdio: ["ignore", "ignore", "ignore", "ipc"] }); workers.push(worker);
+    await writeFile(join(cwd, "invocation.json"), JSON.stringify(input("process.stdout.write('unexpected')")));
+    await build({ entryPoints: [resolve("tests/fixtures/supervised-worker.ts")], outfile: join(cwd, "dist/worker.js"), bundle: true, platform: "node", format: "esm" });
+    const worker = fork(join(cwd, "dist/worker.js"), [cwd], { execArgv: [], env: safeChildEnv(), stdio: ["ignore", "ignore", "ignore", "ipc"] }); workers.push(worker);
     const [message] = await once(worker, "message"); expect(message).toContain("without a confirmed outcome");
   });
 });
