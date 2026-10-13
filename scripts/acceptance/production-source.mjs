@@ -1,0 +1,79 @@
+import assert from "node:assert/strict";
+import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+
+export async function qualifyProductionSource({ call, companyId, projectId, issueId, root, node, checks, json, stop, start, waitUntil }) {
+  const route = "/plugins/kujolang.paperclip/bridge/action";
+  const action = async (operation, params = {}, options = {}) => (await call(route, { method: "POST", body: { companyId, key: "manage-kujo-execution", params: { issueId, operation, ...params } }, ...options })).data;
+  const config = async enabled => call("/plugins/kujolang.paperclip/config", { method: "POST", body: { companyId, configJson: { capabilityProfile: "build", features: { sourceExecution: enabled } } } });
+  const accept = async record => call(`/issues/${issueId}/interactions/${record.interactionId}/accept`, { method: "POST", body: {} });
+  const source = 'print("host-approved source")\nwrite_file("generated.txt", "private output")\n';
+  await writeFile(join(root, "workspace/approved.kujo"), source);
+  await writeFile(join(root, "workspace/source-tests.kujo"), 'test "host arithmetic" { assert(3 + 4 == 7, "seven") }\n');
+  await mkdir(join(root, "workspace/tests"), { recursive: true });
+  await writeFile(join(root, "workspace/tests/source-fixture.kujo"), 'print("host fixture")\n');
+  await writeFile(join(root, "workspace/tests/source-fixture.out"), 'host fixture\n');
+  assert.match((await action("inspect", { mode: "run", path: "approved.kujo" }, { status: 502 })).message, /disabled/);
+  await config(true);
+  await waitUntil(async () => { try { return !!(await action("inspect", { mode: "run", path: "approved.kujo" })).data.plan; } catch { return false; } });
+  const prepared = (await action("prepare", { mode: "run", path: "approved.kujo", submissionId: "host-source" })).data;
+  assert.equal((await action("prepare", { mode: "run", path: "approved.kujo", submissionId: "host-source" })).data.id, prepared.id);
+  assert.match((await action("start", { id: prepared.id }, { status: 502 })).message, /human approval/);
+  await accept(prepared);
+  const receipt = (await action("start", { id: prepared.id })).data;
+  assert.equal(receipt.state, "succeeded"); assert.equal(receipt.result.stdout, "host-approved source\n");
+  assert.equal(receipt.history.status, "retained"); assert.equal(receipt.abilityReceipt.ability_id, "kujo.paperclip.source.execute");
+  assert.equal(receipt.ownerId, undefined); assert.equal(receipt.claimId, undefined);
+  assert.equal(await stat(join(root, "workspace/generated.txt")).catch(() => null), null);
+  assert.equal(await readFile(join(root, "workspace/approved.kujo"), "utf8"), source);
+  checks.push("source run requires separate settings and human-only approval, deduplicates requests and executes a frozen copy with retained host receipts");
+  for (const mode of ["test", "fixtures"]) {
+    const request = (await action("prepare", { mode, ...(mode === "test" ? { path: "source-tests.kujo" } : {}), submissionId: `host-${mode}` })).data;
+    await accept(request);
+    const result = (await action("start", { id: request.id })).data;
+    assert.equal(result.state, "succeeded"); assert.equal(result.result.classification, "process-completed");
+    assert.match(result.result.stdout, /passed|PASS|Passed/);
+  }
+  const stale = (await action("prepare", { mode: "run", path: "approved.kujo", submissionId: "host-source-stale" })).data;
+  await accept(stale); await writeFile(join(root, "workspace/approved.kujo"), 'print("changed")\n');
+  assert.equal((await action("start", { id: stale.id })).data.state, "stale");
+  checks.push("native test-file and fixture commands retain observed output; changed source invalidates earlier approval");
+  const exported = (await call(route, { method: "POST", body: { companyId, key: "export-evidence", params: { entityType: "issue", entityId: issueId, evidenceId: receipt.history.outcomeId } } })).data.data;
+  assert.equal(exported.parent.status, "retained"); assert.equal(exported.payload.planEvidence.digest, exported.parent.receipt.digest);
+  await stop(); await start();
+  await waitUntil(async () => { try { return (await action("status", { id: receipt.id })).data?.state === "succeeded"; } catch { return false; } });
+  assert.deepEqual((await action("status", { id: receipt.id })).data, receipt);
+  assert.equal((await action("list")).data.history.pending, false);
+  const pending = (await action("prepare", { mode: "run", path: "approved.kujo", submissionId: "disabled-source" })).data;
+  await config(false);
+  await waitUntil(async () => { try { return /disabled/.test((await action("status", { id: receipt.id }, { status: 502 })).message); } catch { return false; } });
+  assert.equal((await action("cancel", { id: pending.id })).data.state, "cancelled");
+  await config(true);
+  await waitUntil(async () => { try { return (await action("status", { id: receipt.id })).data?.state === "succeeded"; } catch { return false; } });
+  const other = (await call("/companies", { method: "POST", status: 201, body: { name: "Unrelated source tenant" } })).data.id;
+  await call("/plugins/kujolang.paperclip/config", { method: "POST", body: { companyId: other, configJson: { features: { sourceExecution: true } } } });
+  await action("status", {}, { status: 502, body: { companyId: other, key: "manage-kujo-execution", params: { operation: "status", issueId, id: receipt.id } } });
+  checks.push("source receipts and parent-linked history survive authenticated host/database restart; disabled cancellation and tenant isolation hold");
+  await writeFile(join(root, "source-agent-idle.mjs"), "setTimeout(() => {}, 120000);\n");
+  const agent = (await call(`/companies/${companyId}/agents`, { method: "POST", status: 201, body: { name: "Source execution agent", role: "ceo", adapterType: "process", adapterConfig: { command: node, args: [join(root, "source-agent-idle.mjs")] } } })).data;
+  const key = (await call(`/agents/${agent.id}/keys`, { method: "POST", status: 201, body: { name: "Disposable source execution key" } })).data;
+  const token = key.token || key.key;
+  let agentRunId;
+  try {
+    const run = (await call(`/agents/${agent.id}/heartbeat/invoke`, { method: "POST", status: 202, body: { reason: "source_qualification", idempotencyKey: `source-${agent.id}` } })).data;
+    agentRunId = run.id;
+    const issue = (await call(`/companies/${companyId}/issues`, { method: "POST", status: 201, body: { title: "Agent source qualification", projectId, status: "backlog" } })).data;
+    await call(`/issues/${issue.id}/checkout`, { method: "POST", token, runId: run.id, body: { agentId: agent.id, expectedStatuses: ["backlog"] } });
+    const tool = async parameters => (await call("/plugins/tools/execute", { method: "POST", token, runId: run.id, body: { tool: "kujolang.paperclip:manage-kujo-execution", parameters: { issueId: issue.id, ...parameters }, runContext: { companyId, projectId, agentId: agent.id, runId: run.id } } })).data.result;
+    assert.match((await tool({ operation: "list", issueId })).error, /assigned issue/);
+    const request = (await tool({ operation: "prepare", mode: "run", path: "approved.kujo", submissionId: "agent-source" })).data;
+    assert.ok(request.id); assert.match((await tool({ operation: "start", id: request.id })).error, /human approval/);
+    const denied = await call(`/issues/${issue.id}/interactions/${request.interactionId}/accept`, { method: "POST", token, runId: run.id, status: 403, body: {} });
+    assert.equal(denied.data.code, "interaction_human_only");
+    await call(`/issues/${issue.id}/interactions/${request.interactionId}/accept`, { method: "POST", body: {} });
+    const result = await tool({ operation: "start", id: request.id });
+    assert.equal(result.error, undefined); assert.equal(result.data.state, "succeeded");
+  } finally { if (agentRunId) await call(`/heartbeat-runs/${agentRunId}/cancel`, { method: "POST", body: {} }); }
+  checks.push("actual assigned agent run can prepare/start source execution only after board approval and cannot accept its own card");
+  await json("source-receipts.json", { receipt, exported, companyId, projectId, issueId });
+}
