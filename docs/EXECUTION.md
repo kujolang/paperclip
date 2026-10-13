@@ -99,6 +99,53 @@ catalog entry or a portable permission grant. Native result `durationMs` measure
 the process; receipt timing measures the request lifecycle including approval
 wait. Legacy Eval receipts and immutable history remain unchanged.
 
+## Approved starter creation
+
+`features.projectCreation` admits Installed/Build/Full to the issue-only
+`manage-kujo-starter` workflow. `inspect` and `prepare` require `issueId`, `kind`
+(`script`, `api`, `mcp`, `agent`) and a new directory `name`; `prepare` also requires
+`submissionId`. `start`, `status` and `cancel` take `issueId`/`id`; `list` takes
+`issueId`. Callers cannot supply roots, files, templates, commands or approval IDs.
+Names are portable lowercase single components, up to64 characters; reserved
+platform names are refused. The workspace comes only from Paperclip and must
+remain a stable local root during creation. It need not be a Git repository.
+
+Inspect returns canonical generated/pinned source for explicit file review.
+Preparation binds its exact inventory/digests, destination, component/helper,
+runtime binary, effective settings and host workspace identity (including root
+inode/device) to a human-only card. The UI requires a preview before requesting
+approval and never starts on acceptance. The agent route requires current host
+assignment/run; only that requester/run or a human can start/cancel. Reusing a
+submission ID with the same kind/name/requester returns its existing immutable
+request, including after successful creation. It never generates another card or
+repeats writes. Changed input/requester conflicts; a new request needs a new ID.
+
+At start, revalidate the approved plan and absent destination. The fixed isolated
+Kujo helper uses released `copy_file_beneath`: descriptor-relative parent creation,
+symlink/reparse rejection and atomic no-replace publication for each file. No
+project module, generated program, dependency installer, server or client setup
+runs. A `.kujo-paperclip-starter.json` marker records the starter digest before
+copying template files; it is included in the approval inventory and receipt.
+The existing64-file/64KiB-per-file/256KiB template bounds apply, plus one small
+marker. Source/output schemas and exact byte/digest receipts are validated.
+
+This is **not an atomic directory transaction**. A concurrent conflict,
+interruption, timeout or storage failure may leave files or parent directories,
+including the path whose copy reported failure. Files are never overwritten or
+automatically removed/resumed/retried. Native `created`, `conflict` and `incomplete`
+results remain distinct; missing/contradictory post-entry evidence is uncertain.
+Keep the trusted root stable: per-file confinement does not freeze the entire
+workspace or prove the files remain unchanged after publication. Inspect retained
+files before another request; choose a fresh destination rather than retrying
+blindly. Persistent application servers remain separate workflow work.
+
+Terminal creation publishes linked `starter-creation-plan` and
+`starter-creation-result` evidence using the shared atomic publication/acknowledgment
+and clear/prune rules. Portable receipts identify the host-owned
+`kujo.paperclip.starter.create` adapter, not a canonical catalog entry. Existing
+Eval/source receipts are unchanged. Creation shares company admission limits,
+leases, cancellation and retention; no new migration or scheduler is introduced.
+
 ## Retained execution history
 
 Each terminal request publishes two immutable records atomically: the requested

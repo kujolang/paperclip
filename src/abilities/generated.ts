@@ -4860,6 +4860,394 @@ export const projections = [
     ],
     "definitionDigest": "0b579478b95d5b03e596f5d014854b8149f269d987737321b498be067bc0de39",
     "canonicalDefinitions": []
+  },
+  {
+    "exportName": "starterCreationTool",
+    "id": "kujo.paperclip.starter.create",
+    "feature": "projectCreation",
+    "canonicalIds": [],
+    "components": [],
+    "tool": {
+      "name": "manage-kujo-starter",
+      "displayName": "Create an Approved Kujo Starter",
+      "description": "Preview canonical script/API/MCP/agent files, request human-only issue approval and explicitly create a new directory in the host-owned workspace. Never overwrites files, installs dependencies or executes generated programs. Partial creation is not rolled back or retried. Agent requires current assigned issue/run; no caller root or file bytes.",
+      "parametersSchema": {
+        "oneOf": [
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "issueId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "operation": {
+                "const": "inspect"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "script",
+                  "agent",
+                  "api",
+                  "mcp"
+                ]
+              },
+              "name": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64,
+                "pattern": "^[a-z][a-z0-9_-]*$"
+              }
+            },
+            "required": [
+              "issueId",
+              "operation",
+              "kind",
+              "name"
+            ]
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "issueId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "operation": {
+                "const": "prepare"
+              },
+              "submissionId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "script",
+                  "agent",
+                  "api",
+                  "mcp"
+                ]
+              },
+              "name": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64,
+                "pattern": "^[a-z][a-z0-9_-]*$"
+              }
+            },
+            "required": [
+              "issueId",
+              "operation",
+              "submissionId",
+              "kind",
+              "name"
+            ]
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "issueId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "operation": {
+                "const": "start"
+              },
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              }
+            },
+            "required": [
+              "issueId",
+              "operation",
+              "id"
+            ]
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "issueId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "operation": {
+                "const": "status"
+              },
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              }
+            },
+            "required": [
+              "issueId",
+              "operation",
+              "id"
+            ]
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "issueId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "operation": {
+                "const": "list"
+              }
+            },
+            "required": [
+              "issueId",
+              "operation"
+            ]
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "issueId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "operation": {
+                "const": "cancel"
+              },
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              }
+            },
+            "required": [
+              "issueId",
+              "operation",
+              "id"
+            ]
+          }
+        ]
+      }
+    },
+    "definition": {
+      "schema": "kujo.ability/v1",
+      "id": "kujo.paperclip.starter.create",
+      "version": "1.0.0",
+      "title": "Create an Approved Kujo Starter",
+      "description": "Preview canonical script/API/MCP/agent files, request human-only issue approval and explicitly create a new directory in the host-owned workspace. Never overwrites files, installs dependencies or executes generated programs. Partial creation is not rolled back or retried. Agent requires current assigned issue/run; no caller root or file bytes.",
+      "input_schema": {
+        "oneOf": [
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "issueId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "operation": {
+                "const": "inspect"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "script",
+                  "agent",
+                  "api",
+                  "mcp"
+                ]
+              },
+              "name": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64,
+                "pattern": "^[a-z][a-z0-9_-]*$"
+              }
+            },
+            "required": [
+              "issueId",
+              "operation",
+              "kind",
+              "name"
+            ]
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "issueId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "operation": {
+                "const": "prepare"
+              },
+              "submissionId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "script",
+                  "agent",
+                  "api",
+                  "mcp"
+                ]
+              },
+              "name": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64,
+                "pattern": "^[a-z][a-z0-9_-]*$"
+              }
+            },
+            "required": [
+              "issueId",
+              "operation",
+              "submissionId",
+              "kind",
+              "name"
+            ]
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "issueId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "operation": {
+                "const": "start"
+              },
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              }
+            },
+            "required": [
+              "issueId",
+              "operation",
+              "id"
+            ]
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "issueId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "operation": {
+                "const": "status"
+              },
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              }
+            },
+            "required": [
+              "issueId",
+              "operation",
+              "id"
+            ]
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "issueId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "operation": {
+                "const": "list"
+              }
+            },
+            "required": [
+              "issueId",
+              "operation"
+            ]
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "issueId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "operation": {
+                "const": "cancel"
+              },
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              }
+            },
+            "required": [
+              "issueId",
+              "operation",
+              "id"
+            ]
+          }
+        ]
+      },
+      "output_schema": {
+        "type": "object",
+        "additionalProperties": true
+      },
+      "effects": [
+        {
+          "kind": "write",
+          "resource": "kujo.paperclip.workspace.new-starter-files"
+        },
+        {
+          "kind": "write",
+          "resource": "kujo.paperclip.evidence"
+        }
+      ],
+      "idempotency": {
+        "mode": "keyed"
+      },
+      "semantics": {
+        "open_world": false,
+        "destructive": false,
+        "executes_code": false
+      }
+    },
+    "profiles": [
+      "installed",
+      "build",
+      "full"
+    ],
+    "definitionDigest": "83c56079f9300b735b6b72bf9195c4cd9c1b2dfb3248fa79a4dddc4f7b84d33a",
+    "canonicalDefinitions": []
   }
 ] as const;
 export const catalogTool = projections[0].tool;
@@ -4880,4 +5268,5 @@ export const shipcheckTool = projections[14].tool;
 export const evalTool = projections[15].tool;
 export const packageTool = projections[16].tool;
 export const sourceExecutionTool = projections[17].tool;
+export const starterCreationTool = projections[18].tool;
 export const projectedTools = projections.map((entry) => entry.tool);

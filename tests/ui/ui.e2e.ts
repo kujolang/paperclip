@@ -583,3 +583,49 @@ test("company navigation drops a late private source execution response", async 
   await page.evaluate(() => window.__KUJO_RESOLVE_SOURCE__?.());
   await expect(page.getByText("private delayed source result", { exact: true })).toHaveCount(0);
 });
+
+test("starter creation requires reviewed files, human approval request and explicit creation", async ({ page }, testInfo) => {
+  await page.setViewportSize({ width: 390, height: 1200 });
+  await page.goto("/?surface=task&entity=issue&projectCreation=1&profile=build");
+  const section = page.getByRole("region", { name: "Approved Kujo project creation", exact: true });
+  await expect(section.getByRole("button", { name: "Request file creation approval" })).toBeDisabled();
+  await section.getByRole("button", { name: "Preview creation files" }).click();
+  await expect(section.getByLabel("Creation source")).toContainText("Hello from Kujo");
+  await section.getByRole("button", { name: "Request file creation approval" }).click();
+  await expect(section.getByText(/A pending request does not prove approval/)).toBeVisible();
+  expect(await page.evaluate(() => window.__KUJO_ACTIONS__?.some(entry => (entry.input as { operation?: string }).operation === "start"))).toBe(false);
+  await section.getByRole("button", { name: "Create approved files", exact: true }).click();
+  await expect(section.getByLabel("Created files")).toContainText("my-kujo-project/src/main.kujo");
+  await expect(section.getByText(/Next: select this entry point in Run or test Kujo/)).toBeVisible();
+  await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  await section.screenshot({ path: testInfo.outputPath("starter-creation.png") });
+});
+
+test("changing a starter selection invalidates its preview and keeps creation explicit", async ({ page }) => {
+  await page.goto("/?surface=task&entity=issue&projectCreation=1");
+  const section = page.getByRole("region", { name: "Approved Kujo project creation", exact: true });
+  await section.getByRole("button", { name: "Preview creation files" }).click();
+  await section.getByLabel("Creation starter").selectOption("mcp");
+  await expect(section.getByRole("button", { name: "Request file creation approval" })).toBeDisabled();
+  await expect(section.getByLabel("Creation source")).toHaveCount(0);
+  await section.getByLabel("Creation directory name").fill("my-mcp");
+  await section.getByRole("button", { name: "Preview creation files" }).click();
+  await expect.poll(() => page.evaluate(() => window.__KUJO_ACTIONS__?.findLast(entry => (entry.input as { operation?: string }).operation === "inspect"))).toMatchObject({ action: "manage-kujo-starter", input: { kind: "mcp", name: "my-mcp" } });
+});
+
+test("creation is absent by default and on project/run or excluded-profile surfaces", async ({ page }) => {
+  for (const query of ["entity=issue", "entity=project&projectCreation=1", "entity=run&projectCreation=1", "entity=issue&projectCreation=1&profile=review", "entity=issue&projectCreation=1&profile=ship"]) {
+    await page.goto(`/?surface=detail&${query}`);
+    await expect(page.getByRole("region", { name: "Approved Kujo project creation", exact: true })).toHaveCount(0);
+  }
+});
+
+test("company navigation discards delayed creation source and errors", async ({ page }) => {
+  await page.goto("/?surface=task&entity=issue&projectCreation=1");
+  await page.evaluate(() => { window.__KUJO_DELAY_CREATION__ = true; });
+  await page.getByRole("button", { name: "Preview creation files" }).click();
+  await expect.poll(() => page.evaluate(() => Boolean(window.__KUJO_RESOLVE_CREATION__))).toBe(true);
+  await page.evaluate(() => window.__KUJO_NAVIGATE__?.("other-company"));
+  await page.evaluate(() => window.__KUJO_RESOLVE_CREATION__?.());
+  await expect(page.getByText("private delayed creation result")).toHaveCount(0);
+});

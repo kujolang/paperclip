@@ -22,19 +22,20 @@ function approvalPreview(request: ExecutionRequest) {
 export function confirmationFor(record: ExecutionRecord) {
   const preview = approvalPreview(record.request);
   const evaluation = record.request.plan.operation === "eval.run";
+  const creation = record.request.plan.operation === "starter.create";
   return {
     idempotencyKey: `kujo.execution:${record.id}`,
-    title: evaluation ? "Run Kujo evaluation" : "Run Kujo source or tests",
+    title: evaluation ? "Run Kujo evaluation" : creation ? "Create Kujo starter files" : "Run Kujo source or tests",
     continuationPolicy: "none" as const,
     resolverPolicy: "human_only" as const,
     payload: {
       version: 1 as const,
-      prompt: evaluation ? "Allow this Kujo evaluation to run once?" : "Allow this Kujo source/test command to run once?",
-      acceptLabel: "Allow this run",
-      rejectLabel: "Do not run",
+      prompt: evaluation ? "Allow this Kujo evaluation to run once?" : creation ? "Allow these Kujo starter files to be created once?" : "Allow this Kujo source/test command to run once?",
+      acceptLabel: creation ? "Allow file creation" : "Allow this run",
+      rejectLabel: creation ? "Do not create files" : "Do not run",
       allowDeclineReason: true,
       supersedeOnUserComment: true,
-      detailsMarkdown: `${evaluation ? "Review the suite and its effects." : "Review the source/test operation and its effects."} Approval applies only to this request and its exact inputs. Kujo execution is not a sandbox.\n\n\`\`\`json\n${preview}\n\`\`\`\n\nApproval expires at ${new Date(record.expiresAt).toISOString()}.`,
+      detailsMarkdown: `${evaluation ? "Review the suite and its effects." : creation ? "Review the starter inventory and file creation effects." : "Review the source/test operation and its effects."} Approval applies only to this request and its exact inputs. ${creation ? "File creation is not an atomic directory transaction and cannot be rolled back automatically." : "Kujo execution is not a sandbox."}\n\n\`\`\`json\n${preview}\n\`\`\`\n\nApproval expires at ${new Date(record.expiresAt).toISOString()}.`,
       target: { type: "custom" as const, key: record.id, revisionId: record.requestDigest, label: "Kujo execution request" },
     },
   };
