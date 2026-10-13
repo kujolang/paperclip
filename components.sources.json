@@ -363,7 +363,7 @@
       "id": "dispatch",
       "repository": "https://github.com/kujolang/dispatch",
       "sourceDirectory": "dispatch",
-      "gitCommit": "e83f034077ef46e138cf3ac59603a9f91d410ab5",
+      "gitCommit": "4c4d34b2979f6754a97a48d1da62e28fda14315d",
       "version": "1.3.0",
       "entrypoint": "dispatch.kujo",
       "files": [

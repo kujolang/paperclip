@@ -554,7 +554,7 @@ and retention of active/paused/uncertain runs without deleting their state.
 ### Pinned Dispatch native commands
 
 Bundle `0.10.1` pins Dispatch `1.3.0` with the additive control-view contract at
-`e83f034077ef46e138cf3ac59603a9f91d410ab5`: CLI, canonical source modules,
+`4c4d34b2979f6754a97a48d1da62e28fda14315d`: CLI, canonical source modules,
 fixture sources, workflow examples, schemas, metadata and license. No external AI
 SDK, provider credentials, container runtime or participant SDK is installed by
 this snapshot. Dispatch native workflows are qualified on Linux/macOS only.
