@@ -1,0 +1,50 @@
+import { z } from "zod";
+import type { ExecuteKujoInput, ExecuteKujoResult } from "../runtime/types.js";
+
+const identity = z.string().min(1).max(200);
+const digest = z.string().regex(/^[a-f0-9]{64}$/);
+export const executionScopeSchema = z.object({ companyId: identity, issueId: identity }).strict();
+export type ExecutionScope = z.infer<typeof executionScopeSchema>;
+export const executionPlanSchema = z.object({
+  operation: z.literal("eval.run"),
+  projectId: identity,
+  workspaceId: identity,
+  suite: z.string().min(1).max(500),
+  summary: z.string().min(1).max(4000),
+  effects: z.array(z.enum(["read_workspace", "write_reports", "execute_project", "network"])).min(1).max(4),
+  inputDigest: digest,
+  workspaceDigest: digest,
+  definitionDigest: digest,
+  componentDigest: digest,
+  runtimeDigest: digest,
+  policyDigest: digest,
+  timeoutMs: z.number().int().min(100).max(27000),
+}).strict();
+export type ExecutionPlan = z.infer<typeof executionPlanSchema>;
+export const executionRequestSchema = z.object({
+  plan: executionPlanSchema,
+  requester: z.object({ kind: z.enum(["human", "agent"]), id: identity }).strict(),
+}).strict();
+export type ExecutionRequest = z.infer<typeof executionRequestSchema>;
+export const executionStateSchema = z.enum(["preparing", "pending", "running", "cancel_requested", "succeeded", "failed", "cancelled", "expired", "rejected", "stale", "uncertain"]);
+export type ExecutionState = z.infer<typeof executionStateSchema>;
+export const executionRecordSchema = z.object({
+  id: identity, requestDigest: digest, request: executionRequestSchema, state: executionStateSchema,
+  interactionId: z.string().nullable(), approvedBy: z.string().nullable(), ownerId: z.string().nullable(), claimId: z.string().nullable(),
+  createdAt: z.string(), expiresAt: z.string(), leaseUntil: z.string().nullable(), finishedAt: z.string().nullable(),
+  result: z.record(z.string(), z.unknown()).nullable(), diagnostic: z.string().nullable(),
+});
+export type ExecutionRecord = z.infer<typeof executionRecordSchema>;
+
+// Internal adapter boundary, never a tool accepting commands or workspace paths.
+// Materialization must recheck admission and digests, then freeze the approved
+// inputs. Returning null means the approved plan can no longer be executed.
+// Only reviewed adapter code can provide an invocation; the coordinator owns
+// spawn, process-tree cancellation, byte limits and timeouts.
+export type ExecutionAdapter = {
+  materialize(scope: ExecutionScope, plan: ExecutionPlan, signal: AbortSignal): Promise<{
+    invocation: Omit<ExecuteKujoInput, "signal" | "timeoutMs" | "maxStdoutBytes" | "maxStderrBytes">;
+    collect(result: ExecuteKujoResult): Promise<Record<string, unknown>>;
+    dispose(): Promise<void>;
+  } | null>;
+};

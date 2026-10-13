@@ -49,6 +49,7 @@ async function assertDirectory(cwd: string): Promise<string> {
 
 export async function executeKujo(input: ExecuteKujoInput): Promise<ExecuteKujoResult> {
   const cwd = await assertDirectory(input.cwd);
+  if (input.signal?.aborted) throw new KujoPluginError("KUJO_EXEC_CANCELLED", "Kujo execution was cancelled before process start");
   const start = performance.now();
 
   return await new Promise<ExecuteKujoResult>((resolve, reject) => {

@@ -76,6 +76,18 @@ describe("process isolation, concurrency, and termination", () => {
     maxStderrBytes: 128,
   });
 
+  it("never launches an already-aborted process", async () => {
+    const root = await mkdtemp(join(tmpdir(), "kujo-preaborted-test-"));
+    const marker = join(root, "executed");
+    const controller = new AbortController(); controller.abort();
+    try {
+      const input = processInput("require('node:fs').writeFileSync(process.argv[1], 'unexpected');");
+      input.args.push(marker);
+      await expect(executeKujo({ ...input, signal: controller.signal })).rejects.toThrow("cancelled before process start");
+      await expect(access(marker)).rejects.toThrow();
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
   it("escalates an output-limit termination when a child ignores SIGTERM", async () => {
     const started = performance.now();
     await expect(executeKujo(processInput("process.on('SIGTERM',()=>{});process.stdout.write('x'.repeat(10000));setInterval(()=>{},1000)")))

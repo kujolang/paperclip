@@ -1,5 +1,5 @@
 import { afterAll, afterEach, beforeAll } from "vitest";
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile, readdir, writeFile } from "node:fs/promises";
 import { PGlite } from "@electric-sql/pglite";
 import { createTestHarness as createSdkHarness } from "@paperclipai/plugin-sdk/testing";
 import { EVIDENCE_NAMESPACE } from "../../src/storage/history.js";
@@ -10,7 +10,8 @@ export async function testDatabase() {
   database ??= (async () => {
     const db = new PGlite();
     await db.exec(`CREATE SCHEMA ${EVIDENCE_NAMESPACE}`);
-    await db.exec(await readFile(new URL("../../migrations/001_evidence.sql", import.meta.url), "utf8"));
+    const migrations = new URL("../../migrations/", import.meta.url);
+    for (const name of (await readdir(migrations)).filter((name) => name.endsWith(".sql")).sort()) await db.exec(await readFile(new URL(name, migrations), "utf8"));
     return db;
   })();
   return await database;
@@ -33,7 +34,12 @@ export function createTestHarness(options: Parameters<typeof createSdkHarness>[0
   };
   return harness;
 }
-afterEach(async () => { if (database) await (await database).exec(`DELETE FROM ${EVIDENCE_NAMESPACE}.artifacts`); });
+afterEach(async () => {
+  if (database) {
+    await (await database).exec(`DELETE FROM ${EVIDENCE_NAMESPACE}.artifacts`);
+    await (await database).exec(`DELETE FROM ${EVIDENCE_NAMESPACE}.executions`);
+  }
+});
 afterAll(async () => {
   if (process.env.KUJO_SQL_CAPTURE_FILE) await writeFile(process.env.KUJO_SQL_CAPTURE_FILE, JSON.stringify(sqlCalls));
   if (database) await (await database).close();
