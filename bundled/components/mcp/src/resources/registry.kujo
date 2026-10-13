@@ -1,0 +1,145 @@
+# Resource registry module
+#
+# Co-locates resource metadata and readers for centralized runtime registration.
+
+export func register_all_resources(deps) {
+    return {
+        "project://docs": {
+            "uri": "project://docs",
+            "name": "Project Documentation",
+            "desc": "List project documentation files",
+            "mime": "application/json"
+        },
+        "files://tree": {
+            "uri": "files://tree",
+            "name": "File Tree",
+            "desc": "File tree overview of the demo directory",
+            "mime": "application/json"
+        },
+        "log://calls": {
+            "uri": "log://calls",
+            "name": "Tool Call Log",
+            "desc": "Recent tool call history",
+            "mime": "application/json"
+        },
+        "prompt://onboarding": {
+            "uri": "prompt://onboarding",
+            "name": "Onboarding Prompt",
+            "desc": "Reusable onboarding prompt for agents working in this repository",
+            "mime": "text/markdown"
+        },
+        "workflow://checklist-loop": {
+            "uri": "workflow://checklist-loop",
+            "name": "Checklist Loop Workflow",
+            "desc": "Template workflow for completing one checklist loop",
+            "mime": "text/markdown"
+        }
+    }
+}
+
+export func read_registered_resource(resource_uri, deps) {
+    docs_dir := deps["docs_dir"]
+    allowed_dir := deps["allowed_dir"]
+    allowed_dirs := [allowed_dir]
+    if has_key(deps, "allowed_dirs") {
+        candidate_dirs := deps["allowed_dirs"]
+        if type(candidate_dirs) == "array" && len(candidate_dirs) > 0 {
+            allowed_dirs := candidate_dirs
+        }
+    }
+    log_file := deps["log_file"]
+    repo_docs_dir := deps["repo_docs_dir"]
+
+    if resource_uri == "project://docs" {
+        try {
+            docs := []
+            idx := 0
+            while idx < len(allowed_dirs) {
+                docs_root := allowed_dirs[idx] + "/docs"
+                files := []
+                try {
+                    files := list_dir(docs_root)
+                } except err {
+                    files := []
+                }
+
+                for f in files {
+                    if ends_with(f, ".md") {
+                        display_name := f
+                        if len(allowed_dirs) > 1 {
+                            display_name := "root" + to_string(idx + 1) + "/" + f
+                        }
+                        docs := push(docs, {"name": display_name, "size": file_size(docs_root + "/" + f)})
+                    }
+                }
+
+                idx := idx + 1
+            }
+            return {"ok": true, "content": to_json(docs), "mime_type": "application/json"}
+        } except err {
+            return {"ok": false, "error": "Failed: " + err}
+        }
+    }
+
+    if resource_uri == "files://tree" {
+        try {
+            tree := {"roots": allowed_dirs, "entries": []}
+            idx := 0
+            while idx < len(allowed_dirs) {
+                current_root := allowed_dirs[idx]
+                files := list_dir(current_root)
+                for f in files {
+                    fp := current_root + "/" + f
+                    entry := {"name": f, "path": fp, "size": file_size(fp), "root": current_root}
+                    try {
+                        sub := list_dir(fp)
+                        entry["type"] := "directory"
+                        entry["children"] := len(sub)
+                    } except err {
+                        entry["type"] := "file"
+                    }
+                    tree["entries"] := push(tree["entries"], entry)
+                }
+
+                idx := idx + 1
+            }
+            return {"ok": true, "content": to_json(tree), "mime_type": "application/json"}
+        } except err {
+            return {"ok": false, "error": "Failed: " + err}
+        }
+    }
+
+    if resource_uri == "log://calls" {
+        if !file_exists(log_file) {
+            return {"ok": true, "content": to_json([]), "mime_type": "application/json"}
+        }
+
+        content := read_file(log_file)
+        lines := split(content, "\n")
+        entries := []
+        for line in lines {
+            if trim(line) != "" {
+                entries := push(entries, {"text": line})
+            }
+        }
+        return {"ok": true, "content": to_json(entries), "mime_type": "application/json"}
+    }
+
+    if resource_uri == "prompt://onboarding" {
+        fp := repo_docs_dir + "/onboarding-prompt.md"
+        if !file_exists(fp) {
+            return {"ok": false, "error": "Onboarding prompt resource file is missing"}
+        }
+        return {"ok": true, "content": read_file(fp), "mime_type": "text/markdown"}
+    }
+
+    if resource_uri == "workflow://checklist-loop" {
+        fp := repo_docs_dir + "/checklist-loop-workflow.md"
+        if !file_exists(fp) {
+            return {"ok": false, "error": "Checklist workflow resource file is missing"}
+        }
+        return {"ok": true, "content": read_file(fp), "mime_type": "text/markdown"}
+    }
+
+    return {"ok": false, "error": "Resource not found"}
+}

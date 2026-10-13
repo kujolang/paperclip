@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Pin the canonical MCP Windows path-boundary repair so starter file tools work across the supported native platforms.
+
+- Add pinned canonical SQLite API and MCP server starter previews with source provenance, effect/setup guidance, portable demo files and real consumer HTTP/JSON-RPC verification.
+
 - Preview canonical script and fixture-agent starter files, inspect source and download a bounded review JSON without creating workspace files or installing dependencies.
 
 - Add offline canonical Kennel package declaration inspection, scoped project/issue UI and agent tool, explicit unverified lock records, and retained redacted evidence. Local dependency paths are never followed; no install or project execution occurs.

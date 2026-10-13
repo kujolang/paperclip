@@ -52,6 +52,8 @@ export function usePluginAction(action: string) {
     window.__KUJO_ACTIONS__.push({ action, input });
     if (action === "preview-starter") {
       if (window.__KUJO_DELAY_PACKAGES__) { await new Promise<void>(resolve => { window.__KUJO_RESOLVE_PACKAGES__ = resolve; }); throw new Error("private delayed starter result"); }
+      if ((input as { kind: string }).kind === "mcp") return { ...(input as object), status: "preview", entrypoint: "server.kujo", runtimeVersion: "1.8.1", provenance: { component: "mcp", version: "1.3.1", commit: "canonical-mcp-commit" }, files: [{ path: "server.kujo", content: "from src.server.runtime import entry_loaded", sha256: "fixture" }], notice: "No server registered or started." };
+      if ((input as { kind: string }).kind === "api") return { ...(input as object), status: "preview", entrypoint: "main.kujo", runtimeVersion: "1.8.1", provenance: { component: "crud-api", version: "1.0.0", commit: "canonical-api-commit" }, files: [{ path: "main.kujo", content: "from src.server.runtime import entry_loaded", sha256: "fixture" }], notice: "No server started or database created." };
       return { ...(input as object), status: "preview", runtimeVersion: "1.8.1", files: [{ path: "src/main.kujo", content: 'print("Hello from Kujo")', sha256: "fixture" }], notice: "Generated programs have not run." };
     }
     if (action === "inspect-kujo-packages") {

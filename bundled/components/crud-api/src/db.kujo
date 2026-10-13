@@ -1,0 +1,171 @@
+from src.config import DB_PATH
+
+func fatal(message) {
+	print(message)
+	exit(1)
+}
+
+func print_seed_count(label, count) {
+	if count > 0 {
+		print(label + ": " + to_string(count))
+	}
+}
+
+export db := db_connect("sqlite", DB_PATH)
+if type(db) == "error" {
+	fatal("Failed to connect to SQLite database: " + to_string(db))
+}
+
+export func db_query_safe(sql, params) {
+	rows := db_query(db, sql, params)
+	if type(rows) == "error" {
+		return {"ok": false, "error": to_string(rows)}
+	}
+	return {"ok": true, "rows": rows}
+}
+
+export func db_execute_safe(sql, params) {
+	result := db_execute(db, sql, params)
+	if type(result) == "error" {
+		return {"ok": false, "error": to_string(result)}
+	}
+	return {"ok": true, "result": result}
+}
+
+pragma_steps := [
+	"PRAGMA journal_mode=WAL",
+	"PRAGMA synchronous=NORMAL",
+	"PRAGMA temp_store=MEMORY",
+	"PRAGMA foreign_keys=ON",
+	"PRAGMA busy_timeout=5000"
+]
+
+for sql in pragma_steps {
+	pragma_result := db_query_safe(sql, [])
+	if !pragma_result["ok"] {
+		fatal("Database PRAGMA setup failed: " + pragma_result["error"])
+	}
+}
+
+schema_steps := [
+	{"sql": "CREATE TABLE IF NOT EXISTS projects (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE, description TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)", "params": []},
+	{"sql": "CREATE INDEX IF NOT EXISTS idx_projects_name ON projects(name)", "params": []},
+	{"sql": "CREATE TABLE IF NOT EXISTS items (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT NOT NULL, content TEXT NOT NULL, status TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)", "params": []},
+	{"sql": "CREATE INDEX IF NOT EXISTS idx_items_status ON items(status)", "params": []},
+	{"sql": "CREATE INDEX IF NOT EXISTS idx_items_updated_at ON items(updated_at)", "params": []},
+	{"sql": "CREATE INDEX IF NOT EXISTS idx_items_status_id ON items(status, id DESC)", "params": []},
+	{"sql": "CREATE INDEX IF NOT EXISTS idx_items_created_at_id ON items(created_at, id DESC)", "params": []},
+	{"sql": "CREATE INDEX IF NOT EXISTS idx_items_updated_at_id ON items(updated_at, id DESC)", "params": []},
+	{"sql": "CREATE INDEX IF NOT EXISTS idx_items_title_id ON items(title, id DESC)", "params": []}
+]
+
+for step in schema_steps {
+	init_result := db_execute_safe(step["sql"], step["params"])
+	if !init_result["ok"] {
+		fatal("Database schema setup failed: " + init_result["error"])
+	}
+}
+
+table_info_result := db_query_safe("PRAGMA table_info(items)", [])
+if !table_info_result["ok"] {
+	fatal("Database schema introspection failed: " + table_info_result["error"])
+}
+
+has_project_id_column := false
+for column_info in table_info_result["rows"] {
+	if has_key(column_info, "name") && to_string(column_info["name"]) == "project_id" {
+		has_project_id_column := true
+	}
+}
+
+if !has_project_id_column {
+	alter_result := db_execute_safe("ALTER TABLE items ADD COLUMN project_id INTEGER REFERENCES projects(id) ON DELETE SET NULL", [])
+	if !alter_result["ok"] {
+		fatal("Database schema migration failed: " + alter_result["error"])
+	}
+}
+
+project_index_result := db_execute_safe("CREATE INDEX IF NOT EXISTS idx_items_project_id ON items(project_id)", [])
+if !project_index_result["ok"] {
+	fatal("Database index setup failed: " + project_index_result["error"])
+}
+
+project_sort_index_steps := [
+	{"sql": "CREATE INDEX IF NOT EXISTS idx_items_project_id_id ON items(project_id, id DESC)", "params": []},
+	{"sql": "CREATE INDEX IF NOT EXISTS idx_items_project_status_id ON items(project_id, status, id DESC)", "params": []},
+	{"sql": "CREATE INDEX IF NOT EXISTS idx_items_project_updated_at_id ON items(project_id, updated_at, id DESC)", "params": []}
+]
+
+for step in project_sort_index_steps {
+	index_result := db_execute_safe(step["sql"], step["params"])
+	if !index_result["ok"] {
+		fatal("Database index setup failed: " + index_result["error"])
+	}
+}
+
+seeded_items_count := 0
+seeded_projects_count := 0
+
+project_seed_fixtures := [
+	{"name": "Documentation", "description": "API and developer documentation roadmap and examples."},
+	{"name": "Website", "description": "Frontend and UI experience work tracked independently."},
+	{"name": "Operations", "description": "Runtime hardening, observability, and deployment baseline tasks."}
+]
+
+for project_fixture in project_seed_fixtures {
+	project_existing_result := db_query_safe("SELECT COUNT(*) AS total FROM projects WHERE name = ?", [project_fixture["name"]])
+	if !project_existing_result["ok"] {
+		fatal("Project seed check failed: " + project_existing_result["error"])
+	}
+
+	project_existing := project_existing_result["rows"]
+	if len(project_existing) > 0 && project_existing[0]["total"] == 0 {
+		project_stamp := now()
+		project_insert := db_execute_safe("INSERT INTO projects (name, description, created_at, updated_at) VALUES (?, ?, ?, ?)", [project_fixture["name"], project_fixture["description"], project_stamp, project_stamp])
+		if !project_insert["ok"] {
+			fatal("Project sample data seed failed: " + project_insert["error"])
+		}
+		seeded_projects_count := seeded_projects_count + 1
+	}
+}
+
+seed_fixtures := [
+	{"title": "First Sample Item", "content": "Use this record to test read and update flows.", "status": "published", "project_name": "Documentation"},
+	{"title": "Draft Work Item", "content": "A draft record for testing filtered list responses.", "status": "draft", "project_name": "Website"},
+	{"title": "Archived Reference Item", "content": "An archived record useful for lifecycle state examples.", "status": "archived", "project_name": "Operations"},
+	{"title": "Integration Test Fixture", "content": "Use this to validate pagination and deterministic ordering.", "status": "published", "project_name": "Documentation"},
+	{"title": "Sample Patch Target", "content": "Designed for quick PATCH requests while experimenting.", "status": "draft", "project_name": "Website"}
+]
+
+for fixture in seed_fixtures {
+	seed_existing_result := db_query_safe("SELECT COUNT(*) AS total FROM items WHERE title = ?", [fixture["title"]])
+	if !seed_existing_result["ok"] {
+		fatal("Database seed check failed: " + seed_existing_result["error"])
+	}
+
+	seed_existing := seed_existing_result["rows"]
+	if len(seed_existing) > 0 && seed_existing[0]["total"] == 0 {
+		project_id := null
+		if has_key(fixture, "project_name") {
+			project_lookup_result := db_query_safe("SELECT id FROM projects WHERE name = ? LIMIT 1", [fixture["project_name"]])
+			if !project_lookup_result["ok"] {
+				fatal("Project lookup for seed fixture failed: " + project_lookup_result["error"])
+			}
+
+			project_lookup := project_lookup_result["rows"]
+			if len(project_lookup) > 0 {
+				project_id := project_lookup[0]["id"]
+			}
+		}
+
+		seed_stamp := now()
+		seed_insert := db_execute_safe("INSERT INTO items (title, content, status, created_at, updated_at, project_id) VALUES (?, ?, ?, ?, ?, ?)", [fixture["title"], fixture["content"], fixture["status"], seed_stamp, seed_stamp, project_id])
+		if !seed_insert["ok"] {
+			fatal("Sample data seed failed: " + seed_insert["error"])
+		}
+		seeded_items_count := seeded_items_count + 1
+	}
+}
+
+print_seed_count("Ensured project content. Inserted projects", seeded_projects_count)
+print_seed_count("Ensured demo content. Inserted items", seeded_items_count)

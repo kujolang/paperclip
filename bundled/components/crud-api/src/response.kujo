@@ -1,0 +1,35 @@
+from src.config import CORS_ALLOW_ORIGIN
+from src.logging import log_request_complete
+from src.request_context import current_request_id
+
+func with_cors(response) {
+	response := set_header(response, "Access-Control-Allow-Origin", CORS_ALLOW_ORIGIN)
+	response := set_header(response, "Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
+	response := set_header(response, "Access-Control-Allow-Headers", "Content-Type, Authorization, X-Request-Id, X-API-Key, If-Unmodified-Since")
+	response := set_header(response, "Access-Control-Max-Age", "86400")
+	response := set_header(response, "Vary", "Origin")
+	response := set_header(response, "X-Request-Id", current_request_id())
+
+	if CORS_ALLOW_ORIGIN != "*" {
+		response := set_header(response, "Access-Control-Allow-Credentials", "true")
+	}
+
+	response := set_header(response, "X-Content-Type-Options", "nosniff")
+	response := set_header(response, "X-Frame-Options", "DENY")
+	response := set_header(response, "Referrer-Policy", "no-referrer")
+	response := set_header(response, "Permissions-Policy", "geolocation=(), microphone=(), camera=()")
+	response := set_header(response, "Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'; base-uri 'none'")
+	response := set_header(response, "Cache-Control", "no-store")
+
+	return response
+}
+
+export func api_json(status, payload) {
+	log_request_complete(status)
+	return with_cors(json_response(status, payload))
+}
+
+export func api_text(status, body) {
+	log_request_complete(status)
+	return with_cors(http_response(status, body))
+}

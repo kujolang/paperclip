@@ -1,0 +1,73 @@
+from src.config import AUTH_STRATEGY, AUTH_TOKEN, AUTH_HEADER_NAME, AUTH_HEADER_VALUE
+
+func get_header(req, header_name) {
+	if has_key(req, "headers") == 0 {
+		return ""
+	}
+
+	headers := req["headers"]
+	if has_key(headers, header_name) {
+		return to_string(headers[header_name])
+	}
+
+	return ""
+}
+
+func validate_static_bearer(req) {
+	if len(trim(AUTH_TOKEN)) == 0 {
+		return {"ok": true}
+	}
+
+	token_header := get_header(req, "Authorization")
+	if len(token_header) == 0 {
+		token_header := get_header(req, "authorization")
+	}
+
+	if len(token_header) == 0 {
+		return {"ok": false, "error": "Unauthorized"}
+	}
+
+	parts := split(token_header, " ")
+	if len(parts) != 2 || parts[0] != "Bearer" {
+		return {"ok": false, "error": "Unauthorized"}
+	}
+
+	if parts[1] != AUTH_TOKEN {
+		return {"ok": false, "error": "Unauthorized"}
+	}
+
+	return {"ok": true}
+}
+
+func validate_header_value(req) {
+	if len(trim(AUTH_HEADER_NAME)) == 0 {
+		return {"ok": false, "error": "Unauthorized"}
+	}
+
+	if len(trim(AUTH_HEADER_VALUE)) == 0 {
+		return {"ok": true}
+	}
+
+	header_value := get_header(req, AUTH_HEADER_NAME)
+	if len(header_value) == 0 {
+		header_value := get_header(req, to_lower(AUTH_HEADER_NAME))
+	}
+
+	if header_value != AUTH_HEADER_VALUE {
+		return {"ok": false, "error": "Unauthorized"}
+	}
+
+	return {"ok": true}
+}
+
+export func validate_write_auth(req) {
+	if AUTH_STRATEGY == "header_value" {
+		result := validate_header_value(req)
+		result["strategy"] := "header_value"
+		return result
+	}
+
+	result := validate_static_bearer(req)
+	result["strategy"] := "static_bearer"
+	return result
+}

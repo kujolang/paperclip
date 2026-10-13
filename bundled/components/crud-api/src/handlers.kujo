@@ -1,0 +1,776 @@
+from src.config import DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE
+from src.db import db, db_query_safe, db_execute_safe
+from src.response import api_json
+from src.validation import get_query, get_header, parse_bounded_int, parse_body_json, parse_item_id, is_valid_status, validate_and_merge
+
+func project_exists(project_id) {
+	lookup_result := db_query_safe("SELECT id FROM projects WHERE id = ? LIMIT 1", [project_id])
+	if !lookup_result["ok"] {
+		return {"ok": false, "error": "Database query failed"}
+	}
+
+	if len(lookup_result["rows"]) == 0 {
+		return {"ok": true, "exists": false}
+	}
+
+	return {"ok": true, "exists": true}
+}
+
+func parse_optional_project_id(data) {
+	if has_key(data, "project_id") == 0 {
+		return {"ok": true, "project_id": null}
+	}
+
+	if data["project_id"] == null {
+		return {"ok": true, "project_id": null}
+	}
+
+	try {
+		parsed_project_id := parse_int(trim(to_string(data["project_id"])))
+		if parsed_project_id <= 0 {
+			return {"ok": false, "error": "project_id must be a positive integer or null"}
+		}
+		return {"ok": true, "project_id": parsed_project_id}
+	} except err {
+		return {"ok": false, "error": "project_id must be a positive integer or null"}
+	}
+}
+
+func parse_project_id_param(req) {
+	params := req["params"]
+	if has_key(params, "id") == 0 {
+		return {"ok": false, "error": "Missing project id in path"}
+	}
+
+	id_text := trim(to_string(params["id"]))
+	if len(id_text) == 0 {
+		return {"ok": false, "error": "Missing project id in path"}
+	}
+
+	try {
+		project_id := parse_int(id_text)
+		if project_id <= 0 {
+			return {"ok": false, "error": "Project id must be a positive integer"}
+		}
+		return {"ok": true, "id": project_id}
+	} except err {
+		return {"ok": false, "error": "Project id must be a valid integer"}
+	}
+}
+
+func validate_concurrency_precondition(req, current_updated_at) {
+	provided := trim(get_header(req, "If-Unmodified-Since"))
+	if len(provided) == 0 {
+		provided := trim(get_header(req, "if-unmodified-since"))
+	}
+
+	if len(provided) == 0 {
+		return {
+			"ok": false,
+			"status": 428,
+			"error": "If-Unmodified-Since header is required",
+			"current_updated_at": current_updated_at,
+			"provided_updated_at": ""
+		}
+	}
+
+	if provided != to_string(current_updated_at) {
+		return {
+			"ok": false,
+			"status": 409,
+			"error": "Update conflict: resource has changed",
+			"current_updated_at": current_updated_at,
+			"provided_updated_at": provided
+		}
+	}
+
+	return {"ok": true}
+}
+
+export func get_project(project_id) {
+	query_result := db_query_safe("SELECT id, name, description, created_at, updated_at FROM projects WHERE id = ?", [project_id])
+	if !query_result["ok"] {
+		return {"ok": false, "error": "Database query failed"}
+	}
+
+	rows := query_result["rows"]
+	if len(rows) == 0 {
+		return {"ok": true, "found": false}
+	}
+
+	return {"ok": true, "found": true, "project": rows[0]}
+}
+
+export func get_item(item_id) {
+	query_result := db_query_safe("SELECT i.id, i.title, i.content, i.status, i.created_at, i.updated_at, i.project_id, p.name AS project_name FROM items i LEFT JOIN projects p ON p.id = i.project_id WHERE i.id = ?", [item_id])
+	if !query_result["ok"] {
+		return {"ok": false, "error": "Database query failed"}
+	}
+
+	rows := query_result["rows"]
+	if len(rows) == 0 {
+		return {"ok": true, "found": false}
+	}
+
+	return {"ok": true, "found": true, "item": rows[0]}
+}
+
+export func list_items(req) {
+	try {
+		limit_result := parse_bounded_int(get_query(req, "limit", to_string(DEFAULT_PAGE_SIZE)), "limit", 1, MAX_PAGE_SIZE)
+		if !limit_result["ok"] {
+			return api_json(400, {"error": limit_result["error"]})
+		}
+
+		offset_result := parse_bounded_int(get_query(req, "offset", "0"), "offset", 0, 1000000000)
+		if !offset_result["ok"] {
+			return api_json(400, {"error": offset_result["error"]})
+		}
+
+		status_filter := to_lower(trim(get_query(req, "status", "")))
+		if len(status_filter) > 0 {
+			if !is_valid_status(status_filter) {
+				return api_json(400, {"error": "status must be one of: draft, published, archived"})
+			}
+		}
+
+		sort_by := to_lower(trim(get_query(req, "sort_by", "id")))
+		if sort_by != "id" && sort_by != "title" && sort_by != "status" && sort_by != "created_at" && sort_by != "updated_at" {
+			return api_json(400, {"error": "sort_by must be one of: id, title, status, created_at, updated_at"})
+		}
+
+		sort_dir := to_lower(trim(get_query(req, "sort_dir", "desc")))
+		if sort_dir != "asc" && sort_dir != "desc" {
+			return api_json(400, {"error": "sort_dir must be one of: asc, desc"})
+		}
+
+		query_text := trim(get_query(req, "q", ""))
+		if len(query_text) > 120 {
+			return api_json(400, {"error": "q cannot exceed 120 characters"})
+		}
+
+		sort_column := "i.id"
+		if sort_by == "title" {
+			sort_column := "i.title"
+		} else if sort_by == "status" {
+			sort_column := "i.status"
+		} else if sort_by == "created_at" {
+			sort_column := "i.created_at"
+		} else if sort_by == "updated_at" {
+			sort_column := "i.updated_at"
+		}
+
+		sort_sql := sort_column + " "
+		if sort_dir == "asc" {
+			sort_sql := sort_sql + "ASC"
+		} else {
+			sort_sql := sort_sql + "DESC"
+		}
+
+		if sort_column != "i.id" {
+			sort_sql := sort_sql + ", i.id DESC"
+		}
+
+		project_filter := null
+		project_filter_raw := trim(get_query(req, "project_id", ""))
+		if len(project_filter_raw) > 0 {
+			project_filter_result := parse_optional_project_id({"project_id": project_filter_raw})
+			if !project_filter_result["ok"] {
+				return api_json(400, {"error": project_filter_result["error"]})
+			}
+			project_filter := project_filter_result["project_id"]
+		}
+
+		limit := limit_result["value"]
+		offset := offset_result["value"]
+
+		cursor_token := trim(get_query(req, "cursor", ""))
+		cursor_id := null
+		if len(cursor_token) > 0 {
+			if sort_by != "id" || sort_dir != "desc" {
+				return api_json(400, {"error": "cursor mode requires sort_by=id and sort_dir=desc"})
+			}
+
+			cursor_parts := split(cursor_token, ":")
+			if len(cursor_parts) != 2 || cursor_parts[0] != "id" {
+				return api_json(400, {"error": "cursor must use format id:<positive_integer>"})
+			}
+
+			try {
+				parsed_cursor_id := parse_int(trim(cursor_parts[1]))
+				if parsed_cursor_id <= 0 {
+					return api_json(400, {"error": "cursor must use format id:<positive_integer>"})
+				}
+				cursor_id := parsed_cursor_id
+			} except err {
+				return api_json(400, {"error": "cursor must use format id:<positive_integer>"})
+			}
+		}
+
+		items := []
+		count_rows := []
+		query_like := "%" + to_lower(query_text) + "%"
+		next_cursor := ""
+		has_more := false
+
+		if cursor_id != null {
+			if len(status_filter) > 0 && project_filter != null && len(query_text) > 0 {
+				items_sql := "SELECT i.id, i.title, i.content, i.status, i.created_at, i.updated_at, i.project_id, p.name AS project_name FROM items i LEFT JOIN projects p ON p.id = i.project_id WHERE i.status = ? AND i.project_id = ? AND (LOWER(i.title) LIKE ? OR LOWER(i.content) LIKE ?) AND i.id < ? ORDER BY i.id DESC LIMIT ?"
+				items_result := db_query_safe(items_sql, [status_filter, project_filter, query_like, query_like, cursor_id, limit])
+				if !items_result["ok"] {
+					return api_json(500, {"error": "Database query failed"})
+				}
+
+				count_result := db_query_safe("SELECT COUNT(*) AS total FROM items WHERE status = ? AND project_id = ? AND (LOWER(title) LIKE ? OR LOWER(content) LIKE ?)", [status_filter, project_filter, query_like, query_like])
+				if !count_result["ok"] {
+					return api_json(500, {"error": "Database query failed"})
+				}
+
+				items := items_result["rows"]
+				count_rows := count_result["rows"]
+			} else if len(status_filter) > 0 && project_filter != null {
+				items_sql := "SELECT i.id, i.title, i.content, i.status, i.created_at, i.updated_at, i.project_id, p.name AS project_name FROM items i LEFT JOIN projects p ON p.id = i.project_id WHERE i.status = ? AND i.project_id = ? AND i.id < ? ORDER BY i.id DESC LIMIT ?"
+				items_result := db_query_safe(items_sql, [status_filter, project_filter, cursor_id, limit])
+				if !items_result["ok"] {
+					return api_json(500, {"error": "Database query failed"})
+				}
+
+				count_result := db_query_safe("SELECT COUNT(*) AS total FROM items WHERE status = ? AND project_id = ?", [status_filter, project_filter])
+				if !count_result["ok"] {
+					return api_json(500, {"error": "Database query failed"})
+				}
+
+				items := items_result["rows"]
+				count_rows := count_result["rows"]
+			} else if len(status_filter) > 0 && len(query_text) > 0 {
+				items_sql := "SELECT i.id, i.title, i.content, i.status, i.created_at, i.updated_at, i.project_id, p.name AS project_name FROM items i LEFT JOIN projects p ON p.id = i.project_id WHERE i.status = ? AND (LOWER(i.title) LIKE ? OR LOWER(i.content) LIKE ?) AND i.id < ? ORDER BY i.id DESC LIMIT ?"
+				items_result := db_query_safe(items_sql, [status_filter, query_like, query_like, cursor_id, limit])
+				if !items_result["ok"] {
+					return api_json(500, {"error": "Database query failed"})
+				}
+
+				count_result := db_query_safe("SELECT COUNT(*) AS total FROM items WHERE status = ? AND (LOWER(title) LIKE ? OR LOWER(content) LIKE ?)", [status_filter, query_like, query_like])
+				if !count_result["ok"] {
+					return api_json(500, {"error": "Database query failed"})
+				}
+
+				items := items_result["rows"]
+				count_rows := count_result["rows"]
+			} else if len(status_filter) > 0 {
+				items_sql := "SELECT i.id, i.title, i.content, i.status, i.created_at, i.updated_at, i.project_id, p.name AS project_name FROM items i LEFT JOIN projects p ON p.id = i.project_id WHERE i.status = ? AND i.id < ? ORDER BY i.id DESC LIMIT ?"
+				items_result := db_query_safe(items_sql, [status_filter, cursor_id, limit])
+				if !items_result["ok"] {
+					return api_json(500, {"error": "Database query failed"})
+				}
+
+				count_result := db_query_safe("SELECT COUNT(*) AS total FROM items WHERE status = ?", [status_filter])
+				if !count_result["ok"] {
+					return api_json(500, {"error": "Database query failed"})
+				}
+
+				items := items_result["rows"]
+				count_rows := count_result["rows"]
+			} else if project_filter != null && len(query_text) > 0 {
+				items_sql := "SELECT i.id, i.title, i.content, i.status, i.created_at, i.updated_at, i.project_id, p.name AS project_name FROM items i LEFT JOIN projects p ON p.id = i.project_id WHERE i.project_id = ? AND (LOWER(i.title) LIKE ? OR LOWER(i.content) LIKE ?) AND i.id < ? ORDER BY i.id DESC LIMIT ?"
+				items_result := db_query_safe(items_sql, [project_filter, query_like, query_like, cursor_id, limit])
+				if !items_result["ok"] {
+					return api_json(500, {"error": "Database query failed"})
+				}
+
+				count_result := db_query_safe("SELECT COUNT(*) AS total FROM items WHERE project_id = ? AND (LOWER(title) LIKE ? OR LOWER(content) LIKE ?)", [project_filter, query_like, query_like])
+				if !count_result["ok"] {
+					return api_json(500, {"error": "Database query failed"})
+				}
+
+				items := items_result["rows"]
+				count_rows := count_result["rows"]
+			} else if project_filter != null {
+				items_sql := "SELECT i.id, i.title, i.content, i.status, i.created_at, i.updated_at, i.project_id, p.name AS project_name FROM items i LEFT JOIN projects p ON p.id = i.project_id WHERE i.project_id = ? AND i.id < ? ORDER BY i.id DESC LIMIT ?"
+				items_result := db_query_safe(items_sql, [project_filter, cursor_id, limit])
+				if !items_result["ok"] {
+					return api_json(500, {"error": "Database query failed"})
+				}
+
+				count_result := db_query_safe("SELECT COUNT(*) AS total FROM items WHERE project_id = ?", [project_filter])
+				if !count_result["ok"] {
+					return api_json(500, {"error": "Database query failed"})
+				}
+
+				items := items_result["rows"]
+				count_rows := count_result["rows"]
+			} else if len(query_text) > 0 {
+				items_sql := "SELECT i.id, i.title, i.content, i.status, i.created_at, i.updated_at, i.project_id, p.name AS project_name FROM items i LEFT JOIN projects p ON p.id = i.project_id WHERE (LOWER(i.title) LIKE ? OR LOWER(i.content) LIKE ?) AND i.id < ? ORDER BY i.id DESC LIMIT ?"
+				items_result := db_query_safe(items_sql, [query_like, query_like, cursor_id, limit])
+				if !items_result["ok"] {
+					return api_json(500, {"error": "Database query failed"})
+				}
+
+				count_result := db_query_safe("SELECT COUNT(*) AS total FROM items WHERE (LOWER(title) LIKE ? OR LOWER(content) LIKE ?)", [query_like, query_like])
+				if !count_result["ok"] {
+					return api_json(500, {"error": "Database query failed"})
+				}
+
+				items := items_result["rows"]
+				count_rows := count_result["rows"]
+			} else {
+				items_sql := "SELECT i.id, i.title, i.content, i.status, i.created_at, i.updated_at, i.project_id, p.name AS project_name FROM items i LEFT JOIN projects p ON p.id = i.project_id WHERE i.id < ? ORDER BY i.id DESC LIMIT ?"
+				items_result := db_query_safe(items_sql, [cursor_id, limit])
+				if !items_result["ok"] {
+					return api_json(500, {"error": "Database query failed"})
+				}
+
+				count_result := db_query_safe("SELECT COUNT(*) AS total FROM items", [])
+				if !count_result["ok"] {
+					return api_json(500, {"error": "Database query failed"})
+				}
+
+				items := items_result["rows"]
+				count_rows := count_result["rows"]
+			}
+
+			if len(items) == limit && len(items) > 0 {
+				last_item := items[len(items) - 1]
+				next_cursor := "id:" + to_string(last_item["id"])
+			}
+		} else {
+			if len(status_filter) > 0 && project_filter != null && len(query_text) > 0 {
+				items_sql := "SELECT i.id, i.title, i.content, i.status, i.created_at, i.updated_at, i.project_id, p.name AS project_name FROM items i LEFT JOIN projects p ON p.id = i.project_id WHERE i.status = ? AND i.project_id = ? AND (LOWER(i.title) LIKE ? OR LOWER(i.content) LIKE ?) ORDER BY " + sort_sql + " LIMIT ? OFFSET ?"
+				items_result := db_query_safe(items_sql, [status_filter, project_filter, query_like, query_like, limit, offset])
+				if !items_result["ok"] {
+					return api_json(500, {"error": "Database query failed"})
+				}
+
+				count_result := db_query_safe("SELECT COUNT(*) AS total FROM items WHERE status = ? AND project_id = ? AND (LOWER(title) LIKE ? OR LOWER(content) LIKE ?)", [status_filter, project_filter, query_like, query_like])
+				if !count_result["ok"] {
+					return api_json(500, {"error": "Database query failed"})
+				}
+
+				items := items_result["rows"]
+				count_rows := count_result["rows"]
+			} else if len(status_filter) > 0 && project_filter != null {
+				items_sql := "SELECT i.id, i.title, i.content, i.status, i.created_at, i.updated_at, i.project_id, p.name AS project_name FROM items i LEFT JOIN projects p ON p.id = i.project_id WHERE i.status = ? AND i.project_id = ? ORDER BY " + sort_sql + " LIMIT ? OFFSET ?"
+				items_result := db_query_safe(items_sql, [status_filter, project_filter, limit, offset])
+				if !items_result["ok"] {
+					return api_json(500, {"error": "Database query failed"})
+				}
+
+				count_result := db_query_safe("SELECT COUNT(*) AS total FROM items WHERE status = ? AND project_id = ?", [status_filter, project_filter])
+				if !count_result["ok"] {
+					return api_json(500, {"error": "Database query failed"})
+				}
+
+				items := items_result["rows"]
+				count_rows := count_result["rows"]
+			} else if len(status_filter) > 0 && len(query_text) > 0 {
+				items_sql := "SELECT i.id, i.title, i.content, i.status, i.created_at, i.updated_at, i.project_id, p.name AS project_name FROM items i LEFT JOIN projects p ON p.id = i.project_id WHERE i.status = ? AND (LOWER(i.title) LIKE ? OR LOWER(i.content) LIKE ?) ORDER BY " + sort_sql + " LIMIT ? OFFSET ?"
+				items_result := db_query_safe(items_sql, [status_filter, query_like, query_like, limit, offset])
+				if !items_result["ok"] {
+					return api_json(500, {"error": "Database query failed"})
+				}
+
+				count_result := db_query_safe("SELECT COUNT(*) AS total FROM items WHERE status = ? AND (LOWER(title) LIKE ? OR LOWER(content) LIKE ?)", [status_filter, query_like, query_like])
+				if !count_result["ok"] {
+					return api_json(500, {"error": "Database query failed"})
+				}
+
+				items := items_result["rows"]
+				count_rows := count_result["rows"]
+			} else if len(status_filter) > 0 {
+				items_sql := "SELECT i.id, i.title, i.content, i.status, i.created_at, i.updated_at, i.project_id, p.name AS project_name FROM items i LEFT JOIN projects p ON p.id = i.project_id WHERE i.status = ? ORDER BY " + sort_sql + " LIMIT ? OFFSET ?"
+				items_result := db_query_safe(items_sql, [status_filter, limit, offset])
+				if !items_result["ok"] {
+					return api_json(500, {"error": "Database query failed"})
+				}
+
+				count_result := db_query_safe("SELECT COUNT(*) AS total FROM items WHERE status = ?", [status_filter])
+				if !count_result["ok"] {
+					return api_json(500, {"error": "Database query failed"})
+				}
+
+				items := items_result["rows"]
+				count_rows := count_result["rows"]
+			} else if project_filter != null && len(query_text) > 0 {
+				items_sql := "SELECT i.id, i.title, i.content, i.status, i.created_at, i.updated_at, i.project_id, p.name AS project_name FROM items i LEFT JOIN projects p ON p.id = i.project_id WHERE i.project_id = ? AND (LOWER(i.title) LIKE ? OR LOWER(i.content) LIKE ?) ORDER BY " + sort_sql + " LIMIT ? OFFSET ?"
+				items_result := db_query_safe(items_sql, [project_filter, query_like, query_like, limit, offset])
+				if !items_result["ok"] {
+					return api_json(500, {"error": "Database query failed"})
+				}
+
+				count_result := db_query_safe("SELECT COUNT(*) AS total FROM items WHERE project_id = ? AND (LOWER(title) LIKE ? OR LOWER(content) LIKE ?)", [project_filter, query_like, query_like])
+				if !count_result["ok"] {
+					return api_json(500, {"error": "Database query failed"})
+				}
+
+				items := items_result["rows"]
+				count_rows := count_result["rows"]
+			} else if project_filter != null {
+				items_sql := "SELECT i.id, i.title, i.content, i.status, i.created_at, i.updated_at, i.project_id, p.name AS project_name FROM items i LEFT JOIN projects p ON p.id = i.project_id WHERE i.project_id = ? ORDER BY " + sort_sql + " LIMIT ? OFFSET ?"
+				items_result := db_query_safe(items_sql, [project_filter, limit, offset])
+				if !items_result["ok"] {
+					return api_json(500, {"error": "Database query failed"})
+				}
+
+				count_result := db_query_safe("SELECT COUNT(*) AS total FROM items WHERE project_id = ?", [project_filter])
+				if !count_result["ok"] {
+					return api_json(500, {"error": "Database query failed"})
+				}
+
+				items := items_result["rows"]
+				count_rows := count_result["rows"]
+			} else if len(query_text) > 0 {
+				items_sql := "SELECT i.id, i.title, i.content, i.status, i.created_at, i.updated_at, i.project_id, p.name AS project_name FROM items i LEFT JOIN projects p ON p.id = i.project_id WHERE (LOWER(i.title) LIKE ? OR LOWER(i.content) LIKE ?) ORDER BY " + sort_sql + " LIMIT ? OFFSET ?"
+				items_result := db_query_safe(items_sql, [query_like, query_like, limit, offset])
+				if !items_result["ok"] {
+					return api_json(500, {"error": "Database query failed"})
+				}
+
+				count_result := db_query_safe("SELECT COUNT(*) AS total FROM items WHERE (LOWER(title) LIKE ? OR LOWER(content) LIKE ?)", [query_like, query_like])
+				if !count_result["ok"] {
+					return api_json(500, {"error": "Database query failed"})
+				}
+
+				items := items_result["rows"]
+				count_rows := count_result["rows"]
+			} else {
+				items_sql := "SELECT i.id, i.title, i.content, i.status, i.created_at, i.updated_at, i.project_id, p.name AS project_name FROM items i LEFT JOIN projects p ON p.id = i.project_id ORDER BY " + sort_sql + " LIMIT ? OFFSET ?"
+				items_result := db_query_safe(items_sql, [limit, offset])
+				if !items_result["ok"] {
+					return api_json(500, {"error": "Database query failed"})
+				}
+
+				count_result := db_query_safe("SELECT COUNT(*) AS total FROM items", [])
+				if !count_result["ok"] {
+					return api_json(500, {"error": "Database query failed"})
+				}
+
+				items := items_result["rows"]
+				count_rows := count_result["rows"]
+			}
+		}
+
+		total := 0
+		if len(count_rows) > 0 {
+			try {
+				total := parse_int(to_string(count_rows[0]["total"]))
+			} except err {
+				total := 0
+			}
+		}
+
+		if cursor_id == null {
+			if (offset + len(items)) < total {
+				has_more := true
+			}
+		} else {
+			if len(items) == limit {
+				has_more := true
+			}
+		}
+
+		return api_json(200, {
+			"items": items,
+			"count": len(items),
+			"total": total,
+			"limit": limit,
+			"offset": offset,
+			"has_more": has_more,
+			"status": status_filter,
+			"project_id": project_filter,
+			"sort_by": sort_by,
+			"sort_dir": sort_dir,
+			"q": query_text,
+			"cursor": cursor_token,
+			"next_cursor": next_cursor
+		})
+	} except err {
+		return api_json(500, {"error": "List items failed: " + to_string(err)})
+	}
+}
+
+export func list_projects(req) {
+	project_rows_result := db_query_safe("SELECT p.id, p.name, p.description, p.created_at, p.updated_at, COUNT(i.id) AS items_count FROM projects p LEFT JOIN items i ON i.project_id = p.id GROUP BY p.id ORDER BY p.id ASC", [])
+	if !project_rows_result["ok"] {
+		return api_json(500, {"error": "Database query failed"})
+	}
+
+	return api_json(200, {
+		"projects": project_rows_result["rows"],
+		"count": len(project_rows_result["rows"])
+	})
+}
+
+export func get_one_project(req) {
+	project_id_result := parse_project_id_param(req)
+	if !project_id_result["ok"] {
+		return api_json(400, {"error": project_id_result["error"]})
+	}
+
+	project_result := get_project(project_id_result["id"])
+	if !project_result["ok"] {
+		return api_json(500, {"error": "Database query failed"})
+	}
+	if !project_result["found"] {
+		return api_json(404, {"error": "Project not found"})
+	}
+
+	return api_json(200, project_result["project"])
+}
+
+export func list_project_items(req) {
+	project_id_result := parse_project_id_param(req)
+	if !project_id_result["ok"] {
+		return api_json(400, {"error": project_id_result["error"]})
+	}
+
+	project_result := get_project(project_id_result["id"])
+	if !project_result["ok"] {
+		return api_json(500, {"error": "Database query failed"})
+	}
+	if !project_result["found"] {
+		return api_json(404, {"error": "Project not found"})
+	}
+
+	rows_result := db_query_safe("SELECT i.id, i.title, i.content, i.status, i.created_at, i.updated_at, i.project_id, p.name AS project_name FROM items i LEFT JOIN projects p ON p.id = i.project_id WHERE i.project_id = ? ORDER BY i.id DESC", [project_id_result["id"]])
+	if !rows_result["ok"] {
+		return api_json(500, {"error": "Database query failed"})
+	}
+
+	return api_json(200, {
+		"project": project_result["project"],
+		"items": rows_result["rows"],
+		"count": len(rows_result["rows"])
+	})
+}
+
+export func create_project(req) {
+	body_result := parse_body_json(req)
+	if !body_result["ok"] {
+		return api_json(400, {"error": body_result["error"]})
+	}
+
+	data := body_result["data"]
+	if has_key(data, "name") == 0 {
+		return api_json(400, {"error": "name is required"})
+	}
+	if has_key(data, "description") == 0 {
+		return api_json(400, {"error": "description is required"})
+	}
+
+	name := trim(to_string(data["name"]))
+	description := trim(to_string(data["description"]))
+	if len(name) == 0 {
+		return api_json(400, {"error": "name cannot be empty"})
+	}
+	if len(name) > 160 {
+		return api_json(400, {"error": "name cannot exceed 160 characters"})
+	}
+	if len(description) == 0 {
+		return api_json(400, {"error": "description cannot be empty"})
+	}
+	if len(description) > 2000 {
+		return api_json(400, {"error": "description cannot exceed 2000 characters"})
+	}
+
+	existing_project_result := db_query_safe("SELECT id FROM projects WHERE name = ? LIMIT 1", [name])
+	if !existing_project_result["ok"] {
+		return api_json(500, {"error": "Database query failed"})
+	}
+	if len(existing_project_result["rows"]) > 0 {
+		return api_json(409, {"error": "project name already exists"})
+	}
+
+	timestamp := now()
+	insert_result := db_execute_safe("INSERT INTO projects (name, description, created_at, updated_at) VALUES (?, ?, ?, ?)", [name, description, timestamp, timestamp])
+	if !insert_result["ok"] {
+		return api_json(500, {"error": "Database insert failed"})
+	}
+
+	project_id := db_last_insert_id(db)
+	created_result := get_project(project_id)
+	if !created_result["ok"] || !created_result["found"] {
+		return api_json(500, {"error": "Failed to fetch created project"})
+	}
+
+	return api_json(201, created_result["project"])
+}
+
+export func create_item(req) {
+	body_result := parse_body_json(req)
+	if !body_result["ok"] {
+		return api_json(400, {"error": body_result["error"]})
+	}
+
+	data := body_result["data"]
+	if has_key(data, "title") == 0 {
+		return api_json(400, {"error": "title is required"})
+	}
+	if has_key(data, "content") == 0 {
+		return api_json(400, {"error": "content is required"})
+	}
+
+	title := trim(to_string(data["title"]))
+	content := trim(to_string(data["content"]))
+	if len(title) == 0 {
+		return api_json(400, {"error": "title cannot be empty"})
+	}
+	if len(content) == 0 {
+		return api_json(400, {"error": "content cannot be empty"})
+	}
+	if len(title) > 200 {
+		return api_json(400, {"error": "title cannot exceed 200 characters"})
+	}
+	if len(content) > 50000 {
+		return api_json(400, {"error": "content cannot exceed 50000 characters"})
+	}
+
+	project_id_result := parse_optional_project_id(data)
+	if !project_id_result["ok"] {
+		return api_json(400, {"error": project_id_result["error"]})
+	}
+
+	project_id := project_id_result["project_id"]
+	if project_id != null {
+		project_exists_result := project_exists(project_id)
+		if !project_exists_result["ok"] {
+			return api_json(500, {"error": "Database query failed"})
+		}
+		if !project_exists_result["exists"] {
+			return api_json(400, {"error": "project_id does not reference an existing project"})
+		}
+	}
+
+	status := "draft"
+	if has_key(data, "status") {
+		status := to_lower(trim(to_string(data["status"])))
+		if !is_valid_status(status) {
+			return api_json(400, {"error": "status must be one of: draft, published, archived"})
+		}
+	}
+
+	timestamp := now()
+	insert_result := db_execute_safe("INSERT INTO items (title, content, status, created_at, updated_at, project_id) VALUES (?, ?, ?, ?, ?, ?)", [title, content, status, timestamp, timestamp, project_id])
+	if !insert_result["ok"] {
+		return api_json(500, {"error": "Database insert failed"})
+	}
+
+	item_id := db_last_insert_id(db)
+	item_result := get_item(item_id)
+	if !item_result["ok"] || !item_result["found"] {
+		return api_json(500, {"error": "Failed to fetch created item"})
+	}
+
+	return api_json(201, item_result["item"])
+}
+
+export func get_one_item(req) {
+	id_result := parse_item_id(req)
+	if !id_result["ok"] {
+		return api_json(400, {"error": id_result["error"]})
+	}
+
+	item_result := get_item(id_result["id"])
+	if !item_result["ok"] {
+		return api_json(500, {"error": "Database query failed"})
+	}
+	if !item_result["found"] {
+		return api_json(404, {"error": "Item not found"})
+	}
+
+	return api_json(200, item_result["item"])
+}
+
+export func delete_item(req) {
+	id_result := parse_item_id(req)
+	if !id_result["ok"] {
+		return api_json(400, {"error": id_result["error"]})
+	}
+
+	item_id := id_result["id"]
+	item_result := get_item(item_id)
+	if !item_result["ok"] {
+		return api_json(500, {"error": "Database query failed"})
+	}
+	if !item_result["found"] {
+		return api_json(404, {"error": "Item not found"})
+	}
+
+	concurrency_result := validate_concurrency_precondition(req, item_result["item"]["updated_at"])
+	if !concurrency_result["ok"] {
+		return api_json(concurrency_result["status"], {
+			"error": concurrency_result["error"],
+			"current_updated_at": concurrency_result["current_updated_at"],
+			"provided_updated_at": concurrency_result["provided_updated_at"]
+		})
+	}
+
+	delete_result := db_execute_safe("DELETE FROM items WHERE id = ?", [item_id])
+	if !delete_result["ok"] {
+		return api_json(500, {"error": "Database delete failed"})
+	}
+
+	return api_json(200, {"deleted": true, "id": item_id})
+}
+
+export func update_item(req, is_patch) {
+	id_result := parse_item_id(req)
+	if !id_result["ok"] {
+		return api_json(400, {"error": id_result["error"]})
+	}
+
+	item_id := id_result["id"]
+	item_result := get_item(item_id)
+	if !item_result["ok"] {
+		return api_json(500, {"error": "Database query failed"})
+	}
+	if !item_result["found"] {
+		return api_json(404, {"error": "Item not found"})
+	}
+
+	concurrency_result := validate_concurrency_precondition(req, item_result["item"]["updated_at"])
+	if !concurrency_result["ok"] {
+		return api_json(concurrency_result["status"], {
+			"error": concurrency_result["error"],
+			"current_updated_at": concurrency_result["current_updated_at"],
+			"provided_updated_at": concurrency_result["provided_updated_at"]
+		})
+	}
+
+	body_result := parse_body_json(req)
+	if !body_result["ok"] {
+		return api_json(400, {"error": body_result["error"]})
+	}
+
+	if is_patch {
+		patch_data := body_result["data"]
+		if has_key(patch_data, "title") == 0 && has_key(patch_data, "content") == 0 && has_key(patch_data, "status") == 0 && has_key(patch_data, "project_id") == 0 {
+			return api_json(400, {"error": "PATCH requires at least one of: title, content, status, project_id"})
+		}
+	}
+
+	merged := validate_and_merge(item_result["item"], body_result["data"], !is_patch)
+	if !merged["ok"] {
+		return api_json(400, {"error": merged["error"]})
+	}
+
+	if merged["project_id"] != null {
+		project_exists_result := project_exists(merged["project_id"])
+		if !project_exists_result["ok"] {
+			return api_json(500, {"error": "Database query failed"})
+		}
+		if !project_exists_result["exists"] {
+			return api_json(400, {"error": "project_id does not reference an existing project"})
+		}
+	}
+
+	update_result := db_execute_safe("UPDATE items SET title = ?, content = ?, status = ?, project_id = ?, updated_at = ? WHERE id = ?", [merged["title"], merged["content"], merged["status"], merged["project_id"], now(), item_id])
+	if !update_result["ok"] {
+		return api_json(500, {"error": "Database update failed"})
+	}
+
+	updated_result := get_item(item_id)
+	if !updated_result["ok"] || !updated_result["found"] {
+		return api_json(500, {"error": "Failed to fetch updated item"})
+	}
+
+	return api_json(200, updated_result["item"])
+}

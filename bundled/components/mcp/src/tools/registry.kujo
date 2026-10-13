@@ -1,0 +1,1099 @@
+# Tool registry module
+#
+# Co-locates tool metadata and handlers for centralized runtime registration.
+
+from src.core.framework import check_path, safe_read, safe_write
+
+export func register_all_tools(deps) {
+    obj_schema := deps["obj_schema"]
+    str_schema := deps["str_schema"]
+    arr_schema := deps["arr_schema"]
+    bool_schema := deps["bool_schema"]
+    int_schema := deps["int_schema"]
+
+    return {
+        "read_project_docs": {
+            "name": "read_project_docs",
+            "description": "Read documentation files from the project. Use this to access README, guides, and other docs.",
+            "params": obj_schema("Read docs parameters", {
+                "file_name": str_schema("Doc file name (e.g. 'README', 'guide')", null),
+                "section": str_schema("Optional section to focus on", null)
+            }, ["file_name"])
+        },
+        "search_files": {
+            "name": "search_files",
+            "description": "Search files by filename or content with recursion, limits, and timeout budget control.",
+            "params": obj_schema("Search parameters", {
+                "pattern": str_schema("Search keyword to match against file names", null),
+                "directory": str_schema("Subdirectory to search (e.g. 'docs', 'patches')", null),
+                "mode": str_schema("Search mode: filename or content", ["filename", "content"]),
+                "recursive": bool_schema("Search subdirectories when true"),
+                "refresh_index": bool_schema("Bypass the bounded tree index cache when true"),
+                "max_results": int_schema("Maximum number of matches to return", 1, null),
+                "timeout_ms": int_schema("Operation timeout budget in scan steps", 1, null)
+            }, ["pattern"])
+        },
+        "generate_summary": {
+            "name": "generate_summary",
+            "description": "Generate a structured summary of project documentation.",
+            "params": obj_schema("Summary parameters", {
+                "files": arr_schema("Doc filenames to include in the summary", "string"),
+                "include_file_sizes": bool_schema("Include file sizes in output")
+            }, ["files"])
+        },
+        "write_safe_patch": {
+            "name": "write_safe_patch",
+            "description": "Write safe patches inside the allowed directory.",
+            "params": obj_schema("Patch parameters", {
+                "file_path": str_schema("Relative path inside demo/ (e.g. 'patches/update.kujo')", null),
+                "content": str_schema("Full content to write", null),
+                "description": str_schema("Description of the patch", null)
+            }, ["file_path", "content"])
+        },
+        "read_text_range": {
+            "name": "read_text_range",
+            "description": "Read a specific line range from a text file inside the allowed directory.",
+            "params": obj_schema("Text range parameters", {
+                "file_path": str_schema("Relative file path inside allowed directory", null),
+                "start_line": int_schema("1-based inclusive start line", 1, null),
+                "end_line": int_schema("1-based inclusive end line", 1, null)
+            }, ["file_path", "start_line", "end_line"])
+        },
+        "write_text_safe": {
+            "name": "write_text_safe",
+            "description": "Write text content safely with optional create-if-missing behavior.",
+            "params": obj_schema("Safe text write parameters", {
+                "file_path": str_schema("Relative file path inside allowed directory", null),
+                "content": str_schema("Text content to write", null),
+                "create_if_missing": bool_schema("Allow creating new files when true")
+            }, ["file_path", "content"])
+        },
+        "list_tree_recursive": {
+            "name": "list_tree_recursive",
+            "description": "List files and directories recursively with depth control.",
+            "params": obj_schema("Recursive tree parameters", {
+                "directory": str_schema("Relative start directory inside allowed directory", null),
+                "max_depth": int_schema("Maximum recursion depth (0 for current directory only)", 0, null),
+                "refresh_index": bool_schema("Bypass the bounded tree index cache when true")
+            }, [])
+        },
+        "grep_text": {
+            "name": "grep_text",
+            "description": "Search text content recursively using literal or regex mode.",
+            "params": obj_schema("Text grep parameters", {
+                "query": str_schema("Text or regex query", null),
+                "mode": str_schema("Search mode: literal or regex", ["literal", "regex"]),
+                "directory": str_schema("Relative start directory inside allowed directory", null),
+                "max_results": int_schema("Maximum number of matches to return", 1, null),
+                "timeout_ms": int_schema("Operation timeout budget in scan steps", 1, null),
+                "refresh_index": bool_schema("Bypass the bounded tree index cache when true")
+            }, ["query"])
+        }
+    }
+}
+
+export func execute_registered_tool(tool_name, p, deps) {
+    docs_dir := deps["docs_dir"]
+    allowed_dir := deps["allowed_dir"]
+    read_only_patterns := deps["read_only_patterns"]
+    default_timeout_ms := deps["default_timeout_ms"]
+    scan_max_entries := deps["scan_max_entries"]
+    scan_max_files := deps["scan_max_files"]
+    scan_max_bytes := deps["scan_max_bytes"]
+    tree_cache_enabled := deps["tree_cache_enabled"]
+
+    dict_has_key := func(dict_value, key_name) {
+        probe := has_key(dict_value, key_name)
+        if type(probe) == "bool" {
+            return probe
+        }
+        if type(probe) == "int" {
+            return probe == 1
+        }
+        return false
+    }
+
+    resolve_allowed_dirs := func() {
+        fallback_dirs := [trim(to_string(allowed_dir))]
+
+        if dict_has_key(deps, "allowed_dirs") == false {
+            return fallback_dirs
+        }
+
+        candidate_dirs := deps["allowed_dirs"]
+        if type(candidate_dirs) != "array" || len(candidate_dirs) == 0 {
+            return fallback_dirs
+        }
+
+        normalized_dirs := []
+        for raw_dir in candidate_dirs {
+            dir_text := trim(to_string(raw_dir))
+            if dir_text != "" {
+                normalized_dirs := push(normalized_dirs, dir_text)
+            }
+        }
+
+        if len(normalized_dirs) == 0 {
+            return fallback_dirs
+        }
+
+        return normalized_dirs
+    }
+
+    allowed_dirs := resolve_allowed_dirs()
+
+    has_parent_path_segment := func(path_value) {
+        slash_parts := split(path_value, "/")
+        for part in slash_parts {
+            if part == ".." {
+                return true
+            }
+        }
+
+        backslash_parts := split(path_value, "\\")
+        for part in backslash_parts {
+            if part == ".." {
+                return true
+            }
+        }
+
+        return false
+    }
+
+    is_safe_relative_path := func(path_value) {
+        clean := trim(to_string(path_value))
+        if clean == "" {
+            return false
+        }
+        if starts_with(clean, "/") || starts_with(clean, "\\") {
+            return false
+        }
+        if has_parent_path_segment(clean) {
+            return false
+        }
+        return true
+    }
+
+    is_safe_doc_name := func(file_name) {
+        clean := trim(to_string(file_name))
+        if clean == "" {
+            return false
+        }
+        if index_of(clean, "/") >= 0 || index_of(clean, "\\") >= 0 {
+            return false
+        }
+        if clean == "." || clean == ".." {
+            return false
+        }
+        return true
+    }
+
+    resolve_allowed_path := func(fp) {
+        active_allowed_dirs := resolve_allowed_dirs()
+        chk := check_path(fp, active_allowed_dirs, read_only_patterns, false)
+        if !chk["ok"] {
+            return {"ok": false, "path": "", "reason": chk["reason"]}
+        }
+        return {"ok": true, "path": path_absolute(fp), "reason": ""}
+    }
+
+    parse_positive_int := func(value, field_name) {
+        if type(value) != "int" {
+            return {"ok": false, "value": 0, "error": field_name + " must be an integer"}
+        }
+        if value <= 0 {
+            return {"ok": false, "value": 0, "error": field_name + " must be greater than 0"}
+        }
+        return {"ok": true, "value": value, "error": ""}
+    }
+
+    parse_non_negative_int := func(value, field_name) {
+        if type(value) != "int" {
+            return {"ok": false, "value": 0, "error": field_name + " must be an integer"}
+        }
+        if value < 0 {
+            return {"ok": false, "value": 0, "error": field_name + " must be 0 or greater"}
+        }
+        return {"ok": true, "value": value, "error": ""}
+    }
+
+    parse_bool_or_default := func(args, key_name, default_value) {
+        if dict_has_key(args, key_name) == false {
+            return {"ok": true, "value": default_value, "error": ""}
+        }
+
+        raw_value := args[key_name]
+        if type(raw_value) != "bool" {
+            return {"ok": false, "value": default_value, "error": key_name + " must be a boolean"}
+        }
+        return {"ok": true, "value": raw_value == true, "error": ""}
+    }
+
+    parse_int_or_default := func(args, key_name, default_value, allow_zero) {
+        if dict_has_key(args, key_name) == false {
+            return {"ok": true, "value": default_value, "error": ""}
+        }
+
+        raw_value := args[key_name]
+        if allow_zero {
+            return parse_non_negative_int(raw_value, key_name)
+        }
+        return parse_positive_int(raw_value, key_name)
+    }
+
+    require_arg := func(args, key_name) {
+        if dict_has_key(args, key_name) == false {
+            return {"ok": false, "value": null, "error": key_name + " is required"}
+        }
+
+        return {"ok": true, "value": args[key_name], "error": ""}
+    }
+
+    require_string_arg := func(args, key_name, allow_empty) {
+        required := require_arg(args, key_name)
+        if !required["ok"] {
+            return {"ok": false, "value": "", "error": required["error"]}
+        }
+
+        raw_value := required["value"]
+        if type(raw_value) != "string" {
+            return {"ok": false, "value": "", "error": key_name + " must be a string"}
+        }
+
+        value := trim(raw_value)
+        if allow_empty == false && value == "" {
+            return {"ok": false, "value": "", "error": key_name + " must be a non-empty string"}
+        }
+
+        return {"ok": true, "value": value, "error": ""}
+    }
+
+    require_array_arg := func(args, key_name, allow_empty) {
+        required := require_arg(args, key_name)
+        if !required["ok"] {
+            return {"ok": false, "value": [], "error": required["error"]}
+        }
+
+        raw_value := required["value"]
+        if type(raw_value) != "array" {
+            return {"ok": false, "value": [], "error": key_name + " must be an array"}
+        }
+
+        if allow_empty == false && len(raw_value) == 0 {
+            return {"ok": false, "value": [], "error": key_name + " must be a non-empty array"}
+        }
+
+        return {"ok": true, "value": raw_value, "error": ""}
+    }
+
+    require_positive_int_arg := func(args, key_name) {
+        required := require_arg(args, key_name)
+        if !required["ok"] {
+            return {"ok": false, "value": 0, "error": required["error"]}
+        }
+
+        return parse_positive_int(required["value"], key_name)
+    }
+
+    resolve_scoped_directories := func(args) {
+        scoped_dirs := []
+        rel_dir := ""
+        if dict_has_key(args, "directory") && trim(to_string(args["directory"])) != "" {
+            rel_dir := trim(to_string(args["directory"]))
+            if !is_safe_relative_path(rel_dir) {
+                return {"ok": false, "directories": [], "error": "Invalid directory value"}
+            }
+        }
+
+        idx := 0
+        while idx < len(allowed_dirs) {
+            root_dir := allowed_dirs[idx]
+            candidate_dir := root_dir
+            if rel_dir != "" {
+                candidate_dir := root_dir + "/" + rel_dir
+            }
+
+            resolved := resolve_allowed_path(candidate_dir)
+            if resolved["ok"] {
+                if path_is_dir(resolved["path"]) {
+                    label := "root" + to_string(idx + 1)
+                    scoped_dirs := push(scoped_dirs, {
+                        "path": resolved["path"],
+                        "root": root_dir,
+                        "label": label
+                    })
+                }
+            }
+
+            idx := idx + 1
+        }
+
+        if len(scoped_dirs) == 0 {
+            return {"ok": false, "directories": [], "error": "Search directory is not available"}
+        }
+
+        return {"ok": true, "directories": scoped_dirs, "error": ""}
+    }
+
+    resolve_file_for_read := func(file_path) {
+        file_path_text := trim(to_string(file_path))
+        if file_path_text == "" {
+            return {"ok": false, "path": "", "content": "", "error": "file_path must be a non-empty string"}
+        }
+
+        active_allowed_dirs := resolve_allowed_dirs()
+        idx := 0
+        while idx < len(active_allowed_dirs) {
+            root_dir := trim(to_string(active_allowed_dirs[idx]))
+            if root_dir == "" {
+                idx := idx + 1
+                continue
+            }
+
+            candidate := root_dir + "/" + file_path_text
+            read_result := safe_read(candidate, active_allowed_dirs, read_only_patterns)
+            if read_result["ok"] {
+                return {"ok": true, "path": candidate, "content": read_result["content"], "error": ""}
+            }
+            idx := idx + 1
+        }
+
+        return {"ok": false, "path": "", "content": "", "error": "Not found: " + file_path_text}
+    }
+
+    resolve_file_for_write := func(file_path, create_if_missing) {
+        file_path_text := trim(to_string(file_path))
+        if file_path_text == "" {
+            return {"ok": false, "path": "", "error": "file_path must be a non-empty string"}
+        }
+
+        active_allowed_dirs := resolve_allowed_dirs()
+        idx := 0
+        while idx < len(active_allowed_dirs) {
+            root_dir := trim(to_string(active_allowed_dirs[idx]))
+            if root_dir == "" {
+                idx := idx + 1
+                continue
+            }
+
+            candidate := root_dir + "/" + file_path_text
+            if file_exists(candidate) {
+                return {"ok": true, "path": candidate, "error": ""}
+            }
+            idx := idx + 1
+        }
+
+        if create_if_missing == true {
+            create_root := trim(to_string(active_allowed_dirs[0]))
+            if create_root == "" {
+                return {"ok": false, "path": "", "error": "No writable directory is configured"}
+            }
+
+            return {"ok": true, "path": create_root + "/" + file_path_text, "error": ""}
+        }
+
+        return {"ok": false, "path": "", "error": "File does not exist; set create_if_missing to true to create it"}
+    }
+
+    collect_files_recursive := func(start_dir, max_depth, root_dir, root_label, max_entries, max_files, max_bytes, refresh_index) {
+        allowed_root_abs := path_absolute(root_dir)
+        queue := [{"path": start_dir, "depth": 0}]
+        files := []
+        entries := []
+        queue_index := 0
+        scanned_bytes := 0
+        skipped_symlinks := 0
+        truncated := false
+        truncation_reason := ""
+
+        while queue_index < len(queue) && !truncated {
+            current := queue[queue_index]
+            queue_index := queue_index + 1
+
+            current_path := current["path"]
+            current_depth := current["depth"]
+
+            items := []
+            try {
+                items := list_dir(current_path)
+            } except err {
+                items := []
+            }
+
+            for item in items {
+                if len(entries) >= max_entries {
+                    truncated := true
+                    truncation_reason := "max_entries"
+                    break
+                }
+
+                item_path := current_path + "/" + item
+                if path_is_symlink(item_path) {
+                    skipped_symlinks := skipped_symlinks + 1
+                    continue
+                }
+                relative := ""
+                if starts_with(item_path, allowed_root_abs + "/") {
+                    relative := substring(item_path, len(allowed_root_abs) + 1, len(item_path))
+                } else {
+                    relative := item
+                }
+
+                display_path := relative
+                if len(allowed_dirs) > 1 {
+                    display_path := root_label + "/" + relative
+                }
+
+                entry := {
+                    "name": item,
+                    "path": display_path,
+                    "full_path": item_path,
+                    "depth": current_depth
+                }
+
+                is_directory := false
+                try {
+                    list_dir(item_path)
+                    is_directory := true
+                } except err {
+                    is_directory := false
+                }
+
+                if is_directory {
+                    entry["type"] := "directory"
+                    if current_depth < max_depth {
+                        queue := push(queue, {"path": item_path, "depth": current_depth + 1})
+                    }
+                } else {
+                    if len(files) >= max_files {
+                        truncated := true
+                        truncation_reason := "max_files"
+                        break
+                    }
+                    entry["type"] := "file"
+                    item_size := file_size(item_path)
+                    if scanned_bytes + item_size > max_bytes {
+                        truncated := true
+                        truncation_reason := "max_bytes"
+                        break
+                    }
+                    entry["size_bytes"] := item_size
+                    scanned_bytes := scanned_bytes + item_size
+                    files := push(files, {
+                        "path": display_path,
+                        "full_path": item_path
+                    })
+                }
+
+                entries := push(entries, entry)
+            }
+        }
+
+        result := {
+            "files": files,
+            "entries": entries,
+            "scanned_bytes": scanned_bytes,
+            "skipped_symlinks": skipped_symlinks,
+            "truncated": truncated,
+            "truncation_reason": truncation_reason,
+            "cache_hit": false
+        }
+        return result
+    }
+
+    if tool_name == "read_project_docs" {
+        file_name_parse := require_string_arg(p, "file_name", false)
+        if !file_name_parse["ok"] {
+            return {"ok": false, "error": file_name_parse["error"]}
+        }
+
+        raw_name := file_name_parse["value"]
+        if !is_safe_doc_name(raw_name) {
+            return {"ok": false, "error": "Invalid file_name value"}
+        }
+
+        fname := raw_name
+        if !ends_with(fname, ".md") { fname := fname + ".md" }
+
+        r := safe_read(docs_dir + "/" + fname, allowed_dirs, read_only_patterns)
+        if r["ok"] { return {"ok": true, "data": {"content": r["content"], "file": fname}} }
+
+        active_allowed_dirs := resolve_allowed_dirs()
+        idx := 0
+        while idx < len(active_allowed_dirs) {
+            r2 := safe_read(active_allowed_dirs[idx] + "/" + fname, active_allowed_dirs, read_only_patterns)
+            if r2["ok"] {
+                return {"ok": true, "data": {"content": r2["content"], "file": fname}}
+            }
+            idx := idx + 1
+        }
+
+        return {"ok": false, "error": "Doc not found: " + fname}
+    }
+
+    if tool_name == "search_files" {
+        sdir_result := resolve_scoped_directories(p)
+        if !sdir_result["ok"] {
+            return {"ok": false, "error": sdir_result["error"]}
+        }
+
+        pattern_parse := require_string_arg(p, "pattern", false)
+        if !pattern_parse["ok"] {
+            return {"ok": false, "error": pattern_parse["error"]}
+        }
+        pattern := pattern_parse["value"]
+
+        mode := "filename"
+        if dict_has_key(p, "mode") {
+            if type(p["mode"]) != "string" {
+                return {"ok": false, "error": "mode must be a string"}
+            }
+            mode := to_lower(trim(p["mode"]))
+        }
+        if mode != "filename" && mode != "content" {
+            return {"ok": false, "error": "mode must be either filename or content"}
+        }
+
+        recursive_parse := parse_bool_or_default(p, "recursive", true)
+        if !recursive_parse["ok"] {
+            return {"ok": false, "error": recursive_parse["error"]}
+        }
+        recursive := recursive_parse["value"]
+
+        refresh_parse := parse_bool_or_default(p, "refresh_index", false)
+        if !refresh_parse["ok"] {
+            return {"ok": false, "error": refresh_parse["error"]}
+        }
+        refresh_index := refresh_parse["value"]
+
+        max_results_parse := parse_int_or_default(p, "max_results", 50, false)
+        if !max_results_parse["ok"] {
+            return {"ok": false, "error": max_results_parse["error"]}
+        }
+        max_results := max_results_parse["value"]
+
+        timeout_parse := parse_int_or_default(p, "timeout_ms", default_timeout_ms, false)
+        if !timeout_parse["ok"] {
+            return {"ok": false, "error": timeout_parse["error"]}
+        }
+        timeout_ms := timeout_parse["value"]
+
+        max_depth := 0
+        if recursive {
+            max_depth := 8
+        }
+
+        tree_data := {"files": [], "entries": [], "scan_files": 0, "scanned_bytes": 0, "skipped_symlinks": 0, "truncated": false, "truncation_reason": "", "cache_hit": false}
+        dir_index := 0
+        while dir_index < len(sdir_result["directories"]) && !tree_data["truncated"] {
+            scoped_dir := sdir_result["directories"][dir_index]
+            partial_tree := collect_files_recursive(scoped_dir["path"], max_depth, scoped_dir["root"], scoped_dir["label"], scan_max_entries - len(tree_data["entries"]), scan_max_files - len(tree_data["files"]), scan_max_bytes - tree_data["scanned_bytes"], refresh_index)
+
+            for entry in partial_tree["entries"] {
+                tree_data["entries"] := push(tree_data["entries"], entry)
+            }
+            for file_item in partial_tree["files"] {
+                tree_data["files"] := push(tree_data["files"], file_item)
+            }
+            tree_data["scanned_bytes"] := tree_data["scanned_bytes"] + partial_tree["scanned_bytes"]
+            tree_data["skipped_symlinks"] := tree_data["skipped_symlinks"] + partial_tree["skipped_symlinks"]
+            tree_data["cache_hit"] := tree_data["cache_hit"] || partial_tree["cache_hit"]
+            if partial_tree["truncated"] {
+                tree_data["truncated"] := true
+                tree_data["truncation_reason"] := partial_tree["truncation_reason"]
+            }
+
+            dir_index := dir_index + 1
+        }
+
+        matches := []
+        timed_out := false
+        timeout_budget := timeout_ms
+
+        entry_index := 0
+        while entry_index < len(tree_data["entries"]) {
+            if len(matches) >= max_results {
+                break
+            }
+            if timeout_budget <= 0 {
+                timed_out := true
+                break
+            }
+            timeout_budget := timeout_budget - 1
+
+            entry := tree_data["entries"][entry_index]
+            entry_index := entry_index + 1
+            if entry["type"] != "file" {
+            } else {
+                if mode == "filename" {
+                    name_match := index_of(entry["name"], pattern) >= 0
+                    path_match := index_of(entry["path"], pattern) >= 0
+                    if name_match || path_match {
+                        matches := push(matches, {
+                            "file_path": entry["path"],
+                            "match_type": "filename"
+                        })
+                    }
+                } else {
+                    read_result := safe_read(entry["full_path"], allowed_dirs, read_only_patterns)
+                    if !read_result["ok"] {
+                    } else {
+                        lines := split(read_result["content"], "\n")
+                        line_number := 1
+                        line_idx := 0
+                        found := false
+                        preview := ""
+
+                        while line_idx < len(lines) {
+                            if timeout_budget <= 0 {
+                                timed_out := true
+                                break
+                            }
+                            timeout_budget := timeout_budget - 1
+
+                            line := lines[line_idx]
+                            line_idx := line_idx + 1
+
+                            if index_of(line, pattern) >= 0 {
+                                found := true
+                                preview := line
+                                break
+                            }
+
+                            line_number := line_number + 1
+                        }
+
+                        if found {
+                            matches := push(matches, {
+                                "file_path": entry["path"],
+                                "match_type": "content",
+                                "line_number": line_number,
+                                "line_preview": preview
+                            })
+                        }
+                    }
+                }
+            }
+        }
+
+        if timed_out {
+            return {"ok": false, "error": "Tool timeout exceeded (" + to_string(timeout_ms) + "ms budget)"}
+        }
+
+        return {"ok": true, "data": {
+            "pattern": pattern,
+            "mode": mode,
+            "recursive": recursive,
+            "max_results": max_results,
+            "timeout_ms": timeout_ms,
+            "timed_out": timed_out,
+            "scan_truncated": tree_data["truncated"],
+            "scan_truncation_reason": tree_data["truncation_reason"],
+            "scan_entries": len(tree_data["entries"]),
+            "scan_files": len(tree_data["files"]),
+            "scan_bytes": tree_data["scanned_bytes"],
+            "skipped_symlinks": tree_data["skipped_symlinks"],
+            "cache_hit": tree_data["cache_hit"],
+            "total_matches": len(matches),
+            "matches": matches,
+            "searched_in": sdir_result["directories"]
+        }}
+    }
+
+    if tool_name == "generate_summary" {
+        files_parse := require_array_arg(p, "files", false)
+        if !files_parse["ok"] {
+            return {"ok": false, "error": files_parse["error"]}
+        }
+
+        include_sizes_parse := parse_bool_or_default(p, "include_file_sizes", false)
+        if !include_sizes_parse["ok"] {
+            return {"ok": false, "error": include_sizes_parse["error"]}
+        }
+        include_file_sizes := include_sizes_parse["value"]
+
+        sections := []
+        for fname_raw in files_parse["value"] {
+            if type(fname_raw) != "string" {
+                return {"ok": false, "error": "files must contain only strings"}
+            }
+
+            fname := trim(fname_raw)
+            if fname == "" {
+                return {"ok": false, "error": "files entries must be non-empty strings"}
+            }
+
+            source_path := docs_dir + "/" + fname
+            r := safe_read(source_path, allowed_dirs, read_only_patterns)
+            if !r["ok"] {
+                idx := 0
+                while idx < len(allowed_dirs) {
+                    candidate_path := allowed_dirs[idx] + "/docs/" + fname
+                    retry := safe_read(candidate_path, allowed_dirs, read_only_patterns)
+                    if retry["ok"] {
+                        r := retry
+                        source_path := candidate_path
+                        break
+                    }
+                    idx := idx + 1
+                }
+            }
+
+            if r["ok"] {
+                lines := split(r["content"], "\n")
+                sec := {"file": fname, "lines": len(lines), "chars": len(r["content"]), "first": ""}
+                if len(lines) > 0 { sec["first"] := trim(lines[0]) }
+                if include_file_sizes {
+                    sec["size_bytes"] := file_size(source_path)
+                }
+                sections := push(sections, sec)
+            }
+        }
+        return {"ok": true, "data": {
+            "summary": sections,
+            "total": len(sections),
+            "generated_at": format_date(now(), "YYYY-MM-DD HH:mm:ss")
+        }}
+    }
+
+    if tool_name == "write_safe_patch" {
+        file_path_parse := require_string_arg(p, "file_path", false)
+        if !file_path_parse["ok"] {
+            return {"ok": false, "error": file_path_parse["error"]}
+        }
+        file_path := file_path_parse["value"]
+        if !is_safe_relative_path(file_path) {
+            return {"ok": false, "error": "Invalid file_path value"}
+        }
+
+        content_parse := require_string_arg(p, "content", true)
+        if !content_parse["ok"] {
+            return {"ok": false, "error": content_parse["error"]}
+        }
+
+        description := ""
+        if dict_has_key(p, "description") {
+            description := to_string(p["description"])
+        }
+
+        write_target := resolve_file_for_write(file_path, true)
+        if !write_target["ok"] {
+            return {"ok": false, "error": write_target["error"]}
+        }
+
+        active_allowed_dirs := resolve_allowed_dirs()
+        r := safe_write(write_target["path"], content_parse["value"], active_allowed_dirs, read_only_patterns)
+        if r["ok"] {
+            return {"ok": true, "data": {
+                "path": file_path, "bytes": r["bytes"],
+                "description": description
+            }}
+        }
+        return {"ok": false, "error": r["error"]}
+    }
+
+    if tool_name == "read_text_range" {
+        file_path_parse := require_string_arg(p, "file_path", false)
+        if !file_path_parse["ok"] {
+            return {"ok": false, "error": file_path_parse["error"]}
+        }
+
+        file_path := file_path_parse["value"]
+        if !is_safe_relative_path(file_path) {
+            return {"ok": false, "error": "Invalid file_path value"}
+        }
+
+        start_parse := require_positive_int_arg(p, "start_line")
+        if !start_parse["ok"] {
+            return {"ok": false, "error": start_parse["error"]}
+        }
+
+        end_parse := require_positive_int_arg(p, "end_line")
+        if !end_parse["ok"] {
+            return {"ok": false, "error": end_parse["error"]}
+        }
+
+        if start_parse["value"] > end_parse["value"] {
+            return {"ok": false, "error": "start_line must be less than or equal to end_line"}
+        }
+
+        read_target := resolve_file_for_read(file_path)
+        if !read_target["ok"] {
+            return {"ok": false, "error": read_target["error"]}
+        }
+
+        lines := split(read_target["content"], "\n")
+        if start_parse["value"] > len(lines) {
+            return {"ok": false, "error": "start_line is beyond end of file"}
+        }
+
+        selected_lines := []
+        line_index := start_parse["value"] - 1
+        last_index := end_parse["value"] - 1
+        while line_index <= last_index {
+            if line_index >= len(lines) {
+                break
+            }
+            selected_lines := push(selected_lines, lines[line_index])
+            line_index := line_index + 1
+        }
+
+        text := ""
+        idx := 0
+        while idx < len(selected_lines) {
+            if idx == 0 {
+                text := selected_lines[idx]
+            } else {
+                text := text + "\n" + selected_lines[idx]
+            }
+            idx := idx + 1
+        }
+
+        return {"ok": true, "data": {
+            "file_path": file_path,
+            "start_line": start_parse["value"],
+            "end_line": end_parse["value"],
+            "line_count": len(selected_lines),
+            "text": text,
+            "lines": selected_lines
+        }}
+    }
+
+    if tool_name == "write_text_safe" {
+        file_path_parse := require_string_arg(p, "file_path", false)
+        if !file_path_parse["ok"] {
+            return {"ok": false, "error": file_path_parse["error"]}
+        }
+
+        file_path := file_path_parse["value"]
+        if !is_safe_relative_path(file_path) {
+            return {"ok": false, "error": "Invalid file_path value"}
+        }
+
+        content_parse := require_string_arg(p, "content", true)
+        if !content_parse["ok"] {
+            return {"ok": false, "error": content_parse["error"]}
+        }
+
+        create_parse := parse_bool_or_default(p, "create_if_missing", false)
+        if !create_parse["ok"] {
+            return {"ok": false, "error": create_parse["error"]}
+        }
+        create_if_missing := create_parse["value"]
+
+        write_target := resolve_file_for_write(file_path, create_if_missing)
+        if !write_target["ok"] {
+            return {"ok": false, "error": write_target["error"]}
+        }
+
+        existed_before_write := file_exists(write_target["path"])
+        active_allowed_dirs := resolve_allowed_dirs()
+        write_result := safe_write(write_target["path"], content_parse["value"], active_allowed_dirs, read_only_patterns)
+        if !write_result["ok"] {
+            return {"ok": false, "error": write_result["error"]}
+        }
+
+        created_flag := create_if_missing && existed_before_write == false && file_exists(write_target["path"])
+
+        return {"ok": true, "data": {
+            "file_path": file_path,
+            "bytes_written": write_result["bytes"],
+            "created": created_flag
+        }}
+    }
+
+    if tool_name == "list_tree_recursive" {
+        dir_result := resolve_scoped_directories(p)
+        if !dir_result["ok"] {
+            return {"ok": false, "error": dir_result["error"]}
+        }
+
+        depth_parse := parse_int_or_default(p, "max_depth", 2, true)
+        if !depth_parse["ok"] {
+            return {"ok": false, "error": depth_parse["error"]}
+        }
+
+        refresh_parse := parse_bool_or_default(p, "refresh_index", false)
+        if !refresh_parse["ok"] {
+            return {"ok": false, "error": refresh_parse["error"]}
+        }
+
+        tree_data := {"files": [], "entries": [], "scan_files": 0, "scanned_bytes": 0, "skipped_symlinks": 0, "truncated": false, "truncation_reason": "", "cache_hit": false}
+        dir_index := 0
+        while dir_index < len(dir_result["directories"]) && !tree_data["truncated"] {
+            scoped_dir := dir_result["directories"][dir_index]
+            partial_tree := collect_files_recursive(scoped_dir["path"], depth_parse["value"], scoped_dir["root"], scoped_dir["label"], scan_max_entries - len(tree_data["entries"]), scan_max_files - tree_data["scan_files"], scan_max_bytes - tree_data["scanned_bytes"], refresh_parse["value"])
+
+            for entry in partial_tree["entries"] {
+                tree_data["entries"] := push(tree_data["entries"], entry)
+            }
+            tree_data["scanned_bytes"] := tree_data["scanned_bytes"] + partial_tree["scanned_bytes"]
+            tree_data["scan_files"] := tree_data["scan_files"] + len(partial_tree["files"])
+            tree_data["skipped_symlinks"] := tree_data["skipped_symlinks"] + partial_tree["skipped_symlinks"]
+            tree_data["cache_hit"] := tree_data["cache_hit"] || partial_tree["cache_hit"]
+            if partial_tree["truncated"] {
+                tree_data["truncated"] := true
+                tree_data["truncation_reason"] := partial_tree["truncation_reason"]
+            }
+
+            dir_index := dir_index + 1
+        }
+
+        return {"ok": true, "data": {
+            "directory": dir_result["directories"],
+            "max_depth": depth_parse["value"],
+            "entries": tree_data["entries"],
+            "total_entries": len(tree_data["entries"]),
+            "scan_files": tree_data["scan_files"],
+            "scan_bytes": tree_data["scanned_bytes"],
+            "skipped_symlinks": tree_data["skipped_symlinks"],
+            "scan_truncated": tree_data["truncated"],
+            "scan_truncation_reason": tree_data["truncation_reason"],
+            "cache_hit": tree_data["cache_hit"]
+        }}
+    }
+
+    if tool_name == "grep_text" {
+        query_parse := require_string_arg(p, "query", false)
+        if !query_parse["ok"] {
+            return {"ok": false, "error": query_parse["error"]}
+        }
+        query := query_parse["value"]
+
+        mode := "literal"
+        if dict_has_key(p, "mode") {
+            if type(p["mode"]) != "string" {
+                return {"ok": false, "error": "mode must be a string"}
+            }
+            mode := to_lower(trim(p["mode"]))
+        }
+        if mode != "literal" && mode != "regex" {
+            return {"ok": false, "error": "mode must be either literal or regex"}
+        }
+
+        max_results_parse := parse_int_or_default(p, "max_results", 50, false)
+        if !max_results_parse["ok"] {
+            return {"ok": false, "error": max_results_parse["error"]}
+        }
+        max_results := max_results_parse["value"]
+
+        timeout_parse := parse_int_or_default(p, "timeout_ms", default_timeout_ms, false)
+        if !timeout_parse["ok"] {
+            return {"ok": false, "error": timeout_parse["error"]}
+        }
+        timeout_ms := timeout_parse["value"]
+
+        refresh_parse := parse_bool_or_default(p, "refresh_index", false)
+        if !refresh_parse["ok"] {
+            return {"ok": false, "error": refresh_parse["error"]}
+        }
+
+        dir_result := resolve_scoped_directories(p)
+        if !dir_result["ok"] {
+            return {"ok": false, "error": dir_result["error"]}
+        }
+
+        tree_data := {"files": [], "entries": [], "scanned_bytes": 0, "skipped_symlinks": 0, "truncated": false, "truncation_reason": "", "cache_hit": false}
+        dir_index := 0
+        while dir_index < len(dir_result["directories"]) && !tree_data["truncated"] {
+            scoped_dir := dir_result["directories"][dir_index]
+            partial_tree := collect_files_recursive(scoped_dir["path"], 8, scoped_dir["root"], scoped_dir["label"], scan_max_entries, scan_max_files - len(tree_data["files"]), scan_max_bytes - tree_data["scanned_bytes"], refresh_parse["value"])
+
+            for file_item in partial_tree["files"] {
+                tree_data["files"] := push(tree_data["files"], file_item)
+            }
+            tree_data["scanned_bytes"] := tree_data["scanned_bytes"] + partial_tree["scanned_bytes"]
+            tree_data["skipped_symlinks"] := tree_data["skipped_symlinks"] + partial_tree["skipped_symlinks"]
+            tree_data["cache_hit"] := tree_data["cache_hit"] || partial_tree["cache_hit"]
+            if partial_tree["truncated"] {
+                tree_data["truncated"] := true
+                tree_data["truncation_reason"] := partial_tree["truncation_reason"]
+            }
+
+            dir_index := dir_index + 1
+        }
+
+        files := tree_data["files"]
+        matches := []
+        timed_out := false
+        timeout_budget := timeout_ms
+
+        file_index := 0
+        while file_index < len(files) {
+            if len(matches) >= max_results {
+                break
+            }
+            if timeout_budget <= 0 {
+                timed_out := true
+                break
+            }
+            timeout_budget := timeout_budget - 1
+
+            fp := files[file_index]
+            file_index := file_index + 1
+
+            active_allowed_dirs := resolve_allowed_dirs()
+            read_result := safe_read(fp["full_path"], active_allowed_dirs, read_only_patterns)
+            if !read_result["ok"] {
+            } else {
+                lines := split(read_result["content"], "\n")
+                line_number := 1
+                line_idx := 0
+                while line_idx < len(lines) {
+                    if len(matches) >= max_results {
+                        break
+                    }
+                    if timeout_budget <= 0 {
+                        timed_out := true
+                        break
+                    }
+                    timeout_budget := timeout_budget - 1
+
+                    line := lines[line_idx]
+                    line_idx := line_idx + 1
+
+                    matched := false
+                    if mode == "literal" {
+                        matched := index_of(line, query) >= 0
+                    } else {
+                        matched := regex_match(line, query)
+                    }
+
+                    if matched {
+                        matches := push(matches, {
+                            "file_path": fp["path"],
+                            "line_number": line_number,
+                            "line": line
+                        })
+                    }
+                    line_number := line_number + 1
+                }
+            }
+
+            if timed_out {
+                break
+            }
+        }
+
+        if timed_out {
+            return {"ok": false, "error": "Tool timeout exceeded (" + to_string(timeout_ms) + "ms budget)"}
+        }
+
+        return {"ok": true, "data": {
+            "query": query,
+            "mode": mode,
+            "max_results": max_results,
+            "timeout_ms": timeout_ms,
+            "scan_truncated": tree_data["truncated"],
+            "scan_truncation_reason": tree_data["truncation_reason"],
+            "scan_files": len(tree_data["files"]),
+            "scan_bytes": tree_data["scanned_bytes"],
+            "skipped_symlinks": tree_data["skipped_symlinks"],
+            "cache_hit": tree_data["cache_hit"],
+            "total_matches": len(matches),
+            "matches": matches
+        }}
+    }
+
+    return {"ok": false, "error": "Tool not found: " + to_string(tool_name)}
+}

@@ -45,14 +45,14 @@ export async function qualifyProductionPackages({ call, companyId, projectId, ro
   const starter = async (kind, options = {}) => (await call(route, { method: "POST", body: { companyId, key: "preview-starter", params: { kind, name: "host-starter" } }, ...options })).data;
   assert.match((await starter("script", { status: 502 })).message, /disabled/);
   await config("build");
-  await waitUntil(async () => { try { return (await detail()).starters?.length === 2; } catch { return false; } });
-  for (const kind of ["script", "agent"]) {
+  await waitUntil(async () => { try { return (await detail()).starters?.length === 4; } catch { return false; } });
+  for (const kind of ["script", "agent", "api", "mcp"]) {
     const preview = (await starter(kind)).data;
     assert.equal(preview.status, "preview"); assert.equal(preview.kind, kind);
-    assert.ok(preview.files.some(file => file.path === "src/main.kujo"));
+    assert.ok(preview.files.some(file => file.path === preview.entrypoint));
     assert.ok(preview.files.every(file => !file.content.includes(root)));
   }
   assert.equal(await readFile(join(root, "workspace/kennel.toml"), "utf8"), manifest);
-  checks.push("native script and fixture-agent starter previews respect company profiles and preserve the project workspace");
+  checks.push("native script, fixture-agent and pinned API/MCP starter previews respect company profiles and preserve the project workspace");
   await json("packages.json", { report, exported, companyId, projectId });
 }

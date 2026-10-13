@@ -1,0 +1,52 @@
+DEFAULT_PORT := 4100
+DEFAULT_MAX_BODY_BYTES := 65536
+DEFAULT_MIN_AUTH_SECRET_LENGTH := 16
+export DEFAULT_PAGE_SIZE := 50
+export MAX_PAGE_SIZE := 200
+
+func parse_int_env(var_name, default_value) {
+	raw := env_or(var_name, to_string(default_value))
+	try {
+		parsed := parse_int(trim(raw))
+		if parsed > 0 {
+			return parsed
+		}
+	} except err {}
+
+	return default_value
+}
+
+export API_PORT := parse_int_env("KUJO_CRUD_PORT", DEFAULT_PORT)
+api_host_raw := trim(env_or("KUJO_CRUD_API_HOST", "127.0.0.1"))
+if len(api_host_raw) == 0 {
+	api_host_raw := "127.0.0.1"
+}
+export API_HOST := api_host_raw
+export DB_PATH := env_or("KUJO_CRUD_DB_PATH", "data/kujo_crud_api.db")
+cors_origin_raw := trim(env_or("KUJO_CRUD_CORS_ORIGIN", "*"))
+if len(cors_origin_raw) == 0 {
+	cors_origin_raw := "*"
+}
+export CORS_ALLOW_ORIGIN := cors_origin_raw
+export AUTH_TOKEN := env_or("KUJO_CRUD_AUTH_TOKEN", "")
+auth_strategy_raw := to_lower(trim(env_or("KUJO_CRUD_AUTH_STRATEGY", "static_bearer")))
+if auth_strategy_raw != "static_bearer" && auth_strategy_raw != "header_value" {
+	print("Invalid KUJO_CRUD_AUTH_STRATEGY value: " + auth_strategy_raw + " (falling back to static_bearer)")
+	auth_strategy_raw := "static_bearer"
+}
+
+export AUTH_STRATEGY := auth_strategy_raw
+export AUTH_HEADER_NAME := trim(env_or("KUJO_CRUD_AUTH_HEADER_NAME", "X-API-Key"))
+export AUTH_HEADER_VALUE := env_or("KUJO_CRUD_AUTH_HEADER_VALUE", "")
+export MAX_BODY_BYTES := parse_int_env("KUJO_CRUD_MAX_BODY_BYTES", DEFAULT_MAX_BODY_BYTES)
+export MIN_AUTH_SECRET_LENGTH := parse_int_env("KUJO_CRUD_MIN_AUTH_SECRET_LENGTH", DEFAULT_MIN_AUTH_SECRET_LENGTH)
+export TRUST_PROXY_HEADERS := env_bool("KUJO_CRUD_TRUST_PROXY_HEADERS", false)
+
+security_profile_raw := to_lower(trim(env_or("KUJO_CRUD_SECURITY_PROFILE", "demo")))
+if security_profile_raw != "demo" && security_profile_raw != "production" {
+	print("Invalid KUJO_CRUD_SECURITY_PROFILE value: " + security_profile_raw + " (falling back to demo)")
+	security_profile_raw := "demo"
+}
+
+export SECURITY_PROFILE := security_profile_raw
+export SECURITY_PROFILE_IS_PRODUCTION := SECURITY_PROFILE == "production"

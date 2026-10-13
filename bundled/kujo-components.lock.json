@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "bundleVersion": "0.8.0",
+  "bundleVersion": "0.9.0",
   "runtime": {
     "minimumVersion": "1.8.1"
   },
@@ -439,6 +439,96 @@
         "src/utils.kujo": "9a132cc8a5f7f84ddf5227b6c3104489d0cba82f3db87cab1ccf9f4f0dc6b4a8",
         "dependency_spec.kujo": "6f6c5156fd15799035772443a925a65375880cfe0e14b059e8fa71024bf7f475",
         "manifest.kujo": "a807ed6ffb58b1d8ba052d4afb92281bfa1fc8e24ba332579a1a816ca634dba8"
+      }
+    },
+    {
+      "id": "crud-api",
+      "repository": "https://github.com/kujolang/crud-api",
+      "gitCommit": "7ae446671b27128468ea0cc14c68f4e2ca11a989",
+      "version": "1.0.0",
+      "entrypoint": "main.kujo",
+      "files": [
+        "LICENSE",
+        "main.kujo",
+        "README.md",
+        "docs/api-examples.md",
+        "docs/openapi.yaml",
+        "src/auth.kujo",
+        "src/config.kujo",
+        "src/db.kujo",
+        "src/handlers.kujo",
+        "src/logging.kujo",
+        "src/rate_limit.kujo",
+        "src/request_context.kujo",
+        "src/response.kujo",
+        "src/server/runtime.kujo",
+        "src/validation.kujo",
+        "data/.gitkeep"
+      ],
+      "outputContracts": [],
+      "license": "MIT",
+      "checksums": {
+        "LICENSE": "4b6449939f8dce26dc5fb87756740a5977da9085517af127d9e634e6a6492506",
+        "main.kujo": "0632b36c3d6dac9e54591c6c91d7aa0f739c2ae4c4cd8a1df258c99ff89bf9d6",
+        "README.md": "e9225e5149c60ce1b317a1a6f7998cc290d6442ce670eb66d727cdcb8d3cab02",
+        "docs/api-examples.md": "082fa2cb494df6cc00e5354f80b124fded49c561a0fe48b4e7c6200cd5596075",
+        "docs/openapi.yaml": "e707611595652261b145c9f55cd6659c0cce07b5817a65d8a9b43017cf013f42",
+        "src/auth.kujo": "a7f63db2956c6812908f4d3f5f76103c76c42c8fa89e1bceb65f7651d2b50cdb",
+        "src/config.kujo": "a0cf527f8fc45aeb4587527060b727e3bf48184f6221f74dc382de2f9e0fcea0",
+        "src/db.kujo": "c1c2e9fe162f3593ee2a37c49ff3d3353964e3b78199df6707cd8d2c784b14f5",
+        "src/handlers.kujo": "4694502918603ebe5645612b6281d5fa2ee3382754490bf8c435790336abf824",
+        "src/logging.kujo": "ea488db1d6896187bda22447fc840dd266b403acee7b88ffb43ee83d534cae52",
+        "src/rate_limit.kujo": "3b9ce2eac0fd2f129285033183bb3bb329aa409e5ad354384359e19015b89f0f",
+        "src/request_context.kujo": "0ee40b9291a5532081daadf9beb67f9f90e1dc1920b40b149f5608d769a65802",
+        "src/response.kujo": "df5d8e1939e60c2f819596b0661c713c6307aae6859fee8f9436cf362a15ddeb",
+        "src/server/runtime.kujo": "1b0aaae962454981394e248b77f9042b0e9d71be7506e67d3a3032173669037d",
+        "src/validation.kujo": "8c3abb3490a37825bd98002d9691a9efbce4f9acf05d117f917ba14892a501f0",
+        "data/.gitkeep": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    {
+      "id": "mcp",
+      "repository": "https://github.com/kujolang/mcp",
+      "gitCommit": "922ae79537991a382ad87c13c49130390813b4fa",
+      "version": "1.3.1",
+      "entrypoint": "server.kujo",
+      "files": [
+        "LICENSE",
+        "server.kujo",
+        "mcp-server.json",
+        "README.md",
+        "src/server/runtime.kujo",
+        "src/core/framework.kujo",
+        "src/tools/registry.kujo",
+        "src/resources/registry.kujo",
+        "docs/mcp-reference.md",
+        "docs/security-model.md",
+        "demo/README.md",
+        "demo/docs/README.md",
+        "demo/docs/guide.md",
+        "demo/docs/scenarios.md",
+        "demo/docs/walkthrough.md",
+        "demo/patches/sample_patch.kujo"
+      ],
+      "outputContracts": [],
+      "license": "MIT",
+      "checksums": {
+        "LICENSE": "4b6449939f8dce26dc5fb87756740a5977da9085517af127d9e634e6a6492506",
+        "server.kujo": "9dd19f127ab3ba983e32d0b898e8ce311791f18e0eef1958ac9ad8c3e296a1c9",
+        "mcp-server.json": "85f65c1fe203ab4de6b73f424f3af6230eae6c94d32685dd998016f3c082670b",
+        "README.md": "57886f9c8cea781feaa203ae0f805cbe4ed04760d3037cbc8ed2017db3550158",
+        "src/server/runtime.kujo": "a647be08198d3e79e0f47484121e53a223f00e4f1c20a48668507dc0af440c1d",
+        "src/core/framework.kujo": "41960457527679b621afec6fb420bb889edd252171d30da12a0bade1388ba0d3",
+        "src/tools/registry.kujo": "83381ae25ae4067478e9e34ada4e86548399cdf8027379e2c4a718a588808a1e",
+        "src/resources/registry.kujo": "3923e6258aa2284712607278071084f82b992e75c00f443aa5bdfd265d45e17c",
+        "docs/mcp-reference.md": "435102985e7c987a033cab99f35b278a903e3bc79f43df8c5a240294ac9bea3e",
+        "docs/security-model.md": "f28dc7e9b65ff34f10699e78c896dc5cc4c2c0cbe8990b2a888cf97b0c78c094",
+        "demo/README.md": "d511be2809d21fd97d2a879852644c096947276d0c55d2b5357fcfee383a7950",
+        "demo/docs/README.md": "38d87fa345eb027737ad6add85bf72f9bad6a8f7deef826b6911d81fe06959ea",
+        "demo/docs/guide.md": "2dca424abcaa8ea74031d679a31845aede7f879274e72bb1d380c3e28640cddc",
+        "demo/docs/scenarios.md": "34c702162b402d83092d8b5f22bcff6f5f4d9a726ccf3eaa7521573018aef69a",
+        "demo/docs/walkthrough.md": "166f65565d572827ba8781f28565921297e2d0be5e95f34c1c54dfce4afd3e1b",
+        "demo/patches/sample_patch.kujo": "c9eed2a484da7b2c8f71e1fc1c5f6bc54a07859c9c4c8a4fce0c354e8c966714"
       }
     }
   ]

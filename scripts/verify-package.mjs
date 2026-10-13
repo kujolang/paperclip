@@ -41,6 +41,8 @@ for (const required of [
   "bundled/components/concord/concord.kujo",
   "schemas/concord-analysis.schema.json",
   "bundled/components/kennel/src/validator.kujo",
+  "bundled/components/crud-api/src/server/runtime.kujo",
+  "bundled/components/mcp/src/server/runtime.kujo",
   "bundled/components/eval/main.kujo",
   "bundled/components/eval/src/eval_core.kujo",
   "bundled/components/eval/schema/evaluation-result.schema.json",
@@ -58,6 +60,15 @@ for (const required of [
   "VERSION",
 ]) {
   if (!files.has(required)) throw new Error(`npm tarball is missing ${required}`);
+}
+// Npm omits some names (including .gitignore) even under an allowed files root.
+// A source-tree integrity check cannot establish installed-package integrity.
+const componentLock = JSON.parse(readFileSync(new URL("../bundled/kujo-components.lock.json", import.meta.url), "utf8"));
+for (const component of componentLock.components) {
+  for (const relative of component.files) {
+    const required = `bundled/components/${component.id}/${relative}`;
+    if (!files.has(required)) throw new Error(`npm tarball is missing pinned component file ${required}`);
+  }
 }
 for (const file of files) {
   if (!allowedFiles.has(file) && !allowedRoots.some((root) => file.startsWith(root))) {

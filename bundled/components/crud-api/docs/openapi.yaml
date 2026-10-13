@@ -1,0 +1,632 @@
+openapi: 3.0.3
+info:
+  title: Kujo CRUD API Showcase
+  version: 1.0.0
+  description: |
+    CRUD API contract for items and projects, including filtering, search,
+    cursor pagination, auth strategy options, and optimistic concurrency.
+servers:
+  - url: http://127.0.0.1:4100
+    description: Default loopback showcase server
+tags:
+  - name: System
+  - name: Items
+  - name: Projects
+paths:
+  /:
+    get:
+      tags: [System]
+      summary: API metadata
+      responses:
+        "200":
+          description: Metadata payload
+          content:
+            application/json:
+              schema:
+                type: object
+              examples:
+                default:
+                  value:
+                    service: Kujo CRUD Starter API
+                    version: 1.0.0
+                    resources: [items, projects]
+                    trust_proxy_headers: false
+
+  /health:
+    get:
+      tags: [System]
+      summary: Health check
+      responses:
+        "200":
+          description: API and database are healthy
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Health"
+
+  /items:
+    get:
+      tags: [Items]
+      summary: List items
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Offset"
+        - $ref: "#/components/parameters/StatusFilter"
+        - $ref: "#/components/parameters/ProjectFilter"
+        - $ref: "#/components/parameters/SortBy"
+        - $ref: "#/components/parameters/SortDir"
+        - $ref: "#/components/parameters/TextQuery"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: Paginated item list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListItemsResponse"
+              examples:
+                default:
+                  value:
+                    items:
+                      - id: 5
+                        title: Sample Patch Target
+                        content: Designed for quick PATCH requests while experimenting.
+                        status: draft
+                        project_id: 2
+                        project_name: Website
+                        created_at: "1777930859.0"
+                        updated_at: "1777930859.0"
+                    count: 1
+                    total: 5
+                    limit: 20
+                    offset: 0
+                    has_more: false
+                    status: ""
+                    project_id: null
+                    sort_by: id
+                    sort_dir: desc
+                    q: ""
+                    cursor: ""
+                    next_cursor: ""
+        "400":
+          $ref: "#/components/responses/BadRequest"
+
+    post:
+      tags: [Items]
+      summary: Create an item
+      security:
+        - BearerAuth: []
+        - HeaderValueAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ItemCreateRequest"
+            examples:
+              default:
+                value:
+                  title: New item
+                  content: Hello from contract example
+                  status: draft
+                  project_id: 1
+      responses:
+        "201":
+          description: Created item
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Item"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "409":
+          $ref: "#/components/responses/DuplicateConflict"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+
+  /items/{id}:
+    get:
+      tags: [Items]
+      summary: Get one item
+      parameters:
+        - $ref: "#/components/parameters/ItemId"
+      responses:
+        "200":
+          description: Item record
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Item"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+    put:
+      tags: [Items]
+      summary: Replace one item
+      security:
+        - BearerAuth: []
+        - HeaderValueAuth: []
+      parameters:
+        - $ref: "#/components/parameters/ItemId"
+        - $ref: "#/components/parameters/IfUnmodifiedSince"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ItemCreateRequest"
+      responses:
+        "200":
+          description: Updated item
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Item"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "428":
+          $ref: "#/components/responses/PreconditionRequired"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+
+    patch:
+      tags: [Items]
+      summary: Patch one item
+      security:
+        - BearerAuth: []
+        - HeaderValueAuth: []
+      parameters:
+        - $ref: "#/components/parameters/ItemId"
+        - $ref: "#/components/parameters/IfUnmodifiedSince"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ItemPatchRequest"
+      responses:
+        "200":
+          description: Updated item
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Item"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "428":
+          $ref: "#/components/responses/PreconditionRequired"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+
+    delete:
+      tags: [Items]
+      summary: Delete one item
+      security:
+        - BearerAuth: []
+        - HeaderValueAuth: []
+      parameters:
+        - $ref: "#/components/parameters/ItemId"
+        - $ref: "#/components/parameters/IfUnmodifiedSince"
+      responses:
+        "200":
+          description: Delete result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  deleted:
+                    type: boolean
+                  id:
+                    type: integer
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "428":
+          $ref: "#/components/responses/PreconditionRequired"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+
+  /projects:
+    get:
+      tags: [Projects]
+      summary: List projects
+      responses:
+        "200":
+          description: Project collection
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListProjectsResponse"
+
+    post:
+      tags: [Projects]
+      summary: Create project
+      security:
+        - BearerAuth: []
+        - HeaderValueAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ProjectCreateRequest"
+            examples:
+              default:
+                value:
+                  name: Mobile App
+                  description: Tracks mobile feature milestones.
+      responses:
+        "201":
+          description: Created project
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Project"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+
+  /projects/{id}:
+    get:
+      tags: [Projects]
+      summary: Get one project
+      parameters:
+        - $ref: "#/components/parameters/ProjectId"
+      responses:
+        "200":
+          description: Project record
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Project"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /projects/{id}/items:
+    get:
+      tags: [Projects]
+      summary: List items by project
+      parameters:
+        - $ref: "#/components/parameters/ProjectId"
+      responses:
+        "200":
+          description: Project plus related items
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  project:
+                    $ref: "#/components/schemas/Project"
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Item"
+                  count:
+                    type: integer
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+components:
+  parameters:
+    ItemId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: integer
+        minimum: 1
+    ProjectId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: integer
+        minimum: 1
+    Limit:
+      name: limit
+      in: query
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 200
+    Offset:
+      name: offset
+      in: query
+      schema:
+        type: integer
+        minimum: 0
+    StatusFilter:
+      name: status
+      in: query
+      schema:
+        type: string
+        enum: [draft, published, archived]
+    ProjectFilter:
+      name: project_id
+      in: query
+      schema:
+        type: integer
+        minimum: 1
+    SortBy:
+      name: sort_by
+      in: query
+      schema:
+        type: string
+        enum: [id, title, status, created_at, updated_at]
+    SortDir:
+      name: sort_dir
+      in: query
+      schema:
+        type: string
+        enum: [asc, desc]
+    TextQuery:
+      name: q
+      in: query
+      schema:
+        type: string
+        maxLength: 120
+    Cursor:
+      name: cursor
+      in: query
+      description: Cursor token format `id:<positive_integer>`.
+      schema:
+        type: string
+    IfUnmodifiedSince:
+      name: If-Unmodified-Since
+      in: header
+      required: true
+      schema:
+        type: string
+      description: Must match current item `updated_at` token.
+
+  responses:
+    BadRequest:
+      description: Invalid request
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Unauthorized:
+      description: Unauthorized request
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Conflict:
+      description: Stale write conflict
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ConflictError"
+    DuplicateConflict:
+      description: Duplicate resource conflict
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    PreconditionRequired:
+      description: Missing concurrency precondition
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ConflictError"
+    RateLimited:
+      description: Too many write requests
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              error:
+                type: string
+              retry_after_seconds:
+                type: integer
+
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: OpaqueToken
+      description: |
+        Bearer token strategy. Include `Authorization: Bearer <token>`.
+        Enforced when `KUJO_CRUD_AUTH_TOKEN` is configured.
+    HeaderValueAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: |
+        Header-value strategy. Include the configured auth header and value.
+        Defaults to `X-API-Key` and can be overridden by `KUJO_CRUD_AUTH_HEADER_NAME`.
+
+  schemas:
+    Health:
+      type: object
+      properties:
+        status:
+          type: string
+        database:
+          type: string
+        items:
+          type: integer
+
+    Error:
+      type: object
+      properties:
+        error:
+          type: string
+
+    ConflictError:
+      type: object
+      properties:
+        error:
+          type: string
+        current_updated_at:
+          type: string
+        provided_updated_at:
+          type: string
+
+    Item:
+      type: object
+      required: [id, title, content, status, created_at, updated_at]
+      properties:
+        id:
+          type: integer
+        title:
+          type: string
+        content:
+          type: string
+        status:
+          type: string
+          enum: [draft, published, archived]
+        project_id:
+          type: integer
+          nullable: true
+        project_name:
+          type: string
+          nullable: true
+        created_at:
+          type: string
+        updated_at:
+          type: string
+
+    ItemCreateRequest:
+      type: object
+      required: [title, content]
+      properties:
+        title:
+          type: string
+          maxLength: 200
+        content:
+          type: string
+          maxLength: 50000
+        status:
+          type: string
+          enum: [draft, published, archived]
+        project_id:
+          type: integer
+          minimum: 1
+          nullable: true
+
+    ItemPatchRequest:
+      type: object
+      properties:
+        title:
+          type: string
+          maxLength: 200
+        content:
+          type: string
+          maxLength: 50000
+        status:
+          type: string
+          enum: [draft, published, archived]
+        project_id:
+          type: integer
+          minimum: 1
+          nullable: true
+
+    Project:
+      type: object
+      required: [id, name, description, created_at, updated_at]
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+        description:
+          type: string
+        items_count:
+          type: integer
+        created_at:
+          type: string
+        updated_at:
+          type: string
+
+    ProjectCreateRequest:
+      type: object
+      required: [name, description]
+      properties:
+        name:
+          type: string
+          maxLength: 160
+        description:
+          type: string
+          maxLength: 2000
+
+    ListItemsResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/Item"
+        count:
+          type: integer
+        total:
+          type: integer
+        limit:
+          type: integer
+        offset:
+          type: integer
+        has_more:
+          type: boolean
+        status:
+          type: string
+        project_id:
+          type: integer
+          nullable: true
+        sort_by:
+          type: string
+        sort_dir:
+          type: string
+        q:
+          type: string
+        cursor:
+          type: string
+        next_cursor:
+          type: string
+
+    ListProjectsResponse:
+      type: object
+      properties:
+        projects:
+          type: array
+          items:
+            $ref: "#/components/schemas/Project"
+        count:
+          type: integer

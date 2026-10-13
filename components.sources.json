@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "bundleVersion": "0.8.0",
+  "bundleVersion": "0.9.0",
   "runtime": {
     "minimumVersion": "1.8.1"
   },
@@ -302,6 +302,60 @@
         "src/utils.kujo",
         "dependency_spec.kujo",
         "manifest.kujo"
+      ],
+      "outputContracts": []
+    },
+    {
+      "id": "crud-api",
+      "repository": "https://github.com/kujolang/crud-api",
+      "sourceDirectory": "crud-api",
+      "gitCommit": "7ae446671b27128468ea0cc14c68f4e2ca11a989",
+      "version": "1.0.0",
+      "entrypoint": "main.kujo",
+      "files": [
+        "LICENSE",
+        "main.kujo",
+        "README.md",
+        "docs/api-examples.md",
+        "docs/openapi.yaml",
+        "src/auth.kujo",
+        "src/config.kujo",
+        "src/db.kujo",
+        "src/handlers.kujo",
+        "src/logging.kujo",
+        "src/rate_limit.kujo",
+        "src/request_context.kujo",
+        "src/response.kujo",
+        "src/server/runtime.kujo",
+        "src/validation.kujo",
+        "data/.gitkeep"
+      ],
+      "outputContracts": []
+    },
+    {
+      "id": "mcp",
+      "repository": "https://github.com/kujolang/mcp",
+      "sourceDirectory": "mcp",
+      "gitCommit": "922ae79537991a382ad87c13c49130390813b4fa",
+      "version": "1.3.1",
+      "entrypoint": "server.kujo",
+      "files": [
+        "LICENSE",
+        "server.kujo",
+        "mcp-server.json",
+        "README.md",
+        "src/server/runtime.kujo",
+        "src/core/framework.kujo",
+        "src/tools/registry.kujo",
+        "src/resources/registry.kujo",
+        "docs/mcp-reference.md",
+        "docs/security-model.md",
+        "demo/README.md",
+        "demo/docs/README.md",
+        "demo/docs/guide.md",
+        "demo/docs/scenarios.md",
+        "demo/docs/walkthrough.md",
+        "demo/patches/sample_patch.kujo"
       ],
       "outputContracts": []
     }

@@ -121,3 +121,26 @@ freshness again and persists `packages-latest` in the immutable scoped store.
 This new kind uses the existing history table; it is not a legacy state migration.
 Lock parsing is explicitly separate from trust, integrity or installed-byte proof.
 See [Usage](USAGE.md#inspect-kujo-packages) for bounds and result semantics.
+
+## Canonical application starter sources
+
+CRUD API is the twelfth pinned component. The API starter copies only its reviewed
+backend, data-directory placeholder, license and API documentation after integrity
+verification. It rechecks bytes during staging, retains the upstream README under
+an explicit name and adds a host-specific backend-only guide. It never invokes
+the server during preview. The same bounded starter collector returns source
+files, hashes, entrypoint and canonical commit provenance. Consumer tests separately
+materialize those files in a disposable directory and prove health/auth/CRUD and
+SQLite persistence through an owned loopback server restart.
+
+MCP is the thirteenth pinned component. The starter uses its portable local
+framework/demo sources and relative-root configuration; it does not invoke the
+repository-specific generator, which binds outputs to analyzed repository paths.
+Both application starters share integrity-checked staging and the bounded source
+collector, carry canonical source provenance, and preserve upstream source bytes.
+MCP consumer tests exercise authenticated standard JSON-RPC and scope/write guards
+against the materialized files in an owned temporary server.
+
+The MCP pin includes the canonical Windows separator repair from kujolang/mcp#13.
+Permission comparisons normalize native Windows separators while preserving literal
+POSIX backslashes; the plugin carries the upstream fix without a local fork.
