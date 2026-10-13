@@ -1,0 +1,299 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/kujolang/spec/raw/main/schema/spec.schema.json",
+  "title": "Spec",
+  "description": "Schema for Spec files \u2014 structured task definitions for AI-native development.",
+  "type": "object",
+  "required": [
+    "name",
+    "goal"
+  ],
+  "properties": {
+    "name": {
+      "type": "string",
+      "description": "Task name \u2014 a short, human-readable identifier.",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "version": {
+      "type": "string",
+      "description": "Spec version for tracking and evolution.",
+      "default": "0.1.0"
+    },
+    "id": {
+      "type": "string",
+      "description": "Unique identifier (UUID v4) for this spec.",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "draft",
+        "ready",
+        "in-progress",
+        "review",
+        "completed",
+        "archived"
+      ],
+      "default": "draft",
+      "description": "Lifecycle status of this spec."
+    },
+    "created_at": {
+      "type": "string",
+      "description": "ISO 8601 timestamp when this spec was created."
+    },
+    "updated_at": {
+      "type": "string",
+      "description": "ISO 8601 timestamp when this spec was last modified."
+    },
+    "completed_at": {
+      "type": "string",
+      "description": "ISO 8601 timestamp when this spec was completed."
+    },
+    "estimated_hours": {
+      "type": "number",
+      "description": "Estimated effort in hours (numeric, for tooling)."
+    },
+    "parent_id": {
+      "type": "string",
+      "description": "UUID of parent spec for task hierarchy."
+    },
+    "children": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "maxItems": 200,
+      "description": "Child spec IDs (informational)."
+    },
+    "goal": {
+      "type": "string",
+      "description": "What this task aims to accomplish \u2014 the primary objective.",
+      "minLength": 1,
+      "maxLength": 5000
+    },
+    "background": {
+      "type": "string",
+      "description": "Context and motivation \u2014 why this task exists and what problem it solves.",
+      "maxLength": 10000
+    },
+    "scope": {
+      "type": "string",
+      "description": "What is in scope for this task \u2014 boundaries of the work.",
+      "maxLength": 10000
+    },
+    "non_goals": {
+      "type": "array",
+      "description": "What is explicitly out of scope \u2014 things this task will NOT address.",
+      "items": {
+        "type": "string",
+        "maxLength": 2000
+      },
+      "maxItems": 100
+    },
+    "relevant_systems": {
+      "type": "array",
+      "description": "Systems, services, or components that are relevant to this task.",
+      "items": {
+        "type": "string",
+        "maxLength": 500
+      },
+      "maxItems": 50
+    },
+    "likely_files": {
+      "type": "array",
+      "description": "Files that are likely to be created, modified, or referenced during this task.",
+      "items": {
+        "type": "string",
+        "maxLength": 1000
+      },
+      "maxItems": 200
+    },
+    "acceptance_criteria": {
+      "type": "array",
+      "description": "Specific, verifiable conditions that must be met for this task to be considered complete.",
+      "items": {
+        "type": "string",
+        "maxLength": 2000
+      },
+      "maxItems": 100,
+      "minItems": 1
+    },
+    "eval_requirements": {
+      "type": "array",
+      "description": "Eval hooks and checks that validate the task outcome.",
+      "items": {
+        "type": "object",
+        "required": [
+          "description"
+        ],
+        "properties": {
+          "description": {
+            "type": "string",
+            "description": "What this eval requirement checks.",
+            "maxLength": 2000
+          },
+          "check_type": {
+            "type": "string",
+            "description": "Type of check (e.g., command_succeeds, file_exists, snapshot_matches).",
+            "enum": [
+              "command_succeeds",
+              "command_output_contains",
+              "file_exists",
+              "file_contains",
+              "file_line_count",
+              "json_path_value",
+              "snapshot_matches",
+              "directory_contains_files",
+              "regex_matches",
+              "command_timing_less_than",
+              "env_var_set",
+              "http_status",
+              "http_body_contains",
+              "markdown_contains_section",
+              "exit_code",
+              "stdout_contains",
+              "stderr_empty",
+              "artifact_exists"
+            ]
+          },
+          "params": {
+            "type": "object",
+            "description": "Parameters for the check type."
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Tags for filtering eval runs."
+          }
+        }
+      },
+      "maxItems": 200
+    },
+    "risks": {
+      "type": "array",
+      "description": "Known risks and their mitigations.",
+      "items": {
+        "type": "object",
+        "required": [
+          "risk"
+        ],
+        "properties": {
+          "risk": {
+            "type": "string",
+            "description": "Description of the risk.",
+            "maxLength": 2000
+          },
+          "mitigation": {
+            "type": "string",
+            "description": "How to mitigate or address this risk.",
+            "maxLength": 2000
+          },
+          "severity": {
+            "type": "string",
+            "enum": [
+              "low",
+              "medium",
+              "high",
+              "critical"
+            ],
+            "default": "medium"
+          }
+        }
+      },
+      "maxItems": 100
+    },
+    "dependencies": {
+      "type": "array",
+      "description": "Tasks, systems, or resources that this task depends on.",
+      "items": {
+        "oneOf": [
+          {
+            "type": "string",
+            "maxLength": 1000
+          },
+          {
+            "type": "object",
+            "required": [
+              "description"
+            ],
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": [
+                  "blocks",
+                  "blocked_by"
+                ]
+              },
+              "spec_id": {
+                "type": "string",
+                "description": "UUID of related spec"
+              },
+              "description": {
+                "type": "string",
+                "maxLength": 2000
+              }
+            }
+          }
+        ]
+      },
+      "maxItems": 100
+    },
+    "review_expectations": {
+      "type": "array",
+      "description": "What kind of review is expected for this task.",
+      "items": {
+        "type": "string",
+        "maxLength": 1000
+      },
+      "maxItems": 50
+    },
+    "human_approval_points": {
+      "type": "array",
+      "description": "Points in the workflow where human approval is required.",
+      "items": {
+        "type": "string",
+        "maxLength": 1000
+      },
+      "maxItems": 50
+    },
+    "estimated_effort": {
+      "type": "string",
+      "description": "Estimated effort (e.g., '2 hours', '1 day', '1 week').",
+      "maxLength": 200
+    },
+    "priority": {
+      "type": "string",
+      "enum": [
+        "critical",
+        "high",
+        "medium",
+        "low"
+      ],
+      "default": "medium",
+      "description": "Task priority."
+    },
+    "assignee": {
+      "type": "string",
+      "description": "Who is assigned to this task.",
+      "maxLength": 200
+    },
+    "tags": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "maxLength": 200
+      },
+      "maxItems": 50,
+      "description": "Tags for categorization and filtering."
+    },
+    "metadata": {
+      "type": "object",
+      "description": "Arbitrary additional metadata.",
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}

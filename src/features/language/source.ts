@@ -12,16 +12,21 @@ import type { ResolvedRuntime } from "../../runtime/types.js";
 const execFileAsync = promisify(execFile);
 export const MAX_SOURCE_BYTES = 65_536;
 const sensitive = /(^|\/)(?:\.env(?:\.|$)|credentials?(?:\.|\/|$)|secrets?(?:\.|\/|$)|id_(?:rsa|ed25519)(?:\.|$))/i;
-export const sourcePathSchema = z.string().min(1).max(1000).refine((value) =>
-  value.endsWith(".kujo") && !value.startsWith("/") && !/[\\:\x00-\x1f\x7f]/.test(value)
+export const workspaceTextPathSchema = z.string().min(1).max(1000).refine((value) =>
+  !value.startsWith("/") && !/[\\:\x00-\x1f\x7f]/.test(value)
   && value.split("/").every((part) => part !== ".." && part !== "." && part !== "") && !sensitive.test(value),
-  "Choose a relative, non-sensitive .kujo source path");
+  "Choose a relative, non-sensitive workspace path");
+export const sourcePathSchema = workspaceTextPathSchema.refine((value) => value.endsWith(".kujo"), "Choose a .kujo source path");
 
 export async function discoverSources(cwd: string) {
+  return discoverWorkspaceText(cwd, (path) => sourcePathSchema.safeParse(path).success);
+}
+
+export async function discoverWorkspaceText(cwd: string, admits: (path: string) => boolean) {
   const { stdout } = await execFileAsync("git", ["-C", cwd, "ls-files", "-z", "--cached", "--others", "--exclude-standard"], {
     encoding: "utf8", env: safeChildEnv(), maxBuffer: 2_000_000, timeout: 5_000, windowsHide: true,
   });
-  const paths = [...new Set(stdout.split("\0").filter((path) => sourcePathSchema.safeParse(path).success))].sort();
+  const paths = [...new Set(stdout.split("\0").filter((path) => workspaceTextPathSchema.safeParse(path).success && admits(path)))].sort();
   return { files: paths.slice(0, 1000), truncated: paths.length > 1000 };
 }
 
@@ -31,6 +36,11 @@ export async function discoverSources(cwd: string) {
 const READER = `params := args()\nbytes := read_binary_prefix_beneath(params[0], params[1], 65537)\nprint(to_json({"base64": encode_base64(bytes)}))\n`;
 export async function readSource(input: { cwd: string; path: string; directory: string; runtime: ResolvedRuntime; config: PluginConfig }) {
   sourcePathSchema.parse(input.path);
+  return readWorkspaceText(input);
+}
+
+export async function readWorkspaceText(input: { cwd: string; path: string; directory: string; runtime: ResolvedRuntime; config: PluginConfig }) {
+  workspaceTextPathSchema.parse(input.path);
   const helper = join(input.directory, "read-source.kujo");
   await writeFile(helper, READER, { mode: 0o600 });
   const result = await executeKujo({ executable: input.runtime.executable, cwd: input.directory,
@@ -39,7 +49,7 @@ export async function readSource(input: { cwd: string; path: string; directory: 
   if (result.exitCode !== 0) throw new KujoPluginError("KUJO_WORKSPACE_OUTSIDE_ALLOWED_ROOT", "Source is not a safe readable regular file in the project workspace");
   const { base64 } = z.object({ base64: z.string().max(90_000).regex(/^[A-Za-z0-9+/]*={0,2}$/) }).parse(JSON.parse(result.stdout));
   const bytes = Buffer.from(base64, "base64");
-  if (bytes.length > MAX_SOURCE_BYTES) throw new KujoPluginError("KUJO_OUTPUT_LIMIT", "Source exceeds the 64 KiB language-operation limit");
+  if (bytes.length > MAX_SOURCE_BYTES) throw new KujoPluginError("KUJO_OUTPUT_LIMIT", "Workspace text exceeds the 64 KiB inspection limit");
   if (bytes.includes(0)) throw new KujoPluginError("KUJO_INVALID_CONFIG", "Source must be UTF-8 text without NUL bytes");
   const source = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
   return { source, digest: createHash("sha256").update(bytes).digest("hex") };

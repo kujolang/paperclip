@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "bundleVersion": "0.2.0",
+  "bundleVersion": "0.3.0",
   "runtime": {
     "minimumVersion": "1.8.1"
   },
@@ -121,6 +121,28 @@
           "name": "intelligence",
           "format": "json",
           "schema": "schemas/repository-understanding.schema.json"
+        }
+      ]
+    },
+    {
+      "id": "spec",
+      "repository": "https://github.com/kujolang/spec",
+      "sourceDirectory": "spec",
+      "gitCommit": "1211f37a09314be7150734bf15a55e9b2ea6504d",
+      "version": "1.0.1",
+      "entrypoint": "src/validate.kujo",
+      "files": [
+        "LICENSE",
+        "src/validate.kujo",
+        "src/convert.kujo",
+        "src/common.kujo",
+        "schema/spec.schema.json"
+      ],
+      "outputContracts": [
+        {
+          "name": "validation",
+          "format": "json",
+          "schema": "schemas/spec-validation.schema.json"
         }
       ]
     }

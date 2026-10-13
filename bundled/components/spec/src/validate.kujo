@@ -1,0 +1,369 @@
+# Spec Validator — validates spec JSON against the schema.
+# Called as: kujo run src/validate.kujo --json <tmp-file> [--format yaml|toml|json]
+# Outputs JSON: {"valid": true/false, "errors": [...], "warnings": [...]}
+
+from src.common import dict_get, dict_get_arr
+
+KNOWN_CHECK_TYPES := [
+	"command_succeeds", "command_output_contains", "file_exists",
+	"file_contains", "file_line_count", "json_path_value",
+	"snapshot_matches", "directory_contains_files", "regex_matches",
+	"command_timing_less_than", "env_var_set", "http_status",
+	"http_body_contains", "markdown_contains_section", "exit_code",
+	"stdout_contains", "stderr_empty", "artifact_exists"
+]
+
+VALID_PRIORITIES := ["critical", "high", "medium", "low"]
+VALID_SEVERITIES := ["low", "medium", "high", "critical"]
+VALID_STATUSES := ["draft", "ready", "in-progress", "review", "completed", "archived"]
+KNOWN_TOP_LEVEL_FIELDS := [
+	"name", "goal", "id", "status", "version", "created_at",
+	"updated_at", "completed_at", "estimated_hours", "children", "metadata",
+	"background", "scope", "non_goals", "relevant_systems", "likely_files",
+	"acceptance_criteria", "eval_requirements", "risks", "dependencies",
+	"review_expectations", "human_approval_points", "estimated_effort",
+	"priority", "assignee", "tags", "parent_id"
+]
+
+func contains(items, value) {
+	i := 0
+	while i < len(items) {
+		if items[i] == value { return true }
+		i := i + 1
+	}
+	return false
+}
+
+func is_known_check_type(ct) {
+	return contains(KNOWN_CHECK_TYPES, ct)
+}
+
+func is_valid_priority(p) {
+	return contains(VALID_PRIORITIES, p)
+}
+
+func is_valid_severity(s) {
+	return contains(VALID_SEVERITIES, s)
+}
+
+func is_valid_status(s) {
+	return contains(VALID_STATUSES, s)
+}
+
+func is_known_top_level_field(k) {
+	return contains(KNOWN_TOP_LEVEL_FIELDS, k)
+}
+
+export func validate_spec(spec) {
+	errors := []
+	warnings := []
+
+	# Required fields
+	name := dict_get(spec, "name", "")
+	if name == "" { errors := push(errors, "Missing required field: name") }
+	if len(name) > 200 { errors := push(errors, "Field name exceeds 200 characters") }
+
+	goal := dict_get(spec, "goal", "")
+	if goal == "" { errors := push(errors, "Missing required field: goal") }
+	if len(goal) > 5000 { errors := push(errors, "Field goal exceeds 5000 characters") }
+
+	# String fields
+	string_fields := [
+		"version", "id", "status", "created_at", "updated_at",
+		"completed_at", "background", "scope", "estimated_effort", "assignee", "parent_id"
+	]
+	field_idx := 0
+	while field_idx < len(string_fields) {
+		errors = _check_str(spec, string_fields[field_idx], errors, false)
+		field_idx := field_idx + 1
+	}
+	errors = _check_str_length(spec, "background", errors, 10000)
+	errors = _check_str_length(spec, "scope", errors, 10000)
+	errors = _check_str_length(spec, "estimated_effort", errors, 200)
+	errors = _check_str_length(spec, "assignee", errors, 200)
+
+	# Array of strings
+	array_rules := [
+		["non_goals", 100], ["relevant_systems", 50], ["likely_files", 200],
+		["acceptance_criteria", 100], ["review_expectations", 50],
+		["human_approval_points", 50], ["tags", 50], ["children", 200]
+	]
+	array_idx := 0
+	while array_idx < len(array_rules) {
+		rule := array_rules[array_idx]
+		errors = _check_str_array(spec, rule[0], errors, rule[1])
+		array_idx := array_idx + 1
+	}
+	if has_key(spec, "acceptance_criteria") && type(spec["acceptance_criteria"]) == "array" && len(spec["acceptance_criteria"]) == 0 {
+		errors := push(errors, "Field acceptance_criteria requires at least 1 item")
+	}
+	errors = _check_str_array_item_length(spec, "non_goals", errors, 2000)
+	errors = _check_str_array_item_length(spec, "relevant_systems", errors, 500)
+	errors = _check_str_array_item_length(spec, "likely_files", errors, 1000)
+	errors = _check_str_array_item_length(spec, "acceptance_criteria", errors, 2000)
+	errors = _check_str_array_item_length(spec, "review_expectations", errors, 1000)
+	errors = _check_str_array_item_length(spec, "human_approval_points", errors, 1000)
+	errors = _check_str_array_item_length(spec, "tags", errors, 200)
+	errors := _check_dependencies(spec, errors)
+
+	# Typed schema fields
+	if has_key(spec, "status") {
+		status := spec["status"]
+		if type(status) == "string" && is_valid_status(status) == false {
+			errors := push(errors, "Invalid status: " + status + " (use draft/ready/in-progress/review/completed/archived)")
+		}
+	}
+	if has_key(spec, "id") {
+		id := spec["id"]
+		if type(id) == "string" && regex_match(id, "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$") == false {
+			errors := push(errors, "Field id must be a UUID v4")
+		}
+	}
+	if has_key(spec, "estimated_hours") {
+		hours_type := type(spec["estimated_hours"])
+		if hours_type != "int" && hours_type != "float" {
+			errors := push(errors, "Field estimated_hours must be a number")
+		}
+	}
+	if has_key(spec, "metadata") && type(spec["metadata"]) != "dict" {
+		errors := push(errors, "Field metadata must be an object")
+	}
+
+	# Eval requirements
+	eval_result := _check_eval_requirements(spec, errors, warnings)
+	errors = eval_result["errors"]
+	warnings = eval_result["warnings"]
+
+	# Risks
+	risk_result := _check_risks(spec, errors, warnings)
+	errors = risk_result["errors"]
+	warnings = risk_result["warnings"]
+
+	# Priority
+	priority := dict_get(spec, "priority", "medium")
+	if type(priority) != "string" { errors := push(errors, "Field priority must be a string") }
+	else { if is_valid_priority(priority) == false { errors := push(errors, "Invalid priority: " + priority + " (use critical/high/medium/low)") } }
+
+	# Top-level unknown field lint gate (warning in default mode; error in strict mode).
+	warnings := _check_unknown_top_level_fields(spec, warnings)
+
+	return {
+		"valid": len(errors) == 0,
+		"errors": errors,
+		"warnings": warnings
+	}
+}
+
+func _check_unknown_top_level_fields(spec, warnings) {
+	keys_arr := keys(spec)
+	i := 0
+	while i < len(keys_arr) {
+		k := keys_arr[i]
+		if is_known_top_level_field(k) == false {
+			warnings := push(warnings, "Unknown top-level field: " + k)
+		}
+		i := i + 1
+	}
+	return warnings
+}
+
+func _check_str(spec, key, errors, required) {
+	has_entry := has_key(spec, key)
+	if has_entry == false || has_entry == 0 {
+		if required == true { errors := push(errors, "Missing required field: " + key) }
+		return errors
+	}
+	v := spec[key]
+	# Validate that v is a string by attempting string concatenation
+	is_str := false
+	try { tmp := v + ""; is_str := true } except err {}
+	if is_str == false { errors := push(errors, "Field " + key + " must be a string, got non-string value") }
+	return errors
+}
+
+func _check_str_length(spec, key, errors, max_length) {
+	if has_key(spec, key) && type(spec[key]) == "string" && len(spec[key]) > max_length {
+		errors := push(errors, "Field " + key + " exceeds " + to_string(max_length) + " characters")
+	}
+	return errors
+}
+
+func _check_str_array(spec, key, errors, max_items) {
+	has_arr := has_key(spec, key)
+	if has_arr == false || has_arr == 0 { return errors }
+	arr := spec[key]
+	if type(arr) != "array" {
+		errors := push(errors, "Field " + key + " must be an array")
+		return errors
+	}
+	count := len(arr)
+	if count > max_items { errors := push(errors, "Field " + key + " exceeds maximum of " + to_string(max_items) + " items") }
+	i := 0
+	while i < count {
+		if type(arr[i]) != "string" {
+			errors := push(errors, "Field " + key + "[" + to_string(i) + "] must be a string")
+		}
+		i := i + 1
+	}
+	return errors
+}
+
+func _check_str_array_item_length(spec, key, errors, max_length) {
+	has_arr := has_key(spec, key)
+	if has_arr == false || has_arr == 0 { return errors }
+	if type(spec[key]) != "array" { return errors }
+	arr := spec[key]
+	i := 0
+	while i < len(arr) {
+		if type(arr[i]) == "string" && len(arr[i]) > max_length {
+			errors := push(errors, "Field " + key + "[" + to_string(i) + "] exceeds " + to_string(max_length) + " characters")
+		}
+		i := i + 1
+	}
+	return errors
+}
+
+func _check_dependencies(spec, errors) {
+	has_dependencies := has_key(spec, "dependencies")
+	if has_dependencies == false || has_dependencies == 0 { return errors }
+	arr := spec["dependencies"]
+	if type(arr) != "array" {
+		errors := push(errors, "Field dependencies must be an array")
+		return errors
+	}
+	if len(arr) > 100 { errors := push(errors, "Field dependencies exceeds maximum of 100 items") }
+	i := 0
+	while i < len(arr) {
+		dep := arr[i]
+		if type(dep) == "dict" {
+			has_description := has_key(dep, "description")
+			if has_description == false || has_description == 0 {
+				errors := push(errors, "dependencies[" + to_string(i) + "] must have a string description")
+			} else {
+				if type(dep["description"]) != "string" { errors := push(errors, "dependencies[" + to_string(i) + "] must have a string description") }
+			}
+			if has_key(dep, "type") {
+				dt := dep["type"]
+				if type(dt) != "string" || (dt != "blocks" && dt != "blocked_by") {
+					errors := push(errors, "dependencies[" + to_string(i) + "].type must be blocks or blocked_by")
+				}
+			}
+			if has_key(dep, "spec_id") && type(dep["spec_id"]) != "string" {
+				errors := push(errors, "dependencies[" + to_string(i) + "].spec_id must be a string")
+			}
+		} else {
+			if type(dep) != "string" { errors := push(errors, "dependencies[" + to_string(i) + "] must be a string or object") }
+		}
+		i := i + 1
+	}
+	return errors
+}
+
+func _check_eval_requirements(spec, errors, warnings) {
+	has_er := has_key(spec, "eval_requirements")
+	if has_er == false || has_er == 0 { return {"errors": errors, "warnings": warnings} }
+	arr := spec["eval_requirements"]
+	if type(arr) != "array" {
+		errors := push(errors, "Field eval_requirements must be an array")
+		return {"errors": errors, "warnings": warnings}
+	}
+	count := len(arr)
+	if count > 200 { errors := push(errors, "Field eval_requirements exceeds 200 items") }
+	i := 0
+	while i < count {
+		er := arr[i]
+		if type(er) != "dict" {
+			errors := push(errors, "eval_requirements[" + to_string(i) + "] must be an object")
+			i := i + 1
+			continue
+		}
+		has_desc := has_key(er, "description")
+		if has_desc == false || has_desc == 0 { errors := push(errors, "eval_requirements[" + to_string(i) + "] must have a string description") }
+		else {
+			if type(er["description"]) != "string" { errors := push(errors, "eval_requirements[" + to_string(i) + "] must have a string description") }
+			else { if len(er["description"]) > 2000 { errors := push(errors, "eval_requirements[" + to_string(i) + "].description exceeds 2000 characters") } }
+		}
+		has_ct := has_key(er, "check_type")
+		if has_ct == true || has_ct == 1 {
+			ct := er["check_type"]
+			if type(ct) != "string" { errors := push(errors, "eval_requirements[" + to_string(i) + "].check_type must be a string") }
+			else { if ct != "" && is_known_check_type(ct) == false { warnings := push(warnings, "Unknown check_type: " + ct) } }
+		}
+		if has_key(er, "params") && type(er["params"]) != "dict" { errors := push(errors, "eval_requirements[" + to_string(i) + "].params must be an object") }
+		if has_key(er, "tags") {
+			tags := er["tags"]
+			if type(tags) != "array" { errors := push(errors, "eval_requirements[" + to_string(i) + "].tags must be an array of strings") }
+			else {
+				ti := 0
+				while ti < len(tags) {
+					if type(tags[ti]) != "string" { errors := push(errors, "eval_requirements[" + to_string(i) + "].tags must be an array of strings") }
+					ti := ti + 1
+				}
+			}
+		}
+		i := i + 1
+	}
+	return {"errors": errors, "warnings": warnings}
+}
+
+func _check_risks(spec, errors, warnings) {
+	has_r := has_key(spec, "risks")
+	if has_r == false || has_r == 0 { return {"errors": errors, "warnings": warnings} }
+	arr := spec["risks"]
+	if type(arr) != "array" { errors := push(errors, "Field risks must be an array"); return {"errors": errors, "warnings": warnings} }
+	count := len(arr)
+	if count > 100 { errors := push(errors, "Field risks exceeds 100 items") }
+	i := 0
+	while i < count {
+		r := arr[i]
+		if type(r) != "dict" { errors := push(errors, "risks[" + to_string(i) + "] must be an object"); i := i + 1; continue }
+		has_risk := has_key(r, "risk")
+		if has_risk == false || has_risk == 0 { errors := push(errors, "risks[" + to_string(i) + "] missing risk field") }
+		if has_risk && type(r["risk"]) != "string" { errors := push(errors, "risks[" + to_string(i) + "].risk must be a string") }
+		if has_key(r, "mitigation") && type(r["mitigation"]) != "string" { errors := push(errors, "risks[" + to_string(i) + "].mitigation must be a string") }
+		has_sev := has_key(r, "severity")
+		if has_sev == true || has_sev == 1 {
+			sev := r["severity"]
+			if type(sev) != "string" { errors := push(errors, "risks[" + to_string(i) + "].severity must be a string") }
+			else { if is_valid_severity(sev) == false { warnings := push(warnings, "Invalid severity: " + sev) } }
+		}
+		i := i + 1
+	}
+	return {"errors": errors, "warnings": warnings}
+}
+
+func print_invalid_result(message) {
+	print("{\"valid\": false, \"errors\": [\"" + message + "\"]}")
+}
+
+#
+# Main: read spec JSON file and validate
+#
+func main() {
+	parser := arg_parser()
+	parser := parser.add_argument("--json", "type", "string", "default", "", "help", "Path to parsed spec JSON")
+	parsed_args := parser.parse()
+	json_file := trim(to_string(parsed_args["json"]))
+
+	if json_file == "" {
+		print_invalid_result("No --json <file> argument provided")
+		return
+	}
+
+	raw := ""
+	try { raw = read_file(json_file) } except err {
+		print_invalid_result("Cannot read file: " + json_file)
+		return
+	}
+
+	spec := {}
+	try { spec = parse_json(raw) } except err {
+		print_invalid_result("JSON parse error")
+		return
+	}
+
+	result := validate_spec(spec)
+	print(to_json(result))
+}
+
+main()

@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "bundleVersion": "0.2.0",
+  "bundleVersion": "0.3.0",
   "runtime": {
     "minimumVersion": "1.8.1"
   },
@@ -162,6 +162,35 @@
           "schema": "schemas/repository-understanding.schema.json"
         }
       ]
+    },
+    {
+      "id": "spec",
+      "repository": "https://github.com/kujolang/spec",
+      "gitCommit": "1211f37a09314be7150734bf15a55e9b2ea6504d",
+      "version": "1.0.1",
+      "entrypoint": "src/validate.kujo",
+      "files": [
+        "LICENSE",
+        "src/validate.kujo",
+        "src/convert.kujo",
+        "src/common.kujo",
+        "schema/spec.schema.json"
+      ],
+      "outputContracts": [
+        {
+          "name": "validation",
+          "format": "json",
+          "schema": "schemas/spec-validation.schema.json"
+        }
+      ],
+      "license": "MIT",
+      "checksums": {
+        "LICENSE": "4b6449939f8dce26dc5fb87756740a5977da9085517af127d9e634e6a6492506",
+        "src/validate.kujo": "691be02b5f3ccb90116c5fb4e606a89ef8370e45444ee4b7bb96420e09a13b2d",
+        "src/convert.kujo": "22250f617e462589a666b92a3b0cf70d3adbc85fd836cd99dc8e555dca36d023",
+        "src/common.kujo": "7ab3676aca8d7dce1c7e8cc4ce871245a7b56b1f4819a68336c7e7a91be83789",
+        "schema/spec.schema.json": "a5a2cd84e5101c2bb8cc94ceb1b202e7f3cdc701e5dbbb78ef8764d425f16f10"
+      }
     }
   ]
 }
