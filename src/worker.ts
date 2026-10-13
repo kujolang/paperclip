@@ -215,7 +215,10 @@ function registerTools(ctx: PluginContext) {
 }
 
 function registerUiBridge(ctx: PluginContext) {
-  ctx.data.register("doctor", async () => await doctor());
+  ctx.data.register("doctor", async (params) => {
+    const companyId = z.string().min(1).optional().parse(params.companyId);
+    return await doctor(companyId ? await configFor(ctx, companyId) : undefined);
+  });
   ctx.data.register("detail", async (params) => {
     const target = z.object({
       entityType: z.enum(["project", "issue", "run"]),
@@ -243,7 +246,7 @@ function registerUiBridge(ctx: PluginContext) {
     const ownedContext = context && workspace && context.projectId === workspace.projectId && context.workspaceId === workspace.id
       ? context
       : null;
-    return { review: ownedReview, failure: ownedFailure, context: ownedContext };
+    return { review: ownedReview, failure: ownedFailure, context: ownedContext, readiness: await doctor(config) };
   });
 
   ctx.actions.register("generate-review", async (params, actionCtx) => {
@@ -331,10 +334,12 @@ const plugin = definePlugin({
   async setup(ctx) {
     registerTools(ctx);
     registerUiBridge(ctx);
+    // Startup has no company identity. Company overrides are probed by the
+    // scoped Doctor/detail handlers, not borrowed from another tenant.
     const report = await doctor();
     health = {
       status: report.status === "ok" ? "ok" : "error",
-      message: report.status === "ok" ? "Kujo components are ready" : "A bundled component failed integrity verification",
+      message: report.status === "ok" ? "Kujo runtime and components are ready" : "Kujo runtime or components need attention",
       details: report,
     };
     ctx.logger.info("Kujo plugin initialized", { pluginId: ctx.manifest.id, componentCount: report.components.length, status: report.status });

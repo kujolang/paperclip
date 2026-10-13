@@ -19,6 +19,9 @@ function compareVersions(left: string, right: string): number {
 }
 
 async function validateExecutable(candidate: string): Promise<string> {
+  if (!isAbsolute(candidate)) {
+    throw new KujoPluginError("KUJO_RUNTIME_NOT_FOUND", "Configure an absolute Kujo executable path");
+  }
   const resolved = await realpath(candidate).catch(() => null);
   if (!resolved || !isAbsolute(resolved)) {
     throw new KujoPluginError("KUJO_RUNTIME_NOT_FOUND", `Kujo executable does not exist: ${candidate}`);
@@ -77,4 +80,3 @@ export async function resolveKujo(config: PluginConfig, cwd: string): Promise<Re
     { platform: process.platform, arch: process.arch },
   );
 }
-

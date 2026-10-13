@@ -10,3 +10,16 @@
 - Unsupported target: v0.1 supports macOS arm64/x64, Linux arm64/x64, and Windows x64.
 - Worker crash: open plugin health, verify the exact Paperclip compatibility train, then reinstall. Component failures should normally appear as structured feature errors rather than crash the worker.
 
+
+## Needs attention in the Kujo panel
+
+The panel's readiness result includes a bounded `kujo --version` probe using the
+company's resolved configuration, plus bundled component integrity checks. An
+explicit binary override must be absolute and identify a compatible Kujo runtime.
+A failing override does not silently select a different runtime. Clear the override
+to use the packaged binary, or repair its path/version, then select **Check again**.
+
+Plugin startup health checks the default runtime; the task/detail panel checks the
+active company's overrides. A feature disabled by configuration remains disabled
+with a healthy runtime. Existing artifacts stay readable while runtime repair is
+needed. Runtime availability does not mean that repository tests have passed.

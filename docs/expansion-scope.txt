@@ -1,0 +1,225 @@
+IMPLEMENTATION AUTHORIZED: user requested the full roadmap on 2026-10-12.
+The original review below is preserved as scope evidence; its proposal wording
+is historical. Track implementation and proof in expansion-tracker.json.
+
+KUJO PAPERCLIP: CAPABILITY GAP REVIEW AND PROPOSED ROADMAP
+Reviewed 2026-10-12. Proposal for discussion, not an approved implementation plan.
+
+RECOMMENDATION
+Make Paperclip a task-oriented front end to Kujo's shared capabilities, with a
+first-use journey that produces useful evidence on the user's own project.
+Success means users can understand, build, check and review with Kujo—not merely
+see a longer list of tools. Preserve the existing small, local, credential-free
+experience and make broader capabilities progressively available.
+
+BASELINE AND EVIDENCE
+Plugin 0.1.8 at c186a4a501a3d21be72a19e5f32926263897622e uses Kujo runtime
+1.8.1 and Paperclip SDK 2026.1012.0. It exposes four agent tools: select context,
+read selected context, review changes, and capture supplied failure output.
+There are three workflows, one managed skill, issue/task/project/run UI surfaces,
+and three latest-result slots. Run UI is read-only. Failure capture does not run
+the supplied command; review only suggests checks. No source changes were made.
+
+Reviewed plugin manifest, worker, UI, configuration, health and storage source;
+component pins and canonical Git histories; current Paperclip SDK interfaces;
+Kujo language release notes; CMD/Pi/Ability/MCP and ecosystem source; public
+catalog metadata and current GitHub releases. This is a source-backed product
+and integration review, not an exhaustive security audit or new full test run.
+The preceding maintenance work passed plugin/live tests; broad host verification
+remains incomplete because of disk constraints.
+
+The public catalog returned 53 projects, but some entries lag releases: Kujo
+shows 1.8.0, Paperclip 0.1.7 and Agents SDK 1.0.0, whereas current GitHub releases
+are 1.8.1, 0.1.8 and 1.1.2. Kujo Pi source advertises 1.2.0 while latest GitHub
+release is 1.1.0. Discovery metadata, source availability and released consumer
+compatibility must be presented separately. Counts are not completeness proof.
+
+CURRENT GAPS, ORDERED BY USER VALUE
+
+1. Honest onboarding and useful first result — highest priority
+The panel renders READY unconditionally. Doctor checks component integrity but
+returns runtime.status=unchecked. It cannot substantiate execution readiness.
+The context form begins blank; the manifest lacks issues.read, so issue-aware
+prefilling needs an explicit host permission and scoped integration.
+Proposal: a capability-aware Doctor, available/missing/disabled/unsupported
+states, precise repair guidance, and a suggested first action from issue/project
+context. Support a clean repository, no Git repository, and missing workspace
+without dead ends. Offer a bundled example when the user has no project.
+
+2. Kujo language development — highest priority
+The plugin does not expose source checking, diagnostics, formatting, tests,
+package inspection, language examples or application scaffolds. The runtime
+already supports check/lint/format, test/test-run, doctor, native facilities,
+VM/interpreter execution, package workflows and AI record/replay mechanisms.
+Proposal: language diagnostics with file/line links, previewable formatting,
+version-matched documentation/examples, and small starters for a local script,
+API, MCP server and AI agent. Begin with read-only check/lint/package validation.
+Run/test and file creation require deliberate effect admission. Normal Kujo
+execution is trusted code and is not a sandbox. Do not add a free-form shell.
+
+3. Understand a repository before selecting context — highest priority
+Scent selects context, but there is no Scout repository map showing entrypoints,
+modules, routes, dependencies and evidence-backed risk observations.
+Proposal: an Understand action combines bounded Scout intelligence with the
+existing Scent selection/read boundary. Every selected file explains its reason,
+budget impact and freshness. Prefer concrete findings over a generic repo score.
+Scout adapters must redirect generated reports to plugin-owned storage rather
+than quietly writing into the source workspace.
+
+4. A complete review-and-verification journey — highest priority
+Current Review Pack stops at footprint, summary and suggested tests. There is
+no exposed Spec acceptance contract, Eval execution evidence, Fence boundary
+check, Concord drift report or ShipCheck readiness report. The Verification
+setting is explicitly reserved and only emits a warning; it is not a verifier.
+Proposal: connect acceptance criteria to declared checks and show pass/fail/
+not-run/blocked/stale states. Keep each tool's actual scope visible: ShipCheck
+reports readiness signals; it does not itself prove project tests ran. Concord
+findings are heuristic drift leads. Import evidence first; add bounded execution
+after host approval/job integration is proven.
+
+5. Persistent evidence and history — highest priority foundation
+Storage overwrites review-latest, context-latest and failure-latest. There is
+no user-facing run history/comparison or shared Ability receipt interface.
+Proposal: immutable artifact and invocation IDs, parent/child relationships,
+input/definition digest, component version, workspace revision, result and
+redaction metadata; bounded retention; readable comparisons; download/export;
+explicit issue/work-product attachment where the host supports it. RunLedger
+can index receipts; Paperclip remains the authority for its company/issue/run
+identity. Distinguish supplied logs, imported results and plugin-observed runs.
+
+6. Discoverable ecosystem capabilities — highest priority architecture
+CMD documents 38 tools in its Full profile and five in Essentials. It already
+uses portable Ability identity, schemas, effects, profiles and receipts. Pi has
+capability packs and trust-aware setup. Paperclip has four fixed tools.
+Proposal: reuse canonical Ability definitions and compatible shared runtime
+logic, then build a Paperclip adapter. Start with Understand, Review, Verify and
+Build experiences; expose richer Workflow, WebOps and Publishing packs on demand.
+Installed, enabled, authorized and platform-supported are different states.
+Do not adopt CMD's single-user process environment, path parameters or local
+receipt files unchanged in a multi-company host.
+
+7. Workflow execution and recovery — next substantial increment
+Dispatch, Muzzle and Workcell enable approved, bounded workflows, logs and
+receipts; they are not integrated. The plugin's subprocess ceiling is 27 seconds.
+Proposal: typed start/status/inspect/cancel operations, persistent ownership,
+progress and partial results; Dispatch owns its workflow replay; Workcell provides
+explicitly configured isolation. Persist submission identity before polling;
+reconcile uncertain outcomes before retrying effects. Cancel owned work rather
+than merely stop waiting. No background daemon or Docker requirement for first use.
+
+8. Knowledge, AI and operations — optional packs
+RAG: local, scoped retrieval with citations; separate query from networked ingest.
+AI SDK / Agents SDK: examples, validation and bounded workflows using existing
+provider configuration; do not build a second agent scheduler inside Paperclip.
+Watchdog: optional metadata-only trace correlation and clearly labeled usage
+estimates, without duplicate billing/accounting or raw prompt/log export.
+Kennel: inspect dependencies/lockfiles and preview exact installation changes.
+MCP: inspect/validate and explicitly scaffold servers; do not assume the controlled
+Ability Gateway beta supports arbitrary customer execution backends.
+
+9. Broader company workflows — optional expansion
+WebOps: Lens, SiteProbe, ContentGraph, SearchBridge for browser/crawl/content/search
+evidence; network access and browser installation are explicit prerequisites.
+Publishing/applications: SSG, SiteKit, CMS, Commerce and Presentations through
+bounded templates, preview/build/validate actions, not automatic publishing.
+Editorial: Dossier, BluePencil, GalleyPack, VersionSeal, PressWire, ReaderSignal,
+StoryDesk and AssetWorks can support an optional publishing workflow with explicit
+human review and publication authority. Source, Agent City, Relay, Leash and other
+host/operator products should interoperate where useful, not be embedded wholesale.
+Tribunal, PackWrite, Howl, Redact and Ward are discoverable specialist options.
+Feature completeness means clear supported workflows and honest availability;
+it does not mean enabling every ecosystem product by default.
+
+10. Dependency cohort and public support — prerequisite
+The runtime update did not refresh the four source snapshots. Canonical local
+heads are 13/4/3/5 commits beyond ChangeBucket/PatchBrief/CaseFile/Scent pins.
+ChangeBucket 1.1.0 is released; the plugin pins 1.0.0. Other histories include
+portable process, containment and performance work beyond their pinned snapshots.
+These facts do not independently establish an exploitable plugin vulnerability:
+the plugin has its own process/path/Git controls. Review diffs and adapters before
+syncing; preserve/version schemas and test an exact compatible dependency cohort.
+Keep experimental assurance/handoff protocols distinct from stable functionality.
+
+HOST INTEGRATION CONSTRAINTS THAT MUST SHAPE THE DESIGN
+- Paperclip tools are declared in the manifest and handlers register matching
+  names. Generate a reviewed tool subset at plugin build time initially. Validate
+  host discovery/filtering before promising dynamically installed tools appear.
+- SDK jobs.register is for manifest-declared scheduled jobs, not an arbitrary
+  durable task queue. Prove queueing, ownership, cancellation and restart behavior
+  in a small adapter prototype before implementing long-running workflows.
+- SDK approvals offers list/get/decide, not a generic create operation. Do not
+  assume an Approval API call will mint request-bound Ability authorization.
+  Prototype a human-authenticated approval flow bound to company, actor, exact
+  input and definition digest. Never let the agent authorize its own effects.
+- Paperclip owns identity, assignment, permissions and agent orchestration;
+  Ability owns portable operation semantics; Dispatch owns its workflow replay;
+  Workcell owns chosen isolation; Watchdog observes; RunLedger indexes evidence.
+- Preserve canonical workspace resolution, two-stage context reads, bounded output,
+  redaction, tenant isolation and no runtime component downloads. Optional pack
+  installation is a separate visible operation with exact versions/provenance.
+- Use existing skills and structured examples to teach agents when to select each
+  workflow. Do not flood every agent prompt with all tools and all documentation.
+
+PROPOSED FIRST-USE EXPERIENCE
+1. Open Kujo on an issue: see verified runtime/capability status and the resolved
+   project. Choose Understand, Review, Verify or Build with Kujo.
+2. Understand produces a bounded repository map, relevant files, a short task
+   contract and an explanation of the recommended next check.
+3. Show a real result with source links and a receipt immediately; no API key is
+   needed for the read-only path. A clean tree still gives useful project context.
+4. A new Kujo user can open a small bundled example, inspect its source and expected
+   output, then deliberately run it in the supported execution environment.
+5. As work changes, the same task view shows observed verification, stale evidence,
+   review history and a concise handoff. Advanced packs appear when relevant.
+
+DELIVERY SEQUENCE AND EXIT CRITERIA
+A. Reliability baseline: capability Doctor/READY fix, reserved Verification UX,
+   component cohort refresh, stale documentation/catalog correction. Gate: packed
+   npm install in a clean host detects broken/missing runtime and gives a real
+   read-only result on each declared platform; preserve existing four tools.
+B. First-use vertical slice: Understand + Scout/Scent, source diagnostics and
+   examples, artifact history and initial Ability projection. Gate: first useful
+   result without a contributor checkout or credentials, on populated/clean/empty
+   fixtures; issue context stays within its company; accessibility and both UI
+   surfaces pass. Proposed usability target: a newcomer succeeds in five minutes,
+   measured with 3–5 unfamiliar users rather than claimed from internal tests.
+C. Verification: Spec/Fence/Concord/ShipCheck views and imported receipts, followed
+   by Eval execution only after the approval/job prototypes pass. Gate: selected
+   checks yield accurate observed outcomes; never count suggested tests as passed.
+D. Durable workflows: Dispatch/Muzzle/Workcell and controlled run/test/scaffold
+   operations. Gate: restart/cancel/duplicate-submission/expired-approval matrix;
+   explicit uncertainty after a lost response; no cross-company execution.
+E. Optional packs: RAG/AI/Watchdog, WebOps and Publishing, with platform and service
+   prerequisites shown. Ship each complete workflow with a consumer-install test.
+
+Robustness is tested per operation: malformed schemas, malicious workspaces,
+symlink escapes, repository revision changes, disabled features, output caps,
+redaction failures, worker restarts, storage exhaustion and version migration.
+Keep the existing native-platform matrix; do not infer that every new CLI tool
+supports Windows merely because the Kujo runtime does.
+
+No dates, implementation estimates or adoption claims are established by this
+review. Recommended first implementation scope: A plus the Understand journey in
+B. Keep the language-development journey in the same roadmap so Kujo itself is
+visible, rather than only tools written in Kujo.
+
+SOURCES / REPRODUCIBLE ENTRY POINTS
+Plugin: https://github.com/kujolang/paperclip/tree/c186a4a501a3d21be72a19e5f32926263897622e
+Files: src/manifest.ts; src/worker.ts; src/ui/index.tsx; src/storage/state.ts;
+src/health/doctor.ts; src/config/schema.ts; components.sources.json.
+Language: https://github.com/kujolang/kujo/blob/main/README.md
+Release: https://github.com/kujolang/kujo/releases/tag/v1.8.1
+Shared integration example: https://github.com/kujolang/kujo-cmd
+CMD sources: catalog/abilities.json; catalog/profiles.json; lib/executor.mjs;
+.generated/BUILD.json (canonical runtime pinned to kujolang/mcp c41aa574...).
+Pi comparison: https://github.com/kujolang/kujo-pi (source/release distinction above).
+Contracts: https://github.com/kujolang/ability
+Isolation: https://github.com/kujolang/workcell
+Discovery: https://docs.kujolang.ai/tools/ and live Kujo catalog (version caveat above).
+Host: /Users/robertdevore/2026/paperclip/packages/plugins/sdk/src/types.ts,
+PluginToolsClient, PluginJobsClient, PluginApprovalsClient, PluginContext.
+Release-query evidence: work/kujo-review-releases.json in this Codex workspace.
+
+SignalBox: readiness defect cap_7b0ee52e-9d8a-4eb6-b97b-0038aee90246;
+sig_76477ace-594a-4460-99c9-d4a1d0f058dd. Static evidence; not a new exploit claim.
+Roadmap items are proposals, not new Signals or authorized implementation tasks.

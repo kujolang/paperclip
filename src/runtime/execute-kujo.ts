@@ -182,7 +182,7 @@ export async function executeVersion(executable: string, cwd: string, timeoutMs 
   if (result.exitCode !== 0) {
     throw new KujoPluginError("KUJO_RUNTIME_EXEC_FAILED", "Kujo --version failed", result);
   }
-  const match = `${result.stdout}\n${result.stderr}`.match(/(?:kujo\s+)?v?(\d+\.\d+\.\d+)/i);
+  const match = `${result.stdout}\n${result.stderr}`.match(/^kujo\s+v?(\d+\.\d+\.\d+)(?:\s|$)/im);
   if (!match?.[1]) {
     throw new KujoPluginError("KUJO_RUNTIME_INCOMPATIBLE", "Unable to parse Kujo runtime version");
   }
