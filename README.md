@@ -1,6 +1,6 @@
 # Kujo for Paperclip
 
-[![Version](https://img.shields.io/badge/version-0.1.8-black)](https://github.com/kujolang/paperclip/releases/tag/v0.1.8)
+[![Version](https://img.shields.io/badge/version-0.1.9-black)](https://github.com/kujolang/paperclip/releases/tag/v0.1.9)
 [![npm](https://img.shields.io/npm/v/%40kujolang%2Fpaperclip?label=npm&color=black)](https://www.npmjs.com/package/@kujolang/paperclip)
 [![CI](https://img.shields.io/github/actions/workflow/status/kujolang/paperclip/ci.yml?branch=main&label=CI&color=black)](https://github.com/kujolang/paperclip/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-MIT-lightgrey)](LICENSE)
@@ -9,6 +9,9 @@
 Kujo helps Paperclip agents choose useful context, review changes, and save clear
 failure evidence. It runs locally inside Paperclip and works in the current task view.
 You do not need the Classic Task Interface.
+
+Bundled component imports are isolated from project modules. Configured runtime
+overrides require Kujo 1.8.1 or newer; the included runtime already satisfies this.
 
 ## Install in 30 seconds
 

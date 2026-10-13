@@ -28,7 +28,8 @@ export async function runComponent<T = unknown>(input: RunComponentInput): Promi
     resolveKujo(input.config, input.cwd),
     resolveComponent(input.component),
   ]);
-  const invocation = ["run", ...(input.interpreter ? ["--interpreter"] : []), component.entrypointPath, "--", ...input.args];
+  // Canonical imports must never resolve against modules in the analyzed workspace.
+  const invocation = ["run", "--isolated-imports", ...(input.interpreter ? ["--interpreter"] : []), component.entrypointPath, "--", ...input.args];
   const result = await executeKujo({
     executable: runtime.executable,
     cwd: input.cwd,

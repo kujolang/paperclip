@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "bundleVersion": "0.1.0",
-  "runtime": { "minimumVersion": "1.2.0" },
+  "runtime": { "minimumVersion": "1.8.1" },
   "components": [
     {
       "id": "changebucket",
