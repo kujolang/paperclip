@@ -26,7 +26,8 @@
     "README.md",
     "SECURITY.md",
     "VERSION",
-    "LICENSE"
+    "LICENSE",
+    "migrations"
   ],
   "paperclipPlugin": {
     "manifest": "./dist/manifest.js",
@@ -62,6 +63,7 @@
     }
   },
   "devDependencies": {
+    "@electric-sql/pglite": "0.5.9",
     "@playwright/test": "1.63.0",
     "@types/node": "26.5.1",
     "@types/react": "19.3.0",

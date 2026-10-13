@@ -86,6 +86,17 @@ export const contextContentTool = {
   },
 } as const;
 
+export const listEvidenceTool = {
+  name: "list-evidence", displayName: "List Kujo Evidence",
+  description: "List retained Kujo receipts for the current project or run. Results distinguish observed, supplied and legacy evidence; they do not imply project tests passed.",
+  parametersSchema: { type: "object", additionalProperties: false, properties: { scope: { type: "string", enum: ["project", "run"], default: "project" } } },
+} as const;
+export const readEvidenceTool = {
+  name: "get-evidence", displayName: "Read Kujo Evidence",
+  description: "Read one integrity-checked, redacted evidence export in the current project or run, limited to 64 KiB. Does not attach or mutate host documents.",
+  parametersSchema: { type: "object", additionalProperties: false, required: ["evidenceId"], properties: { scope: { type: "string", enum: ["project", "run"], default: "project" }, evidenceId: { type: "string", minLength: 1, maxLength: 100 } } },
+} as const;
+
 const manifest: PaperclipPluginManifestV1 = {
   id: "kujolang.paperclip",
   apiVersion: 1,
@@ -96,10 +107,14 @@ const manifest: PaperclipPluginManifestV1 = {
   categories: ["workspace", "ui"],
   minimumHostVersion: MINIMUM_HOST_VERSION,
   capabilities: [
+    "issue.documents.write",
     "agent.tools.register",
     "projects.read",
     "issues.read",
     "project.workspaces.read",
+    "database.namespace.read",
+    "database.namespace.write",
+    "database.namespace.migrate",
     "plugin.state.read",
     "plugin.state.write",
     "activity.log.write",
@@ -107,8 +122,9 @@ const manifest: PaperclipPluginManifestV1 = {
     "skills.managed",
   ],
   entrypoints: { worker: "./dist/worker.js", ui: "./dist/ui" },
+  database: { namespaceSlug: "kujo_evidence", migrationsDir: "migrations" },
   instanceConfigSchema: instanceConfigJsonSchema,
-  tools: [languageTool, formatTool, understandTool, reviewTool, failureTool, contextTool, contextContentTool],
+  tools: [listEvidenceTool, readEvidenceTool, languageTool, formatTool, understandTool, reviewTool, failureTool, contextTool, contextContentTool],
   skills: [{
     skillKey: "scoped-repository-context",
     displayName: "Scoped Repository Context",

@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
 import { doctor } from "../src/health/doctor.js";
 import { parsePluginConfig } from "../src/config/schema.js";
-import { createTestHarness } from "@paperclipai/plugin-sdk/testing";
+import { createTestHarness } from "./helpers/harness.js";
 import manifest from "../src/manifest.js";
 import plugin from "../src/worker.js";
 import { getKujoRuntimeInfo } from "@kujolang/kujo-runtime";
