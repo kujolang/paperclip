@@ -1,11 +1,13 @@
 # Dispatch
 
-[![Version](https://img.shields.io/badge/version-1.3.0-black)](https://github.com/kujolang/dispatch/releases/tag/v1.3.0)
+[![Version](https://img.shields.io/badge/version-1.4.0-black)](https://github.com/kujolang/dispatch/releases/tag/v1.4.0)
 [![License](https://img.shields.io/badge/license-MIT-lightgrey)](LICENSE)
 [![built with Kujo](https://img.shields.io/badge/built%20with-Kujo-white.svg)](https://github.com/kujolang/kujo)
 
-Dispatch 1.3 adds durable failure/review controls and restart-safe replay admission.
-See [release notes](docs/RELEASE_1_3_0.md) and the [upgrade guide](docs/UPGRADING_TO_1_3.md).
+Dispatch 1.4 adds bounded graph controls, sourced resource accounting, retained-host
+recovery and an experimental installed operator. Durable approval decisions are
+bound to authoritative revisions and receipts.
+See [release notes](docs/RELEASE_1_4_0.md) and the [upgrade guide](docs/UPGRADING_TO_1_3.md).
 Effect assurance beta and participant interoperability alpha remain experimental,
 opt-in, and under a trusted local host. Separate participant SDK packages remain
 unpublished. A correlation match never authorizes replay.
@@ -23,9 +25,9 @@ multi-tenant service. Start with the credential-free fixture below, then use
 model and [the 1.3 follow-up review](docs/audits/next-review-v1.3-2026-09-22.md) for open work.
 For an existing deployment, read [the 1.3 upgrade guide](docs/UPGRADING_TO_1_3.md)
 before changing the runtime or sharing an output root with older workers.
-The supported release runtime is **Kujo 1.6.0 on Linux/macOS (POSIX)**.
-`release/dispatch-v1.3.0.refs` pins the installer closure;
-`release/dispatch-v1.3.0-validation.refs` pins the released companion integration
+The supported release runtime is **Kujo 1.8.1 on Linux/macOS (POSIX)**.
+`release/dispatch-v1.4.0.refs` pins the installer closure;
+`release/dispatch-v1.4.0-validation.refs` pins the released companion integration
 cohort. Older candidate manifests remain historical evidence. The runtime supplies
 process-owned locks and confined directory durability. Quiesce old workers before
 upgrading; never mix lock protocols on a run directory. Live provider and target
@@ -215,7 +217,7 @@ SDK's `create_model_catalog`/`provider_model_catalog`, not a copied routing tabl
 
 ## Prerequisites
 
-- Kujo 1.6.0 on Linux/macOS, pinned to released source `44af277848173664f72ca85f2a1b3b98d634ecdd`
+- Kujo 1.8.1 on Linux/macOS, pinned to released source `357796a1a868f2c80bc8f7b8edcc7d6aff384f04`
 - AI SDK installed by the Kujo `ai` profile, or a local clone for source development
 - `dispatch` checked out locally
 

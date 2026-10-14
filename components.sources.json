@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "bundleVersion": "0.11.0",
+  "bundleVersion": "0.12.0",
   "runtime": {
     "minimumVersion": "1.8.1"
   },
@@ -35,8 +35,8 @@
       "id": "patchbrief",
       "repository": "https://github.com/kujolang/patchbrief",
       "sourceDirectory": "patchbrief",
-      "gitCommit": "0e8d6bd6fd226b09b807f8758ade08096c8b70f0",
-      "version": "1.0.1",
+      "gitCommit": "34000d62d6dd7d2422e40faecf65120af1a138dc",
+      "version": "1.0.2",
       "entrypoint": "patchbrief.kujo",
       "files": [
         "LICENSE",
@@ -66,8 +66,8 @@
       "id": "failure-evidence",
       "repository": "https://github.com/kujolang/casefile",
       "sourceDirectory": "casefile",
-      "gitCommit": "d8146a3f62aee11c52dcfee82381bf22fd0992b2",
-      "version": "1.0.0",
+      "gitCommit": "3d8da7d76445cb554fe193ea0d3a8b5a557962d7",
+      "version": "1.0.1",
       "entrypoint": "casefile.kujo",
       "files": [
         "LICENSE",
@@ -85,8 +85,8 @@
       "id": "context",
       "repository": "https://github.com/kujolang/scent",
       "sourceDirectory": "scent",
-      "gitCommit": "9c1fcb238221dc8a63da3ea1260230aa2f8be766",
-      "version": "1.0.0",
+      "gitCommit": "d71da6cbb6f4a1fb9d438743a4ad9e00614da266",
+      "version": "1.1.0",
       "entrypoint": "scent.kujo",
       "files": [
         "LICENSE",
@@ -150,8 +150,8 @@
       "id": "fence",
       "repository": "https://github.com/kujolang/fence",
       "sourceDirectory": "fence",
-      "gitCommit": "818fad467674efeb6d6b5973211834d3f1a0b1fd",
-      "version": "1.0.0",
+      "gitCommit": "d3173049b5365af975624fddd48e943d39738c75",
+      "version": "1.1.0",
       "entrypoint": "fence.kujo",
       "files": [
         "LICENSE",
@@ -204,8 +204,8 @@
       "id": "concord",
       "repository": "https://github.com/kujolang/concord",
       "sourceDirectory": "concord",
-      "gitCommit": "767b28dec5532639c01259eb47d1b19af995e552",
-      "version": "1.0.0",
+      "gitCommit": "3d58834dc207343fa1bf1df5e8e407d4483ebf29",
+      "version": "1.1.1",
       "entrypoint": "concord.kujo",
       "files": [
         "LICENSE",
@@ -235,8 +235,8 @@
       "id": "shipcheck",
       "repository": "https://github.com/kujolang/shipcheck",
       "sourceDirectory": "shipcheck",
-      "gitCommit": "0a9f5795e9498f3698d5da6bb66642544251dd37",
-      "version": "1.0.0",
+      "gitCommit": "ee4cfd052c0522eebedc0eead223cbb22490b357",
+      "version": "1.0.1",
       "entrypoint": "shipcheck.kujo",
       "files": [
         "LICENSE",
@@ -260,8 +260,8 @@
       "id": "eval",
       "repository": "https://github.com/kujolang/eval",
       "sourceDirectory": "eval",
-      "gitCommit": "b4a104f3d5e6464b0335fb07f533e24c8164965b",
-      "version": "1.0.0",
+      "gitCommit": "71e66dff780d6930bcbe093c046bf31aa26411df",
+      "version": "1.1.0",
       "entrypoint": "main.kujo",
       "files": [
         "LICENSE",
@@ -290,8 +290,8 @@
       "id": "kennel",
       "repository": "https://github.com/kujolang/kennel",
       "sourceDirectory": "kennel",
-      "gitCommit": "ebe7094c32b58f6a92f7ce127ac5cb5ba4c1acc6",
-      "version": "1.1.1",
+      "gitCommit": "8982ef6d7c363c4b7855e457cd2151b4a1ec21df",
+      "version": "1.2.0",
       "entrypoint": "src/validator.kujo",
       "files": [
         "LICENSE",
@@ -309,8 +309,8 @@
       "id": "crud-api",
       "repository": "https://github.com/kujolang/crud-api",
       "sourceDirectory": "crud-api",
-      "gitCommit": "7ae446671b27128468ea0cc14c68f4e2ca11a989",
-      "version": "1.0.0",
+      "gitCommit": "e96eea1d17d7984f4013815a1f901f9eb6e8feac",
+      "version": "1.0.1",
       "entrypoint": "main.kujo",
       "files": [
         "LICENSE",
@@ -336,8 +336,8 @@
       "id": "mcp",
       "repository": "https://github.com/kujolang/mcp",
       "sourceDirectory": "mcp",
-      "gitCommit": "922ae79537991a382ad87c13c49130390813b4fa",
-      "version": "1.3.1",
+      "gitCommit": "c6b2b17a65f66e4096cd4b68bc89b1a3fe352a46",
+      "version": "1.3.2",
       "entrypoint": "server.kujo",
       "files": [
         "LICENSE",
@@ -363,8 +363,8 @@
       "id": "dispatch",
       "repository": "https://github.com/kujolang/dispatch",
       "sourceDirectory": "dispatch",
-      "gitCommit": "4c4d34b2979f6754a97a48d1da62e28fda14315d",
-      "version": "1.3.0",
+      "gitCommit": "83541c46b2c1fd5dcc812a07591e1879370dce8b",
+      "version": "1.4.0",
       "entrypoint": "dispatch.kujo",
       "files": [
         "LICENSE",

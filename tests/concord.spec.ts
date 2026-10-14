@@ -32,7 +32,7 @@ describe("canonical Concord snapshot inspection", () => {
     await writeFile(join(input.cwd, "src/scanner.kujo"), `write_file(${JSON.stringify(marker)}, "import executed")\n`);
     const before = execFileSync("git", ["-C", input.cwd, "status", "--porcelain=v1", "-z"], { encoding: "utf8" });
     const report = await inspectConcord(input);
-    expect(report).toMatchObject({ status: "failed", stale: false, provenance: { component: "concord", commit: "767b28dec5532639c01259eb47d1b19af995e552" } });
+    expect(report).toMatchObject({ status: "failed", stale: false, provenance: { component: "concord", commit: "3d58834dc207343fa1bf1df5e8e407d4483ebf29" } });
     expect(report.report?.findings).toContainEqual(expect.objectContaining({ id: "version-inconsistency", severity: "high" }));
     expect(report.report?.summary.total_findings).toBe(report.report?.findings.length);
     expect(report.coverage).toMatchObject({ copied: 4, omitted: [], truncated: false });
@@ -118,7 +118,7 @@ describe("scoped Concord integration", () => {
     const target = { entityType: "project" as const, entityId: "project", companyId: "company" };
     const result = await h.executeTool("inspect-artifact-drift", {}, { companyId: "company", projectId: "project" });
     expect(result.error).toBeUndefined(); expect(result.data).not.toHaveProperty("snapshot");
-    expect(result.data).toMatchObject({ status: "failed", provenance: { commit: "767b28dec5532639c01259eb47d1b19af995e552" } });
+    expect(result.data).toMatchObject({ status: "failed", provenance: { commit: "3d58834dc207343fa1bf1df5e8e407d4483ebf29" } });
     const restarted = await harness(input);
     const [receipt] = await listEvidence(restarted.ctx, target);
     expect(receipt).toMatchObject({ kind: "concord-latest", sourceKind: "observed", result: "artifact drift failed" });

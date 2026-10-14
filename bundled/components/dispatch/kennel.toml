@@ -1,6 +1,6 @@
 [package]
 name = "dispatch"
-version = "1.3.0"
+version = "1.4.0"
 description = "Reliable workflow orchestration for multi-step AI agent systems in Kujo."
 license = "MIT"
 authors = ["Kujolang <contact@kujolang.ai>"]
@@ -15,10 +15,10 @@ readme = "README.md"
 stage = "production"
 stability = "stable"
 public_api = true
-notes = "The Dispatch 1.3 CLI and workflow contracts are public; Requires Kujo 1.6.0 for POSIX locks and directory durability. Assurance beta and interoperability alpha remain experimental and opt-in."
+notes = "The Dispatch 1.4 CLI and workflow contracts are public; Requires Kujo 1.8.1 for POSIX locks and directory durability. Assurance beta and interoperability alpha remain experimental and opt-in."
 
 [kujo]
-minimum_version = "1.6.0"
+minimum_version = "1.8.1"
 entry = "dispatch.kujo"
 sources = ["."]
 includes = ["README.md", "HOWTO.md", "BLOG_ROUTER.md", "CHANGELOG.md", "docs", "examples", "release", "scripts", "src", "tests", "dispatch.kujo", "kujo.toml"]

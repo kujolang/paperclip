@@ -1,6 +1,6 @@
 #!/usr/bin/env kujo
 
-VERSION := "1.0.0"
+VERSION := "1.0.1"
 
 DEFAULT_REDACTION_PATTERNS := [
 	"(?s)-----BEGIN [A-Z ]*PRIVATE KEY-----.*?(-----END [A-Z ]*PRIVATE KEY-----|$)",

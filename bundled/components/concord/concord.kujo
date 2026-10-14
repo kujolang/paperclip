@@ -8,10 +8,9 @@
 #   ./kujo run concord.kujo version
 #   ./kujo run concord.kujo help
 
-VERSION := "1.0.0"
 VALID_CATEGORIES := "cli-docs, spec-eval, manifest, versions, examples, source-of-truth, all"
 
-from src.common import parse_flag, parse_subcommand, shift_args, highest_severity, is_truthy, is_flag_token, verification_exit_code, scan_exit_code, sanitize_terminal_text
+from src.common import concord_version, parse_flag, parse_subcommand, shift_args, highest_severity, is_truthy, is_flag_token, verification_exit_code, scan_exit_code, sanitize_terminal_text
 from src.scanner import is_git_repo, is_kujo_project
 from src.checks.cli_docs import check_cli_docs
 from src.checks.spec_eval import check_spec_eval
@@ -72,7 +71,7 @@ func append_findings(findings, new_findings) {
 
 func print_help() {
 	print_lines([
-		"Concord v" + VERSION,
+		"Concord v" + concord_version(),
 		"",
 		"An artifact drift and alignment checker for Kujo ecosystem projects.",
 		"",
@@ -125,7 +124,7 @@ func print_help() {
 
 func print_version() {
 	print_lines([
-		"Concord v" + VERSION,
+		"Concord v" + concord_version(),
 		"Artifact drift and alignment checker for Kujo ecosystem projects.",
 		"Dogfood showcase tool — early build.",
 	])

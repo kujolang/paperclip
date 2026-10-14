@@ -16,7 +16,7 @@ import { removeTree } from "../src/runtime/files.js";
 it("previews unchanged portable MCP source and demo files without installing integrations", async () => {
   const preview = await previewStarter({ kind: "mcp", name: "demo-mcp" }, parsePluginConfig({}));
   const component = await resolveComponent("mcp");
-  expect(preview).toMatchObject({ status: "preview", entrypoint: "server.kujo", provenance: { commit: component.gitCommit, version: "1.3.1" } });
+  expect(preview).toMatchObject({ status: "preview", entrypoint: "server.kujo", provenance: { commit: component.gitCommit, version: "1.3.2" } });
   for (const relative of component.files) expect(preview.files.find(file => file.path === (relative === "README.md" ? "UPSTREAM_README.md" : relative))?.content).toBe(await readFile(join(component.root, relative), "utf8"));
   const config = JSON.parse(preview.files.find(file => file.path === "mcp-server.json")!.content);
   expect(config.http.host).toBe("127.0.0.1"); expect(config.permissions.allowed_directories).toEqual(["./demo"]);

@@ -42,7 +42,7 @@ describe("canonical Eval frozen-input execution", () => {
     expect(result.exitCode).toBe(0);
     expect(receipt).toMatchObject({ sourceKind: "native", executionObserved: true, scope: "frozen-inputs", classification: "passed",
       inputDigest: prepared.binding.inputDigest, definitionDigest: prepared.binding.definitionDigest,
-      result: { checks: { passed: 2, failed: 0, skipped: 0 } }, provenance: { component: "eval", commit: "b4a104f3d5e6464b0335fb07f533e24c8164965b" } });
+      result: { checks: { passed: 2, failed: 0, skipped: 0 } }, provenance: { component: "eval", commit: "71e66dff780d6930bcbe093c046bf31aa26411df" } });
   });
   it("retains real failure and skipped-check classifications instead of promoting process completion to success", async () => {
     const { result, receipt } = await run(await prepare([

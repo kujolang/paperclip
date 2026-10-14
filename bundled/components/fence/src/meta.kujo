@@ -7,7 +7,7 @@ from src.util import join_strings
 // report, and the SARIF report all derive from this. Update here only (and
 // CHANGELOG.md) when releasing.
 export func fence_version() {
-    return "1.0.0"
+    return "1.1.0"
 }
 
 export func version_line() {
