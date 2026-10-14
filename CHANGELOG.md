@@ -2,6 +2,8 @@
 
 ## 0.2.0 — 2026-10-14
 
+- Update Zod, database-test tooling, Playwright, React development fixtures, Rollup, Vitest and Node types to current compatible releases; refresh pinned GitHub Actions dependencies.
+
 - Align eleven bundled components with their approved official releases; retain the explicitly pinned, independently tested offline RAG snapshot. Standalone RAG 1.1.0 remains unpublished pending its own governance evidence.
 
 - Raise the expansion host floor to official Paperclip 2026.1012.0 and remove the permissive version fallback. Add official npm-host and independently installed plugin acceptance; no custom host fork is required.
