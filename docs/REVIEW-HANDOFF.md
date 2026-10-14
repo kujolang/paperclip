@@ -1,3 +1,15 @@
+# Release status — 0.2.0
+
+The user authorized completion and publication on October 14, 2026. The prior review-stop boundary below is historical. Eleven component snapshots now use their official release commits: PatchBrief 1.0.2, CaseFile 1.0.1, Scent 1.1.0, Fence 1.1.0, Concord 1.1.1, ShipCheck 1.0.1, Eval 1.1.0, Kennel 1.2.0, CRUD API 1.0.1, MCP 1.3.2 and Dispatch 1.4.0. ChangeBucket, Scout and Spec retain their qualified snapshots. RAG retains the explicit offline snapshot; standalone RAG 1.1.0 is not released and its governance evidence remains a separate gate.
+
+The plugin requires official Paperclip 2026.1012.0 and bundles Kujo 1.8.1. No custom host fork or separate component installations are required. Qualification of this plugin does not certify hosted RAG deployments or every Dispatch integration. The full thirteen-item expansion roadmap remains deferred; this release covers the implemented and qualified workflows only.
+
+See the release workflow for the exact tagged package verification, registry publication and clean install. See `RELEASE_0_2_0.md` for user-facing scope.
+
+---
+
+## Historical review handoff
+
 # Review boundary and release dependencies
 
 Status checked 2026-10-14. No expansion release is authorized by this handoff.

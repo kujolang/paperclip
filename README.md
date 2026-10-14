@@ -1,6 +1,6 @@
 # Kujo for Paperclip
 
-[![Version](https://img.shields.io/badge/version-0.1.9-black)](https://github.com/kujolang/paperclip/releases/tag/v0.1.9)
+[![Version](https://img.shields.io/badge/version-0.2.0-black)](https://github.com/kujolang/paperclip/releases/tag/v0.2.0)
 [![npm](https://img.shields.io/npm/v/%40kujolang%2Fpaperclip?label=npm&color=black)](https://www.npmjs.com/package/@kujolang/paperclip)
 [![CI](https://img.shields.io/github/actions/workflow/status/kujolang/paperclip/ci.yml?branch=main&label=CI&color=black)](https://github.com/kujolang/paperclip/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-MIT-lightgrey)](LICENSE)
@@ -10,13 +10,9 @@ Kujo helps Paperclip agents choose useful context, review changes, and save clea
 failure evidence. It runs locally inside Paperclip and works in the current task view.
 You do not need the Classic Task Interface.
 
-> Development documentation: the workflows below include the unpublished expansion
-> on `main`. Public npm `0.1.9` provides Context Packs, Review Packs and Failure
-> Evidence; it does not yet include the new Eval controls or broader adapters.
-
 ## Install in 30 seconds
 
-You need Paperclip `2026.824.1` or later and Node.js `24.11.0` or later.
+You need Paperclip `2026.1012.0` or later and Node.js `24.11.0` or later.
 
 ```bash
 npx paperclipai plugin install @kujolang/paperclip
@@ -146,7 +142,7 @@ classification and request-lifecycle timing; legacy records remain observed hist
 see [execution history](docs/EXECUTION.md#retained-execution-history) for retention
 and clear behavior.
 
-The upcoming release requires Paperclip database namespace migrations and authenticated issue-document actions. Upgrade the host before installing it. Legacy latest records migrate on first access, with missing input/definition provenance explicitly marked unknown. Retained payloads have SHA-256 integrity checks; a redacted export carries its own digest. Suggested tests remain suggestions, and supplied failure logs remain supplied evidence.
+This release requires Paperclip database namespace migrations and authenticated issue-document actions. Upgrade the host before installing it. Legacy latest records migrate on first access, with missing input/definition provenance explicitly marked unknown. Retained payloads have SHA-256 integrity checks; a redacted export carries its own digest. Suggested tests remain suggestions, and supplied failure logs remain supplied evidence.
 
 ## Run approved evaluations
 

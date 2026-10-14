@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { spawn, execFileSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { once } from "node:events";
-import { access, cp, copyFile, mkdir, mkdtemp, open, readFile, readdir, realpath, symlink, writeFile } from "node:fs/promises";
+import { access, cp, copyFile, mkdir, mkdtemp, open, readFile, readdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -164,9 +164,40 @@ try {
   const projectId = (await call(`/companies/${companyId}/projects`, { method: "POST", status: 201, body: { name: "Fixed-program fixture" } })).data.id;
   await call(`/projects/${projectId}/workspaces`, { method: "POST", status: 201, body: { name: "Isolated fixture", cwd: join(root, "workspace"), isPrimary: true } });
   const issueId = (await call(`/companies/${companyId}/issues`, { method: "POST", status: 201, body: { title: "Verify authenticated execution", projectId, status: "backlog" } })).data.id;
-  const installed = (await call("/plugins/install", { method: "POST", body: { packageName: fixture, isLocalPath: true } })).data;
-  assert.equal(installed.status, "ready");
-  checks.push("fresh authenticated instance and local worker installation");
+  const previousPackage = process.env.KUJO_ACCEPTANCE_PREVIOUS_PACKAGE;
+  if (previousPackage) {
+    assert.ok(production && packageDirectory, "Upgrade qualification requires a packaged production target");
+    const previous = await realpath(previousPackage);
+    const previousManifest = JSON.parse(await readFile(join(previous, "package.json"), "utf8"));
+    assert.equal(previousManifest.name, "@kujolang/paperclip");
+    assert.equal(previousManifest.version, "0.1.9");
+    const upgradeFixture = join(root, "upgrade-plugin");
+    await cp(previous, upgradeFixture, { recursive: true });
+    await symlink(resolve(previous, "../.."), join(upgradeFixture, "node_modules"));
+    const initial = (await call("/plugins/install", { method: "POST", body: { packageName: upgradeFixture, isLocalPath: true } })).data;
+    assert.equal(initial.status, "ready");
+    const target = { entityType: "issue", entityId: issueId };
+    const captured = (await call("/plugins/kujolang.paperclip/bridge/action", { method: "POST", body: { companyId, key: "capture-failure", params: { ...target, title: "Retained before 0.2 upgrade", command: "fixture-check", exitCode: 1, log: "Upgrade evidence fixture" } } })).data;
+    const legacyId = captured.data?.failureEvidenceId ?? captured.result?.failureEvidenceId ?? captured.failureEvidenceId;
+    assert.ok(legacyId, "Published previous plugin must retain real evidence before upgrading");
+    await stop();
+    await rm(join(upgradeFixture, "node_modules"));
+    await cp(fixture, upgradeFixture, { recursive: true, verbatimSymlinks: true });
+    await start();
+    const upgraded = (await call("/plugins/kujolang.paperclip/upgrade", { method: "POST", body: {} })).data;
+    if (upgraded.status === "upgrade_pending") await call("/plugins/kujolang.paperclip/enable", { method: "POST", body: {} });
+    else assert.equal(upgraded.status, "ready");
+    const detail = async () => (await call("/plugins/kujolang.paperclip/bridge/data", { method: "POST", body: { companyId, key: "detail", params: target } })).data;
+    assert.ok(JSON.stringify(await detail()).includes(legacyId), "Legacy failure evidence must survive the upgrade");
+    await stop(); await start();
+    assert.ok(JSON.stringify(await detail()).includes(legacyId), "Migrated evidence must survive a further host restart");
+    checks.push("published 0.1.9 evidence survives packaged upgrade, capability admission and full host restart");
+    evidence.upgrade = { from: previousManifest.version, to: evidence.package.version, legacyEvidenceRetained: true };
+  } else {
+    const installed = (await call("/plugins/install", { method: "POST", body: { packageName: fixture, isLocalPath: true } })).data;
+    assert.equal(installed.status, "ready");
+    checks.push("fresh authenticated instance and local worker installation");
+  }
   if (production) {
     if (!["workflows", "knowledge"].includes(process.env.KUJO_ACCEPTANCE_PACK)) {
     const { qualifyProductionEvaluation } = await import("./production-eval.mjs");

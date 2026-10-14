@@ -2,7 +2,7 @@
 
 ## Requirements
 
-- Paperclip `2026.824.1` or later
+- Paperclip `2026.1012.0` or later
 - Node.js `24.11.0` or later
 - a Paperclip project with a local Git workspace for Review and Context Packs
 
