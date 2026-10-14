@@ -182,8 +182,8 @@ try {
     assert.ok(legacyId, "Published previous plugin must retain real evidence before upgrading");
     // Reinstall is the documented public installation/upgrade command. The
     // official host's upgrade endpoint rejects added capabilities, so exercise
-    // the explicit administrator install path and preserve the same plugin ID.
-    await call("/plugins/kujolang.paperclip/disable", { method: "POST", body: {} });
+    // the explicit data-preserving administrator reinstall path and preserve the same plugin ID.
+    await call("/plugins/kujolang.paperclip?purge=false", { method: "DELETE" });
     const upgraded = (await call("/plugins/install", { method: "POST", body: { packageName: fixture, isLocalPath: true } })).data;
     assert.equal(upgraded.status, "ready");
     assert.equal(upgraded.id, initial.id, "Upgrade must retain the original plugin identity and state");
@@ -330,7 +330,7 @@ try {
   assert.equal(await readFile(heartbeat, "utf8"), stoppedHeartbeat);
   checks.push("abrupt authenticated worker crash stops native heartbeat before its deadline; lost observation remains uncertain and cannot replay");
   const restartPending = await prepare("restart-pending");
-  await call("/plugins/kujolang.paperclip/disable", { method: "POST", body: {} });
+  await call("/plugins/kujolang.paperclip?purge=false", { method: "DELETE" });
   await call("/plugins/kujolang.paperclip/enable", { method: "POST", body: {} });
   assert.equal((await status(restartPending.id)).state, "pending");
   assert.deepEqual(await status(succeeded.id), succeeded);
