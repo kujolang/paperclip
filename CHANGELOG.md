@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Expose Project knowledge on project/issue pages and through a scoped agent tool: explicit selected-file ingestion, offline cited queries, content freshness, revision-bound replacement/deletion and private storage. Query summaries appear in Evidence history; index bytes stay private. Packaged host acceptance remains pending.
+
 - Add internal private knowledge storage with scoped revisions, bounded company slots, expiry and metadata-only listing, plus explicit Git-visible file capture and content freshness checks. Public controls remain in development.
 
 - Pin canonical RAG 1.0.0 and add an internal offline ingest/query adapter with a portable private index, redacted corpus digests, source citations and explicit incomplete-ingestion rejection. Public knowledge controls and durable host storage remain in development.

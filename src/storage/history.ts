@@ -9,7 +9,7 @@ export const EVIDENCE_NAMESPACE = "plugin_kujo_evidence_c15d42de56";
 export const HISTORY_LIMIT = 20;
 export const HISTORY_DAYS = 30;
 export const LEGACY_ARTIFACT_KINDS = ["review-latest", "context-latest", "failure-latest", "understand-latest", "language-latest", "verification-latest", "spec-latest", "fence-latest", "concord-latest", "shipcheck-latest"] as const;
-export const ARTIFACT_KINDS = [...LEGACY_ARTIFACT_KINDS, "packages-latest", "evaluation-plan", "evaluation-result", "source-execution-plan", "source-execution-result", "starter-creation-plan", "starter-creation-result", "workflow-plan", "workflow-result"] as const;
+export const ARTIFACT_KINDS = [...LEGACY_ARTIFACT_KINDS, "packages-latest", "evaluation-plan", "evaluation-result", "source-execution-plan", "source-execution-result", "starter-creation-plan", "starter-creation-result", "workflow-plan", "workflow-result", "knowledge-answer"] as const;
 export type ArtifactKind = typeof ARTIFACT_KINDS[number];
 export type ReceiptOptions = { inputs?: unknown; definition?: unknown; parentId?: string; legacy?: boolean; projection?: ProjectionReceipt };
 export const evidenceMetadataSchema = z.object({
@@ -35,6 +35,7 @@ export function canonicalJson(value: unknown): string {
 }
 export function evidenceDigest(value: unknown) { return createHash("sha256").update(canonicalJson(value)).digest("hex"); }
 function resultLabel(kind: ArtifactKind, payload: Record<string, unknown>) {
+  if (kind === "knowledge-answer") return `knowledge ${(payload.answer as { status: string }).status}`;
   if (kind === "packages-latest") return `package inspection ${payload.status}`;
   if (kind === "shipcheck-latest") return `release signals ${payload.status}`;
   if (kind === "concord-latest") return `artifact drift ${payload.status}`;

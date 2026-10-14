@@ -132,7 +132,7 @@ window.__KUJO_FIXTURE_DATA__ = {
 const fixture = window.__KUJO_FIXTURE_DATA__ as { readiness: DoctorReport; catalog?: CapabilityCatalog; verificationEnabled: boolean };
 fixture.readiness.runtime.platform = "linux";
 fixture.readiness.runtime.arch = "x64";
-fixture.readiness.components = ["scout", "context", "failure-evidence", "changebucket", "patchbrief", "spec", "fence", "concord", "shipcheck", "eval", "kennel", "crud-api", "mcp", "dispatch"].map((id) => ({ id: id as DoctorReport["components"][number]["id"], version: "1.0.0", integrity: "ok" }));
+fixture.readiness.components = ["scout", "context", "failure-evidence", "changebucket", "patchbrief", "spec", "fence", "concord", "shipcheck", "eval", "kennel", "crud-api", "mcp", "dispatch", "rag"].map((id) => ({ id: id as DoctorReport["components"][number]["id"], version: "1.0.0", integrity: "ok" }));
 const fixtureConfig = applyCapabilityProfile(parsePluginConfig({ capabilityProfile: parameters.get("profile") ?? "installed", features: { workflows: parameters.get("workflows") === "1", verification: parameters.get("verification") === "1", execution: parameters.get("execution") === "1", sourceExecution: parameters.get("sourceExecution") === "1", projectCreation: parameters.get("projectCreation") === "1" } }));
 for (const feature of Object.keys(fixture.readiness.capabilities) as Array<keyof DoctorReport["capabilities"]>) if (!fixtureConfig.features[feature === "packages" ? "language" : (feature === "spec" || feature === "fence" || feature === "concord" || feature === "shipcheck") ? "verification" : feature]) fixture.readiness.capabilities[feature] = "disabled";
 fixture.readiness.capabilities.packages = !fixtureConfig.features.language ? "disabled" : fixture.readiness.runtime.status === "ok" ? "ready" : "blocked";
@@ -142,6 +142,7 @@ fixture.readiness.capabilities.concord = fixture.readiness.capabilities.spec;
 fixture.readiness.capabilities.shipcheck = fixture.readiness.capabilities.spec;
 fixture.verificationEnabled = fixtureConfig.features.verification;
 fixture.catalog = capabilityCatalog(fixtureConfig, fixture.readiness, true, parameters.get("workflowStorage") !== "missing");
+if (!parameters.has("knowledge")) fixture.catalog.capabilities = fixture.catalog.capabilities.filter(item => item.tool !== "manage-project-knowledge");
 window.__KUJO_ACTIONS__ = [];
 
 const props = {

@@ -1,3 +1,5 @@
+import { knowledgeTool } from "./abilities/generated.js";
+import { registerKnowledge } from "./features/knowledge/service.js";
 import { workflowStorageReady } from "./features/dispatch/storage.js";
 import { workflowTool } from "./abilities/generated.js";
 import { registerWorkflows } from "./features/dispatch/bridge.js";
@@ -91,7 +93,7 @@ async function configFor(ctx: PluginContext, companyId: string, tool?: { name: s
 const historyTarget = z.object({ entityType: z.enum(["project", "issue", "run"]), entityId: z.string().min(1), evidenceId: z.string().min(1).max(100), otherId: z.string().min(1).max(100).optional() }).strict();
 function evidenceEnabled(config: ReturnType<typeof parsePluginConfig>, kind: ArtifactKind) {
   const tool = { "review-latest": reviewTool, "context-latest": contextTool, "failure-latest": failureTool, "understand-latest": understandTool,
-    "packages-latest": packageTool, "language-latest": languageTool, "verification-latest": importVerificationTool, "spec-latest": specTool, "fence-latest": fenceTool, "concord-latest": concordTool, "shipcheck-latest": shipcheckTool, "evaluation-plan": evalTool, "evaluation-result": evalTool, "source-execution-plan": sourceExecutionTool, "source-execution-result": sourceExecutionTool, "starter-creation-plan": starterCreationTool, "starter-creation-result": starterCreationTool, "workflow-plan": workflowTool, "workflow-result": workflowTool } as const;
+    "packages-latest": packageTool, "language-latest": languageTool, "verification-latest": importVerificationTool, "spec-latest": specTool, "fence-latest": fenceTool, "concord-latest": concordTool, "shipcheck-latest": shipcheckTool, "evaluation-plan": evalTool, "evaluation-result": evalTool, "source-execution-plan": sourceExecutionTool, "source-execution-result": sourceExecutionTool, "starter-creation-plan": starterCreationTool, "starter-creation-result": starterCreationTool, "workflow-plan": workflowTool, "workflow-result": workflowTool, "knowledge-answer": knowledgeTool } as const;
   return toolEnabled(config, tool[kind]);
 }
 
@@ -745,6 +747,7 @@ let starterCreations: ReturnType<typeof registerStarterCreation> | undefined;
 let sourceExecutions: ReturnType<typeof registerSourceExecution> | undefined;
 const plugin = definePlugin({
   async setup(ctx) {
+    registerKnowledge(ctx);
     workflows = registerWorkflows(ctx);
     evaluation = registerEvaluation(ctx);
     sourceExecutions = registerSourceExecution(ctx);

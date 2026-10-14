@@ -4,6 +4,9 @@ export type PluginDetailTabProps = {
 
 declare global {
   interface Window {
+    __KUJO_KNOWLEDGE__?: any;
+    __KUJO_DELAY_KNOWLEDGE__?: boolean;
+    __KUJO_RESOLVE_KNOWLEDGE__?: () => void;
     __KUJO_WORKFLOW_REQUESTS__?: Array<Record<string, unknown>>;
     __KUJO_DELAY_WORKFLOW__?: boolean;
     __KUJO_RESOLVE_WORKFLOW__?: () => void;
@@ -59,6 +62,21 @@ export function usePluginAction(action: string) {
   return async (input: unknown) => {
     window.__KUJO_ACTIONS__ ??= [];
     window.__KUJO_ACTIONS__.push({ action, input });
+    if (action === "manage-project-knowledge") {
+      if (window.__KUJO_DELAY_KNOWLEDGE__) { await new Promise<void>(resolve => { window.__KUJO_RESOLVE_KNOWLEDGE__ = resolve; }); throw new Error("private delayed knowledge result"); }
+      const params = input as { operation: string };
+      const index = window.__KUJO_KNOWLEDGE__;
+      const entries = index ? [{ workspaceId: "workspace", revision: index.revision, storedAt: index.generatedAt, expiresAt: index.expiresAt }] : [];
+      if (params.operation === "status" || params.operation === "list") return { enabled: true, index: index ?? null, indexes: entries };
+      if (params.operation === "discover") return { files: ["docs/guide.md"], truncated: false };
+      if (params.operation === "ingest") {
+        window.__KUJO_KNOWLEDGE__ = { revision: "fixture-revision", files: [{ path: "docs/guide.md", redactedCount: 0 }], chunks: 1, generatedAt: "2026-10-13T00:00:00Z", expiresAt: "2026-11-12T00:00:00Z" };
+        return { index: window.__KUJO_KNOWLEDGE__, indexes: [{ workspaceId: "workspace", revision: "fixture-revision", expiresAt: "2026-11-12T00:00:00Z" }] };
+      }
+      if (params.operation === "query") return { answer: { status: "answered", answer: "Kujo runs local programs.", scope: "Offline retrieval draft from the indexed snapshot.", citations: [{ path: "docs/guide.md", lineStart: 1, lineEnd: 2, text: "Kujo runs local programs.", indexedDigest: "a".repeat(64) }] } };
+      if (params.operation === "freshness") return { freshness: { status: "changed", changed: ["docs/guide.md"] } };
+      if (params.operation === "delete") { window.__KUJO_KNOWLEDGE__ = null; return { deleted: true }; }
+    }
     if (action === "preview-starter") {
       if (window.__KUJO_DELAY_PACKAGES__) { await new Promise<void>(resolve => { window.__KUJO_RESOLVE_PACKAGES__ = resolve; }); throw new Error("private delayed starter result"); }
       if ((input as { kind: string }).kind === "mcp") return { ...(input as object), status: "preview", entrypoint: "server.kujo", runtimeVersion: "1.8.1", provenance: { component: "mcp", version: "1.3.1", commit: "canonical-mcp-commit" }, files: [{ path: "server.kujo", content: "from src.server.runtime import entry_loaded", sha256: "fixture" }], notice: "No server registered or started." };

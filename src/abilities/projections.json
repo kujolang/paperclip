@@ -2965,5 +2965,147 @@
         "executes_code": true
       }
     }
+  },
+  {
+    "exportName": "knowledgeTool",
+    "id": "kujo.paperclip.knowledge.manage",
+    "feature": "knowledge",
+    "canonicalIds": [
+      "kujo.rag.knowledge.query",
+      "kujo.rag.knowledge.ingest"
+    ],
+    "components": [
+      "rag"
+    ],
+    "profiles": [
+      "essentials"
+    ],
+    "tool": {
+      "name": "manage-project-knowledge",
+      "displayName": "Project Knowledge",
+      "description": "Explicitly index selected project text locally, query retained snapshots with citations, inspect freshness, or delete private indexes. Discovery lists names only. No external provider or project code runs. Index creation and replacement require explicit paths and the current revision (null for a new index).",
+      "parametersSchema": {
+        "type": "object",
+        "required": [
+          "operation"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "operation": {
+            "type": "string",
+            "enum": [
+              "discover",
+              "status",
+              "list",
+              "ingest",
+              "query",
+              "freshness",
+              "delete"
+            ]
+          },
+          "paths": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 64,
+            "items": {
+              "type": "string",
+              "maxLength": 1000
+            }
+          },
+          "revision": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 100
+          },
+          "question": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4000
+          },
+          "workspaceId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          }
+        }
+      }
+    },
+    "definition": {
+      "schema": "kujo.ability/v1",
+      "id": "kujo.paperclip.knowledge.manage",
+      "version": "1.0.0",
+      "title": "Project Knowledge",
+      "description": "Explicitly index selected project text locally, query retained snapshots with citations, inspect freshness, or delete private indexes. Discovery lists names only. No external provider or project code runs. Index creation and replacement require explicit paths and the current revision (null for a new index).",
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "operation"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "operation": {
+            "type": "string",
+            "enum": [
+              "discover",
+              "status",
+              "list",
+              "ingest",
+              "query",
+              "freshness",
+              "delete"
+            ]
+          },
+          "paths": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 64,
+            "items": {
+              "type": "string",
+              "maxLength": 1000
+            }
+          },
+          "revision": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 100
+          },
+          "question": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4000
+          },
+          "workspaceId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          }
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "additionalProperties": true
+      },
+      "effects": [
+        {
+          "kind": "read",
+          "resource": "paperclip.workspace.selected.text"
+        },
+        {
+          "kind": "write",
+          "resource": "paperclip.private.knowledge.index"
+        },
+        {
+          "kind": "read",
+          "resource": "paperclip.private.knowledge.index"
+        }
+      ],
+      "idempotency": {
+        "mode": "keyed"
+      }
+    }
   }
 ]

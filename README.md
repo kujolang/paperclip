@@ -77,9 +77,9 @@ The fifteen component snapshots are pinned, checksummed, and shipped with the pl
 plugin does not download component code while installing or running. The Eval snapshot
 provides human-approved execution on issue workspaces. The separately enabled
 Dispatch workflow panel runs shipped offline examples through durable host jobs,
-with exact human checkpoint decisions and retained state. The RAG snapshot and
-internal ingest/query adapter are under development; there is no public knowledge
-panel or agent tool yet. A read-only checkpoint
+with exact human checkpoint decisions and retained state. The RAG snapshot powers **Ask your project**: explicitly index selected local
+files, ask questions with snapshot citations, and inspect freshness or delete retained
+indexes. See [Project knowledge](docs/KNOWLEDGE.md). A read-only checkpoint
 receipt inspection can establish whether Dispatch recorded the exact approved
 decision after a lost response, without rerunning it. See
 [Run a Kujo workflow](docs/USAGE.md#run-a-kujo-workflow) for operator setup and limits.
@@ -191,10 +191,11 @@ The plugin ships pinned, checksummed Ability contracts/catalogs and generates it
 
 ## Agent tools
 
-Paperclip agents can call twenty tools:
+Paperclip agents can call twenty-one tools:
 
 | Tool | Use |
 | --- | --- |
+| `kujolang.paperclip:manage-project-knowledge` | Explicitly index selected project text, query cited snapshots, inspect content freshness and delete private indexes. Offline, with no project execution or external provider. |
 | `kujolang.paperclip:manage-kujo-workflow` | Preview and queue approved offline Dispatch examples, inspect retained state, and cancel owned operations. Human checkpoint decisions use the issue panel. macOS/Linux and operator storage required. |
 | `kujolang.paperclip:manage-kujo-starter` | Preview and create approved canonical starter files in a new issue-workspace directory. No overwrite, dependency installation or generated-program execution. |
 | `kujolang.paperclip:manage-kujo-execution` | Preview, request approval, start, inspect or cancel a fixed native run/test on the assigned issue/current run. Separate opt-in and human approval required. |

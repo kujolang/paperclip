@@ -11,6 +11,7 @@ export const pluginConfigSchema = z.object({
     review: z.boolean().default(true),
     failureEvidence: z.boolean().default(true),
     context: z.boolean().default(true),
+    knowledge: z.boolean().default(true),
     language: z.boolean().default(true),
     understand: z.boolean().default(true),
     examples: z.boolean().default(true),
@@ -19,7 +20,7 @@ export const pluginConfigSchema = z.object({
     sourceExecution: z.boolean().default(false),
     projectCreation: z.boolean().default(false),
     workflows: z.boolean().default(false),
-  }).strict().default({ review: true, failureEvidence: true, context: true, understand: true, language: true, examples: true, verification: false, execution: false, sourceExecution: false, projectCreation: false, workflows: false }),
+  }).strict().default({ review: true, failureEvidence: true, context: true, knowledge: true, understand: true, language: true, examples: true, verification: false, execution: false, sourceExecution: false, projectCreation: false, workflows: false }),
   limits: z.object({
     timeoutMs: z.number().int().min(1_000).max(27_000).default(DEFAULT_LIMITS.timeoutMs),
     maxStdoutBytes: z.number().int().min(1_024).max(10_000_000).default(DEFAULT_LIMITS.maxStdoutBytes),
@@ -56,6 +57,7 @@ export const instanceConfigJsonSchema = {
       properties: {
         review: { type: "boolean", title: "Review Pack", default: true },
         failureEvidence: { type: "boolean", title: "Failure Evidence", default: true },
+        knowledge: { type: "boolean", title: "Project knowledge", default: true },
         context: { type: "boolean", title: "Context Pack", default: true },
         language: { type: "boolean", title: "Kujo source tools and package inspection", default: true },
         understand: { type: "boolean", title: "Repository understanding", default: true },

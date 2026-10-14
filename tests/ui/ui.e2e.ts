@@ -215,7 +215,7 @@ test("capability discovery separates profile selection, host authorization and m
   await expect(review.getByText("Authorization: checked on call")).toBeVisible();
   await explorer.getByRole("button", { name: "Explore 38 canonical capabilities" }).click();
   await expect(page.getByLabel("Canonical ecosystem catalog")).toBeVisible();
-  await expect(page.getByLabel("Canonical ecosystem catalog").locator("summary").filter({ hasText: /RAG/ }).first()).toContainText("Not integrated yet");
+  await expect(page.getByLabel("Canonical ecosystem catalog").locator("summary").filter({ hasText: /RAG/ }).first()).toContainText("Paperclip adapter available");
   await explorer.getByRole("button", { name: "Hide ecosystem catalog" }).click();
   await expect(explorer).toHaveScreenshot("capability-catalog.png", { animations: "disabled", maxDiffPixelRatio: 0.02 });
 });
@@ -704,4 +704,38 @@ test("native checkpoint receipt observation preserves an uncertain host outcome"
   await expect(section.getByText("Control operation: uncertain", { exact: true })).toBeVisible();
   await expect(section.getByRole("button", { name: "Queue approved operation", exact: true })).toHaveCount(0);
   await expect(section.getByText(/original host command receipt is unchanged/)).toBeVisible();
+});
+
+test("knowledge requires explicit selected reads and shows cited snapshot answers and deletion", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 1200 });
+  await page.goto("/?surface=task&entity=issue&knowledge=1");
+  const panel = page.getByRole("region", { name: "Project knowledge" });
+  await panel.getByRole("button", { name: "Refresh index status" }).click();
+  await panel.getByRole("button", { name: "Choose knowledge files" }).click();
+  await expect(panel.getByRole("button", { name: "Index selected files", exact: true })).toBeDisabled();
+  await panel.getByLabel("docs/guide.md", { exact: true }).check();
+  await panel.getByRole("button", { name: "Index selected files", exact: true }).click();
+  await expect.poll(() => page.evaluate(() => window.__KUJO_ACTIONS__?.at(-1))).toMatchObject({ action: "manage-project-knowledge", input: { operation: "ingest", paths: ["docs/guide.md"], revision: null } });
+  await panel.getByRole("button", { name: "Ask indexed files" }).click();
+  await expect(panel.getByText("Answer draft", { exact: true })).toBeVisible();
+  await panel.getByText("docs/guide.md:1–2", { exact: true }).click();
+  await expect(panel.getByText("Indexed content SHA-256:", { exact: false })).toBeVisible();
+  await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  await panel.getByRole("button", { name: "Check source freshness" }).click();
+  await expect(panel.getByRole("status")).toContainText("changed");
+  await panel.getByText("Retained indexes (1)", { exact: true }).click();
+  await panel.getByRole("button", { name: "Delete private index" }).click();
+  await expect(panel.getByRole("status")).toContainText("deleted");
+  await expect(panel.getByRole("button", { name: "Ask indexed files" })).toHaveCount(0);
+});
+
+
+test("knowledge navigation discards delayed private results", async ({ page }) => {
+  await page.goto("/?surface=task&entity=issue&knowledge=1");
+  await page.evaluate(() => { window.__KUJO_DELAY_KNOWLEDGE__ = true; });
+  await page.getByRole("button", { name: "Choose knowledge files", exact: true }).click();
+  await page.waitForFunction(() => !!window.__KUJO_RESOLVE_KNOWLEDGE__);
+  await page.evaluate(() => { window.__KUJO_NAVIGATE__?.("other-company"); window.__KUJO_DELAY_KNOWLEDGE__ = false; window.__KUJO_RESOLVE_KNOWLEDGE__?.(); });
+  await expect(page.getByText("private delayed knowledge result", { exact: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Choose knowledge files", exact: true })).toBeEnabled();
 });
