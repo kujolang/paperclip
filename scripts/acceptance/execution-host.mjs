@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { spawn, execFileSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { once } from "node:events";
-import { access, cp, copyFile, mkdir, mkdtemp, open, readFile, readdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { access, cp, copyFile, mkdir, mkdtemp, open, readFile, readdir, realpath, symlink, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -180,16 +180,17 @@ try {
     const captured = (await call("/plugins/kujolang.paperclip/bridge/action", { method: "POST", body: { companyId, key: "capture-failure", params: { ...target, title: "Retained before 0.2 upgrade", command: "fixture-check", exitCode: 1, log: "Upgrade evidence fixture" } } })).data;
     const legacyId = captured.data?.failureEvidenceId ?? captured.result?.failureEvidenceId ?? captured.failureEvidenceId;
     assert.ok(legacyId, "Published previous plugin must retain real evidence before upgrading");
-    await stop();
-    await rm(join(upgradeFixture, "node_modules"));
-    await cp(fixture, upgradeFixture, { recursive: true, verbatimSymlinks: true });
-    await start();
-    const upgraded = (await call("/plugins/kujolang.paperclip/upgrade", { method: "POST", body: {} })).data;
-    if (upgraded.status === "upgrade_pending") await call("/plugins/kujolang.paperclip/enable", { method: "POST", body: {} });
-    else assert.equal(upgraded.status, "ready");
+    // Reinstall is the documented public installation/upgrade command. The
+    // official host's upgrade endpoint rejects added capabilities, so exercise
+    // the explicit administrator install path and preserve the same plugin ID.
+    await call("/plugins/kujolang.paperclip/disable", { method: "POST", body: {} });
+    const upgraded = (await call("/plugins/install", { method: "POST", body: { packageName: fixture, isLocalPath: true } })).data;
+    assert.equal(upgraded.status, "ready");
+    assert.equal(upgraded.id, initial.id, "Upgrade must retain the original plugin identity and state");
     const detail = async () => (await call("/plugins/kujolang.paperclip/bridge/data", { method: "POST", body: { companyId, key: "detail", params: target } })).data;
     assert.ok(JSON.stringify(await detail()).includes(legacyId), "Legacy failure evidence must survive the upgrade");
     await stop(); await start();
+    await waitUntil(async () => { try { return JSON.stringify(await detail()).includes(legacyId); } catch { return false; } }, 30_000);
     assert.ok(JSON.stringify(await detail()).includes(legacyId), "Migrated evidence must survive a further host restart");
     checks.push("published 0.1.9 evidence survives packaged upgrade, capability admission and full host restart");
     evidence.upgrade = { from: previousManifest.version, to: evidence.package.version, legacyEvidenceRetained: true };

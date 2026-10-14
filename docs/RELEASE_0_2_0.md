@@ -19,3 +19,7 @@ Start with Try the Kujo example, Understand this repository and Ask your project
 ## Scope
 
 Reports do not prove tests ran. Approved execution runs trusted code, not a sandbox. Starter previews do not install or start services. Dispatch supports the shipped offline examples, not general live-provider or external-effect recovery. Offline RAG integration is separately qualified; standalone RAG 1.1.0 remains unpublished pending its required review evidence. The broader ecosystem roadmap is not claimed complete.
+
+### Upgrading from 0.1.x
+
+Back up Paperclip data. As an instance administrator, disable the existing Kujo plugin, use the install command above to install the new release, then restart Paperclip. Review the expanded permissions: scheduled jobs, private database storage, local workflow folders and issue interaction/document actions support the new features. The official 2026.1012.0 host's dedicated Upgrade action rejects added capabilities; use its administrator install flow for this release. Do not uninstall with data removal. The upgrade rehearsal preserves the existing plugin identity and retained failure evidence across restart.

@@ -61,3 +61,7 @@ Install it in a clean Paperclip host, confirm the Kujo status panel, and exercis
 ## Upcoming evidence-history upgrade
 
 The next release adds a plugin database namespace and `migrations/001_evidence.sql`, plus explicit issue-document writes. Paperclip must support database namespace migrations and authenticated action actors. Reapprove the new capabilities in the host if prompted. A missing or mismatched database namespace fails with repair guidance; do not manually substitute another schema. The documented historical host floor has not yet been revalidated for this expansion; minimum/latest real-host acceptance is a release gate. Database backup and explicit uninstall/purge behavior follow the host, independently of previously attached issue documents.
+
+### Upgrading from 0.1.x
+
+Back up Paperclip data. As an instance administrator, disable the existing Kujo plugin, use the install command above to install the new release, then restart Paperclip. Review the expanded permissions: scheduled jobs, private database storage, local workflow folders and issue interaction/document actions support the new features. The official 2026.1012.0 host's dedicated Upgrade action rejects added capabilities; use its administrator install flow for this release. Do not uninstall with data removal. The upgrade rehearsal preserves the existing plugin identity and retained failure evidence across restart.
