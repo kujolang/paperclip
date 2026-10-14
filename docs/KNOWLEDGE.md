@@ -2,7 +2,8 @@
 
 The unpublished expansion includes **Ask your project** on project and issue pages.
 It uses the pinned RAG 1.0.0 snapshot, works offline and needs no provider key.
-The packaged knowledge journey passes against host edc9bbb with Node 24.20.0;
+The packaged knowledge journey passes against official npm Paperclip 2026.1012.0
+with freshly installed plugin dependencies and Node 24.20.0;
 public npm 0.1.9 does not include it. Final release and manual usability review remain open.
 
 1. Select **Refresh index status**, then **Choose knowledge files**. Discovery lists
@@ -100,8 +101,8 @@ workspace identity and settings, validates revision ownership, and rechecks nati
 query/ingest context before publishing results. Its automated service and browser
 journeys are complemented by an extracted-package authenticated host check covering
 fresh migration, native cited queries, full host/database restart, retained index
-recovery, tenant rejection and cleanup while disabled. This qualifies host edc9bbb
-on Node 24.20.0, not every host release, manual usability, live-provider support
+recovery, tenant rejection and cleanup while disabled. This qualifies official
+Paperclip 2026.1012.0 on Node 24.20.0, not every host release, manual usability, live-provider support
 or a public release. Those broader gates remain open on the expansion tracker.
 
 ## Verification
@@ -121,3 +122,9 @@ content freshness. Public service tests exercise the scoped tool journey; a runn
 knowledge-only authenticated host journey. Supply the prepared host checkout and
 extracted package using the documented acceptance environment variables. The full
 production suite also includes knowledge. See [review handoff](REVIEW-HANDOFF.md).
+
+For official npm-host qualification, install `paperclipai@2026.1012.0` in a
+disposable prefix and set `KUJO_ACCEPTANCE_NPM_HOST` to that prefix. Install the
+plugin tarball in a separate prefix; set `KUJO_ACCEPTANCE_PACKAGE_DIRECTORY` to
+its installed package and `KUJO_ACCEPTANCE_PACKAGE_DEPENDENCIES` to that prefix's
+`node_modules`. This is an acceptance harness, not setup required of end users.

@@ -237,7 +237,7 @@ recommended agent sequence.
 
 | Package | Version |
 | --- | --- |
-| Paperclip host (unpublished expansion) | Qualified prepared checkout `edc9bbb`; official release floor pending |
+| Paperclip host (unpublished expansion) | Official `2026.1012.0` or newer; tested release `2026.1012.0` |
 | `@paperclipai/plugin-sdk` | `2026.1012.0` |
 | `@kujolang/kujo-runtime` | `1.8.1` |
 | Node.js | `>=24.11.0` |
@@ -246,10 +246,10 @@ The npm package is `@kujolang/paperclip`. Its Paperclip manifest ID is
 `kujolang.paperclip` because manifest IDs do not accept npm scope syntax.
 
 The plugin tests the minimum supported Paperclip SDK and the latest compatible SDK in
-CI. This does not qualify minimum/latest host releases. The permissive `0.0.0`
-manifest fallback cannot establish support for the expansion's database, actor,
-interaction, job and local-folder APIs. See [Compatibility](docs/COMPATIBILITY.md)
-and the [release review handoff](docs/REVIEW-HANDOFF.md) before upgrading.
+CI. Live-host acceptance separately uses official Paperclip from npm with a fresh
+Kujo package install. No custom Paperclip fork or separately installed Kujo tools
+are required. The expansion raises the host floor to `2026.1012.0`; see
+[Compatibility](docs/COMPATIBILITY.md) and the [release review handoff](docs/REVIEW-HANDOFF.md).
 
 ## Configure
 

@@ -14,7 +14,8 @@ The package contains fifteen pinned canonical component snapshots. It does not
 resolve those components from the user's separately installed CLI tools. Updating
 a standalone tool therefore neither updates nor substitutes the plugin's snapshot.
 The runtime dependency is pinned to published `@kujolang/kujo-runtime` 1.8.1;
-Node >=24.11.0 and Paperclip's plugin database/action capabilities are required.
+Node >=24.11.0 and official Paperclip 2026.1012.0 are required. No host fork or
+separately installed component tools are required.
 The development SDK dependency is 2026.1012.0. SDK matrix tests are not equivalent
 to fresh installations of every Paperclip host release.
 
@@ -75,9 +76,8 @@ verification passed 309 tests (2 skipped), all 58 browser scenarios, typecheck,
 build, component integrity, supply-chain and package checks. Local browser tests
 used installed Chrome because Playwright's Chromium download timed out; hosted
 Chromium remains a separate gate. Packaged host and final-head hosted results
-must be recorded before this handoff is called ready. Official minimum/latest
-host releases are not yet qualified: the real-host proof uses the prepared
-`robertdevore/paperclip` checkout edc9bbb. Identify an upstream release containing
-its required APIs, or review/release the relevant fork changes, before advertising
-a general upgrade path. The normal local Paperclip
+must be recorded before this handoff is called ready. Official npm Paperclip 2026.1012.0 (the current stable release and selected
+minimum) passes the knowledge journey with fresh plugin dependencies. PR73 records
+the broader workflow results. Prepared-fork checks are supplementary; a fork is
+not a user requirement. The normal local Paperclip
 instance has not been modified by these isolated acceptance runs.

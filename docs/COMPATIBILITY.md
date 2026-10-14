@@ -4,7 +4,7 @@
 
 | Dependency | Supported range | CI coverage |
 | --- | --- | --- |
-| Paperclip expansion host | Prepared `robertdevore/paperclip` checkout `edc9bbbba12029a9f055d94d58c5a545bb2aaaba` | Authenticated extracted-package acceptance on Node 24.20.0; official minimum/latest host releases not yet qualified |
+| Paperclip expansion host | Official npm `paperclipai@2026.1012.0` | Fresh npm installation and authenticated package acceptance on Node 24.20.0; exact workflow results on PR73 |
 | Paperclip SDK | `2026.1012.0` and latest compatible release | locked minimum and latest |
 | Node.js | `24.11.0` through the latest Node 24 release | minimum and latest Node 24 |
 | Kujo runtime | bundled `1.8.1` | five native targets |
@@ -14,18 +14,19 @@ The plugin supports macOS arm64/x64, Linux arm64/x64, and Windows x64. CI runs t
 ## Change rules
 
 - Patch releases keep the same artifact schemas and minimum host train.
-- The manifest accepts a `0.0.0` host-version fallback for the historical loader defect. This permissive gate is not evidence that an old host supports the expansion APIs. Qualify an official host release before publishing the expansion.
+- The expansion raises the minimum host to official `2026.1012.0`. Its manifest rejects older hosts; the historical `0.0.0` fallback is removed.
 - Before 1.0, a minor release may add fields or raise a minimum version. The changelog must call out either change.
 - Readers accept additive fields but reject unknown schema versions.
 - Context content requires the same company, project, workspace, and Git snapshot that produced the pack.
 - Component and runtime updates require the full native matrix and clean-install smoke test.
 
-The SDK matrix does not install or exercise minimum/latest Paperclip host releases.
-The historical `2026.824.1` maintenance floor must not be advertised as verified
-expansion support. Expansion requires database namespace migrations, authenticated
+The SDK matrix is separate from live-host acceptance. The selected minimum host
+is also the latest official stable npm release as checked on 2026-10-14. No fork
+is required. Expansion requires database namespace migrations, authenticated
 action actors, issue documents/interactions, scheduled jobs and local folders.
-The current live-host proof uses the prepared fork above; official host release
-qualification and a fresh registry upgrade remain release gates.
+Earlier prepared-fork checks are supplementary regression evidence. Future host
+releases need qualification; the new plugin still needs review, publication and
+a post-publication registry upgrade check.
 
 ## Upcoming component cohort
 
