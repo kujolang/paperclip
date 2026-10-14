@@ -5764,6 +5764,255 @@ export const projections = [
     },
     "definitionDigest": "21d5b26adc59a4630c289be85dad1da3b9046923a192beb7a9a010f9008e66ae",
     "canonicalDefinitions": []
+  },
+  {
+    "exportName": "knowledgeTool",
+    "id": "kujo.paperclip.knowledge.manage",
+    "feature": "knowledge",
+    "canonicalIds": [
+      "kujo.rag.knowledge.query",
+      "kujo.rag.knowledge.ingest"
+    ],
+    "components": [
+      "rag"
+    ],
+    "profiles": [
+      "essentials"
+    ],
+    "tool": {
+      "name": "manage-project-knowledge",
+      "displayName": "Project Knowledge",
+      "description": "Explicitly index selected project text locally, query retained snapshots with citations, inspect freshness, or delete private indexes. Discovery lists names only. No external provider or project code runs. Index creation and replacement require explicit paths and the current revision (null for a new index).",
+      "parametersSchema": {
+        "type": "object",
+        "required": [
+          "operation"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "operation": {
+            "type": "string",
+            "enum": [
+              "discover",
+              "status",
+              "list",
+              "ingest",
+              "query",
+              "freshness",
+              "delete"
+            ]
+          },
+          "paths": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 64,
+            "items": {
+              "type": "string",
+              "maxLength": 1000
+            }
+          },
+          "revision": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 100
+          },
+          "question": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4000
+          },
+          "workspaceId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          }
+        }
+      }
+    },
+    "definition": {
+      "schema": "kujo.ability/v1",
+      "id": "kujo.paperclip.knowledge.manage",
+      "version": "1.0.0",
+      "title": "Project Knowledge",
+      "description": "Explicitly index selected project text locally, query retained snapshots with citations, inspect freshness, or delete private indexes. Discovery lists names only. No external provider or project code runs. Index creation and replacement require explicit paths and the current revision (null for a new index).",
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "operation"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "operation": {
+            "type": "string",
+            "enum": [
+              "discover",
+              "status",
+              "list",
+              "ingest",
+              "query",
+              "freshness",
+              "delete"
+            ]
+          },
+          "paths": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 64,
+            "items": {
+              "type": "string",
+              "maxLength": 1000
+            }
+          },
+          "revision": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 100
+          },
+          "question": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4000
+          },
+          "workspaceId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          }
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "additionalProperties": true
+      },
+      "effects": [
+        {
+          "kind": "read",
+          "resource": "paperclip.workspace.selected.text"
+        },
+        {
+          "kind": "write",
+          "resource": "paperclip.private.knowledge.index"
+        },
+        {
+          "kind": "read",
+          "resource": "paperclip.private.knowledge.index"
+        }
+      ],
+      "idempotency": {
+        "mode": "keyed"
+      }
+    },
+    "definitionDigest": "881005b3d1140fce8efd00a765ad5da8eba1a563d4d1b44ff418a07fc7c669d9",
+    "canonicalDefinitions": [
+      {
+        "definition": {
+          "schema": "kujo.ability/v1",
+          "id": "kujo.rag.knowledge.query",
+          "version": "1.0.0",
+          "title": "Query local Kujo RAG",
+          "description": "Query a locally installed Kujo RAG index and return citations.",
+          "input_schema": {
+            "type": "object",
+            "required": [
+              "question"
+            ],
+            "properties": {
+              "path": {
+                "type": "string",
+                "maxLength": 4096,
+                "default": "."
+              },
+              "question": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 8192
+              },
+              "namespace": {
+                "type": "string",
+                "maxLength": 256,
+                "default": "default"
+              }
+            },
+            "additionalProperties": false
+          },
+          "output_schema": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "effects": [
+            {
+              "kind": "read",
+              "resource": "kujo.rag.index"
+            }
+          ],
+          "idempotency": {
+            "mode": "intrinsic"
+          }
+        },
+        "definitionDigest": "d7b397ebe4f9336966646d4c7afe8f48c4ae4bb41b5ef01c48cf8e5329f2a665",
+        "source": "rag"
+      },
+      {
+        "definition": {
+          "schema": "kujo.ability/v1",
+          "id": "kujo.rag.knowledge.ingest",
+          "version": "1.0.0",
+          "title": "Ingest local knowledge",
+          "description": "Ingest a bounded local path into the configured Kujo RAG namespace.",
+          "input_schema": {
+            "type": "object",
+            "required": [
+              "ingest_path"
+            ],
+            "properties": {
+              "path": {
+                "type": "string",
+                "maxLength": 4096,
+                "default": "."
+              },
+              "ingest_path": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4096
+              },
+              "namespace": {
+                "type": "string",
+                "maxLength": 256,
+                "default": "default"
+              },
+              "recursive": {
+                "type": "boolean",
+                "default": true
+              }
+            },
+            "additionalProperties": false
+          },
+          "output_schema": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "effects": [
+            {
+              "kind": "external",
+              "resource": "kujo.rag.embeddings"
+            },
+            {
+              "kind": "write",
+              "resource": "kujo.rag.index"
+            }
+          ],
+          "idempotency": {
+            "mode": "keyed"
+          }
+        },
+        "definitionDigest": "389b9c733ce827d040daec7550d22d742f1d0b8ced0c09944a3868e66a96aa99",
+        "source": "rag"
+      }
+    ]
   }
 ] as const;
 export const catalogTool = projections[0].tool;
@@ -5786,4 +6035,5 @@ export const packageTool = projections[16].tool;
 export const sourceExecutionTool = projections[17].tool;
 export const starterCreationTool = projections[18].tool;
 export const workflowTool = projections[19].tool;
+export const knowledgeTool = projections[20].tool;
 export const projectedTools = projections.map((entry) => entry.tool);

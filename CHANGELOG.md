@@ -1,6 +1,18 @@
 # Changelog
 
-## Unreleased
+## 0.2.0 — 2026-10-14
+
+- Update Zod, database-test tooling, Playwright, React development fixtures, Rollup, Vitest and Node types to current compatible releases; refresh pinned GitHub Actions dependencies.
+
+- Align eleven bundled components with their approved official releases; retain the explicitly pinned, independently tested offline RAG snapshot. Standalone RAG 1.1.0 remains unpublished pending its own governance evidence.
+
+- Raise the expansion host floor to official Paperclip 2026.1012.0 and remove the permissive version fallback. Add official npm-host and independently installed plugin acceptance; no custom host fork is required.
+
+- Expose Project knowledge on project/issue pages and through a scoped agent tool: explicit selected-file ingestion, offline cited queries, content freshness, revision-bound replacement/deletion and private storage. Query summaries appear in Evidence history; index bytes stay private. The knowledge journey passes on official npm Paperclip 2026.1012.0; exact broader acceptance is recorded on PR73.
+
+- Add internal private knowledge storage with scoped revisions, bounded company slots, expiry and metadata-only listing, plus explicit Git-visible file capture and content freshness checks. Public controls use the same private primitives.
+
+- Pin canonical RAG 1.0.0 and add an internal offline ingest/query adapter with a portable private index, redacted corpus digests, source citations and explicit incomplete-ingestion rejection. Public controls and durable host storage use the pinned adapter.
 
 - Inspect exact native checkpoint receipts after lost responses without replaying decisions or rewriting uncertain host outcomes.
 

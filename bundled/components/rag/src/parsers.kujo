@@ -1,0 +1,846 @@
+from src.retrieval_preferences import markdown_example_spans
+from src.common import dict_get_or, filesystem_capability_scope, stable_chunk_id
+
+func build_document(path, kind, content, meta) {
+	enriched_meta := enrich_document_meta(path, kind, content, meta)
+	raw_lines := split(content, "\n")
+	doc_lines := []
+	line_idx := 0
+	while line_idx < len(raw_lines) {
+		line_no := line_idx + 1
+		line_entry := {
+			"line": line_no,
+			"text": raw_lines[line_idx]
+		}
+		doc_lines := push(doc_lines, line_entry)
+		line_idx = line_idx + 1
+	}
+
+	doc_id := substring(sha256(path + ":" + to_string(len(content))), 0, 24)
+	return {
+		"doc_id": doc_id,
+		"path": path,
+		"kind": kind,
+		"content": content,
+		"lines": doc_lines,
+		"meta": enriched_meta
+	}
+}
+
+func push_unique_lower(items, value) {
+	if type(value) != "string" {
+		return items
+	}
+	normalized := to_lower(trim(value))
+	if normalized == "" {
+		return items
+	}
+	idx := 0
+	while idx < len(items) {
+		if items[idx] == normalized {
+			return items
+		}
+		idx = idx + 1
+	}
+	return push(items, normalized)
+}
+
+func parse_metadata_label_value(content, labels) {
+	if type(content) != "string" {
+		return ""
+	}
+	lines := split(content, "\n")
+	line_idx := 0
+	while line_idx < len(lines) && line_idx < 80 {
+		line_raw := trim(lines[line_idx])
+		line_norm := to_lower(line_raw)
+		if line_norm != "" {
+			label_idx := 0
+			while label_idx < len(labels) {
+				label := to_lower(trim(to_string(labels[label_idx])))
+				if label != "" {
+					prefix_colon := label + ":"
+					prefix_equals := label + "="
+					if starts_with(line_norm, prefix_colon) {
+						return trim(substring(line_raw, len(prefix_colon), len(line_raw)))
+					}
+					if starts_with(line_norm, prefix_equals) {
+						return trim(substring(line_raw, len(prefix_equals), len(line_raw)))
+					}
+				}
+				label_idx = label_idx + 1
+			}
+		}
+		line_idx = line_idx + 1
+	}
+	return ""
+}
+
+func detect_byline_author(content) {
+	if type(content) != "string" {
+		return ""
+	}
+	lines := split(content, "\n")
+	line_idx := 0
+	while line_idx < len(lines) && line_idx < 20 {
+		line_raw := trim(lines[line_idx])
+		line_norm := to_lower(line_raw)
+		if starts_with(line_norm, "by ") {
+			return trim(substring(line_raw, 3, len(line_raw)))
+		}
+		line_idx = line_idx + 1
+	}
+	return ""
+}
+
+func infer_source_system(path, kind) {
+	path_norm := to_lower(to_string(path))
+	if contains(path_norm, "jira") {
+		return "jira"
+	}
+	if contains(path_norm, "github") {
+		return "github"
+	}
+	if contains(path_norm, "gitlab") {
+		return "gitlab"
+	}
+	if contains(path_norm, "notion") {
+		return "notion"
+	}
+	if contains(path_norm, "slack") {
+		return "slack"
+	}
+
+	ext := to_lower(path_extension(path_norm))
+	if ext == "json" || ext == "csv" || ext == "xml" || ext == "yaml" || ext == "yml" {
+		return "structured_file"
+	}
+	if kind == "pdf" || ext == "pdf" {
+		return "pdf_file"
+	}
+	if ext == "md" || ext == "mdx" || ext == "txt" || ext == "log" || ext == "kujo" {
+		return "document_file"
+	}
+	return "file"
+}
+
+func extract_sensitivity_tags(content) {
+	tags := []
+	explicit := parse_metadata_label_value(content, ["sensitivity", "sensitivity_tags", "classification"])
+	if explicit != "" {
+		normalized := regex_replace(explicit, ";", ",")
+		parts := split(normalized, ",")
+		part_idx := 0
+		while part_idx < len(parts) {
+			tags = push_unique_lower(tags, parts[part_idx])
+			part_idx = part_idx + 1
+		}
+	}
+
+	lower_content := to_lower(content)
+	if contains(lower_content, "confidential") {
+		tags = push_unique_lower(tags, "confidential")
+	}
+	if contains(lower_content, "restricted") {
+		tags = push_unique_lower(tags, "restricted")
+	}
+	if contains(lower_content, "internal") {
+		tags = push_unique_lower(tags, "internal")
+	}
+	if contains(lower_content, "public") {
+		tags = push_unique_lower(tags, "public")
+	}
+	if contains(lower_content, "secret") || contains(lower_content, "password") || contains(lower_content, "token") || contains(lower_content, "api_key") {
+		tags = push_unique_lower(tags, "sensitive")
+	}
+	if contains(lower_content, "pii") || contains(lower_content, "personal data") || contains(lower_content, "ssn") {
+		tags = push_unique_lower(tags, "pii")
+	}
+
+	return tags
+}
+
+func merge_meta_tags(existing_tags, source_system, sensitivity_tags) {
+	merged := []
+	if type(existing_tags) == "array" {
+		tag_idx := 0
+		while tag_idx < len(existing_tags) {
+			merged = push_unique_lower(merged, to_string(existing_tags[tag_idx]))
+			tag_idx = tag_idx + 1
+		}
+	}
+
+	if type(source_system) == "string" && trim(source_system) != "" {
+		merged = push_unique_lower(merged, "source_" + to_lower(trim(source_system)))
+	}
+
+	if type(sensitivity_tags) == "array" {
+		sens_idx := 0
+		while sens_idx < len(sensitivity_tags) {
+			tag_value := to_lower(trim(to_string(sensitivity_tags[sens_idx])))
+			if tag_value != "" {
+				merged = push_unique_lower(merged, "sensitivity_" + tag_value)
+			}
+			sens_idx = sens_idx + 1
+		}
+	}
+
+	return merged
+}
+
+func enrich_document_meta(path, kind, content, base_meta) {
+	meta := {}
+	if type(base_meta) == "dict" {
+		meta = base_meta
+	}
+
+	author := trim(parse_metadata_label_value(content, ["author", "owner", "maintainer", "created_by"]))
+	if author == "" {
+		author = trim(detect_byline_author(content))
+	}
+	if author != "" {
+		meta["author"] := author
+	}
+
+	timestamp := trim(parse_metadata_label_value(content, ["timestamp", "updated_at", "updated", "last_modified", "created_at", "date"]))
+	if timestamp != "" {
+		meta["timestamp"] := timestamp
+	}
+
+	source_system := trim(parse_metadata_label_value(content, ["source_system", "source", "origin", "system", "repository", "repo"]))
+	if source_system == "" {
+		source_system = infer_source_system(path, kind)
+	}
+	if source_system != "" {
+		meta["source_system"] := to_lower(source_system)
+	}
+
+	sensitivity_tags := extract_sensitivity_tags(content)
+	if len(sensitivity_tags) > 0 {
+		meta["sensitivity_tags"] := sensitivity_tags
+	}
+
+	tags := merge_meta_tags(dict_get_or(meta, "tags", []), source_system, sensitivity_tags)
+	if len(tags) > 0 {
+		meta["tags"] := tags
+	}
+
+	return meta
+}
+
+func parser_registry() {
+	return {
+		"md": "markdown",
+		"mdx": "markdown",
+		"markdown": "markdown",
+		"txt": "text",
+		"kujo": "text",
+		"log": "log_text",
+		"html": "html_text",
+		"htm": "html_text",
+		"xml": "xml_text",
+		"yaml": "yaml_text",
+		"yml": "yaml_text",
+		"json": "structured_json",
+		"csv": "structured_csv",
+		"pdf": "pdf"
+	}
+}
+
+export get_parser_registry := func() {
+	return parser_registry()
+}
+
+func resolve_parser_key(path) {
+	ext := to_lower(path_extension(path))
+	registry := parser_registry()
+	if has_key(registry, ext) == 1 {
+		return registry[ext]
+	}
+	return "text"
+}
+
+func parse_markdown(path, raw) {
+	text := raw
+	text := regex_replace(text, "```[\\s\\S]*?```", " ")
+	text := regex_replace(text, "`([^`]*)`", "$1")
+	text := regex_replace(text, "!\\[[^\\]]*\\]\\([^\\)]*\\)", " ")
+	text := regex_replace(text, "\\[([^\\]]+)\\]\\([^\\)]*\\)", "$1")
+	meta := {
+		"parser": "markdown",
+		"bytes": len(raw)
+	}
+	return build_document(path, "markdown", text, meta)
+}
+
+func parse_text(path, raw) {
+	meta := {
+		"parser": "plain_text",
+		"bytes": len(raw)
+	}
+	return build_document(path, "text", raw, meta)
+}
+
+func build_parser_fallback_document(path, kind, raw, parser_name, error_code, fallback_message) {
+	preview := raw
+	if len(preview) > 2000 {
+		preview = substring(preview, 0, 2000)
+	}
+	meta := {
+		"parser": parser_name,
+		"bytes": len(raw),
+		"fallback": true,
+		"error_code": error_code
+	}
+	content := "[Parser fallback] " + fallback_message + "\n" + preview
+	return build_document(path, kind, content, meta)
+}
+
+func parse_log_text(path, raw) {
+	meta := {
+		"parser": "log_text",
+		"bytes": len(raw)
+	}
+	return build_document(path, "text", raw, meta)
+}
+
+func parse_html_text(path, raw) {
+	text := regex_replace(raw, "(?i)<script\\b[^>]*>[\\s\\S]*?</script\\s*>", " ")
+	text := regex_replace(text, "(?i)<style\\b[^>]*>[\\s\\S]*?</style\\s*>", " ")
+	text := regex_replace(text, "<[^>]+>", " ")
+	text := regex_replace(text, "\\s+", " ")
+	meta := {
+		"parser": "html_text",
+		"bytes": len(raw)
+	}
+	return build_document(path, "text", trim(text), meta)
+}
+
+func parse_xml_text(path, raw) {
+	text := regex_replace(raw, "<\\?xml[\\s\\S]*?\\?>", " ")
+	text := regex_replace(text, "<[^>]+>", " ")
+	text := regex_replace(text, "\\s+", " ")
+	meta := {
+		"parser": "xml_text",
+		"bytes": len(raw)
+	}
+	return build_document(path, "text", trim(text), meta)
+}
+
+func parse_yaml_text(path, raw) {
+	text := regex_replace(raw, "#[^\\n]*", " ")
+	text := regex_replace(text, "\\s+", " ")
+	meta := {
+		"parser": "yaml_text",
+		"bytes": len(raw)
+	}
+	return build_document(path, "text", trim(text), meta)
+}
+
+func normalize_structured_field_name(raw_name) {
+	name := to_lower(trim(to_string(raw_name)))
+	name = regex_replace(name, "[^a-z0-9_]+", "_")
+	name = regex_replace(name, "_+", "_")
+	if starts_with(name, "_") {
+		name = substring(name, 1, len(name))
+	}
+	if ends_with(name, "_") {
+		name = substring(name, 0, len(name) - 1)
+	}
+	if name == "" {
+		name = "value"
+	}
+	return name
+}
+
+func sanitize_structured_schema_name(path) {
+	schema_name := to_lower(trim(basename(path)))
+	ext := path_extension(schema_name)
+	if ext != "" {
+		ext_with_dot := "." + ext
+		schema_name = substring(schema_name, 0, len(schema_name) - len(ext_with_dot))
+	}
+	schema_name = regex_replace(schema_name, "[^a-z0-9_]+", "_")
+	schema_name = regex_replace(schema_name, "_+", "_")
+	if starts_with(schema_name, "_") {
+		schema_name = substring(schema_name, 1, len(schema_name))
+	}
+	if ends_with(schema_name, "_") {
+		schema_name = substring(schema_name, 0, len(schema_name) - 1)
+	}
+	if schema_name == "" {
+		schema_name = "structured"
+	}
+	return schema_name
+}
+
+func structured_value_text(value) {
+	value_type := type(value)
+	if value_type == "string" {
+		return value
+	}
+	if value_type == "int" || value_type == "float" || value_type == "bool" {
+		return to_string(value)
+	}
+	if value_type == "dict" || value_type == "array" {
+		return to_json(value)
+	}
+	if value_type == "null" {
+		return ""
+	}
+	return to_string(value)
+}
+
+func unique_structured_field_name(raw_name, existing) {
+	base := normalize_structured_field_name(raw_name)
+	candidate := base
+	suffix := 2
+	while has_key(existing, candidate) == 1 {
+		candidate = base + "_" + to_string(suffix)
+		suffix = suffix + 1
+	}
+	return candidate
+}
+
+func parse_json_rows(raw) {
+	err := null
+	parsed := null
+	try {
+		parsed = parse_json(raw)
+	} except e {
+		err = e
+	}
+	if type(err) != "null" {
+		return {
+			"ok": false,
+			"rows": []
+		}
+	}
+
+	rows := []
+	parsed_type := type(parsed)
+	if parsed_type == "dict" {
+		normalized_row := {}
+		parsed_keys := keys(parsed)
+		pk := 0
+		while pk < len(parsed_keys) {
+			key := parsed_keys[pk]
+			normalized_key := unique_structured_field_name(key, normalized_row)
+			normalized_row[normalized_key] := parsed[key]
+			pk = pk + 1
+		}
+		rows = push(rows, normalized_row)
+	} else if parsed_type == "array" {
+		i := 0
+		while i < len(parsed) {
+			item := parsed[i]
+			if type(item) == "dict" {
+				normalized_row := {}
+				item_keys := keys(item)
+				ik := 0
+				while ik < len(item_keys) {
+					key := item_keys[ik]
+					normalized_key := unique_structured_field_name(key, normalized_row)
+					normalized_row[normalized_key] := item[key]
+					ik = ik + 1
+				}
+				rows = push(rows, normalized_row)
+			} else {
+				rows = push(rows, {
+					"value": item
+				})
+			}
+			i = i + 1
+		}
+	} else {
+		rows = push(rows, {
+			"value": parsed
+		})
+	}
+
+	return {
+		"ok": true,
+		"rows": rows
+	}
+}
+
+func collect_structured_fields(rows) {
+	field_order := []
+	field_set := {}
+	i := 0
+	while i < len(rows) {
+		row := rows[i]
+		if type(row) == "dict" {
+			row_keys := keys(row)
+			rk := 0
+			while rk < len(row_keys) {
+				field := normalize_structured_field_name(row_keys[rk])
+				if has_key(field_set, field) == 0 {
+					field_set[field] := true
+					field_order = push(field_order, field)
+				}
+				rk = rk + 1
+			}
+		}
+		i = i + 1
+	}
+	return field_order
+}
+
+func row_to_structured_line(row, fields, row_index) {
+	parts := []
+	parts = push(parts, "row " + to_string(row_index))
+	field_idx := 0
+	while field_idx < len(fields) {
+		field := fields[field_idx]
+		value := ""
+		if type(row) == "dict" && has_key(row, field) == 1 {
+			value = structured_value_text(row[field])
+		}
+		parts = push(parts, field + ": " + value)
+		field_idx = field_idx + 1
+	}
+	return join(parts, " | ")
+}
+
+func parse_csv_records(raw) {
+	records := []
+	row := []
+	field := ""
+	in_quotes := false
+	i := 0
+	while i < len(raw) {
+		ch := substring(raw, i, i + 1)
+		if ch == "\"" {
+			if in_quotes {
+				if i + 1 < len(raw) && substring(raw, i + 1, i + 2) == "\"" {
+					field = field + "\""
+					i = i + 1
+				} else {
+					in_quotes = false
+				}
+			} else if trim(field) == "" {
+				field = ""
+				in_quotes = true
+			} else {
+				field = field + ch
+			}
+		} else if ch == "," && in_quotes == false {
+			row = push(row, trim(field))
+			field = ""
+		} else if (ch == "\n" || ch == "\r") && in_quotes == false {
+			row = push(row, trim(field))
+			field = ""
+			if len(row) > 1 || trim(to_string(row[0])) != "" {
+				records = push(records, row)
+			}
+			row = []
+			if ch == "\r" && i + 1 < len(raw) && substring(raw, i + 1, i + 2) == "\n" {
+				i = i + 1
+			}
+		} else {
+			field = field + ch
+		}
+		i = i + 1
+	}
+
+	if in_quotes {
+		return {
+			"ok": false,
+			"records": []
+		}
+	}
+
+	if field != "" || len(row) > 0 {
+		row = push(row, trim(field))
+		if len(row) > 1 || trim(to_string(row[0])) != "" {
+			records = push(records, row)
+		}
+	}
+
+	return {
+		"ok": true,
+		"records": records
+	}
+}
+
+func parse_csv_rows(raw) {
+	parsed_records := parse_csv_records(raw)
+	if dict_get_or(parsed_records, "ok", false) == false {
+		return {
+			"ok": false,
+			"rows": [],
+			"fields": []
+		}
+	}
+
+	records := dict_get_or(parsed_records, "records", [])
+	if len(records) == 0 {
+		return {
+			"ok": false,
+			"rows": [],
+			"fields": []
+		}
+	}
+
+	headers_raw := records[0]
+	fields := []
+	field_set := {}
+	hi := 0
+	while hi < len(headers_raw) {
+		field := unique_structured_field_name(headers_raw[hi], field_set)
+		fields = push(fields, field)
+		field_set[field] := true
+		hi = hi + 1
+	}
+
+	rows := []
+	li := 1
+	while li < len(records) {
+		values := records[li]
+		row := {}
+		fi := 0
+		while fi < len(fields) {
+			value := ""
+			if fi < len(values) {
+				value = trim(values[fi])
+			}
+			row[fields[fi]] := value
+			fi = fi + 1
+		}
+		rows = push(rows, row)
+		li = li + 1
+	}
+
+	return {
+		"ok": true,
+		"rows": rows,
+		"fields": fields
+	}
+}
+
+func build_structured_meta(path, parser_name, format_name, raw, fields, rows) {
+	schema_name := sanitize_structured_schema_name(path)
+	tags := ["structured", format_name, "schema_" + schema_name]
+	i := 0
+	while i < len(fields) {
+		tags = push(tags, "field_" + fields[i])
+		i = i + 1
+	}
+	return {
+		"parser": parser_name,
+		"bytes": len(raw),
+		"structured": true,
+		"structured_format": format_name,
+		"structured_schema": schema_name,
+		"structured_fields": fields,
+		"record_count": len(rows),
+		"tags": tags
+	}
+}
+
+func parse_structured_json(path, raw) {
+	parsed := parse_json_rows(raw)
+	if dict_get_or(parsed, "ok", false) == false {
+		return build_parser_fallback_document(path, "structured", raw, "structured_json", "malformed_json", "Malformed JSON content; using deterministic fallback")
+	}
+
+	rows := dict_get_or(parsed, "rows", [])
+	fields := collect_structured_fields(rows)
+	lines := []
+	meta := build_structured_meta(path, "structured_json", "json", raw, fields, rows)
+	lines = push(lines, "schema: " + dict_get_or(meta, "structured_schema", "structured") + " | format: json | fields: " + join(fields, ", "))
+	row_idx := 0
+	while row_idx < len(rows) {
+		lines = push(lines, row_to_structured_line(rows[row_idx], fields, row_idx + 1))
+		row_idx = row_idx + 1
+	}
+	if len(rows) == 0 {
+		lines = push(lines, "row 1 | value: ")
+	}
+
+	content := join(lines, "\n")
+	return build_document(path, "structured", content, meta)
+}
+
+func parse_structured_csv(path, raw) {
+	parsed := parse_csv_rows(raw)
+	if dict_get_or(parsed, "ok", false) == false {
+		return build_parser_fallback_document(path, "structured", raw, "structured_csv", "malformed_csv", "Malformed CSV content; using deterministic fallback")
+	}
+
+	rows := dict_get_or(parsed, "rows", [])
+	fields := dict_get_or(parsed, "fields", [])
+	meta := build_structured_meta(path, "structured_csv", "csv", raw, fields, rows)
+	lines := []
+	lines = push(lines, "schema: " + dict_get_or(meta, "structured_schema", "structured") + " | format: csv | fields: " + join(fields, ", "))
+	row_idx := 0
+	while row_idx < len(rows) {
+		lines = push(lines, row_to_structured_line(rows[row_idx], fields, row_idx + 1))
+		row_idx = row_idx + 1
+	}
+	if len(rows) == 0 {
+		lines = push(lines, "row 1 | value: ")
+	}
+
+	content := join(lines, "\n")
+	return build_document(path, "structured", content, meta)
+}
+
+func is_safe_pdf_extractor(extractor) {
+	if type(extractor) != "string" {
+		return false
+	}
+	candidate := trim(extractor)
+	if candidate == "" {
+		return false
+	}
+	invalid := regex_replace(candidate, "[A-Za-z0-9_./-]", "")
+	return invalid == ""
+}
+
+func build_pdf_fallback(path, extractor, error_code) {
+	fallback := "[PDF extraction unavailable] " + path
+	meta := {
+		"parser": "pdf_fallback",
+		"bytes": 0,
+		"extractor": extractor
+	}
+	if error_code != "" {
+		meta["error_code"] := error_code
+	}
+	return build_document(path, "pdf", fallback, meta)
+}
+
+func parse_pdf_bytes(path, cfg, pdf_bytes) {
+	extractor := dict_get_or(cfg, "pdf_extractor_command", "pdftotext")
+	timeout_ms := dict_get_or(cfg, "parser_timeout_ms", 30000)
+	if timeout_ms < 1000 {
+		timeout_ms = 1000
+	}
+	if timeout_ms > 120000 {
+		timeout_ms = 120000
+	}
+	if is_safe_pdf_extractor(extractor) == false {
+		return build_pdf_fallback(path, extractor, "invalid_pdf_extractor")
+	}
+
+	result := null
+	spawn_error := null
+	try {
+		result = spawn_process([trim(extractor), "-", "-"], {
+			"timeout_ms": timeout_ms,
+			"stdin": pdf_bytes
+		})
+	} except e {
+		spawn_error = e
+	}
+	if type(spawn_error) != "null" {
+		return build_pdf_fallback(path, extractor, "pdf_extract_failed")
+	}
+	if type(result) == "struct" {
+		if result.success == true {
+			stdout := result.stdout
+			meta := {
+				"parser": "pdf_shell",
+				"bytes": len(stdout),
+				"extractor": extractor
+			}
+			return build_document(path, "pdf", stdout, meta)
+		}
+	}
+	if type(result) == "dict" {
+		if dict_get_or(result, "success", false) == true {
+			stdout := dict_get_or(result, "stdout", "")
+			meta := {
+				"parser": "pdf_shell",
+				"bytes": len(stdout),
+				"extractor": extractor
+			}
+			return build_document(path, "pdf", stdout, meta)
+		}
+	}
+	return build_pdf_fallback(path, extractor, "pdf_extract_failed")
+}
+
+func parse_file_beneath_impl(path, cfg, trusted_root, relative_path) {
+	parser_key := resolve_parser_key(path)
+	sandbox_max_bytes := dict_get_or(cfg, "parser_sandbox_max_bytes", 5000000)
+	if sandbox_max_bytes < 1024 {
+		sandbox_max_bytes = 1024
+	}
+	# Kujo descriptor-relative reads intentionally cap one read at 8 MiB.
+	# Keep the parser budget inside that public runtime contract even when a
+	# caller bypasses normalized configuration.
+	if sandbox_max_bytes > 8388608 {
+		sandbox_max_bytes = 8388608
+	}
+
+	file_bytes := 0
+	size_err := null
+	try {
+		file_bytes = file_size(path)
+	} except e {
+		size_err = e
+	}
+	if type(size_err) == "null" && file_bytes > sandbox_max_bytes {
+		message := "Input exceeds parser sandbox byte budget"
+		meta_raw := "path=" + path + " bytes=" + to_string(file_bytes) + " max=" + to_string(sandbox_max_bytes)
+		return build_parser_fallback_document(path, "text", meta_raw, "sandbox_fallback", "parser_input_too_large", message)
+	}
+
+	if parser_key == "pdf" {
+		extractor := dict_get_or(cfg, "pdf_extractor_command", "pdftotext")
+		if is_safe_pdf_extractor(extractor) == false {
+			return build_pdf_fallback(path, extractor, "invalid_pdf_extractor")
+		}
+		pdf_bytes := null
+		pdf_read_error := null
+		try {
+			pdf_bytes = read_binary_file_beneath(trusted_root, relative_path, sandbox_max_bytes)
+		} except e {
+			pdf_read_error = e
+		}
+		if type(pdf_read_error) != "null" {
+			return build_pdf_fallback(path, extractor, "pdf_extract_failed")
+		}
+		return parse_pdf_bytes(path, cfg, pdf_bytes)
+	}
+
+	raw := read_file_beneath(trusted_root, relative_path, sandbox_max_bytes)
+	if parser_key == "log_text" {
+		return parse_log_text(path, raw)
+	}
+	if parser_key == "html_text" {
+		return parse_html_text(path, raw)
+	}
+	if parser_key == "xml_text" {
+		return parse_xml_text(path, raw)
+	}
+	if parser_key == "yaml_text" {
+		return parse_yaml_text(path, raw)
+	}
+	if parser_key == "structured_json" {
+		return parse_structured_json(path, raw)
+	}
+	if parser_key == "structured_csv" {
+		return parse_structured_csv(path, raw)
+	}
+	if parser_key == "markdown" {
+		if dict_get_or(cfg, "markdown_examples_enabled", false) {
+			return build_document(path, "markdown", raw, markdown_example_spans(raw))
+		}
+		return parse_markdown(path, raw)
+	}
+
+	return parse_text(path, raw)
+}
+
+export parse_file_beneath := func(path, cfg, trusted_root, relative_path) {
+	return parse_file_beneath_impl(path, cfg, trusted_root, relative_path)
+}
+
+export parse_file := func(path, cfg) {
+	scope := filesystem_capability_scope(path)
+	return parse_file_beneath_impl(path, cfg, dict_get_or(scope, "root", ""), dict_get_or(scope, "relative", ""))
+}

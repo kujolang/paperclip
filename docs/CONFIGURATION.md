@@ -71,3 +71,11 @@ arbitrary source execution or change the Verification setting.
 Catalog and retained-history discovery remain available under every profile; history still respects the effective feature selection. The bundled fixed example remains controlled by `features.examples`. Profile selection is company-scoped, enforced by the worker for both UI actions and agent tools, and is separate from the host's authorization decision.
 
 `features.examples` also controls native script/fixture-agent and pinned API/MCP starter previews. These previews require Installed, Build or Full and never create files in the project workspace.
+
+## Project knowledge
+
+`features.knowledge` defaults to `true`. Installed, Essentials, Build and Full
+select `manage-project-knowledge`. Users explicitly choose eligible files before
+indexing; queries use that retained snapshot. Listing and deletion remain available
+when disabled. No external provider is used. See [Knowledge](KNOWLEDGE.md) for
+content limits, retention, revision checks and the unpublished acceptance status.

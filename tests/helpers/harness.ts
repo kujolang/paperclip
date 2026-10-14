@@ -36,6 +36,7 @@ export function createTestHarness(options: Parameters<typeof createSdkHarness>[0
 }
 afterEach(async () => {
   if (database) {
+    await (await database).exec(`DELETE FROM ${EVIDENCE_NAMESPACE}.knowledge_indexes`);
     await (await database).exec(`DELETE FROM ${EVIDENCE_NAMESPACE}.artifacts`);
     await (await database).exec(`DELETE FROM ${EVIDENCE_NAMESPACE}.executions`);
   }

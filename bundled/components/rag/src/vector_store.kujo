@@ -1,0 +1,756 @@
+from src.common import bool_or, dict_get_or, dict_without_key, read_json_file_result, str_or, term_frequency, tokenize
+
+export latest_schema_version := func() {
+	return 2
+}
+
+func schema_version_label(version_int) {
+	if version_int == 2 {
+		return "2.0"
+	}
+	if version_int == 1 {
+		return "1.0"
+	}
+	return to_string(version_int)
+}
+
+export empty_index := func() {
+	return {
+		"schema_version": latest_schema_version(),
+		"version": schema_version_label(latest_schema_version()),
+		"created_at": current_timestamp(),
+		"updated_at": current_timestamp(),
+		"chunks": [],
+		"vectors": [],
+		"lexical": [],
+		"meta": {
+			"documents": 0,
+			"chunks": 0,
+			"provider": "hash"
+		}
+	}
+}
+
+func detect_schema_version(index) {
+	if type(index) != "dict" {
+		return 0
+	}
+	if has_key(index, "schema_version") == 1 {
+		value := index["schema_version"]
+		if type(value) == "int" {
+			return value
+		}
+		if type(value) == "float" {
+			err := null
+			parsed := 0
+			try {
+				parsed := parse_int(to_string(value))
+			} except e {
+				err := e
+			}
+			if type(err) == "null" {
+				return parsed
+			}
+		}
+	}
+	if has_key(index, "version") == 1 {
+		return 1
+	}
+	return 1
+}
+
+func ensure_index_shape(index) {
+	if has_key(index, "chunks") == 0 {
+		index["chunks"] := []
+	}
+	if has_key(index, "vectors") == 0 {
+		index["vectors"] := []
+	}
+	if has_key(index, "lexical") == 0 {
+		index["lexical"] := []
+	}
+	if has_key(index, "meta") == 0 {
+		index["meta"] := {}
+	}
+	if has_key(index, "created_at") == 0 {
+		index["created_at"] := current_timestamp()
+	}
+	if has_key(index, "updated_at") == 0 {
+		index["updated_at"] := current_timestamp()
+	}
+	return index
+}
+
+export migrate_index_schema := func(index) {
+	if type(index) != "dict" {
+		return {
+			"ok": false,
+			"error": {
+				"code": "invalid_index_payload",
+				"message": "Index payload is not a JSON object",
+				"details": {}
+			}
+		}
+	}
+
+	version := detect_schema_version(index)
+	working := ensure_index_shape(index)
+
+	if version == latest_schema_version() {
+		working["schema_version"] := latest_schema_version()
+		working["version"] := schema_version_label(latest_schema_version())
+		meta := dict_get_or(working, "meta", {})
+		meta["schema_version"] := latest_schema_version()
+		working["meta"] := meta
+		return {
+			"ok": true,
+			"index": working,
+			"migrated": false
+		}
+	}
+
+	if version == 1 {
+		meta := dict_get_or(working, "meta", {})
+		meta["schema_version"] := latest_schema_version()
+		meta["migrated_from_schema_version"] := 1
+		working["meta"] := meta
+		working["schema_version"] := latest_schema_version()
+		working["version"] := schema_version_label(latest_schema_version())
+		return {
+			"ok": true,
+			"index": working,
+			"migrated": true,
+			"from_version": 1,
+			"to_version": latest_schema_version()
+		}
+	}
+
+	return {
+		"ok": false,
+		"error": {
+			"code": "unsupported_index_schema",
+			"message": "Index schema version is not supported",
+			"details": {
+				"schema_version": version,
+				"latest_supported": latest_schema_version(),
+				"migratable_from": [1]
+			}
+		}
+	}
+}
+
+func chunk_lexical_record(chunk) {
+	text := dict_get_or(chunk, "text", "")
+	tokens := tokenize(text)
+	tf := term_frequency(tokens)
+	return {
+		"chunk_id": dict_get_or(chunk, "chunk_id", ""),
+		"term_freq": tf,
+		"term_count": len(tokens)
+	}
+}
+
+func shell_quote(value) {
+	if type(value) != "string" {
+		return "''"
+	}
+	escaped := regex_replace(value, "'", "'\"'\"'")
+	return "'" + escaped + "'"
+}
+
+func is_safe_command_token(value) {
+	if type(value) != "string" {
+		return false
+	}
+	candidate := trim(value)
+	if candidate == "" {
+		return false
+	}
+	invalid := regex_replace(candidate, "[A-Za-z0-9_./-]", "")
+	return invalid == ""
+}
+
+func encryption_enabled(cfg) {
+	return bool_or(dict_get_or(cfg, "at_rest_encryption_enabled", false), false)
+}
+
+func resolve_encryption_key(cfg) {
+	inline_key := trim(str_or(dict_get_or(cfg, "at_rest_encryption_key", ""), ""))
+	if inline_key != "" {
+		return {
+			"ok": true,
+			"key": inline_key,
+			"source": "inline"
+		}
+	}
+
+	key_file := trim(str_or(dict_get_or(cfg, "at_rest_encryption_key_file", ""), ""))
+	if key_file != "" {
+		if file_exists(key_file) == false {
+			return {
+				"ok": false,
+				"error": {
+					"code": "encrypted_index_key_file_missing",
+					"message": "Encryption key file does not exist",
+					"details": {
+						"key_file": key_file
+					}
+				}
+			}
+		}
+		return {
+			"ok": true,
+			"key": trim(read_file(key_file)),
+			"source": "file"
+		}
+	}
+
+	return {
+		"ok": false,
+		"error": {
+			"code": "encrypted_index_key_missing",
+			"message": "Encrypted index requires at-rest encryption key configuration",
+			"details": {}
+		}
+	}
+}
+
+func resolve_openssl_binary(cfg) {
+	binary := trim(str_or(dict_get_or(cfg, "at_rest_encryption_openssl_bin", "openssl"), "openssl"))
+	if binary == "" {
+		binary = "openssl"
+	}
+	if is_safe_command_token(binary) == false {
+		return {
+			"ok": false,
+			"error": {
+				"code": "invalid_encryption_openssl_bin",
+				"message": "Encryption OpenSSL binary token contains invalid characters",
+				"details": {
+					"value": binary
+				}
+			}
+		}
+	}
+	return {
+		"ok": true,
+		"binary": binary
+	}
+}
+
+func tmp_file_path(prefix, suffix, seed) {
+	id := substring(sha256(prefix + ":" + suffix + ":" + seed + ":" + to_string(current_timestamp())), 0, 16)
+	return "/tmp/kujo_rag_" + prefix + "_" + id + suffix
+}
+
+func remove_file_if_exists(path_value) {
+	if file_exists(path_value) {
+		delete_file(path_value)
+	}
+}
+
+func command_success(result) {
+	if type(result) == "struct" {
+		return result.success
+	}
+	if type(result) == "dict" {
+		return dict_get_or(result, "success", false)
+	}
+	return false
+}
+
+func command_stderr(result) {
+	if type(result) == "struct" {
+		return to_string(result.stderr)
+	}
+	if type(result) == "dict" {
+		return to_string(dict_get_or(result, "stderr", ""))
+	}
+	return ""
+}
+
+func run_encrypt_payload(plain_text, seed_path, cfg) {
+	key_result := resolve_encryption_key(cfg)
+	if dict_get_or(key_result, "ok", false) == false {
+		return key_result
+	}
+
+	binary_result := resolve_openssl_binary(cfg)
+	if dict_get_or(binary_result, "ok", false) == false {
+		return binary_result
+	}
+
+	if path_exists("./results") == false {
+		create_dir("./results")
+	}
+
+	plain_path := tmp_file_path("enc_plain", ".json", seed_path)
+	key_path := tmp_file_path("enc_key", ".txt", seed_path)
+	cipher_path := tmp_file_path("enc_cipher", ".txt", seed_path)
+
+	write_file(plain_path, plain_text)
+	write_file(key_path, dict_get_or(key_result, "key", ""))
+	_ = execute_status("chmod 600 " + shell_quote(plain_path) + " " + shell_quote(key_path), {"timeout_ms": 5000})
+
+	binary := dict_get_or(binary_result, "binary", "openssl")
+	cmd := binary + " enc -aes-256-cbc -pbkdf2 -salt -a -A -pass file:" + shell_quote(key_path) + " -in " + shell_quote(plain_path) + " -out " + shell_quote(cipher_path)
+	result := execute_status(cmd, {"timeout_ms": 30000})
+	ok := command_success(result)
+	stderr := command_stderr(result)
+
+	ciphertext := ""
+	if ok && file_exists(cipher_path) {
+		ciphertext = trim(read_file(cipher_path))
+	}
+
+	remove_file_if_exists(plain_path)
+	remove_file_if_exists(key_path)
+	remove_file_if_exists(cipher_path)
+
+	if ok == false || ciphertext == "" {
+		return {
+			"ok": false,
+			"error": {
+				"code": "encrypted_index_encrypt_failed",
+				"message": "Failed to encrypt index payload",
+				"details": {
+					"stderr": stderr
+				}
+			}
+		}
+	}
+
+	return {
+		"ok": true,
+		"ciphertext": ciphertext,
+		"integrity": hmac_sha256(dict_get_or(key_result, "key", ""), ciphertext),
+		"key_source": dict_get_or(key_result, "source", "unknown")
+	}
+}
+
+func run_decrypt_payload(ciphertext, integrity, seed_path, cfg) {
+	key_result := resolve_encryption_key(cfg)
+	if dict_get_or(key_result, "ok", false) == false {
+		return key_result
+	}
+
+	binary_result := resolve_openssl_binary(cfg)
+	if dict_get_or(binary_result, "ok", false) == false {
+		return binary_result
+	}
+	strict_integrity := dict_get_or(cfg, "strict_config", false) == true || dict_get_or(cfg, "runtime_environment", "development") == "production"
+	if trim(to_string(integrity)) == "" && strict_integrity {
+		return {
+			"ok": false,
+			"error": {
+				"code": "encrypted_payload_integrity_missing",
+				"message": "Encrypted payload is missing its keyed integrity tag",
+				"details": {}
+			}
+		}
+	}
+	if trim(to_string(integrity)) != "" && hmac_sha256_verify(dict_get_or(key_result, "key", ""), ciphertext, to_string(integrity)) == false {
+		return {
+			"ok": false,
+			"error": {
+				"code": "encrypted_index_decrypt_failed",
+				"message": "Encrypted payload integrity verification failed",
+				"details": {}
+			}
+		}
+	}
+
+	if path_exists("./results") == false {
+		create_dir("./results")
+	}
+
+	in_path := tmp_file_path("dec_cipher", ".txt", seed_path)
+	key_path := tmp_file_path("dec_key", ".txt", seed_path)
+	out_path := tmp_file_path("dec_plain", ".json", seed_path)
+
+	write_file(in_path, ciphertext)
+	write_file(key_path, dict_get_or(key_result, "key", ""))
+	_ = execute_status("chmod 600 " + shell_quote(in_path) + " " + shell_quote(key_path), {"timeout_ms": 5000})
+
+	binary := dict_get_or(binary_result, "binary", "openssl")
+	cmd := binary + " enc -d -aes-256-cbc -pbkdf2 -salt -a -A -pass file:" + shell_quote(key_path) + " -in " + shell_quote(in_path) + " -out " + shell_quote(out_path)
+	result := execute_status(cmd, {"timeout_ms": 30000})
+	ok := command_success(result)
+	stderr := command_stderr(result)
+
+	plain_text := ""
+	if ok && file_exists(out_path) {
+		plain_text = read_file(out_path)
+	}
+
+	remove_file_if_exists(in_path)
+	remove_file_if_exists(key_path)
+	remove_file_if_exists(out_path)
+
+	if ok == false || plain_text == "" {
+		return {
+			"ok": false,
+			"error": {
+				"code": "encrypted_index_decrypt_failed",
+				"message": "Failed to decrypt index payload",
+				"details": {
+					"stderr": stderr
+				}
+			}
+		}
+	}
+
+	return {
+		"ok": true,
+		"plain_text": plain_text
+	}
+}
+
+func encrypted_index_envelope(payload) {
+	return {
+		"format": "kujo_rag_encrypted_index_v1",
+		"algorithm": "openssl_aes_256_cbc_pbkdf2_base64_etm_hmac_sha256",
+		"encrypted_at": current_timestamp(),
+		"ciphertext": dict_get_or(payload, "ciphertext", ""),
+		"integrity": dict_get_or(payload, "integrity", "")
+	}
+}
+
+export protect_json_at_rest := func(value, seed_path, cfg) {
+	if encryption_enabled(cfg) == false {
+		return {
+			"ok": true,
+			"encrypted": false,
+			"value": value
+		}
+	}
+
+	encrypted := run_encrypt_payload(to_json(value), seed_path, cfg)
+	if dict_get_or(encrypted, "ok", false) == false {
+		return encrypted
+	}
+	return {
+		"ok": true,
+		"encrypted": true,
+		"value": {
+			"format": "kujo_rag_encrypted_artifact_v1",
+			"algorithm": "openssl_aes_256_cbc_pbkdf2_base64_etm_hmac_sha256",
+			"encrypted_at": current_timestamp(),
+			"ciphertext": dict_get_or(encrypted, "ciphertext", ""),
+			"integrity": dict_get_or(encrypted, "integrity", "")
+		}
+	}
+}
+
+export unprotect_json_at_rest := func(value, seed_path, cfg) {
+	if type(value) != "dict" || dict_get_or(value, "format", "") != "kujo_rag_encrypted_artifact_v1" {
+		if encryption_enabled(cfg) {
+			return {
+				"ok": false,
+				"error": {
+					"code": "encrypted_artifact_required",
+					"message": "At-rest encryption is enabled but the artifact is plaintext or has an unsupported format",
+					"details": {"path": seed_path}
+				}
+			}
+		}
+		return {
+			"ok": true,
+			"encrypted": false,
+			"value": value
+		}
+	}
+	ciphertext := trim(str_or(dict_get_or(value, "ciphertext", ""), ""))
+	if ciphertext == "" {
+		return {
+			"ok": false,
+			"error": {
+				"code": "encrypted_artifact_payload_invalid",
+				"message": "Encrypted artifact is missing ciphertext",
+				"details": {"path": seed_path}
+			}
+		}
+	}
+	decrypted := run_decrypt_payload(ciphertext, dict_get_or(value, "integrity", ""), seed_path, cfg)
+	if dict_get_or(decrypted, "ok", false) == false {
+		return decrypted
+	}
+	parsed := null
+	parse_error := null
+	try {
+		parsed = parse_json(dict_get_or(decrypted, "plain_text", ""))
+	} except e {
+		parse_error = e
+	}
+	if type(parse_error) != "null" || type(parsed) != "dict" {
+		return {
+			"ok": false,
+			"error": {
+				"code": "encrypted_artifact_plaintext_invalid",
+				"message": "Decrypted artifact is not a JSON object",
+				"details": {"path": seed_path}
+			}
+		}
+	}
+	return {
+		"ok": true,
+		"encrypted": true,
+		"value": parsed
+	}
+}
+
+func is_encrypted_envelope(index) {
+	if type(index) != "dict" {
+		return false
+	}
+	return dict_get_or(index, "format", "") == "kujo_rag_encrypted_index_v1"
+}
+
+func fallback_with_load_error(error_payload) {
+	fallback := empty_index()
+	meta := dict_get_or(fallback, "meta", {})
+	meta["load_error"] := error_payload
+	fallback["meta"] := meta
+	return fallback
+}
+
+func decrypt_envelope_index(envelope, path, cfg) {
+	ciphertext := str_or(dict_get_or(envelope, "ciphertext", ""), "")
+	if trim(ciphertext) == "" {
+		return {
+			"ok": false,
+			"error": {
+				"code": "encrypted_index_payload_invalid",
+				"message": "Encrypted index payload is missing ciphertext",
+				"details": {}
+			}
+		}
+	}
+
+	decrypted := run_decrypt_payload(ciphertext, dict_get_or(envelope, "integrity", ""), path, cfg)
+	if dict_get_or(decrypted, "ok", false) == false {
+		return decrypted
+	}
+
+	err := null
+	parsed := null
+	try {
+		parsed := parse_json(dict_get_or(decrypted, "plain_text", ""))
+	} except e {
+		err := e
+	}
+
+	if type(err) != "null" || type(parsed) != "dict" {
+		return {
+			"ok": false,
+			"error": {
+				"code": "encrypted_index_plaintext_invalid_json",
+				"message": "Decrypted index payload is not valid JSON object",
+				"details": {}
+			}
+		}
+	}
+
+	return {
+		"ok": true,
+		"index": parsed
+	}
+}
+
+export load_index_with_config := func(path, cfg) {
+	loaded := read_json_file_result(path)
+	if dict_get_or(loaded, "ok", false) == false {
+		return fallback_with_load_error(dict_get_or(loaded, "error", {
+			"code": "json_file_load_failed",
+			"message": "Index JSON file could not be loaded",
+			"details": {"path": path}
+		}))
+	}
+	index := dict_get_or(loaded, "data", null)
+	if type(index) != "dict" {
+		return empty_index()
+	}
+	if encryption_enabled(cfg) && is_encrypted_envelope(index) == false {
+		return fallback_with_load_error({
+			"code": "encrypted_index_required",
+			"message": "At-rest encryption is enabled but the persisted index is plaintext or has an unsupported format",
+			"details": {"path": path}
+		})
+	}
+
+	if is_encrypted_envelope(index) {
+		decrypted := decrypt_envelope_index(index, path, cfg)
+		if dict_get_or(decrypted, "ok", false) == false {
+			return fallback_with_load_error(dict_get_or(decrypted, "error", {
+				"code": "encrypted_index_decrypt_failed",
+				"message": "Encrypted index could not be decrypted",
+				"details": {}
+			}))
+		}
+		index = dict_get_or(decrypted, "index", null)
+	}
+
+	if type(index) != "dict" {
+		return empty_index()
+	}
+
+	migrated := migrate_index_schema(index)
+	if dict_get_or(migrated, "ok", false) == false {
+		return fallback_with_load_error(dict_get_or(migrated, "error", {
+			"code": "unsupported_index_schema",
+			"message": "Index could not be loaded",
+			"details": {}
+		}))
+	}
+
+	return dict_get_or(migrated, "index", empty_index())
+}
+
+export load_index := func(path) {
+	return load_index_with_config(path, {})
+}
+
+func persistence_failure(code, message, path, runtime_error) {
+	return {
+		"ok": false,
+		"error": {
+			"code": code,
+			"message": message,
+			"details": {
+				"path": path,
+				"runtime_error": substring(to_string(runtime_error), 0, 512)
+			}
+		}
+	}
+}
+
+export persist_index_with_config := func(path, index, cfg) {
+	index["schema_version"] := latest_schema_version()
+	index["version"] := schema_version_label(latest_schema_version())
+	meta := dict_get_or(index, "meta", {})
+	meta = dict_without_key(meta, "load_error")
+	meta["schema_version"] := latest_schema_version()
+	index["meta"] := meta
+	index["updated_at"] := current_timestamp()
+
+	stored_value := index
+	if encryption_enabled(cfg) {
+		encrypted := null
+		encryption_err := null
+		try {
+			encrypted = run_encrypt_payload(to_json(index), path, cfg)
+		} except e {
+			encryption_err = e
+		}
+		if type(encryption_err) != "null" {
+			return persistence_failure("encrypted_index_encrypt_failed", "Failed to encrypt index payload; the previous index was preserved", path, encryption_err)
+		}
+		if dict_get_or(encrypted, "ok", false) == false {
+			return {
+				"ok": false,
+				"error": dict_get_or(encrypted, "error", {
+					"code": "encrypted_index_encrypt_failed",
+					"message": "Failed to encrypt index payload",
+					"details": {"path": path}
+				})
+			}
+		}
+		stored_value = encrypted_index_envelope(encrypted)
+	}
+
+	payload := to_json(stored_value)
+	validation_err := null
+	validated := null
+	try {
+		validated = parse_json(payload)
+	} except e {
+		validation_err = e
+	}
+	if type(validation_err) != "null" || type(validated) != "dict" {
+		return persistence_failure("index_serialization_invalid", "Serialized index is not a valid JSON object", path, validation_err)
+	}
+
+	write_err := null
+	written := false
+	try {
+		written = write_file_atomic(path, payload, true)
+	} except e {
+		write_err = e
+	}
+	if type(write_err) != "null" || written != true {
+		return persistence_failure("index_persistence_failed", "Index could not be persisted atomically; the previous index was preserved", path, write_err)
+	}
+
+	reloaded := load_index_with_config(path, cfg)
+	load_error := dict_get_or(dict_get_or(reloaded, "meta", {}), "load_error", null)
+	if type(load_error) == "dict" {
+		return {
+			"ok": false,
+			"error": {
+				"code": "index_read_after_write_failed",
+				"message": "Persisted index failed immediate read-back validation",
+				"details": {"path": path, "load_error": load_error}
+			}
+		}
+	}
+
+	return {
+		"ok": true,
+		"path": path,
+		"serialized_chars": len(payload),
+		"sha256": sha256(payload)
+	}
+}
+
+export save_index_with_config := func(path, index, cfg) {
+	result := persist_index_with_config(path, index, cfg)
+	return dict_get_or(result, "ok", false)
+}
+
+export save_index := func(path, index) {
+	return save_index_with_config(path, index, {})
+}
+
+export build_index := func(chunks, vector_payload, cfg) {
+	index := empty_index()
+	vectors := dict_get_or(vector_payload, "vectors", [])
+
+	chunk_map := {}
+	for chunk in chunks {
+		chunk_map[dict_get_or(chunk, "chunk_id", "")] := chunk
+		index["chunks"] := push(index["chunks"], chunk)
+		index["lexical"] := push(index["lexical"], chunk_lexical_record(chunk))
+	}
+
+	for entry in vectors {
+		cid := dict_get_or(entry, "chunk_id", "")
+		if has_key(chunk_map, cid) == 1 {
+			index["vectors"] := push(index["vectors"], entry)
+		}
+	}
+
+	doc_set := Set()
+	for chunk in chunks {
+		doc_set := set_add(doc_set, dict_get_or(chunk, "doc_id", ""))
+	}
+
+	meta := index["meta"]
+	meta["documents"] := len(set_to_array(doc_set))
+	meta["chunks"] := len(index["chunks"])
+	meta["provider"] := dict_get_or(vector_payload, "provider", "hash")
+	meta["embedding_dims"] := dict_get_or(cfg, "embedding_dims", 256)
+	index["meta"] := meta
+
+	return index
+}
+
+export index_summary := func(index) {
+	meta := dict_get_or(index, "meta", {})
+	return {
+		"documents": dict_get_or(meta, "documents", 0),
+		"chunks": dict_get_or(meta, "chunks", 0),
+		"provider": dict_get_or(meta, "provider", "hash"),
+		"schema_version": dict_get_or(index, "schema_version", latest_schema_version()),
+		"updated_at": dict_get_or(index, "updated_at", "")
+	}
+}

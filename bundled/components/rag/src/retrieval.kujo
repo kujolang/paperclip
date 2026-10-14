@@ -1,0 +1,768 @@
+from src.retrieval_preferences import normalize_retrieval_preferences, select_chunk_examples
+from src.common import dict_get_or, tokenize, term_frequency, cosine_similarity, rank_desc, num_or
+from src.embeddings import embed_texts
+
+func build_chunk_lookup(index) {
+	lookup := {}
+	for chunk in dict_get_or(index, "chunks", []) {
+		lookup[dict_get_or(chunk, "chunk_id", "")] := chunk
+	}
+	return lookup
+}
+
+func build_vector_lookup(index) {
+	lookup := {}
+	for entry in dict_get_or(index, "vectors", []) {
+		lookup[dict_get_or(entry, "chunk_id", "")] := dict_get_or(entry, "embedding", [])
+	}
+	return lookup
+}
+
+func build_lexical_lookup(index) {
+	lookup := {}
+	for entry in dict_get_or(index, "lexical", []) {
+		lookup[dict_get_or(entry, "chunk_id", "")] := entry
+	}
+	return lookup
+}
+
+func lexical_score(query_tf, lexical_entry) {
+	term_freq := dict_get_or(lexical_entry, "term_freq", {})
+	score := 0.0
+	for token in keys(query_tf) {
+		q := to_float(dict_get_or(query_tf, token, 0))
+		d := to_float(dict_get_or(term_freq, token, 0))
+		if q > 0.0 && d > 0.0 {
+			score := score + (1.0 + log(1.0 + d))
+		}
+	}
+	denom := to_float(dict_get_or(lexical_entry, "term_count", 0))
+	if denom <= 0.0 {
+		return 0.0
+	}
+	return score / sqrt(denom)
+}
+
+func expand_query_tokens(tokens) {
+	expanded := []
+	for token in tokens {
+		expanded := push(expanded, token)
+		if ends_with(token, "ing") {
+			stem := substring(token, 0, len(token) - 3)
+			if len(stem) > 2 {
+				expanded := push(expanded, stem)
+			}
+		}
+		if ends_with(token, "ed") {
+			stem := substring(token, 0, len(token) - 2)
+			if len(stem) > 2 {
+				expanded := push(expanded, stem)
+			}
+		}
+		if ends_with(token, "s") {
+			stem := substring(token, 0, len(token) - 1)
+			if len(stem) > 2 {
+				expanded := push(expanded, stem)
+			}
+		}
+	}
+	return expanded
+}
+
+func clamp01(value) {
+	v := to_float(value)
+	if v < 0.0 {
+		return 0.0
+	}
+	if v > 1.0 {
+		return 1.0
+	}
+	return v
+}
+
+func confidence_band(value) {
+	if value >= 0.75 {
+		return "high"
+	}
+	if value >= 0.45 {
+		return "medium"
+	}
+	return "low"
+}
+
+func calibrate_confidence(score, dense, lexical) {
+	dense_norm := clamp01((to_float(dense) + 1.0) / 2.0)
+	lexical_raw := to_float(lexical)
+	lexical_norm := 0.0
+	if lexical_raw > 0.0 {
+		lexical_norm = clamp01(lexical_raw / (1.0 + lexical_raw))
+	}
+	score_norm := clamp01((to_float(score) + 1.0) / 2.0)
+
+	# Keep calibration deterministic and stable across runs.
+	combined := clamp01((0.5 * score_norm) + (0.3 * dense_norm) + (0.2 * lexical_norm))
+
+	return {
+		"score": combined,
+		"band": confidence_band(combined),
+		"components": {
+			"combined": score_norm,
+			"dense": dense_norm,
+			"lexical": lexical_norm
+		}
+	}
+}
+
+func citation_from_chunk(chunk, score, dense, lexical) {
+	confidence_payload := calibrate_confidence(score, dense, lexical)
+	text := dict_get_or(chunk, "text", "")
+	snippet := text
+	meta := dict_get_or(chunk, "meta", {})
+	if len(snippet) > 220 {
+		snippet := substring(snippet, 0, 220) + "..."
+	}
+	return {
+		"chunk_id": dict_get_or(chunk, "chunk_id", ""),
+		"doc_id": dict_get_or(chunk, "doc_id", ""),
+		"path": dict_get_or(chunk, "path", ""),
+		"line_start": dict_get_or(chunk, "line_start", 1),
+		"line_end": dict_get_or(chunk, "line_end", 1),
+		"score": score,
+		"dense_score": dense,
+		"lexical_score": lexical,
+		"provenance_score": dict_get_or(confidence_payload, "score", 0.0),
+		"confidence": dict_get_or(confidence_payload, "score", 0.0),
+		"confidence_band": dict_get_or(confidence_payload, "band", "low"),
+		"confidence_components": dict_get_or(confidence_payload, "components", {}),
+		"author": to_string(dict_get_or(meta, "author", "")),
+		"timestamp": to_string(dict_get_or(meta, "timestamp", "")),
+		"source_system": to_lower(trim(to_string(dict_get_or(meta, "source_system", "")))),
+		"sensitivity_tags": dict_get_or(meta, "sensitivity_tags", []),
+		"structured_schema": to_lower(trim(to_string(dict_get_or(meta, "structured_schema", "")))),
+		"structured_fields": dict_get_or(meta, "structured_fields", []),
+		"snippet": snippet,
+		"text": text
+	}
+}
+
+func normalize_text_filter_values(value) {
+	values := []
+	if type(value) == "array" {
+		for item in value {
+			if type(item) == "string" {
+				norm := to_lower(trim(item))
+				if norm != "" {
+					values := push(values, norm)
+				}
+			}
+		}
+		return values
+	}
+
+	if type(value) == "string" {
+		norm := to_lower(trim(value))
+		if norm != "" {
+			values := push(values, norm)
+		}
+	}
+
+	return values
+}
+
+func normalize_extension_filter_values(value) {
+	values := normalize_text_filter_values(value)
+	normalized := []
+	for item in values {
+		ext := item
+		if starts_with(ext, ".") {
+			ext = substring(ext, 1, len(ext))
+		}
+		if ext != "" {
+			normalized := push(normalized, ext)
+		}
+	}
+	return normalized
+}
+
+func normalize_query_filters(value) {
+	defaults := default_filter_dimensions()
+	if type(value) != "dict" {
+		return {
+			"include": defaults,
+			"exclude": defaults
+		}
+	}
+
+	legacy_block := normalize_filter_block(value)
+	raw_include := dict_get_or(value, "include", null)
+	raw_exclude := dict_get_or(value, "exclude", null)
+
+	include_block := legacy_block
+	if type(raw_include) == "dict" {
+		include_block = merge_filter_dimensions(legacy_block, normalize_filter_block(raw_include))
+	}
+
+	exclude_block := defaults
+	if type(raw_exclude) == "dict" {
+		exclude_block = normalize_filter_block(raw_exclude)
+	}
+
+	return {
+		"include": include_block,
+		"exclude": exclude_block
+	}
+}
+
+func default_filter_dimensions() {
+	return {
+		"path": [],
+		"extension": [],
+		"tags": [],
+		"structured_schema": [],
+		"structured_fields": [],
+		"author": [],
+		"timestamp": [],
+		"source_system": [],
+		"sensitivity_tags": []
+	}
+}
+
+func merge_filter_values(base_values, extra_values) {
+	merged := []
+	base_idx := 0
+	while base_idx < len(base_values) {
+		candidate := base_values[base_idx]
+		present := false
+		seen_idx := 0
+		while seen_idx < len(merged) {
+			if merged[seen_idx] == candidate {
+				present = true
+				break
+			}
+			seen_idx = seen_idx + 1
+		}
+		if present == false {
+			merged = push(merged, candidate)
+		}
+		base_idx = base_idx + 1
+	}
+
+	extra_idx := 0
+	while extra_idx < len(extra_values) {
+		candidate := extra_values[extra_idx]
+		present := false
+		seen_idx := 0
+		while seen_idx < len(merged) {
+			if merged[seen_idx] == candidate {
+				present = true
+				break
+			}
+			seen_idx = seen_idx + 1
+		}
+		if present == false {
+			merged = push(merged, candidate)
+		}
+		extra_idx = extra_idx + 1
+	}
+
+	return merged
+}
+
+func merge_filter_dimensions(base_block, extra_block) {
+	return {
+		"path": merge_filter_values(dict_get_or(base_block, "path", []), dict_get_or(extra_block, "path", [])),
+		"extension": merge_filter_values(dict_get_or(base_block, "extension", []), dict_get_or(extra_block, "extension", [])),
+		"tags": merge_filter_values(dict_get_or(base_block, "tags", []), dict_get_or(extra_block, "tags", [])),
+		"structured_schema": merge_filter_values(dict_get_or(base_block, "structured_schema", []), dict_get_or(extra_block, "structured_schema", [])),
+		"structured_fields": merge_filter_values(dict_get_or(base_block, "structured_fields", []), dict_get_or(extra_block, "structured_fields", [])),
+		"author": merge_filter_values(dict_get_or(base_block, "author", []), dict_get_or(extra_block, "author", [])),
+		"timestamp": merge_filter_values(dict_get_or(base_block, "timestamp", []), dict_get_or(extra_block, "timestamp", [])),
+		"source_system": merge_filter_values(dict_get_or(base_block, "source_system", []), dict_get_or(extra_block, "source_system", [])),
+		"sensitivity_tags": merge_filter_values(dict_get_or(base_block, "sensitivity_tags", []), dict_get_or(extra_block, "sensitivity_tags", []))
+	}
+}
+
+func normalize_filter_block(value) {
+	if type(value) != "dict" {
+		return default_filter_dimensions()
+	}
+
+	raw_schema := dict_get_or(value, "structured_schema", dict_get_or(value, "schema", []))
+	raw_fields := dict_get_or(value, "structured_fields", dict_get_or(value, "field", []))
+	raw_author := dict_get_or(value, "author", dict_get_or(value, "authors", []))
+	raw_timestamp := dict_get_or(value, "timestamp", dict_get_or(value, "date", []))
+	raw_source_system := dict_get_or(value, "source_system", dict_get_or(value, "source", []))
+	raw_sensitivity := dict_get_or(value, "sensitivity_tags", dict_get_or(value, "sensitivity", []))
+
+	return {
+		"path": normalize_text_filter_values(dict_get_or(value, "path", [])),
+		"extension": normalize_extension_filter_values(dict_get_or(value, "extension", [])),
+		"tags": normalize_text_filter_values(dict_get_or(value, "tags", [])),
+		"structured_schema": normalize_text_filter_values(raw_schema),
+		"structured_fields": normalize_text_filter_values(raw_fields),
+		"author": normalize_text_filter_values(raw_author),
+		"timestamp": normalize_text_filter_values(raw_timestamp),
+		"source_system": normalize_text_filter_values(raw_source_system),
+		"sensitivity_tags": normalize_text_filter_values(raw_sensitivity)
+	}
+}
+
+func normalize_meta_field_values(value) {
+	fields := []
+	if type(value) == "array" {
+		i := 0
+		while i < len(value) {
+			entry := to_lower(trim(to_string(value[i])))
+			if entry != "" {
+				fields = push(fields, entry)
+			}
+			i = i + 1
+		}
+		return fields
+	}
+	if type(value) == "string" {
+		entry := to_lower(trim(value))
+		if entry != "" {
+			fields = push(fields, entry)
+		}
+	}
+	return fields
+}
+
+func chunk_tags(chunk) {
+	tags := []
+	meta := dict_get_or(chunk, "meta", {})
+	if type(meta) == "dict" {
+		meta_tags := dict_get_or(meta, "tags", [])
+		if type(meta_tags) == "array" {
+			for item in meta_tags {
+				if type(item) == "string" {
+					tag := to_lower(trim(item))
+					if tag != "" {
+						tags := push(tags, tag)
+					}
+				}
+			}
+		}
+
+		kind := to_lower(trim(to_string(dict_get_or(meta, "kind", ""))))
+		if kind != "" {
+			tags := push(tags, kind)
+		}
+
+		source_system := to_lower(trim(to_string(dict_get_or(meta, "source_system", ""))))
+		if source_system != "" {
+			tags := push(tags, source_system)
+		}
+
+		sensitivity_tags := dict_get_or(meta, "sensitivity_tags", [])
+		if type(sensitivity_tags) == "array" {
+			sens_idx := 0
+			while sens_idx < len(sensitivity_tags) {
+				tag := to_lower(trim(to_string(sensitivity_tags[sens_idx])))
+				if tag != "" {
+					tags := push(tags, tag)
+				}
+				sens_idx = sens_idx + 1
+			}
+		}
+	}
+
+	path := to_lower(to_string(dict_get_or(chunk, "path", "")))
+	ext := to_lower(path_extension(path))
+	if ext != "" {
+		tags := push(tags, ext)
+	}
+
+	return tags
+}
+
+func list_contains(list, value) {
+	for item in list {
+		if item == value {
+			return true
+		}
+	}
+	return false
+}
+
+func chunk_metadata_profile(chunk) {
+	meta := dict_get_or(chunk, "meta", {})
+	path := to_lower(to_string(dict_get_or(chunk, "path", "")))
+	ext := to_lower(path_extension(path))
+	return {
+		"path": path,
+		"extension": ext,
+		"tags": chunk_tags(chunk),
+		"structured_schema": to_lower(trim(to_string(dict_get_or(meta, "structured_schema", "")))),
+		"structured_fields": normalize_meta_field_values(dict_get_or(meta, "structured_fields", [])),
+		"author": to_lower(trim(to_string(dict_get_or(meta, "author", "")))),
+		"timestamp": to_lower(trim(to_string(dict_get_or(meta, "timestamp", "")))),
+		"source_system": to_lower(trim(to_string(dict_get_or(meta, "source_system", "")))),
+		"sensitivity_tags": normalize_meta_field_values(dict_get_or(meta, "sensitivity_tags", []))
+	}
+}
+
+func tokens_match_text_value(tokens, value, allow_partial) {
+	if len(tokens) == 0 {
+		return true
+	}
+	if value == "" {
+		return false
+	}
+	token_idx := 0
+	while token_idx < len(tokens) {
+		token := tokens[token_idx]
+		if allow_partial {
+			if contains(value, token) {
+				return true
+			}
+		} else {
+			if value == token {
+				return true
+			}
+		}
+		token_idx = token_idx + 1
+	}
+	return false
+}
+
+func tokens_match_list_values(tokens, values) {
+	if len(tokens) == 0 {
+		return true
+	}
+	token_idx := 0
+	while token_idx < len(tokens) {
+		token := tokens[token_idx]
+		if list_contains(values, token) {
+			return true
+		}
+		token_idx = token_idx + 1
+	}
+	return false
+}
+
+func include_block_matches(profile, block) {
+	if len(dict_get_or(block, "path", [])) > 0 {
+		if tokens_match_text_value(dict_get_or(block, "path", []), dict_get_or(profile, "path", ""), true) == false {
+			return false
+		}
+	}
+	if len(dict_get_or(block, "extension", [])) > 0 {
+		if tokens_match_text_value(dict_get_or(block, "extension", []), dict_get_or(profile, "extension", ""), false) == false {
+			return false
+		}
+	}
+	if len(dict_get_or(block, "tags", [])) > 0 {
+		if tokens_match_list_values(dict_get_or(block, "tags", []), dict_get_or(profile, "tags", [])) == false {
+			return false
+		}
+	}
+	if len(dict_get_or(block, "structured_schema", [])) > 0 {
+		if tokens_match_text_value(dict_get_or(block, "structured_schema", []), dict_get_or(profile, "structured_schema", ""), true) == false {
+			return false
+		}
+	}
+	if len(dict_get_or(block, "structured_fields", [])) > 0 {
+		if tokens_match_list_values(dict_get_or(block, "structured_fields", []), dict_get_or(profile, "structured_fields", [])) == false {
+			return false
+		}
+	}
+	if len(dict_get_or(block, "author", [])) > 0 {
+		if tokens_match_text_value(dict_get_or(block, "author", []), dict_get_or(profile, "author", ""), true) == false {
+			return false
+		}
+	}
+	if len(dict_get_or(block, "timestamp", [])) > 0 {
+		if tokens_match_text_value(dict_get_or(block, "timestamp", []), dict_get_or(profile, "timestamp", ""), true) == false {
+			return false
+		}
+	}
+	if len(dict_get_or(block, "source_system", [])) > 0 {
+		if tokens_match_text_value(dict_get_or(block, "source_system", []), dict_get_or(profile, "source_system", ""), true) == false {
+			return false
+		}
+	}
+	if len(dict_get_or(block, "sensitivity_tags", [])) > 0 {
+		if tokens_match_list_values(dict_get_or(block, "sensitivity_tags", []), dict_get_or(profile, "sensitivity_tags", [])) == false {
+			return false
+		}
+	}
+	return true
+}
+
+func exclude_block_hits(profile, block) {
+	if len(dict_get_or(block, "path", [])) > 0 {
+		if tokens_match_text_value(dict_get_or(block, "path", []), dict_get_or(profile, "path", ""), true) {
+			return true
+		}
+	}
+	if len(dict_get_or(block, "extension", [])) > 0 {
+		if tokens_match_text_value(dict_get_or(block, "extension", []), dict_get_or(profile, "extension", ""), false) {
+			return true
+		}
+	}
+	if len(dict_get_or(block, "tags", [])) > 0 {
+		if tokens_match_list_values(dict_get_or(block, "tags", []), dict_get_or(profile, "tags", [])) {
+			return true
+		}
+	}
+	if len(dict_get_or(block, "structured_schema", [])) > 0 {
+		if tokens_match_text_value(dict_get_or(block, "structured_schema", []), dict_get_or(profile, "structured_schema", ""), true) {
+			return true
+		}
+	}
+	if len(dict_get_or(block, "structured_fields", [])) > 0 {
+		if tokens_match_list_values(dict_get_or(block, "structured_fields", []), dict_get_or(profile, "structured_fields", [])) {
+			return true
+		}
+	}
+	if len(dict_get_or(block, "author", [])) > 0 {
+		if tokens_match_text_value(dict_get_or(block, "author", []), dict_get_or(profile, "author", ""), true) {
+			return true
+		}
+	}
+	if len(dict_get_or(block, "timestamp", [])) > 0 {
+		if tokens_match_text_value(dict_get_or(block, "timestamp", []), dict_get_or(profile, "timestamp", ""), true) {
+			return true
+		}
+	}
+	if len(dict_get_or(block, "source_system", [])) > 0 {
+		if tokens_match_text_value(dict_get_or(block, "source_system", []), dict_get_or(profile, "source_system", ""), true) {
+			return true
+		}
+	}
+	if len(dict_get_or(block, "sensitivity_tags", [])) > 0 {
+		if tokens_match_list_values(dict_get_or(block, "sensitivity_tags", []), dict_get_or(profile, "sensitivity_tags", [])) {
+			return true
+		}
+	}
+	return false
+}
+
+func chunk_matches_filters(chunk, filters) {
+	include_block := dict_get_or(filters, "include", default_filter_dimensions())
+	exclude_block := dict_get_or(filters, "exclude", default_filter_dimensions())
+	profile := chunk_metadata_profile(chunk)
+	if include_block_matches(profile, include_block) == false {
+		return false
+	}
+	if exclude_block_hits(profile, exclude_block) {
+		return false
+	}
+	return true
+}
+
+func clone_array(items) {
+	out := []
+	for item in items {
+		out := push(out, item)
+	}
+	return out
+}
+
+func remove_array_index(items, index) {
+	left := slice(items, 0, index)
+	right := slice(items, index + 1, len(items))
+	out := []
+	for item in left {
+		out := push(out, item)
+	}
+	for item in right {
+		out := push(out, item)
+	}
+	return out
+}
+
+func rerank_with_mmr(scored, vector_lookup, top_k, lambda) {
+	candidates := rank_desc(scored, "score", len(scored))
+	selected := []
+	limit := top_k
+	if limit > len(candidates) {
+		limit = len(candidates)
+	}
+
+	while len(selected) < limit && len(candidates) > 0 {
+		best_index := 0
+		best_value := -1000000000.0
+		best_relevance := -1000000000.0
+		best_chunk_id := ""
+
+		i := 0
+		while i < len(candidates) {
+			item := candidates[i]
+			chunk_id := dict_get_or(item, "chunk_id", "")
+			relevance := num_or(dict_get_or(item, "score", 0.0), 0.0)
+			novelty_penalty := 0.0
+			if len(selected) > 0 {
+				if has_key(vector_lookup, chunk_id) == 1 {
+					max_similarity := 0.0
+					for chosen in selected {
+						chosen_chunk_id := dict_get_or(chosen, "chunk_id", "")
+						if has_key(vector_lookup, chosen_chunk_id) == 1 {
+							sim := cosine_similarity(vector_lookup[chunk_id], vector_lookup[chosen_chunk_id])
+							if sim > max_similarity {
+								max_similarity = sim
+							}
+						}
+					}
+					novelty_penalty = max_similarity
+				}
+			}
+
+			mmr_value := (to_float(lambda) * relevance) - ((1.0 - to_float(lambda)) * novelty_penalty)
+			is_better := false
+			if mmr_value > best_value {
+				is_better = true
+			} else if mmr_value == best_value {
+				if relevance > best_relevance {
+					is_better = true
+				} else if relevance == best_relevance && chunk_id < best_chunk_id {
+					is_better = true
+				}
+			}
+
+			if is_better {
+				best_index = i
+				best_value = mmr_value
+				best_relevance = relevance
+				best_chunk_id = chunk_id
+			}
+
+			i = i + 1
+		}
+
+		selected := push(selected, candidates[best_index])
+		candidates := remove_array_index(candidates, best_index)
+	}
+
+	return selected
+}
+
+func rerank_results(scored, vector_lookup, cfg, top_k) {
+	strategy := to_lower(trim(to_string(dict_get_or(cfg, "rerank_strategy", "none"))))
+	if strategy == "mmr" {
+		lambda := num_or(dict_get_or(cfg, "rerank_mmr_lambda", 0.7), 0.7)
+		if lambda < 0.0 {
+			lambda = 0.0
+		}
+		if lambda > 1.0 {
+			lambda = 1.0
+		}
+		return rerank_with_mmr(scored, vector_lookup, top_k, lambda)
+	}
+
+	base := rank_desc(scored, "score", top_k)
+	return clone_array(base)
+}
+
+func default_stage_timings() {
+	return {
+		"tokenize": 0,
+		"embed": 0,
+		"retrieve": 0,
+		"rerank": 0
+	}
+}
+
+func hybrid_search_pipeline(index, query, cfg) {
+	stage_timings := default_stage_timings()
+	if type(index) != "dict" {
+		return {
+			"results": [],
+			"stage_timings_ms": stage_timings
+		}
+	}
+	if type(query) != "string" || trim(query) == "" {
+		return {
+			"results": [],
+			"stage_timings_ms": stage_timings
+		}
+	}
+
+	top_k := dict_get_or(cfg, "top_k", 6)
+	alpha := dict_get_or(cfg, "hybrid_alpha", 0.65)
+	beta := dict_get_or(cfg, "hybrid_beta", 0.35)
+
+	tokenize_started := current_timestamp()
+	query_tokens := tokenize(query)
+	if dict_get_or(cfg, "query_expansion", true) {
+		query_tokens = expand_query_tokens(query_tokens)
+	}
+	query_tf := term_frequency(query_tokens)
+	filters := normalize_query_filters(dict_get_or(cfg, "query_filters", {}))
+	stage_timings["tokenize"] := current_timestamp() - tokenize_started
+
+	embed_started := current_timestamp()
+	embed_result := embed_texts([query], cfg)
+	query_vector := []
+	vectors := dict_get_or(embed_result, "vectors", [])
+	if len(vectors) > 0 {
+		query_vector := vectors[0]
+	}
+	stage_timings["embed"] := current_timestamp() - embed_started
+
+	retrieve_started := current_timestamp()
+	chunk_lookup := build_chunk_lookup(index)
+	vector_lookup := build_vector_lookup(index)
+	lexical_lookup := build_lexical_lookup(index)
+
+	preferences := normalize_retrieval_preferences(dict_get_or(cfg, "retrieval_preferences", {}))
+	scored := []
+	for chunk_id in keys(chunk_lookup) {
+		if has_key(chunk_lookup, chunk_id) == 1 {
+			chunk := chunk_lookup[chunk_id]
+			chunk = select_chunk_examples(chunk, preferences)
+			chunk_lookup[chunk_id] := chunk
+			if trim(dict_get_or(chunk, "text", "")) != "" && chunk_matches_filters(chunk, filters) {
+				dense := 0.0
+				if has_key(vector_lookup, chunk_id) == 1 {
+					dense := cosine_similarity(query_vector, vector_lookup[chunk_id])
+				}
+				lexical := 0.0
+				if has_key(lexical_lookup, chunk_id) == 1 {
+					lexical := lexical_score(query_tf, lexical_lookup[chunk_id])
+				}
+				score := (to_float(alpha) * dense) + (to_float(beta) * lexical)
+				scored := push(scored, {
+					"chunk_id": chunk_id,
+					"score": score,
+					"dense_score": dense,
+					"lexical_score": lexical
+				})
+			}
+		}
+	}
+	stage_timings["retrieve"] := current_timestamp() - retrieve_started
+
+	rerank_started := current_timestamp()
+	ranked := rerank_results(scored, vector_lookup, cfg, top_k)
+	results := []
+	for item in ranked {
+		cid := dict_get_or(item, "chunk_id", "")
+		if has_key(chunk_lookup, cid) == 1 {
+			chunk := chunk_lookup[cid]
+			results := push(results, citation_from_chunk(
+				chunk,
+				num_or(dict_get_or(item, "score", 0.0), 0.0),
+				num_or(dict_get_or(item, "dense_score", 0.0), 0.0),
+				num_or(dict_get_or(item, "lexical_score", 0.0), 0.0)
+			))
+		}
+	}
+	stage_timings["rerank"] := current_timestamp() - rerank_started
+
+	return {
+		"results": results,
+		"stage_timings_ms": stage_timings
+	}
+}
+
+export hybrid_search_with_stage_timings := func(index, query, cfg) {
+	return hybrid_search_pipeline(index, query, cfg)
+}
+
+export hybrid_search := func(index, query, cfg) {
+	pipeline := hybrid_search_pipeline(index, query, cfg)
+	return dict_get_or(pipeline, "results", [])
+}

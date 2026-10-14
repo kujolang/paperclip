@@ -1,6 +1,6 @@
 #!/usr/bin/env kujo
 
-VERSION := "1.0.0"
+VERSION := "1.1.0"
 
 func usage_text() {
     return "Usage:\n  scent pack --task <text> [--out <path>] [--budget <n>] [--target codex|claude|deepseek|generic] [--include <path>] [--exclude <path>] [--changed] [--staged] [--unstaged] [--max-files <n>] [--max-file-bytes <n>] [--format md|json|both] [--verbose] [--json] [--dry-run]"

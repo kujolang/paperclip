@@ -1,0 +1,463 @@
+from src.common import dict_get_or, str_or, bool_or, num_or, read_json_file_or, write_json_file
+
+func shell_quote(value) {
+	raw := to_string(value)
+	escaped := replace(raw, "'", "'\"'\"'")
+	return "'" + escaped + "'"
+}
+
+func safe_connector_id(raw_id, fallback) {
+	candidate := to_lower(trim(str_or(raw_id, fallback)))
+	if candidate == "" {
+		candidate = fallback
+	}
+	candidate = regex_replace(candidate, "[^a-z0-9_-]", "_")
+	if candidate == "" {
+		candidate = fallback
+	}
+	return candidate
+}
+
+func ensure_dir(path_value) {
+	if path_value == "" || path_value == "." {
+		return true
+	}
+	if path_exists(path_value) {
+		return true
+	}
+	parent := dirname(path_value)
+	if parent != "" && parent != "." && parent != path_value {
+		_ = ensure_dir(parent)
+	}
+	create_dir(path_value)
+	return true
+}
+
+func parse_json_or_default(text, default_value) {
+	if type(text) != "string" || trim(text) == "" {
+		return default_value
+	}
+	err := null
+	payload := default_value
+	try {
+		payload = parse_json(text)
+	} except e {
+		err = e
+	}
+	if type(err) != "null" {
+		return default_value
+	}
+	return payload
+}
+
+func delete_file_if_exists(path_value) {
+	if path_value != "" && file_exists(path_value) {
+		delete_file(path_value)
+	}
+	return true
+}
+
+func normalize_connector_specs(raw_connectors) {
+	connectors := []
+	if type(raw_connectors) != "array" {
+		return connectors
+	}
+
+	i := 0
+	while i < len(raw_connectors) {
+		item := raw_connectors[i]
+		if type(item) == "dict" {
+			connector_type := to_lower(trim(str_or(dict_get_or(item, "type", ""), "")))
+			if connector_type != "" {
+				connector_id := safe_connector_id(dict_get_or(item, "id", "connector_" + to_string(i + 1)), "connector_" + to_string(i + 1))
+				timeout_ms := num_or(dict_get_or(item, "timeout_ms", 180000), 180000)
+				if timeout_ms < 1000 {
+					timeout_ms = 1000
+				}
+				connectors = push(connectors, {
+					"id": connector_id,
+					"type": connector_type,
+					"enabled": bool_or(dict_get_or(item, "enabled", true), true),
+					"repo_url": trim(str_or(dict_get_or(item, "repo_url", ""), "")),
+					"branch": trim(str_or(dict_get_or(item, "branch", "main"), "main")),
+					"source_path": trim(str_or(dict_get_or(item, "source_path", ""), "")),
+					"urls": dict_get_or(item, "urls", []),
+					"headers": dict_get_or(item, "headers", {}),
+					"runner_script": trim(str_or(dict_get_or(item, "runner_script", ""), "")),
+					"payload": dict_get_or(item, "payload", {}),
+					"timeout_ms": timeout_ms
+				})
+			}
+		}
+		i = i + 1
+	}
+
+	return connectors
+}
+
+func reset_target_dir(target_dir) {
+	_ = ensure_dir(dirname(target_dir))
+	cmd := "rm -rf " + shell_quote(target_dir) + " && mkdir -p " + shell_quote(target_dir)
+	res := execute_status(cmd, {"timeout_ms": 120000})
+	if type(res) != "struct" || res.success == false {
+		return {
+			"ok": false,
+			"error": "failed_to_prepare_target",
+			"message": "Failed to prepare connector target directory",
+			"details": {
+				"target_dir": target_dir,
+				"stderr": to_string(dict_get_or(res, "stderr", ""))
+			}
+		}
+	}
+	return {
+		"ok": true,
+		"error": "",
+		"message": ""
+	}
+}
+
+func run_git_repo_connector(connector, staging_root) {
+	connector_id := str_or(dict_get_or(connector, "id", "git_repo"), "git_repo")
+	target_dir := staging_root + "/" + connector_id
+	prep := reset_target_dir(target_dir)
+	if dict_get_or(prep, "ok", false) == false {
+		return prep
+	}
+
+	source_path := trim(str_or(dict_get_or(connector, "source_path", ""), ""))
+	repo_url := trim(str_or(dict_get_or(connector, "repo_url", ""), ""))
+	branch := trim(str_or(dict_get_or(connector, "branch", "main"), "main"))
+	clone_dir := ""
+	resolved_source := source_path
+
+	if resolved_source == "" {
+		if repo_url == "" {
+			return {
+				"ok": false,
+				"error": "git_connector_source_missing",
+				"message": "git_repo connector requires source_path or repo_url",
+				"details": {
+					"connector_id": connector_id
+				}
+			}
+		}
+		clone_dir = staging_root + "/_git_clone_" + connector_id + "_" + to_string(current_timestamp())
+		clone_cmd := "rm -rf " + shell_quote(clone_dir) + " && git clone --depth 1 --branch " + shell_quote(branch) + " " + shell_quote(repo_url) + " " + shell_quote(clone_dir)
+		clone_res := execute_status(clone_cmd, {"timeout_ms": 240000})
+		if type(clone_res) != "struct" || clone_res.success == false {
+			return {
+				"ok": false,
+				"error": "git_clone_failed",
+				"message": "Failed to clone git repository connector source",
+				"details": {
+					"repo_url": repo_url,
+					"branch": branch,
+					"stderr": to_string(dict_get_or(clone_res, "stderr", ""))
+				}
+			}
+		}
+		resolved_source = clone_dir
+	}
+
+	if path_exists(resolved_source) == false {
+		return {
+			"ok": false,
+			"error": "git_source_not_found",
+			"message": "Configured git_repo source_path does not exist",
+			"details": {
+				"source_path": resolved_source
+			}
+		}
+	}
+
+	copy_cmd := "cp -R " + shell_quote(resolved_source + "/.") + " " + shell_quote(target_dir) + " && rm -rf " + shell_quote(target_dir + "/.git")
+	copy_res := execute_status(copy_cmd, {"timeout_ms": 120000})
+	if type(copy_res) != "struct" || copy_res.success == false {
+		return {
+			"ok": false,
+			"error": "git_copy_failed",
+			"message": "Failed to copy git connector contents into staging directory",
+			"details": {
+				"source_path": resolved_source,
+				"target_dir": target_dir,
+				"stderr": to_string(dict_get_or(copy_res, "stderr", ""))
+			}
+		}
+	}
+
+	if clone_dir != "" {
+		_ = execute_status("rm -rf " + shell_quote(clone_dir), {"timeout_ms": 120000})
+	}
+
+	return {
+		"ok": true,
+		"error": "",
+		"message": "",
+		"source": resolved_source,
+		"target_dir": target_dir
+	}
+}
+
+func connector_header_flags(raw_headers) {
+	flags := ""
+	if type(raw_headers) != "dict" {
+		return flags
+	}
+	for key in keys(raw_headers) {
+		value := trim(str_or(dict_get_or(raw_headers, key, ""), ""))
+		if value != "" {
+			flags = flags + " -H " + shell_quote(to_string(key) + ": " + value)
+		}
+	}
+	return flags
+}
+
+func url_output_name(url_value, index_value) {
+	base := basename(url_value)
+	clean := regex_replace(to_lower(base), "[^a-z0-9._-]", "_")
+	if clean == "" || clean == "." {
+		clean = "doc_" + to_string(index_value)
+	}
+	if ends_with(clean, ".md") == false && ends_with(clean, ".txt") == false {
+		clean = clean + ".md"
+	}
+	return clean
+}
+
+func run_http_docs_connector(connector, staging_root) {
+	connector_id := str_or(dict_get_or(connector, "id", "http_docs"), "http_docs")
+	target_dir := staging_root + "/" + connector_id
+	prep := reset_target_dir(target_dir)
+	if dict_get_or(prep, "ok", false) == false {
+		return prep
+	}
+
+	urls := dict_get_or(connector, "urls", [])
+	if type(urls) != "array" || len(urls) == 0 {
+		return {
+			"ok": false,
+			"error": "http_docs_urls_required",
+			"message": "http_docs connector requires a non-empty urls list",
+			"details": {
+				"connector_id": connector_id
+			}
+		}
+	}
+
+	headers := dict_get_or(connector, "headers", {})
+	if type(headers) != "dict" { headers = {} }
+	has_accept := false
+	for name in keys(headers) { if to_lower(name) == "accept" { has_accept = true } }
+	if has_accept == false { headers["Accept"] := "text/markdown, text/html;q=0.9, text/plain;q=0.8" }
+	i := 0
+	while i < len(urls) {
+		url_value := trim(str_or(urls[i], ""))
+		if url_value == "" { i = i + 1; continue }
+		if starts_with(url_value, "file://") {
+			# Preserve the explicitly configured local-file fixture path.
+			output_file := target_dir + "/" + url_output_name(url_value, i + 1)
+			local_result := execute_status("curl --fail --silent --show-error --max-filesize 5000000 " + shell_quote(url_value) + " -o " + shell_quote(output_file), {"timeout_ms": 120000})
+			if type(local_result) != "struct" || local_result.success == false { return {"ok": false, "error": "http_docs_fetch_failed", "message": "Failed to read local connector document."} }
+		} else {
+			if starts_with(url_value, "http://") == false && starts_with(url_value, "https://") == false { return {"ok": false, "error": "http_docs_invalid_scheme", "message": "Documentation URLs must use HTTP(S) or an explicit local file URL."} }
+			fetch_result := null
+			try {
+				fetch_result = http_request(url_value, {"method": "GET", "headers": headers, "timeout": 30, "max_response_bytes": 5000000, "pin_dns": true, "redirects": "follow"})
+			} except error { return {"ok": false, "error": "http_docs_fetch_failed", "message": "Failed to fetch connector document."} }
+			match fetch_result {
+				case Ok(response): {
+					status := dict_get_or(response, "status", 0)
+					if status < 200 || status > 299 { return {"ok": false, "error": "http_docs_fetch_failed", "message": "Documentation server returned an unsuccessful status."} }
+					response_headers := dict_get_or(response, "headers", {})
+					media_type := to_lower(trim(split(dict_get_or(response_headers, "content-type", "text/plain"), ";")[0]))
+					extension := ""
+					if media_type == "text/markdown" { extension = ".md" }
+					if media_type == "text/html" { extension = ".html" }
+					if media_type == "text/plain" { extension = ".txt" }
+					if extension == "" { return {"ok": false, "error": "http_docs_unsupported_media_type", "message": "Documentation response must be Markdown, HTML, or plain text."} }
+					output_file := target_dir + "/" + substring(sha256(url_value), 0, 24) + extension
+					write_file(output_file, dict_get_or(response, "body", ""))
+				}
+				case Err(error): { return {"ok": false, "error": "http_docs_fetch_failed", "message": "Failed to fetch connector document within transport limits."} }
+			}
+		}
+		i = i + 1
+	}
+
+	return {
+		"ok": true,
+		"error": "",
+		"message": "",
+		"target_dir": target_dir,
+		"fetched_urls": len(urls)
+	}
+}
+
+func run_plugin_script_connector(connector, staging_root) {
+	connector_id := str_or(dict_get_or(connector, "id", "plugin_script"), "plugin_script")
+	target_dir := staging_root + "/" + connector_id
+	prep := reset_target_dir(target_dir)
+	if dict_get_or(prep, "ok", false) == false {
+		return prep
+	}
+
+	runner_script := trim(str_or(dict_get_or(connector, "runner_script", ""), ""))
+	if runner_script == "" {
+		return {
+			"ok": false,
+			"error": "plugin_runner_script_required",
+			"message": "plugin_script connector requires runner_script",
+			"details": {
+				"connector_id": connector_id
+			}
+		}
+	}
+	if file_exists(runner_script) == false {
+		return {
+			"ok": false,
+			"error": "plugin_runner_script_not_found",
+			"message": "plugin_script runner_script path does not exist",
+			"details": {
+				"connector_id": connector_id,
+				"runner_script": runner_script
+			}
+		}
+	}
+
+	kujo_bin := env_or("KUJO_RAG_CONNECTOR_PLUGIN_KUJO_BIN", env_or("KUJO_BIN", "kujo"))
+	timeout_ms := num_or(dict_get_or(connector, "timeout_ms", 180000), 180000)
+	if timeout_ms < 1000 {
+		timeout_ms = 1000
+	}
+	payload_path := staging_root + "/_plugin_payload_" + connector_id + "_" + to_string(current_timestamp()) + ".json"
+	output_path := staging_root + "/_plugin_output_" + connector_id + "_" + to_string(current_timestamp()) + ".json"
+
+	plugin_payload := {
+		"connector_id": connector_id,
+		"staging_root": staging_root,
+		"target_dir": target_dir,
+		"connector": connector,
+		"payload": dict_get_or(connector, "payload", {})
+	}
+	write_json_file(payload_path, plugin_payload)
+
+	cmd := "KUJO_RAG_CONNECTOR_PLUGIN_PAYLOAD_PATH=" + shell_quote(payload_path) + " KUJO_RAG_CONNECTOR_PLUGIN_OUTPUT_PATH=" + shell_quote(output_path) + " " + shell_quote(kujo_bin) + " run " + shell_quote(runner_script) + " --interpreter"
+	res := execute_status(cmd, {"timeout_ms": timeout_ms})
+
+	plugin_output := read_json_file_or(output_path, {})
+	if type(plugin_output) != "dict" || len(keys(plugin_output)) == 0 {
+		plugin_output = parse_json_or_default(to_string(dict_get_or(res, "stdout", "")), {})
+	}
+
+	_ = delete_file_if_exists(payload_path)
+	_ = delete_file_if_exists(output_path)
+
+	plugin_ok := false
+	if type(plugin_output) == "dict" {
+		plugin_ok = bool_or(dict_get_or(plugin_output, "ok", false), false)
+	}
+
+	if type(res) != "struct" || res.success == false || plugin_ok == false {
+		return {
+			"ok": false,
+			"error": str_or(dict_get_or(plugin_output, "error", "plugin_script_failed"), "plugin_script_failed"),
+			"message": str_or(dict_get_or(plugin_output, "message", "Connector plugin script failed"), "Connector plugin script failed"),
+			"details": {
+				"connector_id": connector_id,
+				"runner_script": runner_script,
+				"stderr": to_string(dict_get_or(res, "stderr", "")),
+				"plugin_output": plugin_output
+			}
+		}
+	}
+
+	return {
+		"ok": true,
+		"error": "",
+		"message": str_or(dict_get_or(plugin_output, "message", ""), ""),
+		"details": {
+			"connector_id": connector_id,
+			"runner_script": runner_script,
+			"target_dir": target_dir,
+			"plugin_output": plugin_output
+		}
+	}
+}
+
+export run_connector_stage := func(connector, staging_root) {
+	connector_type := to_lower(trim(str_or(dict_get_or(connector, "type", ""), "")))
+	if connector_type == "git_repo" {
+		return run_git_repo_connector(connector, staging_root)
+	}
+	if connector_type == "http_docs" {
+		return run_http_docs_connector(connector, staging_root)
+	}
+	if connector_type == "plugin_script" {
+		return run_plugin_script_connector(connector, staging_root)
+	}
+	return {
+		"ok": false,
+		"error": "unsupported_connector_type",
+		"message": "Connector type is not supported",
+		"details": {
+			"type": connector_type
+		}
+	}
+}
+
+export run_connector_pipeline := func(raw_connectors, staging_root) {
+	connectors := normalize_connector_specs(raw_connectors)
+	_ = ensure_dir(staging_root)
+
+	results := []
+	ok_count := 0
+	failed_count := 0
+	for connector in connectors {
+		connector_id := str_or(dict_get_or(connector, "id", "connector"), "connector")
+		if bool_or(dict_get_or(connector, "enabled", true), true) == false {
+			results = push(results, {
+				"id": connector_id,
+				"type": dict_get_or(connector, "type", ""),
+				"enabled": false,
+				"ok": true,
+				"skipped": true,
+				"error": "",
+				"details": {}
+			})
+			continue
+		}
+
+		stage_result := run_connector_stage(connector, staging_root)
+		stage_ok := bool_or(dict_get_or(stage_result, "ok", false), false)
+		if stage_ok {
+			ok_count = ok_count + 1
+		} else {
+			failed_count = failed_count + 1
+		}
+		results = push(results, {
+			"id": connector_id,
+			"type": dict_get_or(connector, "type", ""),
+			"enabled": true,
+			"ok": stage_ok,
+			"skipped": false,
+			"error": str_or(dict_get_or(stage_result, "error", ""), ""),
+			"message": str_or(dict_get_or(stage_result, "message", ""), ""),
+			"details": dict_get_or(stage_result, "details", stage_result)
+		})
+	}
+
+	pipeline_ok := failed_count == 0
+	if ok_count <= 0 {
+		pipeline_ok = false
+	}
+
+	return {
+		"ok": pipeline_ok,
+		"connectors": connectors,
+		"results": results,
+		"ok_count": ok_count,
+		"failed_count": failed_count,
+		"staging_root": staging_root
+	}
+}

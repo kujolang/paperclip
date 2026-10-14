@@ -4,7 +4,7 @@
 
 | Dependency | Supported range | CI coverage |
 | --- | --- | --- |
-| Paperclip | `2026.824.1` and later in the current compatibility train | minimum host and latest compatible host |
+| Paperclip expansion host | Official npm `paperclipai@2026.1012.0` | Fresh npm installation and authenticated package acceptance on Node 24.20.0; exact workflow results on PR73 |
 | Paperclip SDK | `2026.1012.0` and latest compatible release | locked minimum and latest |
 | Node.js | `24.11.0` through the latest Node 24 release | minimum and latest Node 24 |
 | Kujo runtime | bundled `1.8.1` | five native targets |
@@ -14,13 +14,19 @@ The plugin supports macOS arm64/x64, Linux arm64/x64, and Windows x64. CI runs t
 ## Change rules
 
 - Patch releases keep the same artifact schemas and minimum host train.
-- Paperclip `2026.831.1` reports `0.0.0` to its plugin loader. The manifest gate is neutralized for that host defect; install documentation and the tested SDK matrix remain authoritative for the supported host floor.
+- The expansion raises the minimum host to official `2026.1012.0`. Its manifest rejects older hosts; the historical `0.0.0` fallback is removed.
 - Before 1.0, a minor release may add fields or raise a minimum version. The changelog must call out either change.
 - Readers accept additive fields but reject unknown schema versions.
 - Context content requires the same company, project, workspace, and Git snapshot that produced the pack.
 - Component and runtime updates require the full native matrix and clean-install smoke test.
 
-Paperclip releases outside the tested train are not supported until the scheduled compatibility job passes and the table is updated.
+The SDK matrix is separate from live-host acceptance. The selected minimum host
+is also the latest official stable npm release as checked on 2026-10-14. No fork
+is required. Expansion requires database namespace migrations, authenticated
+action actors, issue documents/interactions, scheduled jobs and local folders.
+Earlier prepared-fork checks are supplementary regression evidence. Future host
+releases need qualification; the new plugin still needs review, publication and
+a post-publication registry upgrade check.
 
 ## Upcoming component cohort
 

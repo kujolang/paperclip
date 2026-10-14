@@ -1,3 +1,4 @@
+import { KnowledgePanel } from "./knowledge.js";
 import { WorkflowPanel } from "./workflows.js";
 import { StarterCreationPanel } from "./starter-creation.js";
 import { SourceExecutionPanel } from "./source-execution.js";
@@ -757,6 +758,8 @@ function KujoPanel({ context, compact = false }: PanelProps) {
         {data?.readiness?.runtime.repair ?? "Kujo readiness has not been verified. Check runtime and component health in plugin settings."}
         <ActionButton tone="secondary" onClick={() => { void refresh(); }}>Check again</ActionButton>
       </div>}
+
+      {(context.entityType === "project" || context.entityType === "issue") && data?.catalog?.capabilities.some(item => item.tool === "manage-project-knowledge") && <KnowledgePanel ready={data?.catalog?.capabilities.find(item => item.tool === "manage-project-knowledge")?.status === "ready"} refreshEvidence={refresh} key={`knowledge:${targetKey}`} entityType={context.entityType} entityId={context.entityId} enabled={!!data?.catalog?.capabilities.find(item => item.tool === "manage-project-knowledge")?.enabled} />}
 
       {context.entityType === "issue" && (data?.executionActive || data?.catalog?.capabilities.some(item => item.tool === "manage-evaluation" && item.enabled)) && <EvaluationPanel refreshEvidence={refresh} key={`eval:${targetKey}`} issueId={context.entityId} enabled={!!data?.catalog?.capabilities.find(item => item.tool === "manage-evaluation")?.enabled} ready={data?.catalog?.capabilities.find(item => item.tool === "manage-evaluation")?.status === "ready"} />}
 

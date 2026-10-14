@@ -1,0 +1,55 @@
+import assert from "node:assert/strict";
+import { readFile, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+
+/** Real authenticated host, private SQL migration, native RAG and restart qualification. */
+export async function qualifyProductionKnowledge({ call, companyId, projectId, root, checks, json, stop, start, waitUntil }) {
+  const route = "/plugins/kujolang.paperclip/bridge/action";
+  const target = { entityType: "project", entityId: projectId };
+  const action = async (operation, params = {}, options = {}) => (await call(route, { method: "POST", body: { companyId, key: "manage-project-knowledge", params: { ...target, operation, ...params } }, ...options })).data;
+  const config = async features => call("/plugins/kujolang.paperclip/config", { method: "POST", body: { companyId, configJson: { capabilityProfile: "build", features } } });
+  const source = "# Kujo project guide\nKujo runs local programs and imports modules.\n";
+  const sourcePath = join(root, "workspace/knowledge-guide.md");
+  await writeFile(sourcePath, source);
+  await config({ knowledge: true });
+  await waitUntil(async () => { try { return (await action("status")).data?.enabled === true; } catch { return false; } });
+  assert.equal((await action("status")).data.index, null);
+  assert.ok((await action("discover")).data.files.includes("knowledge-guide.md"));
+  await action("status", {}, { status: 401, session: "" });
+  const indexed = (await action("ingest", { paths: ["knowledge-guide.md"], revision: null })).data;
+  assert.ok(indexed.index.revision); assert.equal(indexed.index.index, undefined);
+  const revision = indexed.index.revision;
+  const query = async () => (await action("query", { revision, question: "What does Kujo do?" })).data;
+  const first = await query();
+  assert.equal(first.answer.status, "answered");
+  assert.ok(first.answer.citations.some(citation => citation.path === "knowledge-guide.md"));
+  assert.equal(await readFile(sourcePath, "utf8"), source);
+  const detail = async () => (await call("/plugins/kujolang.paperclip/bridge/data", { method: "POST", body: { companyId, key: "detail", params: target } })).data.data;
+  const record = (await detail()).history.find(row => row.kind === "knowledge-answer"); assert.ok(record);
+  const exported = (await call(route, { method: "POST", body: { companyId, key: "export-evidence", params: { ...target, evidenceId: record.id } } })).data.data;
+  assert.equal(exported.payload.revision, revision);
+  assert.equal(exported.receipt.kind, "knowledge-answer");
+  assert.equal(exported.payload.retained, undefined);
+  assert.equal(exported.payload.index, undefined);
+  checks.push("knowledge fresh host migration, explicit selection, native cited query and bounded evidence export");
+  await stop(); await start();
+  await waitUntil(async () => { try { return (await action("status")).data?.index?.revision === revision; } catch { return false; } });
+  assert.equal((await query()).answer.status, "answered");
+  checks.push("private knowledge index and native cited queries survive full authenticated host/database restart");
+  await writeFile(sourcePath, "# Changed\nThis document changed after ingestion.\n");
+  assert.equal((await action("freshness", { revision })).data.freshness.status, "changed");
+  assert.equal((await query()).answer.status, "answered");
+  await action("ingest", { paths: ["missing.md"], revision }, { status: 502 });
+  assert.equal((await action("status")).data.index.revision, revision);
+  const other = (await call("/companies", { method: "POST", status: 201, body: { name: "Unrelated knowledge tenant" } })).data.id;
+  await call(route, { method: "POST", status: 502, body: { companyId: other, key: "manage-project-knowledge", params: { ...target, operation: "status" } } });
+  await config({ knowledge: false });
+  await waitUntil(async () => { try { return (await action("list")).data?.enabled === false; } catch { return false; } });
+  await action("query", { revision, question: "Kujo?" }, { status: 502 });
+  const list = (await action("list")).data.indexes;
+  const retained = list.find(row => row.revision === revision); assert.ok(retained);
+  assert.equal((await action("delete", { revision, workspaceId: retained.workspaceId })).data.deleted, true);
+  assert.equal((await action("list")).data.indexes.length, 0);
+  checks.push("knowledge detects changed sources, preserves failed replacement, isolates tenants and permits disabled cleanup");
+  await json("knowledge.json", { revision, citations: first.answer.citations, historyId: record.id, companyId, projectId });
+}

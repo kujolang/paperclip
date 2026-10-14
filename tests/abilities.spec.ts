@@ -27,7 +27,7 @@ describe("canonical Ability projection", () => {
     const register = vi.spyOn(harness.ctx.tools, "register");
     await plugin.definition.setup(harness.ctx);
     expect(register.mock.calls.map(([name]) => name).sort()).toEqual(manifest.tools!.map((item) => item.name).sort());
-    expect(manifest.tools).toHaveLength(20);
+    expect(manifest.tools).toHaveLength(21);
     await expect(harness.executeTool("kujo.rag.knowledge.ingest", {}, { companyId: "company" })).rejects.toThrow();
   });
 
@@ -46,7 +46,7 @@ describe("canonical Ability projection", () => {
     const report = await doctor(config);
     const catalog = capabilityCatalog(config, report, true);
     expect(catalog.capabilities.find((entry) => entry.tool === "review-changes")).toMatchObject({ installed: true, enabled: false, supported: true, status: "disabled", authorization: "checked-on-call" });
-    expect(catalog.ecosystem.find((entry) => entry.id === "kujo.rag.knowledge.ingest")).toMatchObject({ installed: false, supported: false, status: "not-integrated", authorization: "unavailable", tools: [] });
+    expect(catalog.ecosystem.find((entry) => entry.id === "kujo.rag.knowledge.ingest")).toMatchObject({ installed: true, supported: true, status: "projected", authorization: "checked-on-call", tools: ["manage-project-knowledge"] });
     const unsupported = capabilityCatalog(config, { ...report, runtime: { status: "ok", platform: "linux", arch: "riscv64" } });
     expect(unsupported.capabilities.find((entry) => entry.tool === "check-kujo-source")).toMatchObject({ enabled: true, supported: false, status: "unsupported" });
     const broken = capabilityCatalog(config, { ...report, runtime: { ...report.runtime, status: "error" } });

@@ -1,0 +1,323 @@
+from src.common import bool_or, dict_get_or, read_json_file_or, str_or, write_json_file
+
+func shell_quote(value) {
+	if type(value) != "string" {
+		return "''"
+	}
+	escaped := regex_replace(value, "'", "'\"'\"'")
+	return "'" + escaped + "'"
+}
+
+func ensure_parent_dir(path_value) {
+	dir := dirname(path_value)
+	if dir == "" || dir == "." {
+		return true
+	}
+	if path_exists(dir) == false {
+		create_dir(dir)
+	}
+	return true
+}
+
+func sink_mode(cfg) {
+	mode := to_lower(trim(str_or(dict_get_or(cfg, "api_audit_external_sink_mode", "append_file"), "append_file")))
+	if mode == "" {
+		return "append_file"
+	}
+	return mode
+}
+
+func audit_enabled(cfg) {
+	return bool_or(dict_get_or(cfg, "api_audit_enabled", false), false)
+}
+
+func audit_path(cfg) {
+	path_value := trim(str_or(dict_get_or(cfg, "api_audit_path", "./results/security_audit.log"), "./results/security_audit.log"))
+	if path_value == "" {
+		return "./results/security_audit.log"
+	}
+	return path_value
+}
+
+func audit_state_path(path_value) {
+	return path_value + ".state.json"
+}
+
+func load_chain_state(state_path) {
+	state := read_json_file_or(state_path, {
+		"sequence": 0,
+		"last_hash": "GENESIS"
+	})
+	if type(state) != "dict" {
+		state = {
+			"sequence": 0,
+			"last_hash": "GENESIS"
+		}
+	}
+	if type(dict_get_or(state, "sequence", 0)) != "int" {
+		state["sequence"] = 0
+	}
+	if trim(str_or(dict_get_or(state, "last_hash", "GENESIS"), "GENESIS")) == "" {
+		state["last_hash"] = "GENESIS"
+	}
+	return state
+}
+
+func result_success(res) {
+	if type(res) == "struct" {
+		return res.success
+	}
+	if type(res) == "dict" {
+		return dict_get_or(res, "success", false)
+	}
+	return false
+}
+
+func append_line(path_value, line_value) {
+	ensure_parent_dir(path_value)
+	tmp_path := "/tmp/kujo_rag_audit_" + substring(sha256(path_value + ":" + to_string(current_timestamp())), 0, 16) + ".log"
+	if file_exists(tmp_path) {
+		delete_file(tmp_path)
+	}
+	write_file(tmp_path, line_value + "\n")
+	_ = execute_status("chmod 600 " + shell_quote(tmp_path), {"timeout_ms": 5000})
+
+	cmd := "cat " + shell_quote(tmp_path) + " >> " + shell_quote(path_value)
+	res := execute_status(cmd, {"timeout_ms": 15000})
+	ok := result_success(res)
+	if file_exists(tmp_path) {
+		delete_file(tmp_path)
+	}
+	return ok
+}
+
+func compute_event_hash(prev_hash, event, cfg) {
+	integrity_key := trim(str_or(dict_get_or(cfg, "api_audit_integrity_key", ""), ""))
+	if integrity_key == "" {
+		return sha256(prev_hash + "\n" + to_json(event))
+	}
+	return hmac_sha256(integrity_key, prev_hash + "\n" + to_json(event))
+}
+
+func append_audit_event_after_verification(cfg, event_type, status, details) {
+	if audit_enabled(cfg) == false {
+		return {
+			"ok": true,
+			"enabled": false
+		}
+	}
+
+	if sink_mode(cfg) != "append_file" {
+		return {
+			"ok": false,
+			"error": {
+				"code": "invalid_audit_sink_mode",
+				"message": "Unsupported audit sink mode",
+				"details": {
+					"mode": sink_mode(cfg)
+				}
+			}
+		}
+	}
+
+	path_value := audit_path(cfg)
+	state_path := audit_state_path(path_value)
+	chain_state := load_chain_state(state_path)
+
+	sequence := dict_get_or(chain_state, "sequence", 0) + 1
+	prev_hash := str_or(dict_get_or(chain_state, "last_hash", "GENESIS"), "GENESIS")
+
+	event := {
+		"sequence": sequence,
+		"ts": current_timestamp(),
+		"event_type": to_string(event_type),
+		"status": to_string(status),
+		"details": details,
+		"prev_hash": prev_hash
+	}
+	event_hash := compute_event_hash(prev_hash, event, cfg)
+	event["event_hash"] := event_hash
+
+	if append_line(path_value, to_json(event)) == false {
+		return {
+			"ok": false,
+			"error": {
+				"code": "audit_append_failed",
+				"message": "Failed to append audit event",
+				"details": {
+					"path": path_value
+				}
+			}
+		}
+	}
+
+	state_written := write_file_atomic(state_path, to_json({
+		"sequence": sequence,
+		"last_hash": event_hash,
+		"updated_at": current_timestamp()
+	}), true)
+	if state_written != true {
+		return {
+			"ok": false,
+			"error": {
+				"code": "audit_state_write_failed",
+				"message": "Audit event was appended but its chain checkpoint could not be persisted",
+				"details": {"path": state_path}
+			}
+		}
+	}
+
+	return {
+		"ok": true,
+		"enabled": true,
+		"event": event
+	}
+}
+
+export verify_audit_chain := func(cfg) {
+	path_value := audit_path(cfg)
+	state_path := audit_state_path(path_value)
+
+	if file_exists(path_value) == false {
+		if file_exists(state_path) {
+			orphaned_state := load_chain_state(state_path)
+			if dict_get_or(orphaned_state, "sequence", 0) > 0 || str_or(dict_get_or(orphaned_state, "last_hash", "GENESIS"), "GENESIS") != "GENESIS" {
+				return {
+					"ok": false,
+					"error": {
+						"code": "audit_log_missing",
+						"message": "Audit log is missing while a non-genesis chain checkpoint exists",
+						"details": {"path": path_value, "state_path": state_path}
+					}
+				}
+			}
+		}
+		return {
+			"ok": true,
+			"events": 0,
+			"last_hash": "GENESIS"
+		}
+	}
+
+	raw := read_file(path_value)
+	lines := split(raw, "\n")
+	prev_hash := "GENESIS"
+	events := 0
+	i := 0
+	while i < len(lines) {
+		line_value := trim(lines[i])
+		if line_value != "" {
+			err := null
+			event := null
+			try {
+				event := parse_json(line_value)
+			} except e {
+				err := e
+			}
+			if type(err) != "null" || type(event) != "dict" {
+				return {
+					"ok": false,
+					"error": {
+						"code": "audit_parse_error",
+						"message": "Audit log line is not valid JSON",
+						"details": {
+							"line": i + 1
+						}
+					}
+				}
+			}
+
+			line_prev := str_or(dict_get_or(event, "prev_hash", ""), "")
+			if line_prev != prev_hash {
+				return {
+					"ok": false,
+					"error": {
+						"code": "audit_prev_hash_mismatch",
+						"message": "Audit chain previous hash mismatch",
+						"details": {
+							"line": i + 1
+						}
+					}
+				}
+			}
+
+			event_no_hash := {
+				"sequence": dict_get_or(event, "sequence", 0),
+				"ts": dict_get_or(event, "ts", 0),
+				"event_type": dict_get_or(event, "event_type", ""),
+				"status": dict_get_or(event, "status", ""),
+				"details": dict_get_or(event, "details", {}),
+				"prev_hash": dict_get_or(event, "prev_hash", "")
+			}
+			expected_hash := compute_event_hash(prev_hash, event_no_hash, cfg)
+			actual_hash := str_or(dict_get_or(event, "event_hash", ""), "")
+			if actual_hash != expected_hash {
+				return {
+					"ok": false,
+					"error": {
+						"code": "audit_hash_mismatch",
+						"message": "Audit event hash mismatch",
+						"details": {
+							"line": i + 1
+						}
+					}
+				}
+			}
+
+			prev_hash = actual_hash
+			events = events + 1
+		}
+		i = i + 1
+	}
+
+	if file_exists(state_path) {
+		state := load_chain_state(state_path)
+		state_hash := str_or(dict_get_or(state, "last_hash", "GENESIS"), "GENESIS")
+		if state_hash != prev_hash {
+			return {
+				"ok": false,
+				"error": {
+					"code": "audit_state_mismatch",
+					"message": "Audit chain state does not match computed chain head",
+					"details": {}
+				}
+			}
+		}
+	} else if events > 0 {
+		return {
+			"ok": false,
+			"error": {
+				"code": "audit_state_missing",
+				"message": "Audit chain checkpoint is missing for a non-empty audit log",
+				"details": {"state_path": state_path}
+			}
+		}
+	}
+
+	return {
+		"ok": true,
+		"events": events,
+		"last_hash": prev_hash
+	}
+}
+
+export append_audit_event := func(cfg, event_type, status, details) {
+	if audit_enabled(cfg) == false {
+		return {
+			"ok": true,
+			"enabled": false
+		}
+	}
+	verification_result := verify_audit_chain(cfg)
+	if dict_get_or(verification_result, "ok", false) == false {
+		return {
+			"ok": false,
+			"error": {
+				"code": "audit_chain_invalid_before_append",
+				"message": "Audit event was not appended because the existing chain is invalid",
+				"details": {"verification": dict_get_or(verification_result, "error", {})}
+			}
+		}
+	}
+	return append_audit_event_after_verification(cfg, event_type, status, details)
+}

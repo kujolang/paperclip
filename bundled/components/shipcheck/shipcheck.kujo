@@ -10,7 +10,7 @@
 
 from src.display import display_text
 
-VERSION := "1.0.0"
+VERSION := "1.0.1"
 
 func print_help() {
 	print_lines([

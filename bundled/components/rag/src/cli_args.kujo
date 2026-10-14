@@ -1,0 +1,85 @@
+from src.common import dict_get_or
+
+export parse_cli := func(raw_args) {
+	command := "help"
+	if len(raw_args) > 0 {
+		command := raw_args[0]
+	}
+
+	flags := {}
+	positionals := []
+	i := 1
+	while i < len(raw_args) {
+		token := raw_args[i]
+		if starts_with(token, "--") {
+			key := substring(token, 2, len(token))
+			value := "true"
+			if i + 1 < len(raw_args) {
+				next := raw_args[i + 1]
+				if starts_with(next, "--") == false {
+					value := next
+					i := i + 1
+				}
+			}
+			flags[key] := value
+		} else {
+			positionals := push(positionals, token)
+		}
+		i := i + 1
+	}
+
+	return {
+		"command": command,
+		"flags": flags,
+		"positionals": positionals
+	}
+}
+
+export bool_from_flag := func(flags, key, default_value) {
+	if has_key(flags, key) == 0 {
+		return default_value
+	}
+	value := to_lower(to_string(flags[key]))
+	if value == "true" || value == "1" || value == "yes" || value == "on" {
+		return true
+	}
+	if value == "false" || value == "0" || value == "no" || value == "off" {
+		return false
+	}
+	return default_value
+}
+
+export parse_int_flag := func(flags, key, default_value) {
+	if has_key(flags, key) == 0 {
+		return {
+			"ok": true,
+			"value": default_value
+		}
+	}
+
+	raw_value := to_string(flags[key])
+	err := null
+	parsed := default_value
+	try {
+		parsed := parse_int(raw_value)
+	} except e {
+		err := e
+	}
+
+	if type(err) != "null" {
+		return {
+			"ok": false,
+			"error": "invalid_int_flag",
+			"message": "Flag --" + key + " must be a valid integer",
+			"details": {
+				"flag": key,
+				"value": raw_value
+			}
+		}
+	}
+
+	return {
+		"ok": true,
+		"value": parsed
+	}
+}

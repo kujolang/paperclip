@@ -37,7 +37,7 @@ export func run_scan(dir) {
 
 	return {
 		"tool": "shipcheck",
-		"version": "1.0.0",
+		"version": "1.0.1",
 		"dir": dir,
 		"project_type": project_type,
 		"checks": results

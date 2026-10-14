@@ -169,7 +169,7 @@ export func file_has_extension(path, ext) {
 }
 
 export func concord_version() {
-	return "1.0.0"
+	return "1.1.1"
 }
 
 export func verification_exit_code(findings) {

@@ -1,6 +1,6 @@
 # Kujo for Paperclip
 
-[![Version](https://img.shields.io/badge/version-0.1.9-black)](https://github.com/kujolang/paperclip/releases/tag/v0.1.9)
+[![Version](https://img.shields.io/badge/version-0.2.0-black)](https://github.com/kujolang/paperclip/releases/tag/v0.2.0)
 [![npm](https://img.shields.io/npm/v/%40kujolang%2Fpaperclip?label=npm&color=black)](https://www.npmjs.com/package/@kujolang/paperclip)
 [![CI](https://img.shields.io/github/actions/workflow/status/kujolang/paperclip/ci.yml?branch=main&label=CI&color=black)](https://github.com/kujolang/paperclip/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-MIT-lightgrey)](LICENSE)
@@ -10,13 +10,9 @@ Kujo helps Paperclip agents choose useful context, review changes, and save clea
 failure evidence. It runs locally inside Paperclip and works in the current task view.
 You do not need the Classic Task Interface.
 
-> Development documentation: the workflows below include the unpublished expansion
-> on `main`. Public npm `0.1.9` provides Context Packs, Review Packs and Failure
-> Evidence; it does not yet include the new Eval controls or broader adapters.
-
 ## Install in 30 seconds
 
-You need Paperclip `2026.824.1` or later and Node.js `24.11.0` or later.
+You need Paperclip `2026.1012.0` or later and Node.js `24.11.0` or later.
 
 ```bash
 npx paperclipai plugin install @kujolang/paperclip
@@ -73,11 +69,13 @@ Kujo retains up to 20 results per company/entity for 30 days in its Paperclip da
 | **Review Pack** | Measures change size, explains risk signals, and prepares a review handoff. | ChangeBucket and PatchBrief |
 | **Failure Evidence** | Turns supplied command details and logs into a bounded, redacted record. | CaseFile |
 
-The fourteen component snapshots are pinned, checksummed, and shipped with the plugin. The
+The fifteen component snapshots are pinned, checksummed, and shipped with the plugin. The
 plugin does not download component code while installing or running. The Eval snapshot
 provides human-approved execution on issue workspaces. The separately enabled
 Dispatch workflow panel runs shipped offline examples through durable host jobs,
-with exact human checkpoint decisions and retained state. A read-only checkpoint
+with exact human checkpoint decisions and retained state. The RAG snapshot powers **Ask your project**: explicitly index selected local
+files, ask questions with snapshot citations, and inspect freshness or delete retained
+indexes. See [Project knowledge](docs/KNOWLEDGE.md). A read-only checkpoint
 receipt inspection can establish whether Dispatch recorded the exact approved
 decision after a lost response, without rerunning it. See
 [Run a Kujo workflow](docs/USAGE.md#run-a-kujo-workflow) for operator setup and limits.
@@ -144,7 +142,7 @@ classification and request-lifecycle timing; legacy records remain observed hist
 see [execution history](docs/EXECUTION.md#retained-execution-history) for retention
 and clear behavior.
 
-The upcoming release requires Paperclip database namespace migrations and authenticated issue-document actions. Upgrade the host before installing it. Legacy latest records migrate on first access, with missing input/definition provenance explicitly marked unknown. Retained payloads have SHA-256 integrity checks; a redacted export carries its own digest. Suggested tests remain suggestions, and supplied failure logs remain supplied evidence.
+This release requires Paperclip database namespace migrations and authenticated issue-document actions. Upgrade the host before installing it. Legacy latest records migrate on first access, with missing input/definition provenance explicitly marked unknown. Retained payloads have SHA-256 integrity checks; a redacted export carries its own digest. Suggested tests remain suggestions, and supplied failure logs remain supplied evidence.
 
 ## Run approved evaluations
 
@@ -189,10 +187,11 @@ The plugin ships pinned, checksummed Ability contracts/catalogs and generates it
 
 ## Agent tools
 
-Paperclip agents can call twenty tools:
+Paperclip agents can call twenty-one tools:
 
 | Tool | Use |
 | --- | --- |
+| `kujolang.paperclip:manage-project-knowledge` | Explicitly index selected project text, query cited snapshots, inspect content freshness and delete private indexes. Offline, with no project execution or external provider. |
 | `kujolang.paperclip:manage-kujo-workflow` | Preview and queue approved offline Dispatch examples, inspect retained state, and cancel owned operations. Human checkpoint decisions use the issue panel. macOS/Linux and operator storage required. |
 | `kujolang.paperclip:manage-kujo-starter` | Preview and create approved canonical starter files in a new issue-workspace directory. No overwrite, dependency installation or generated-program execution. |
 | `kujolang.paperclip:manage-kujo-execution` | Preview, request approval, start, inspect or cancel a fixed native run/test on the assigned issue/current run. Separate opt-in and human approval required. |
@@ -234,7 +233,7 @@ recommended agent sequence.
 
 | Package | Version |
 | --- | --- |
-| Paperclip host | `>=2026.824.1` |
+| Paperclip host (unpublished expansion) | Official `2026.1012.0` or newer; tested release `2026.1012.0` |
 | `@paperclipai/plugin-sdk` | `2026.1012.0` |
 | `@kujolang/kujo-runtime` | `1.8.1` |
 | Node.js | `>=24.11.0` |
@@ -243,9 +242,10 @@ The npm package is `@kujolang/paperclip`. Its Paperclip manifest ID is
 `kujolang.paperclip` because manifest IDs do not accept npm scope syntax.
 
 The plugin tests the minimum supported Paperclip SDK and the latest compatible SDK in
-CI. Its manifest temporarily accepts the host's `0.0.0` fallback until Paperclip ships
-the host-version fix in PR #12745; the documented and tested support floor remains
-`2026.824.1`.
+CI. Live-host acceptance separately uses official Paperclip from npm with a fresh
+Kujo package install. No custom Paperclip fork or separately installed Kujo tools
+are required. The expansion raises the host floor to `2026.1012.0`; see
+[Compatibility](docs/COMPATIBILITY.md) and the [release review handoff](docs/REVIEW-HANDOFF.md).
 
 ## Configure
 

@@ -31,7 +31,7 @@ describe("canonical Fence snapshot inspection", () => {
     const input = await fixture();
     const before = execFileSync("git", ["-C", input.cwd, "status", "--porcelain=v1", "-z"], { encoding: "utf8" });
     const report = await inspectFence(input);
-    expect(report).toMatchObject({ status: "failed", threshold: "error", thresholdStatus: "failed", stale: false, provenance: { component: "fence", version: "1.0.0" } });
+    expect(report).toMatchObject({ status: "failed", threshold: "error", thresholdStatus: "failed", stale: false, provenance: { component: "fence", version: "1.1.0" } });
     expect(report.report?.summary).toMatchObject({ files_scanned: 2, violations: 1, errors: 1 });
     expect(report.report?.violations[0]).toMatchObject({ file: "src/ui/view.ts", line: 1, resolved: "src/core/service.ts", from_zone: "ui", to_zone: "core", confidence: "best_effort" });
     expect(report.coverage).toMatchObject({ selected: 2, inspected: 2, omitted: [], truncated: false });
@@ -122,7 +122,7 @@ describe("scoped Fence integration", () => {
     const target = { entityType: "project" as const, entityId: "project", companyId: "company" };
     const result = await h.executeTool("inspect-architecture", {}, { companyId: "company", projectId: "project" });
     expect(result.error).toBeUndefined(); expect(result.data).not.toHaveProperty("snapshot");
-    expect(result.data).toMatchObject({ status: "failed", provenance: { commit: "818fad467674efeb6d6b5973211834d3f1a0b1fd" } });
+    expect(result.data).toMatchObject({ status: "failed", provenance: { commit: "d3173049b5365af975624fddd48e943d39738c75" } });
     const restarted = await harness(input);
     const [receipt] = await listEvidence(restarted.ctx, target);
     expect(receipt).toMatchObject({ kind: "fence-latest", sourceKind: "observed", result: "architecture failed" });

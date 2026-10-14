@@ -1,6 +1,6 @@
 # MCP Server Framework
 
-[![Version](https://img.shields.io/badge/version-1.3.1-black)](https://github.com/kujolang/mcp/releases/tag/v1.3.1)
+[![Version](https://img.shields.io/badge/version-1.3.2-black)](https://github.com/kujolang/mcp/releases/tag/v1.3.2)
 [![License](https://img.shields.io/badge/license-MIT-lightgrey)](LICENSE)
 [![built with Kujo](https://img.shields.io/badge/built%20with-Kujo-white.svg)](https://github.com/kujolang/kujo)
 [![CI](https://github.com/kujolang/mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/kujolang/mcp/actions/workflows/ci.yml)
@@ -104,7 +104,7 @@ Default endpoint: `http://127.0.0.1:8931/mcp/v1`
 Expected health response shape:
 
 ```json
-{"status":"ok","server":"mcp-demo","version":"1.3.1"}
+{"status":"ok","server":"mcp-demo","version":"1.3.2"}
 ```
 
 If you want to run the binary directly, resolve the runtime path first:
@@ -281,6 +281,10 @@ This repository is launch-honest as a local protocol-compatible MCP server found
 An experimental [controlled local STDIO Ability mode](docs/controlled-ability-stdio.md)
 lets an operator transport bounded evidence into Dispatch review/replay. Standalone
 behavior is unchanged; MCP does not become a verifier or replay controller.
+
+## MCP 1.3.2 release scope
+
+This patch corrects canonical file-boundary comparisons on Windows while retaining POSIX filename behavior, traversal rejection and read-only patterns. Kujo 1.7.0 remains the minimum. The separately packaged npm Ability bridge remains at 1.3.1; no bridge reinstall or new host certification is required for this framework-only patch.
 
 ## MCP 1.3.1 release scope
 

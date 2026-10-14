@@ -1,0 +1,682 @@
+from src.common import dict_get_or, str_or, num_or, bool_or, read_json_file_or
+from src.config import load_config, ensure_runtime_dirs
+from src.rag_engine import build_rag_index, load_or_initialize_index, query_rag
+
+func normalize_eval_cases(raw_cases) {
+	if type(raw_cases) != "array" {
+		return []
+	}
+
+	cases := []
+	for item in raw_cases {
+		if type(item) != "dict" {
+			continue
+		}
+
+		query := trim(str_or(dict_get_or(item, "query", ""), ""))
+		if query == "" {
+			continue
+		}
+
+		case_id := trim(str_or(dict_get_or(item, "id", query), query))
+		domain := trim(str_or(dict_get_or(item, "domain", "unspecified"), "unspecified"))
+		if domain == "" {
+			domain = "unspecified"
+		}
+		language := to_lower(trim(str_or(dict_get_or(item, "language", "unknown"), "unknown")))
+		if language == "" {
+			language = "unknown"
+		}
+		expected_path_contains := trim(str_or(dict_get_or(item, "expected_path_contains", ""), ""))
+		min_citations := num_or(dict_get_or(item, "min_citations", 1), 1)
+		if min_citations < 0 {
+			min_citations = 0
+		}
+		max_citations := num_or(dict_get_or(item, "max_citations", -1), -1)
+		if max_citations < -1 {
+			max_citations = -1
+		}
+		min_confidence := num_or(dict_get_or(item, "min_confidence", 0.2), 0.2)
+		if min_confidence < 0.0 {
+			min_confidence = 0.0
+		}
+		if min_confidence > 1.0 {
+			min_confidence = 1.0
+		}
+		min_grounding_score := num_or(dict_get_or(item, "min_grounding_score", 0.4), 0.4)
+		if min_grounding_score < 0.0 {
+			min_grounding_score = 0.0
+		}
+		if min_grounding_score > 1.0 {
+			min_grounding_score = 1.0
+		}
+
+		required_terms_any := []
+		expected_policy_reason := trim(str_or(dict_get_or(item, "expected_policy_reason", ""), ""))
+		raw_terms := dict_get_or(item, "required_answer_terms_any", [])
+		if type(raw_terms) == "array" {
+			for term in raw_terms {
+				if type(term) == "string" {
+					normalized := trim(to_lower(term))
+					if normalized != "" {
+						required_terms_any := push(required_terms_any, normalized)
+					}
+				}
+			}
+		}
+
+		cases := push(cases, {
+			"id": case_id,
+			"domain": domain,
+			"language": language,
+			"query": query,
+			"expected_path_contains": expected_path_contains,
+			"min_citations": min_citations,
+			"max_citations": max_citations,
+			"min_confidence": min_confidence,
+			"min_grounding_score": min_grounding_score,
+			"required_answer_terms_any": required_terms_any,
+			"expected_policy_reason": expected_policy_reason
+		})
+	}
+
+	return cases
+}
+
+func normalize_thresholds(raw_thresholds) {
+	thresholds := {
+		"min_quality_pass_rate": 0.75,
+		"max_error_rate": 0.10,
+		"max_avg_latency_ms": 800,
+		"max_p95_latency_ms": 1500,
+		"min_average_confidence": 0.35,
+		"min_average_grounding": 0.45,
+		"min_case_count": 1
+	}
+
+	if type(raw_thresholds) != "dict" {
+		return thresholds
+	}
+
+	thresholds["min_quality_pass_rate"] := num_or(dict_get_or(raw_thresholds, "min_quality_pass_rate", thresholds["min_quality_pass_rate"]), thresholds["min_quality_pass_rate"])
+	thresholds["max_error_rate"] := num_or(dict_get_or(raw_thresholds, "max_error_rate", thresholds["max_error_rate"]), thresholds["max_error_rate"])
+	thresholds["max_avg_latency_ms"] := num_or(dict_get_or(raw_thresholds, "max_avg_latency_ms", thresholds["max_avg_latency_ms"]), thresholds["max_avg_latency_ms"])
+	thresholds["max_p95_latency_ms"] := num_or(dict_get_or(raw_thresholds, "max_p95_latency_ms", thresholds["max_p95_latency_ms"]), thresholds["max_p95_latency_ms"])
+	thresholds["min_average_confidence"] := num_or(dict_get_or(raw_thresholds, "min_average_confidence", thresholds["min_average_confidence"]), thresholds["min_average_confidence"])
+	thresholds["min_average_grounding"] := num_or(dict_get_or(raw_thresholds, "min_average_grounding", thresholds["min_average_grounding"]), thresholds["min_average_grounding"])
+	thresholds["min_case_count"] := num_or(dict_get_or(raw_thresholds, "min_case_count", thresholds["min_case_count"]), thresholds["min_case_count"])
+
+	if thresholds["min_quality_pass_rate"] < 0.0 {
+		thresholds["min_quality_pass_rate"] = 0.0
+	}
+	if thresholds["min_quality_pass_rate"] > 1.0 {
+		thresholds["min_quality_pass_rate"] = 1.0
+	}
+	if thresholds["max_error_rate"] < 0.0 {
+		thresholds["max_error_rate"] = 0.0
+	}
+	if thresholds["max_error_rate"] > 1.0 {
+		thresholds["max_error_rate"] = 1.0
+	}
+	if thresholds["min_average_confidence"] < 0.0 {
+		thresholds["min_average_confidence"] = 0.0
+	}
+	if thresholds["min_average_confidence"] > 1.0 {
+		thresholds["min_average_confidence"] = 1.0
+	}
+	if thresholds["min_average_grounding"] < 0.0 {
+		thresholds["min_average_grounding"] = 0.0
+	}
+	if thresholds["min_average_grounding"] > 1.0 {
+		thresholds["min_average_grounding"] = 1.0
+	}
+	if thresholds["min_case_count"] < 1 {
+		thresholds["min_case_count"] = 1
+	}
+	if thresholds["max_avg_latency_ms"] < 1 {
+		thresholds["max_avg_latency_ms"] = 1
+	}
+	if thresholds["max_p95_latency_ms"] < 1 {
+		thresholds["max_p95_latency_ms"] = 1
+	}
+
+	return thresholds
+}
+
+func normalize_dataset_domains(raw_domains) {
+	if type(raw_domains) != "array" {
+		return []
+	}
+	out := []
+	i := 0
+	while i < len(raw_domains) {
+		entry := trim(str_or(raw_domains[i], ""))
+		if entry != "" {
+			out = push(out, entry)
+		}
+		i = i + 1
+	}
+	return out
+}
+
+func normalize_dataset_languages(raw_languages) {
+	if type(raw_languages) != "array" {
+		return []
+	}
+	out := []
+	i := 0
+	while i < len(raw_languages) {
+		entry := to_lower(trim(str_or(raw_languages[i], "")))
+		if entry != "" {
+			out = push(out, entry)
+		}
+		i = i + 1
+	}
+	return out
+}
+
+func answer_terms_match(answer_text, required_terms_any) {
+	if len(required_terms_any) == 0 {
+		return true
+	}
+
+	normalized_answer := to_lower(answer_text)
+	for term in required_terms_any {
+		if contains(normalized_answer, term) {
+			return true
+		}
+	}
+
+	return false
+}
+
+func citation_path_match(citations, expected_path_contains) {
+	if expected_path_contains == "" {
+		return true
+	}
+
+	needle := to_lower(expected_path_contains)
+	for citation in citations {
+		path_value := to_lower(str_or(dict_get_or(citation, "path", ""), ""))
+		if contains(path_value, needle) {
+			return true
+		}
+	}
+
+	return false
+}
+
+func tokenize_grounding_terms(text) {
+	cleaned := to_lower(text)
+	cleaned = replace(cleaned, "\n", " ")
+	cleaned = replace(cleaned, "\r", " ")
+	cleaned = replace(cleaned, "\t", " ")
+	punct := [".", ",", ";", ":", "!", "?", "(", ")", "[", "]", "{", "}", "\"", "'", "`", "|", "\\", "/", "-", "_", "=", "+", "*", "#", "@"]
+	i := 0
+	while i < len(punct) {
+		cleaned = replace(cleaned, punct[i], " ")
+		i = i + 1
+	}
+
+	stopwords := {
+		"the": true,
+		"and": true,
+		"for": true,
+		"with": true,
+		"from": true,
+		"that": true,
+		"this": true,
+		"into": true,
+		"your": true,
+		"what": true,
+		"which": true,
+		"when": true,
+		"where": true,
+		"how": true,
+		"are": true,
+		"was": true,
+		"were": true,
+		"can": true,
+		"cannot": true,
+		"safely": true,
+		"answer": true,
+		"based": true,
+		"retrieved": true,
+		"sources": true,
+		"draft": true,
+		"available": true,
+		"local": true,
+		"context": true
+	}
+
+	parts := split(cleaned, " ")
+	seen := {}
+	tokens := []
+	i = 0
+	while i < len(parts) {
+		token := trim(parts[i])
+		if len(token) >= 3 {
+			if has_key(stopwords, token) == 0 && has_key(seen, token) == 0 {
+				seen[token] := true
+				tokens = push(tokens, token)
+			}
+		}
+		i = i + 1
+	}
+	return tokens
+}
+
+func citations_grounding_context(citations) {
+	context := ""
+	i := 0
+	while i < len(citations) {
+		citation := citations[i]
+		path := to_lower(str_or(dict_get_or(citation, "path", ""), ""))
+		snippet := to_lower(str_or(dict_get_or(citation, "snippet", ""), ""))
+		context = context + " " + path + " " + snippet
+		i = i + 1
+	}
+	return trim(context)
+}
+
+func compute_grounding_score(answer, citations, policy) {
+	policy_triggered := bool_or(dict_get_or(policy, "triggered", false), false)
+	if len(citations) == 0 {
+		if policy_triggered == true {
+			return 1.0
+		}
+		return 0.0
+	}
+
+	context := citations_grounding_context(citations)
+	if context == "" {
+		return 0.0
+	}
+
+	terms := tokenize_grounding_terms(answer)
+	if len(terms) == 0 {
+		return 0.0
+	}
+
+	matched := 0
+	i := 0
+	while i < len(terms) {
+		if index_of(context, terms[i]) >= 0 {
+			matched = matched + 1
+		}
+		i = i + 1
+	}
+
+	return to_float(matched) / to_float(len(terms))
+}
+
+func sort_numbers_asc(values) {
+	sorted := []
+	for raw_value in values {
+		value := num_or(raw_value, 0)
+		inserted := false
+		next_sorted := []
+		for existing in sorted {
+			if inserted == false && value < existing {
+				next_sorted := push(next_sorted, value)
+				inserted = true
+			}
+			next_sorted := push(next_sorted, existing)
+		}
+		if inserted == false {
+			next_sorted := push(next_sorted, value)
+		}
+		sorted = next_sorted
+	}
+	return sorted
+}
+
+func percentile_95(values) {
+	if len(values) == 0 {
+		return 0
+	}
+
+	sorted := sort_numbers_asc(values)
+	n := len(sorted)
+	i := 0
+	while i < n {
+		if (i + 1) * 100 >= n * 95 {
+			return num_or(sorted[i], 0)
+		}
+		i = i + 1
+	}
+
+	return num_or(sorted[n - 1], 0)
+}
+
+func evaluate_case(index, cfg, case_item) {
+	query := str_or(dict_get_or(case_item, "query", ""), "")
+	started_at := current_timestamp()
+
+	query_result := {}
+	error_message := ""
+	try {
+		query_result := query_rag(index, query, cfg, null, null)
+	} except e {
+		error_message := to_string(e)
+	}
+
+	elapsed_ms := current_timestamp() - started_at
+	if elapsed_ms < 0 {
+		elapsed_ms = 0
+	}
+
+	if error_message != "" {
+		return {
+			"id": dict_get_or(case_item, "id", query),
+			"domain": str_or(dict_get_or(case_item, "domain", "unspecified"), "unspecified"),
+			"language": str_or(dict_get_or(case_item, "language", "unknown"), "unknown"),
+			"query": query,
+			"ok": false,
+			"error": true,
+			"error_message": error_message,
+			"latency_ms": elapsed_ms,
+			"citations_count": 0,
+			"confidence": 0.0,
+			"checks": {
+				"citations": false,
+				"path": false,
+				"answer_terms": false,
+				"confidence": false,
+				"grounding": false
+			}
+		}
+	}
+
+	citations := dict_get_or(query_result, "citations", [])
+	policy := dict_get_or(query_result, "safe_response_policy", {})
+	answer := str_or(dict_get_or(query_result, "answer", ""), "")
+	confidence := num_or(dict_get_or(query_result, "confidence", 0.0), 0.0)
+	min_citations := num_or(dict_get_or(case_item, "min_citations", 1), 1)
+	max_citations := num_or(dict_get_or(case_item, "max_citations", -1), -1)
+	min_confidence := num_or(dict_get_or(case_item, "min_confidence", 0.2), 0.2)
+	min_grounding_score := num_or(dict_get_or(case_item, "min_grounding_score", 0.4), 0.4)
+	expected_policy_reason := str_or(dict_get_or(case_item, "expected_policy_reason", ""), "")
+
+	citations_ok := len(citations) >= min_citations
+	max_citations_ok := true
+	if max_citations >= 0 {
+		max_citations_ok = len(citations) <= max_citations
+	}
+	path_ok := citation_path_match(citations, str_or(dict_get_or(case_item, "expected_path_contains", ""), ""))
+	answer_terms_ok := answer_terms_match(answer, dict_get_or(case_item, "required_answer_terms_any", []))
+	confidence_ok := confidence >= min_confidence
+	grounding_score := compute_grounding_score(answer, citations, policy)
+	grounding_ok := grounding_score >= min_grounding_score
+	policy_ok := true
+	if expected_policy_reason != "" {
+		policy_ok = bool_or(dict_get_or(policy, "triggered", false), false) && str_or(dict_get_or(policy, "reason", ""), "") == expected_policy_reason
+	}
+	case_ok := citations_ok && max_citations_ok && path_ok && answer_terms_ok && confidence_ok && grounding_ok && policy_ok
+
+	return {
+		"id": dict_get_or(case_item, "id", query),
+		"domain": str_or(dict_get_or(case_item, "domain", "unspecified"), "unspecified"),
+		"language": str_or(dict_get_or(case_item, "language", "unknown"), "unknown"),
+		"query": query,
+		"ok": case_ok,
+		"error": false,
+		"error_message": "",
+		"latency_ms": elapsed_ms,
+		"citations_count": len(citations),
+		"confidence": confidence,
+		"grounding_score": grounding_score,
+		"policy_reason": str_or(dict_get_or(policy, "reason", ""), ""),
+		"checks": {
+			"citations": citations_ok,
+			"max_citations": max_citations_ok,
+			"path": path_ok,
+			"answer_terms": answer_terms_ok,
+			"confidence": confidence_ok,
+			"grounding": grounding_ok,
+			"policy": policy_ok
+		}
+	}
+}
+
+export run_release_evaluation := func(eval_cfg) {
+	if type(eval_cfg) != "dict" {
+		eval_cfg = {}
+	}
+
+	golden_queries_path := str_or(dict_get_or(eval_cfg, "golden_queries_path", "./config/release_eval_golden_queries.json"), "./config/release_eval_golden_queries.json")
+	thresholds_path := str_or(dict_get_or(eval_cfg, "thresholds_path", "./config/release_eval_thresholds.json"), "./config/release_eval_thresholds.json")
+	corpus_path := str_or(dict_get_or(eval_cfg, "corpus_path", "./examples/kujo_docs"), "./examples/kujo_docs")
+	index_path := str_or(dict_get_or(eval_cfg, "index_path", "./results/release_eval_index.json"), "./results/release_eval_index.json")
+	recursive := bool_or(dict_get_or(eval_cfg, "recursive", true), true)
+	release_eval_embedding_provider := to_lower(trim(str_or(dict_get_or(eval_cfg, "embedding_provider", env_or("KUJO_RAG_RELEASE_EVAL_EMBEDDING_PROVIDER", env_or("KUJO_RAG_EMBEDDING_PROVIDER", "hash"))), "hash")))
+	if release_eval_embedding_provider == "" {
+		release_eval_embedding_provider = "hash"
+	}
+	runtime_overrides := dict_get_or(eval_cfg, "runtime_overrides", {})
+	runtime_cfg_input := {
+		"index_path": index_path,
+		"chunk_strategy": "line",
+		"chunk_size": 320,
+		"chunk_overlap": 60,
+		"top_k": 4,
+		"embedding_provider": release_eval_embedding_provider
+	}
+	if type(runtime_overrides) == "dict" {
+		override_keys := keys(runtime_overrides)
+		i := 0
+		while i < len(override_keys) {
+			key := override_keys[i]
+			runtime_cfg_input[key] = runtime_overrides[key]
+			i = i + 1
+		}
+	}
+
+	runtime_cfg := load_config(runtime_cfg_input)
+	_ := ensure_runtime_dirs(runtime_cfg)
+
+	build := build_rag_index(corpus_path, runtime_cfg, recursive)
+	if dict_get_or(build, "ok", true) == false {
+		build_error := dict_get_or(build, "error", {})
+		return {
+			"ok": false,
+			"error": dict_get_or(build_error, "code", "index_persistence_failed"),
+			"error_message": dict_get_or(build_error, "message", "Index persistence failed"),
+			"error_details": dict_get_or(build_error, "details", {})
+		}
+	}
+	index := load_or_initialize_index(runtime_cfg)
+
+	raw_cases_payload := read_json_file_or(golden_queries_path, {
+		"queries": []
+	})
+	dataset_version := trim(str_or(dict_get_or(raw_cases_payload, "dataset_version", "unversioned"), "unversioned"))
+	if dataset_version == "" {
+		dataset_version = "unversioned"
+	}
+	dataset_domains := normalize_dataset_domains(dict_get_or(raw_cases_payload, "dataset_domains", []))
+	dataset_languages := normalize_dataset_languages(dict_get_or(raw_cases_payload, "dataset_languages", []))
+	raw_cases := dict_get_or(raw_cases_payload, "queries", [])
+	cases := normalize_eval_cases(raw_cases)
+
+	thresholds := normalize_thresholds(read_json_file_or(thresholds_path, {}))
+
+	if len(cases) == 0 {
+		return {
+			"ok": false,
+			"error": "no_eval_cases",
+			"error_message": "No valid release evaluation cases were found.",
+			"dataset_version": dataset_version,
+			"dataset_domains": dataset_domains,
+			"dataset_languages": dataset_languages,
+			"thresholds": thresholds,
+			"build_summary": dict_get_or(build, "summary", {}),
+			"total_cases": 0,
+			"results": []
+		}
+	}
+
+	results := []
+	passed_cases := 0
+	error_count := 0
+	latencies := []
+	confidence_sum := 0.0
+	grounding_sum := 0.0
+	domain_metrics := {}
+	language_metrics := {}
+
+	for case_item in cases {
+		case_result := evaluate_case(index, runtime_cfg, case_item)
+		results := push(results, case_result)
+		if dict_get_or(case_result, "ok", false) == true {
+			passed_cases = passed_cases + 1
+		}
+		if dict_get_or(case_result, "error", false) == true {
+			error_count = error_count + 1
+		}
+		latencies := push(latencies, num_or(dict_get_or(case_result, "latency_ms", 0), 0))
+		confidence_sum = confidence_sum + num_or(dict_get_or(case_result, "confidence", 0.0), 0.0)
+		grounding_sum = grounding_sum + num_or(dict_get_or(case_result, "grounding_score", 0.0), 0.0)
+
+		domain := trim(str_or(dict_get_or(case_result, "domain", "unspecified"), "unspecified"))
+		if domain == "" {
+			domain = "unspecified"
+		}
+		bucket := dict_get_or(domain_metrics, domain, {
+			"domain": domain,
+			"total_cases": 0,
+			"passed_cases": 0,
+			"confidence_sum": 0.0,
+			"grounding_sum": 0.0
+		})
+		bucket["total_cases"] = num_or(dict_get_or(bucket, "total_cases", 0), 0) + 1
+		if dict_get_or(case_result, "ok", false) == true {
+			bucket["passed_cases"] = num_or(dict_get_or(bucket, "passed_cases", 0), 0) + 1
+		}
+		bucket["confidence_sum"] = num_or(dict_get_or(bucket, "confidence_sum", 0.0), 0.0) + num_or(dict_get_or(case_result, "confidence", 0.0), 0.0)
+		bucket["grounding_sum"] = num_or(dict_get_or(bucket, "grounding_sum", 0.0), 0.0) + num_or(dict_get_or(case_result, "grounding_score", 0.0), 0.0)
+		domain_metrics[domain] = bucket
+
+		language := to_lower(trim(str_or(dict_get_or(case_result, "language", "unknown"), "unknown")))
+		if language == "" {
+			language = "unknown"
+		}
+		language_bucket := dict_get_or(language_metrics, language, {
+			"language": language,
+			"total_cases": 0,
+			"passed_cases": 0,
+			"confidence_sum": 0.0,
+			"grounding_sum": 0.0
+		})
+		language_bucket["total_cases"] = num_or(dict_get_or(language_bucket, "total_cases", 0), 0) + 1
+		if dict_get_or(case_result, "ok", false) == true {
+			language_bucket["passed_cases"] = num_or(dict_get_or(language_bucket, "passed_cases", 0), 0) + 1
+		}
+		language_bucket["confidence_sum"] = num_or(dict_get_or(language_bucket, "confidence_sum", 0.0), 0.0) + num_or(dict_get_or(case_result, "confidence", 0.0), 0.0)
+		language_bucket["grounding_sum"] = num_or(dict_get_or(language_bucket, "grounding_sum", 0.0), 0.0) + num_or(dict_get_or(case_result, "grounding_score", 0.0), 0.0)
+		language_metrics[language] = language_bucket
+	}
+
+	total_cases := len(cases)
+	quality_pass_rate := to_float(passed_cases) / to_float(total_cases)
+	error_rate := to_float(error_count) / to_float(total_cases)
+	avg_latency_ms := 0.0
+	if len(latencies) > 0 {
+		total_latency := 0
+		for value in latencies {
+			total_latency = total_latency + num_or(value, 0)
+		}
+		avg_latency_ms = to_float(total_latency) / to_float(len(latencies))
+	}
+	p95_latency_ms := percentile_95(latencies)
+	avg_confidence := confidence_sum / to_float(total_cases)
+	avg_grounding := grounding_sum / to_float(total_cases)
+	domain_summary := []
+	for domain_name in keys(domain_metrics) {
+		bucket := dict_get_or(domain_metrics, domain_name, {})
+		domain_total := num_or(dict_get_or(bucket, "total_cases", 0), 0)
+		domain_passed := num_or(dict_get_or(bucket, "passed_cases", 0), 0)
+		domain_avg_confidence := 0.0
+		domain_avg_grounding := 0.0
+		domain_pass_rate := 0.0
+		if domain_total > 0 {
+			domain_avg_confidence = num_or(dict_get_or(bucket, "confidence_sum", 0.0), 0.0) / to_float(domain_total)
+			domain_avg_grounding = num_or(dict_get_or(bucket, "grounding_sum", 0.0), 0.0) / to_float(domain_total)
+			domain_pass_rate = to_float(domain_passed) / to_float(domain_total)
+		}
+		domain_summary = push(domain_summary, {
+			"domain": str_or(dict_get_or(bucket, "domain", domain_name), domain_name),
+			"total_cases": domain_total,
+			"passed_cases": domain_passed,
+			"quality_pass_rate": domain_pass_rate,
+			"avg_confidence": domain_avg_confidence,
+			"avg_grounding": domain_avg_grounding
+		})
+	}
+
+	language_summary := []
+	for language_name in keys(language_metrics) {
+		bucket := dict_get_or(language_metrics, language_name, {})
+		language_total := num_or(dict_get_or(bucket, "total_cases", 0), 0)
+		language_passed := num_or(dict_get_or(bucket, "passed_cases", 0), 0)
+		language_avg_confidence := 0.0
+		language_avg_grounding := 0.0
+		language_pass_rate := 0.0
+		if language_total > 0 {
+			language_avg_confidence = num_or(dict_get_or(bucket, "confidence_sum", 0.0), 0.0) / to_float(language_total)
+			language_avg_grounding = num_or(dict_get_or(bucket, "grounding_sum", 0.0), 0.0) / to_float(language_total)
+			language_pass_rate = to_float(language_passed) / to_float(language_total)
+		}
+		language_summary = push(language_summary, {
+			"language": str_or(dict_get_or(bucket, "language", language_name), language_name),
+			"total_cases": language_total,
+			"passed_cases": language_passed,
+			"quality_pass_rate": language_pass_rate,
+			"avg_confidence": language_avg_confidence,
+			"avg_grounding": language_avg_grounding
+		})
+	}
+
+	gates := {
+		"minimum_case_count": total_cases >= num_or(dict_get_or(thresholds, "min_case_count", 1), 1),
+		"quality_pass_rate": quality_pass_rate >= num_or(dict_get_or(thresholds, "min_quality_pass_rate", 0.75), 0.75),
+		"error_rate": error_rate <= num_or(dict_get_or(thresholds, "max_error_rate", 0.10), 0.10),
+		"avg_latency_ms": avg_latency_ms <= num_or(dict_get_or(thresholds, "max_avg_latency_ms", 800), 800),
+		"p95_latency_ms": to_float(p95_latency_ms) <= num_or(dict_get_or(thresholds, "max_p95_latency_ms", 1500), 1500),
+		"avg_confidence": avg_confidence >= num_or(dict_get_or(thresholds, "min_average_confidence", 0.35), 0.35),
+		"avg_grounding": avg_grounding >= num_or(dict_get_or(thresholds, "min_average_grounding", 0.45), 0.45)
+	}
+
+	ok := true
+	for key in keys(gates) {
+		if dict_get_or(gates, key, false) == false {
+			ok = false
+		}
+	}
+
+	return {
+		"ok": ok,
+		"error": "",
+		"error_message": "",
+		"dataset_version": dataset_version,
+		"dataset_domains": dataset_domains,
+		"dataset_languages": dataset_languages,
+		"thresholds": thresholds,
+		"metrics": {
+			"total_cases": total_cases,
+			"passed_cases": passed_cases,
+			"error_count": error_count,
+			"quality_pass_rate": quality_pass_rate,
+			"error_rate": error_rate,
+			"avg_latency_ms": avg_latency_ms,
+			"p95_latency_ms": p95_latency_ms,
+			"avg_confidence": avg_confidence,
+			"avg_grounding": avg_grounding,
+			"domain_summary": domain_summary,
+			"language_summary": language_summary
+		},
+		"gates": gates,
+		"build_summary": dict_get_or(build, "summary", {}),
+		"results": results
+	}
+}

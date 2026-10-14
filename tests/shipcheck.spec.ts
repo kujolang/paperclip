@@ -37,7 +37,7 @@ describe("native ShipCheck metadata inspection", () => {
     await writeFile(join(input.cwd, "src/checks.kujo"), `write_file(${JSON.stringify(marker)}, "import executed")\n`);
     const before = execFileSync("git", ["-C", input.cwd, "status", "--porcelain=v1", "-z"], { encoding: "utf8" });
     const report = await inspectShipcheck(input);
-    expect(report).toMatchObject({ status: "passed", stale: false, provenance: { component: "shipcheck", commit: "0a9f5795e9498f3698d5da6bb66642544251dd37" } });
+    expect(report).toMatchObject({ status: "passed", stale: false, provenance: { component: "shipcheck", commit: "ee4cfd052c0522eebedc0eead223cbb22490b357" } });
     expect(report.report.summary).toEqual({ total_checks: 16, passed: 16, failed_errors: 0, warnings: 0, gate_passed: 1 });
     expect(report.report.checks.find((check) => check.name === "git-repo")).toMatchObject({ passed: 1, message: "Git repository detected" });
     expect(report.coverage.omitted).toEqual([]);
@@ -106,7 +106,7 @@ describe("scoped Shipcheck integration", () => {
     const target = { entityType: "project" as const, entityId: "project", companyId: "company" };
     const result = await h.executeTool("inspect-release-readiness", {}, { companyId: "company", projectId: "project" });
     expect(result.error).toBeUndefined(); expect(result.data).not.toHaveProperty("snapshot");
-    expect(result.data).toMatchObject({ status: "passed", provenance: { commit: "0a9f5795e9498f3698d5da6bb66642544251dd37" } });
+    expect(result.data).toMatchObject({ status: "passed", provenance: { commit: "ee4cfd052c0522eebedc0eead223cbb22490b357" } });
     const restarted = await harness(input);
     const [receipt] = await listEvidence(restarted.ctx, target);
     expect(receipt).toMatchObject({ kind: "shipcheck-latest", sourceKind: "observed", result: "release signals passed" });

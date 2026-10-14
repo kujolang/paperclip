@@ -10,8 +10,8 @@ import { SUPPORTED_HOST_VERSION } from "../src/config/defaults.js";
 describe("Paperclip plugin contract", () => {
   it("validates against the host manifest schema", () => {
     expect(pluginManifestV1Schema.safeParse(manifest)).toMatchObject({ success: true });
-    expect(manifest.minimumHostVersion).toBe("0.0.0");
-    expect(SUPPORTED_HOST_VERSION).toBe("2026.824.1");
+    expect(manifest.minimumHostVersion).toBe("2026.1012.0");
+    expect(SUPPORTED_HOST_VERSION).toBe("2026.1012.0");
     expect(manifest.ui?.slots).toEqual(expect.arrayContaining([
       expect.objectContaining({ type: "detailTab", id: "kujo", entityTypes: ["project", "issue", "run"] }),
       expect.objectContaining({ type: "taskDetailView", id: "kujo-task-view", entityTypes: ["issue"] }),
@@ -23,7 +23,7 @@ describe("Paperclip plugin contract", () => {
     await plugin.definition.setup(harness.ctx);
     const health = await harness.getData<{ status: string; components: unknown[] }>("doctor");
     expect(health.status).toBe("ok");
-    expect(health.components).toHaveLength(14);
+    expect(health.components).toHaveLength(15);
   });
 
   it("rejects malformed tool parameters without reaching the workspace", async () => {

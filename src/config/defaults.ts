@@ -13,10 +13,9 @@ export const CONTEXT_BUDGETS = {
   broad: 40_000,
 } as const;
 
-export const PLUGIN_VERSION = "0.1.9";
+export const PLUGIN_VERSION = "0.2.0";
 export const PAPERCLIP_API_VERSION = 1;
-// Paperclip 2026.831.1 currently reports 0.0.0 to its plugin loader. Keep the
-// manifest gate neutral until the host supplies its real version; the supported
-// host contract remains enforced by the exact SDK pin and compatibility matrix.
-export const MINIMUM_HOST_VERSION = "0.0.0";
-export const SUPPORTED_HOST_VERSION = "2026.824.1";
+// The expansion is qualified against the official npm release, not a fork.
+// Reject older hosts instead of silently accepting missing plugin APIs.
+export const MINIMUM_HOST_VERSION = "2026.1012.0";
+export const SUPPORTED_HOST_VERSION = MINIMUM_HOST_VERSION;

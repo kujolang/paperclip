@@ -1,0 +1,17 @@
+# Shared test assertions for deterministic Kujo test scripts.
+
+export assert_true := func(condition) {
+	if to_bool(condition) == false {
+		print("Assertion failed: expected true, got false")
+		exit(1)
+	}
+	return true
+}
+
+export assert_equal := func(actual, expected) {
+	if actual != expected {
+		print("Assertion failed: expected " + to_string(expected) + ", got " + to_string(actual))
+		exit(1)
+	}
+	return true
+}

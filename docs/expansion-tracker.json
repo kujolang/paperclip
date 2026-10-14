@@ -98,7 +98,10 @@
       "status": "in_progress",
       "evidence": [
         "Local canonical MCP framework starter preview is available without workspace access, client registration or server execution. Its materialized consumer is tested for authenticated JSON-RPC and file boundaries. Repository-specific MCP generation/validation, approval-backed scaffolding and remaining knowledge/AI/operator workflows are still pending.",
-        "Approved canonical script/API/MCP/fixture-agent creation now exposes separate opt-in inspect/prepare/start/status/list/cancel through an issue panel and assigned-current-agent tool. Approval binds file digests, native helper/runtime and host workspace identity. Native confined per-file copies never overwrite files; partial creation is not rolled back or retried. Linked history and portable host receipts survive recovery. Exact native/browser/host/platform acceptance is recorded on the implementation PR. Dependency installation, persistent services, repository-specific MCP generation and durable external workflow ownership remain pending."
+        "Approved canonical script/API/MCP/fixture-agent creation now exposes separate opt-in inspect/prepare/start/status/list/cancel through an issue panel and assigned-current-agent tool. Approval binds file digests, native helper/runtime and host workspace identity. Native confined per-file copies never overwrite files; partial creation is not rolled back or retried. Linked history and portable host receipts survive recovery. Exact native/browser/host/platform acceptance is recorded on the implementation PR. Dependency installation, persistent services, repository-specific MCP generation and durable external workflow ownership remain pending.",
+        "Canonical RAG1.0.0 is pinned as the fifteenth component with an internal offline native ingest/query lifecycle. Explicit supplied text is bounded and redacted before ingestion; retained native indexes bind namespace, component, bridge and corpus digests. Native citation paths/lines are validated, empty/failed ingestion cannot become a usable index, and insufficient-evidence responses remain explicit. Public workspace admission, durable host storage, UI/tool integration, freshness/reindex/delete, real-host qualification and knowledge/AI acceptance remain unfinished.",
+        "Private knowledge storage now has a dedicated additive migration, company/project/workspace identity, compare-and-swap replacement/deletion, twenty database-enforced company slots and thirty-day logical expiry with opportunistic cleanup. Metadata-only listing and explicit Git-visible confined file capture/content freshness are internally tested. Public host authorization/profile controls, source selection/ingest/query/reindex/delete UI/tool journey and full host/database restart acceptance remain unfinished.",
+        "PR73 adds the public offline Ask your project journey: explicit selected-file ingestion, private revision-bound storage, cited snapshot queries, source freshness, metadata discovery and deletion after disablement. Host-derived company/project identity and post-native context rechecks protect service admission; bounded answers enter evidence history without the native index. Browser and packaged-host acceptance are recorded on PR73. AI/Agents SDK, Watchdog, dependency lifecycle, broader MCP and public/newcomer acceptance remain unfinished."
       ]
     },
     {
@@ -125,5 +128,10 @@
       "status": "pending",
       "evidence": []
     }
-  ]
+  ],
+  "reviewBoundary": {
+    "requested": "2026-10-14",
+    "instruction": "Finish knowledge and release-readiness checks, then stop for user review. Do not continue broader integrations or publish releases. Prepare the official-release dependency inventory.",
+    "remainingRoadmap": "Retained as deferred scope; do not treat all thirteen requirements as complete."
+  }
 }

@@ -16,12 +16,17 @@ const production = process.env.KUJO_ACCEPTANCE_PRODUCTION === "1";
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const packageDirectory = process.env.KUJO_ACCEPTANCE_PACKAGE_DIRECTORY ? await realpath(process.env.KUJO_ACCEPTANCE_PACKAGE_DIRECTORY) : null;
 if (packageDirectory && !production) throw new Error("Packaged acceptance requires production mode");
-const hostArg = process.env.KUJO_ACCEPTANCE_HOST;
-if (!hostArg) throw new Error("Set KUJO_ACCEPTANCE_HOST to a prepared Paperclip source checkout; no existing server URL is accepted.");
+const npmHostArg = process.env.KUJO_ACCEPTANCE_NPM_HOST;
+const hostArg = npmHostArg || process.env.KUJO_ACCEPTANCE_HOST;
+if (!hostArg) throw new Error("Set KUJO_ACCEPTANCE_NPM_HOST to an npm installation prefix, or KUJO_ACCEPTANCE_HOST to a prepared source checkout; no existing server URL is accepted.");
 const host = await realpath(hostArg);
 const node = process.env.KUJO_ACCEPTANCE_NODE || process.execPath;
-const loader = join(host, "cli/node_modules/tsx/dist/loader.mjs");
-await Promise.all([access(loader), access(join(host, "server/src/index.ts")), access(join(repo, "node_modules/esbuild"))]);
+const loader = npmHostArg ? null : join(host, "cli/node_modules/tsx/dist/loader.mjs");
+const hostEntry = npmHostArg ? join(host, "node_modules/@paperclipai/server/dist/index.js") : join(host, "server/src/index.ts");
+const npmHostPackage = npmHostArg ? JSON.parse(await readFile(join(host, "node_modules/@paperclipai/server/package.json"), "utf8")) : null;
+if (npmHostPackage) assert.equal(npmHostPackage.name, "@paperclipai/server");
+await Promise.all([...(loader ? [access(loader)] : []), access(hostEntry), access(join(repo, "node_modules/esbuild"))]);
+const packageDependencies = process.env.KUJO_ACCEPTANCE_PACKAGE_DEPENDENCIES ? await realpath(process.env.KUJO_ACCEPTANCE_PACKAGE_DEPENDENCIES) : join(repo, "node_modules");
 // mkdtemp guarantees a new instance; never reuse a caller-selected database/config.
 const root = await mkdtemp(join(tmpdir(), "kujo-execution-host-"));
 await import("node:fs/promises").then(({ chmod }) => chmod(root, 0o700));
@@ -32,7 +37,7 @@ let log;
 let stopping;
 let cookie = "";
 const evidence = { schemaVersion: 1, fixture: production ? "production Kujo workflows" : "isolated authenticated execution and host admission", startedAt: new Date().toISOString(),
-  hostCommit: execFileSync("git", ["-C", host, "rev-parse", "HEAD"], { encoding: "utf8" }).trim(),
+  ...(npmHostPackage ? { hostPackage: { name: npmHostPackage.name, version: npmHostPackage.version, entrySha256: createHash("sha256").update(await readFile(hostEntry)).digest("hex") } } : { hostCommit: execFileSync("git", ["-C", host, "rev-parse", "HEAD"], { encoding: "utf8" }).trim() }),
   pluginCommit: execFileSync("git", ["-C", repo, "rev-parse", "HEAD"], { encoding: "utf8" }).trim(), checks };
 async function port() {
   const server = createServer();
@@ -94,8 +99,8 @@ for (const [signal, exitCode] of [["SIGINT", 130], ["SIGTERM", 143]]) process.on
 });
 async function start() {
   log = await open(join(root, "server.log"), "a", 0o600);
-  // --import runs the source host in this exact child PID, not a CLI wrapper.
-  child = spawn(node, ["--import", pathToFileURL(loader).href, join(host, "server/src/index.ts")], { cwd: root, env, stdio: ["ignore", log.fd, log.fd] });
+  // Both modes run the host in this exact child PID, without a CLI wrapper.
+  child = spawn(node, loader ? ["--import", pathToFileURL(loader).href, hostEntry] : [hostEntry], { cwd: root, env, stdio: ["ignore", log.fd, log.fd] });
   let launchError;
   child.on("error", error => { launchError = error; });
   const deadline = Date.now() + 120_000;
@@ -130,8 +135,8 @@ try {
   if (packageDirectory) {
     assert.equal(JSON.parse(await readFile(join(packageDirectory, "package.json"), "utf8")).name, "@kujolang/paperclip");
     await cp(packageDirectory, fixture, { recursive: true });
-    await symlink(join(repo, "node_modules"), join(fixture, "node_modules"), process.platform === "win32" ? "junction" : "dir");
-    evidence.package = { mode: "extracted npm archive with existing pinned runtime dependencies", version: JSON.parse(await readFile(join(fixture, "package.json"), "utf8")).version,
+    await symlink(packageDependencies, join(fixture, "node_modules"), process.platform === "win32" ? "junction" : "dir");
+    evidence.package = { mode: process.env.KUJO_ACCEPTANCE_PACKAGE_DEPENDENCIES ? "npm-installed local archive with separately installed dependencies" : "extracted npm archive with existing pinned runtime dependencies", version: JSON.parse(await readFile(join(fixture, "package.json"), "utf8")).version,
       workerSha256: createHash("sha256").update(await readFile(join(fixture, "dist/worker.js"))).digest("hex"),
       manifestSha256: createHash("sha256").update(await readFile(join(fixture, "dist/manifest.js"))).digest("hex") };
   } else {
@@ -159,11 +164,43 @@ try {
   const projectId = (await call(`/companies/${companyId}/projects`, { method: "POST", status: 201, body: { name: "Fixed-program fixture" } })).data.id;
   await call(`/projects/${projectId}/workspaces`, { method: "POST", status: 201, body: { name: "Isolated fixture", cwd: join(root, "workspace"), isPrimary: true } });
   const issueId = (await call(`/companies/${companyId}/issues`, { method: "POST", status: 201, body: { title: "Verify authenticated execution", projectId, status: "backlog" } })).data.id;
-  const installed = (await call("/plugins/install", { method: "POST", body: { packageName: fixture, isLocalPath: true } })).data;
-  assert.equal(installed.status, "ready");
-  checks.push("fresh authenticated instance and local worker installation");
+  const previousPackage = process.env.KUJO_ACCEPTANCE_PREVIOUS_PACKAGE;
+  if (previousPackage) {
+    assert.ok(production && packageDirectory, "Upgrade qualification requires a packaged production target");
+    const previous = await realpath(previousPackage);
+    const previousManifest = JSON.parse(await readFile(join(previous, "package.json"), "utf8"));
+    assert.equal(previousManifest.name, "@kujolang/paperclip");
+    assert.equal(previousManifest.version, "0.1.9");
+    const upgradeFixture = join(root, "upgrade-plugin");
+    await cp(previous, upgradeFixture, { recursive: true });
+    await symlink(resolve(previous, "../.."), join(upgradeFixture, "node_modules"));
+    const initial = (await call("/plugins/install", { method: "POST", body: { packageName: upgradeFixture, isLocalPath: true } })).data;
+    assert.equal(initial.status, "ready");
+    const target = { entityType: "issue", entityId: issueId };
+    const captured = (await call("/plugins/kujolang.paperclip/bridge/action", { method: "POST", body: { companyId, key: "capture-failure", params: { ...target, title: "Retained before 0.2 upgrade", command: "fixture-check", exitCode: 1, log: "Upgrade evidence fixture" } } })).data;
+    const legacyId = captured.data?.failureEvidenceId ?? captured.result?.failureEvidenceId ?? captured.failureEvidenceId;
+    assert.ok(legacyId, "Published previous plugin must retain real evidence before upgrading");
+    // Reinstall is the documented public installation/upgrade command. The
+    // official host's upgrade endpoint rejects added capabilities, so exercise
+    // the explicit data-preserving administrator reinstall path and preserve the same plugin ID.
+    await call("/plugins/kujolang.paperclip?purge=false", { method: "DELETE" });
+    const upgraded = (await call("/plugins/install", { method: "POST", body: { packageName: fixture, isLocalPath: true } })).data;
+    assert.equal(upgraded.status, "ready");
+    assert.equal(upgraded.id, initial.id, "Upgrade must retain the original plugin identity and state");
+    const detail = async () => (await call("/plugins/kujolang.paperclip/bridge/data", { method: "POST", body: { companyId, key: "detail", params: target } })).data;
+    assert.ok(JSON.stringify(await detail()).includes(legacyId), "Legacy failure evidence must survive the upgrade");
+    await stop(); await start();
+    await waitUntil(async () => { try { return JSON.stringify(await detail()).includes(legacyId); } catch { return false; } }, 30_000);
+    assert.ok(JSON.stringify(await detail()).includes(legacyId), "Migrated evidence must survive a further host restart");
+    checks.push("published 0.1.9 evidence survives packaged upgrade, capability admission and full host restart");
+    evidence.upgrade = { from: previousManifest.version, to: evidence.package.version, legacyEvidenceRetained: true };
+  } else {
+    const installed = (await call("/plugins/install", { method: "POST", body: { packageName: fixture, isLocalPath: true } })).data;
+    assert.equal(installed.status, "ready");
+    checks.push("fresh authenticated instance and local worker installation");
+  }
   if (production) {
-    if (process.env.KUJO_ACCEPTANCE_PACK !== "workflows") {
+    if (!["workflows", "knowledge"].includes(process.env.KUJO_ACCEPTANCE_PACK)) {
     const { qualifyProductionEvaluation } = await import("./production-eval.mjs");
     await qualifyProductionEvaluation({ call, companyId, projectId, issueId, userId, root, node, checks, json, stop, start, waitUntil });
     const { qualifyProductionPackages } = await import("./production-packages.mjs");
@@ -173,8 +210,14 @@ try {
     const { qualifyProductionStarters } = await import("./production-starters.mjs");
     await qualifyProductionStarters({ call, companyId, projectId, issueId, root, node, checks, json, stop, start, waitUntil });
     }
-    const { qualifyProductionWorkflows } = await import("./production-workflows.mjs");
-    await qualifyProductionWorkflows({ call, companyId, root, checks, json, stop, start, waitUntil });
+    if (process.env.KUJO_ACCEPTANCE_PACK !== "knowledge") {
+      const { qualifyProductionWorkflows } = await import("./production-workflows.mjs");
+      await qualifyProductionWorkflows({ call, companyId, root, checks, json, stop, start, waitUntil });
+    }
+    if (process.env.KUJO_ACCEPTANCE_PACK !== "workflows") {
+      const { qualifyProductionKnowledge } = await import("./production-knowledge.mjs");
+      await qualifyProductionKnowledge({ call, companyId, projectId, root, checks, json, stop, start, waitUntil });
+    }
   } else {
   const bridge = "/plugins/kujolang.paperclip/bridge/action";
   const action = async (key, params, options = {}) => (await call(bridge, { method: "POST", body: { companyId, key: `${key}-fixture`, params: { issueId, ...params } }, ...options })).data;
@@ -287,7 +330,7 @@ try {
   assert.equal(await readFile(heartbeat, "utf8"), stoppedHeartbeat);
   checks.push("abrupt authenticated worker crash stops native heartbeat before its deadline; lost observation remains uncertain and cannot replay");
   const restartPending = await prepare("restart-pending");
-  await call("/plugins/kujolang.paperclip/disable", { method: "POST", body: {} });
+  await call("/plugins/kujolang.paperclip?purge=false", { method: "DELETE" });
   await call("/plugins/kujolang.paperclip/enable", { method: "POST", body: {} });
   assert.equal((await status(restartPending.id)).state, "pending");
   assert.deepEqual(await status(succeeded.id), succeeded);

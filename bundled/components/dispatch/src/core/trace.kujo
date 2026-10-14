@@ -152,7 +152,7 @@ func render_otel_trace_json(trace_state) {
 		]
 		spans := push(spans, {"traceId": dict_get_or(event, "trace_id", dict_get_or(trace_state, "trace_id", "")), "spanId": dict_get_or(event, "span_id", ""), "name": "dispatch." + dict_get_or(event, "type", "event"), "kind": 1, "startTimeUnixNano": dict_get_or(event, "timestamp_unix_nano", "0"), "endTimeUnixNano": dict_get_or(event, "timestamp_unix_nano", "0"), "attributes": attributes, "status": {"code": 1, "message": dict_get_or(event, "message", "")}})
 	}
-	return to_json({"resourceSpans": [{"resource": {"attributes": [otel_attribute("service.name", "dispatch"), otel_attribute("dispatch.workflow", dict_get_or(trace_state, "workflow_name", ""))]}, "scopeSpans": [{"scope": {"name": "kujolang.dispatch", "version": "1.3.0"}, "spans": spans}]}]})
+	return to_json({"resourceSpans": [{"resource": {"attributes": [otel_attribute("service.name", "dispatch"), otel_attribute("dispatch.workflow", dict_get_or(trace_state, "workflow_name", ""))]}, "scopeSpans": [{"scope": {"name": "kujolang.dispatch", "version": "1.4.0"}, "spans": spans}]}]})
 }
 
 func watchdog_event_kind(event_type) {
