@@ -163,7 +163,7 @@ try {
   assert.equal(installed.status, "ready");
   checks.push("fresh authenticated instance and local worker installation");
   if (production) {
-    if (process.env.KUJO_ACCEPTANCE_PACK !== "workflows") {
+    if (!["workflows", "knowledge"].includes(process.env.KUJO_ACCEPTANCE_PACK)) {
     const { qualifyProductionEvaluation } = await import("./production-eval.mjs");
     await qualifyProductionEvaluation({ call, companyId, projectId, issueId, userId, root, node, checks, json, stop, start, waitUntil });
     const { qualifyProductionPackages } = await import("./production-packages.mjs");
@@ -173,8 +173,14 @@ try {
     const { qualifyProductionStarters } = await import("./production-starters.mjs");
     await qualifyProductionStarters({ call, companyId, projectId, issueId, root, node, checks, json, stop, start, waitUntil });
     }
-    const { qualifyProductionWorkflows } = await import("./production-workflows.mjs");
-    await qualifyProductionWorkflows({ call, companyId, root, checks, json, stop, start, waitUntil });
+    if (process.env.KUJO_ACCEPTANCE_PACK !== "knowledge") {
+      const { qualifyProductionWorkflows } = await import("./production-workflows.mjs");
+      await qualifyProductionWorkflows({ call, companyId, root, checks, json, stop, start, waitUntil });
+    }
+    if (process.env.KUJO_ACCEPTANCE_PACK !== "workflows") {
+      const { qualifyProductionKnowledge } = await import("./production-knowledge.mjs");
+      await qualifyProductionKnowledge({ call, companyId, projectId, root, checks, json, stop, start, waitUntil });
+    }
   } else {
   const bridge = "/plugins/kujolang.paperclip/bridge/action";
   const action = async (key, params, options = {}) => (await call(bridge, { method: "POST", body: { companyId, key: `${key}-fixture`, params: { issueId, ...params } }, ...options })).data;

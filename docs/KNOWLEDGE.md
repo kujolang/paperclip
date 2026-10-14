@@ -2,7 +2,8 @@
 
 The unpublished expansion includes **Ask your project** on project and issue pages.
 It uses the pinned RAG 1.0.0 snapshot, works offline and needs no provider key.
-Full packaged host acceptance is still pending; public npm 0.1.9 does not include it.
+The packaged knowledge journey passes against host edc9bbb with Node 24.20.0;
+public npm 0.1.9 does not include it. Final release and manual usability review remain open.
 
 1. Select **Refresh index status**, then **Choose knowledge files**. Discovery lists
    eligible names without reading their contents.
@@ -97,9 +98,11 @@ A normal query does not perform these rereads.
 The public service checks host entity membership, feature/profile admission,
 workspace identity and settings, validates revision ownership, and rechecks native
 query/ingest context before publishing results. Its automated service and browser
-journeys do not establish full host installation/restart, migrated index recovery,
-manual usability, live-provider support or a public release. Those gates remain
-open on the expansion tracker.
+journeys are complemented by an extracted-package authenticated host check covering
+fresh migration, native cited queries, full host/database restart, retained index
+recovery, tenant rejection and cleanup while disabled. This qualifies host edc9bbb
+on Node 24.20.0, not every host release, manual usability, live-provider support
+or a public release. Those broader gates remain open on the expansion tracker.
 
 ## Verification
 
@@ -113,3 +116,8 @@ The ordinary full verification pipeline checks the pinned package and platforms.
 contexts, concurrent CAS, company capacity, expiry, corruption and tenant isolation.
 `tests/knowledge-admission.spec.ts` checks explicit selection, confined reads and
 content freshness. Public service tests exercise the scoped tool journey; a running packaged host is a separate gate.
+
+`KUJO_ACCEPTANCE_PRODUCTION=1 KUJO_ACCEPTANCE_PACK=knowledge` selects the
+knowledge-only authenticated host journey. Supply the prepared host checkout and
+extracted package using the documented acceptance environment variables. The full
+production suite also includes knowledge. See [review handoff](REVIEW-HANDOFF.md).
