@@ -75,5 +75,9 @@ verification passed 309 tests (2 skipped), all 58 browser scenarios, typecheck,
 build, component integrity, supply-chain and package checks. Local browser tests
 used installed Chrome because Playwright's Chromium download timed out; hosted
 Chromium remains a separate gate. Packaged host and final-head hosted results
-must be recorded before this handoff is called ready. The normal local Paperclip
+must be recorded before this handoff is called ready. Official minimum/latest
+host releases are not yet qualified: the real-host proof uses the prepared
+`robertdevore/paperclip` checkout edc9bbb. Identify an upstream release containing
+its required APIs, or review/release the relevant fork changes, before advertising
+a general upgrade path. The normal local Paperclip
 instance has not been modified by these isolated acceptance runs.

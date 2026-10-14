@@ -4,7 +4,7 @@
 
 | Dependency | Supported range | CI coverage |
 | --- | --- | --- |
-| Paperclip | `2026.824.1` and later in the current compatibility train | minimum host and latest compatible host |
+| Paperclip expansion host | Prepared `robertdevore/paperclip` checkout `edc9bbbba12029a9f055d94d58c5a545bb2aaaba` | Authenticated extracted-package acceptance on Node 24.20.0; official minimum/latest host releases not yet qualified |
 | Paperclip SDK | `2026.1012.0` and latest compatible release | locked minimum and latest |
 | Node.js | `24.11.0` through the latest Node 24 release | minimum and latest Node 24 |
 | Kujo runtime | bundled `1.8.1` | five native targets |
@@ -14,13 +14,18 @@ The plugin supports macOS arm64/x64, Linux arm64/x64, and Windows x64. CI runs t
 ## Change rules
 
 - Patch releases keep the same artifact schemas and minimum host train.
-- Paperclip `2026.831.1` reports `0.0.0` to its plugin loader. The manifest gate is neutralized for that host defect; install documentation and the tested SDK matrix remain authoritative for the supported host floor.
+- The manifest accepts a `0.0.0` host-version fallback for the historical loader defect. This permissive gate is not evidence that an old host supports the expansion APIs. Qualify an official host release before publishing the expansion.
 - Before 1.0, a minor release may add fields or raise a minimum version. The changelog must call out either change.
 - Readers accept additive fields but reject unknown schema versions.
 - Context content requires the same company, project, workspace, and Git snapshot that produced the pack.
 - Component and runtime updates require the full native matrix and clean-install smoke test.
 
-Paperclip releases outside the tested train are not supported until the scheduled compatibility job passes and the table is updated.
+The SDK matrix does not install or exercise minimum/latest Paperclip host releases.
+The historical `2026.824.1` maintenance floor must not be advertised as verified
+expansion support. Expansion requires database namespace migrations, authenticated
+action actors, issue documents/interactions, scheduled jobs and local folders.
+The current live-host proof uses the prepared fork above; official host release
+qualification and a fresh registry upgrade remain release gates.
 
 ## Upcoming component cohort
 
