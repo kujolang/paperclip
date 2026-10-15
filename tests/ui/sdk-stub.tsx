@@ -1,9 +1,13 @@
+import { useState } from "react";
+
 export type PluginDetailTabProps = {
   context: { entityType: string; entityId: string };
 };
 
 declare global {
   interface Window {
+    __KUJO_DELAY_REFRESH__?: boolean;
+    __KUJO_RESOLVE_REFRESH__?: () => void;
     __KUJO_KNOWLEDGE__?: any;
     __KUJO_DELAY_KNOWLEDGE__?: boolean;
     __KUJO_RESOLVE_KNOWLEDGE__?: () => void;
@@ -50,11 +54,17 @@ export function Spinner({ label }: { label: string }) {
 }
 
 export function usePluginData<T>() {
+  const [loading, setLoading] = useState(false);
   return {
     data: window.__KUJO_FIXTURE_DATA__ as T,
-    loading: false,
+    loading,
     error: null,
-    refresh: async () => undefined,
+    refresh: async () => {
+      setLoading(true);
+      if (window.__KUJO_DELAY_REFRESH__) await new Promise<void>(resolve => { window.__KUJO_RESOLVE_REFRESH__ = resolve; });
+      else await new Promise<void>(resolve => setTimeout(resolve, 0));
+      setLoading(false);
+    },
   };
 }
 

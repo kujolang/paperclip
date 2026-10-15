@@ -730,6 +730,24 @@ test("knowledge requires explicit selected reads and shows cited snapshot answer
 });
 
 
+test("knowledge answer survives evidence refresh and clears on company navigation", async ({ page }) => {
+  await page.goto("/?surface=task&entity=issue&knowledge=1");
+  const panel = page.getByRole("region", { name: "Project knowledge" });
+  await panel.getByRole("button", { name: "Choose knowledge files" }).click();
+  await panel.getByLabel("docs/guide.md", { exact: true }).check();
+  await panel.getByRole("button", { name: "Index selected files", exact: true }).click();
+  await page.evaluate(() => { window.__KUJO_DELAY_REFRESH__ = true; });
+  await panel.getByRole("button", { name: "Ask indexed files" }).click();
+  await page.waitForFunction(() => !!window.__KUJO_RESOLVE_REFRESH__);
+  await expect(panel.getByText("Answer draft", { exact: true })).toBeVisible();
+  await expect(panel.getByText("docs/guide.md:1–2", { exact: true })).toBeVisible();
+  await page.evaluate(() => { window.__KUJO_DELAY_REFRESH__ = false; window.__KUJO_RESOLVE_REFRESH__?.(); });
+  await expect(panel.getByText("Answer draft", { exact: true })).toBeVisible();
+  await page.evaluate(() => { window.__KUJO_NAVIGATE__?.("other-company"); });
+  await expect(panel.getByText("Answer draft", { exact: true })).toHaveCount(0);
+  await expect(panel.getByRole("button", { name: "Ask indexed files" })).toHaveCount(0);
+});
+
 test("knowledge navigation discards delayed private results", async ({ page }) => {
   await page.goto("/?surface=task&entity=issue&knowledge=1");
   await page.evaluate(() => { window.__KUJO_DELAY_KNOWLEDGE__ = true; });

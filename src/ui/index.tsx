@@ -737,7 +737,9 @@ function KujoPanel({ context, compact = false }: PanelProps) {
     setSourcePath(path); setFocusLine(line); setFormatPreview(preview);
   }
 
-  if (loading) return <Spinner label="Loading Kujo workspace intelligence" />;
+  // The host keeps the current data while refreshing. Keep child panels mounted
+  // too, so publishing evidence cannot erase an answer, preview or approval card.
+  if (loading && !data) return <Spinner label="Loading Kujo workspace intelligence" />;
   if (error) return <div role="alert" style={{ ...card, color: colors.danger }}>Unable to load Kujo: {error.message}</div>;
 
   const hasArtifacts = data?.packages || (data?.history?.length ?? 0) > 0 || data?.verification || data?.shipcheck || data?.concord || data?.fence || data?.spec || data?.language || data?.understanding || Boolean(data?.review || data?.failure || data?.context);
@@ -948,9 +950,9 @@ function KujoPanel({ context, compact = false }: PanelProps) {
 }
 
 export function KujoDetailTab(props: PluginDetailTabProps) {
-  return <KujoPanel {...props} />;
+  return <KujoPanel key={`${props.context.companyId}:${props.context.entityType}:${props.context.entityId}`} {...props} />;
 }
 
 export function KujoTaskDetailView(props: PluginDetailTabProps) {
-  return <KujoPanel {...props} compact />;
+  return <KujoPanel key={`${props.context.companyId}:${props.context.entityType}:${props.context.entityId}`} {...props} compact />;
 }
