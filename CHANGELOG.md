@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.1 — 2026-10-14
+
+- Preserve visible answers, citations and in-progress panel state while Paperclip refreshes evidence. Previously a successful project-knowledge query could clear its own answer when the host set its loading flag.
+- Remount panels when company or entity changes, retaining scope isolation while preserving same-task refresh state.
+- Model the real host loading cycle in browser fixtures and cover answer retention during/after refresh plus clearing on company navigation.
+
 ## 0.2.0 — 2026-10-14
 
 - Update Zod, database-test tooling, Playwright, React development fixtures, Rollup, Vitest and Node types to current compatible releases; refresh pinned GitHub Actions dependencies.

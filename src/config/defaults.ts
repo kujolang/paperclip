@@ -13,7 +13,7 @@ export const CONTEXT_BUDGETS = {
   broad: 40_000,
 } as const;
 
-export const PLUGIN_VERSION = "0.2.0";
+export const PLUGIN_VERSION = "0.2.1";
 export const PAPERCLIP_API_VERSION = 1;
 // The expansion is qualified against the official npm release, not a fork.
 // Reject older hosts instead of silently accepting missing plugin APIs.
