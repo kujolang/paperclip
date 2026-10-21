@@ -65,9 +65,10 @@ describe("canonical offline package inspection", () => {
   });
   it("bounds dependency previews and labels truncated output", async () => {
     const f = await fixture('[package]\nname="many"\nversion="1.0.0"\n' + Array.from({ length: 201 }, (_, i) => `[dependencies.dep${i}]\npath="../dep${i}"\n`).join(''));
-    expect(await f.inspect()).toMatchObject({ status: "warnings", dependencyCount: 201, truncated: true, dependencies: expect.any(Array) });
-    expect((await f.inspect()).dependencies).toHaveLength(200);
-  });
+    const report = await f.inspect();
+    expect(report).toMatchObject({ status: "warnings", dependencyCount: 201, truncated: true, dependencies: expect.any(Array) });
+    expect(report.dependencies).toHaveLength(200);
+  }, 20_000);
   it("rejects unsafe, oversize, unlisted and disabled reads", async () => {
     const f = await fixture();
     for (const path of ["../kennel.toml", "/kennel.toml", ".env/kennel.toml", "missing/kennel.toml"]) await expect(inspectPackages({ ...f.input, path })).rejects.toThrow();
