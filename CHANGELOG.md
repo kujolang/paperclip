@@ -1,10 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.2.1 — 2026-10-21
 
 - Require the October 2026 Node.js security patches: 24.22.1 on Node 24 or 26.12.1 and later. Pin development and CI to patched releases.
-
-## 0.2.1 — 2026-10-14
 
 - Preserve visible answers, citations and in-progress panel state while Paperclip refreshes evidence. Previously a successful project-knowledge query could clear its own answer when the host set its loading flag.
 - Remount panels when company or entity changes, retaining scope isolation while preserving same-task refresh state.
