@@ -12,7 +12,7 @@ You do not need the Classic Task Interface.
 
 ## Install in 30 seconds
 
-You need Paperclip `2026.1012.0` or later and Node.js `24.11.0` or later.
+You need Paperclip `2026.1012.0` or later and patched Node.js `24.22.1` (24.x) or `26.12.1` and later.
 
 ```bash
 npx paperclipai plugin install @kujolang/paperclip
@@ -236,7 +236,7 @@ recommended agent sequence.
 | Paperclip host (unpublished expansion) | Official `2026.1012.0` or newer; tested release `2026.1012.0` |
 | `@paperclipai/plugin-sdk` | `2026.1012.0` |
 | `@kujolang/kujo-runtime` | `1.8.1` |
-| Node.js | `>=24.11.0` |
+| Node.js | `>=24.22.1 <25` or `>=26.12.1` |
 
 The npm package is `@kujolang/paperclip`. Its Paperclip manifest ID is
 `kujolang.paperclip` because manifest IDs do not accept npm scope syntax.
