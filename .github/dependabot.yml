@@ -9,6 +9,9 @@ updates:
         dependency-type: development
     open-pull-requests-limit: 10
   - package-ecosystem: github-actions
+    groups:
+      codeql:
+        patterns: ["github/codeql-action/*"]
     directory: /
     schedule:
       interval: weekly
