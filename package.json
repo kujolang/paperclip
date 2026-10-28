@@ -55,7 +55,7 @@
     "test:host:execution": "node scripts/acceptance/execution-host.mjs"
   },
   "dependencies": {
-    "@kujolang/kujo-runtime": "1.8.1",
+    "@kujolang/kujo-runtime": "1.9.0",
     "@paperclipai/plugin-sdk": "2026.1012.0",
     "ajv": "8.20.0",
     "ajv-formats": "3.0.1",
