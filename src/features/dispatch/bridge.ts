@@ -8,6 +8,7 @@ import { parsePluginConfig } from "../../config/schema.js";
 import type { ExecutionRecord, ExecutionRequest, ExecutionScope } from "../../execution/contracts.js";
 import { executionAbilityReceipt } from "../../execution/receipt.js";
 import { normalizeError } from "../../runtime/errors.js";
+import { requireReadableEntity } from "../../paperclip/workspace.js";
 import { createWorkflowService, workflowStartInput } from "./service.js";
 
 const identity = z.string().min(1).max(200), base = z.object({ issueId: identity });
@@ -29,6 +30,7 @@ export function workflowView(scope: ExecutionScope, record: ExecutionRecord) {
 export function registerWorkflows(ctx: PluginContext) {
   const service = createWorkflowService(ctx);
   async function execute(value: z.infer<typeof workflowInput>, scope: ExecutionScope, requester: ExecutionRequest["requester"]) {
+    await requireReadableEntity(ctx, { entityType: "issue", entityId: scope.issueId, companyId: scope.companyId });
     if (value.operation === "inspect") return { plan: publicWorkflowPlan((await service.inspect(scope, { template: value.template, topic: value.topic })).plan) };
     if (value.operation === "prepare") return workflowView(scope, await service.prepare(scope, { template: value.template, topic: value.topic }, value.submissionId, requester));
     if (value.operation === "list") return { requests: (await service.list(scope)).map(workflowSummary), history: await reconcileWorkflowHistory(ctx, scope) };

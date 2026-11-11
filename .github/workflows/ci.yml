@@ -15,7 +15,9 @@ jobs:
       fail-fast: false
       matrix:
         os: [macos-14, macos-15-intel, ubuntu-24.04, ubuntu-24.04-arm, windows-2025]
-    runs-on: ${{ matrix.os }}
+    # Preserve the protected status name while replacing the retired macOS 14
+    # ARM runner with the supported macOS 15 ARM image.
+    runs-on: ${{ matrix.os == 'macos-14' && 'macos-15' || matrix.os }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0

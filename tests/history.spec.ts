@@ -89,6 +89,7 @@ describe("durable evidence", () => {
 describe("evidence host bridge", () => {
   it("binds reads to the host company and honors disabled features", async () => {
     const harness = createTestHarness({ manifest });
+    harness.seed({ projects: [{ id: "project", companyId: "company", visibility: "open" } as NonNullable<Awaited<ReturnType<typeof harness.ctx.projects.get>>>] });
     await plugin.definition.setup(harness.ctx);
     await saveArtifact(harness.ctx, target, "language-latest", pack("bridge"));
     const [record] = await listEvidence(harness.ctx, target);
@@ -98,12 +99,14 @@ describe("evidence host bridge", () => {
     expect(exported).toMatchObject({ currentWorkspace: { freshness: "unknown" } });
     expect(JSON.stringify(exported)).not.toContain("/private/project");
     const disabled = createTestHarness({ manifest, config: { features: { language: false } } });
+    disabled.seed({ projects: [{ id: "project", companyId: "company", visibility: "open" } as NonNullable<Awaited<ReturnType<typeof disabled.ctx.projects.get>>>] });
     await plugin.definition.setup(disabled.ctx);
     await expect(disabled.performAction("export-evidence", params, { companyId: "company" })).rejects.toThrow("disabled");
   });
 
   it("bounds agent evidence reads and derives project/run scope from host context", async () => {
     const harness = createTestHarness({ manifest });
+    harness.seed({ projects: [{ id: "project", companyId: "company", visibility: "open" } as NonNullable<Awaited<ReturnType<typeof harness.ctx.projects.get>>>] });
     await plugin.definition.setup(harness.ctx);
     await saveArtifact(harness.ctx, target, "language-latest", pack("tool"));
     const runCtx = { companyId: "company", projectId: "project", runId: "run" };
@@ -120,6 +123,7 @@ describe("evidence host bridge", () => {
 
   it("rejects agent attachment even when caller parameters claim a human", async () => {
     const harness = createTestHarness({ manifest });
+    harness.seed({ issues: [{ id: "issue", companyId: "company", projectId: null, visibility: "open" } as NonNullable<Awaited<ReturnType<typeof harness.ctx.issues.get>>>] });
     await plugin.definition.setup(harness.ctx);
     const params = { entityType: "issue", entityId: "issue", evidenceId: "missing" };
     await expect(harness.performAction("attach-evidence", params, { companyId: "company", actor: { type: "agent", agentId: "agent", companyId: "company" } })).rejects.toThrow("authenticated human");

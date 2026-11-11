@@ -13,6 +13,8 @@ import { build } from "esbuild";
 import { buildRuntimeSupervisor } from "../build-runtime-supervisor.mjs";
 
 const production = process.env.KUJO_ACCEPTANCE_PRODUCTION === "1";
+const browserQualification = process.env.KUJO_ACCEPTANCE_PACK === "ui";
+if (browserQualification && !production) throw new Error("Browser qualification requires production mode");
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const packageDirectory = process.env.KUJO_ACCEPTANCE_PACKAGE_DIRECTORY ? await realpath(process.env.KUJO_ACCEPTANCE_PACKAGE_DIRECTORY) : null;
 if (packageDirectory && !production) throw new Error("Packaged acceptance requires production mode");
@@ -22,9 +24,20 @@ if (!hostArg) throw new Error("Set KUJO_ACCEPTANCE_NPM_HOST to an npm installati
 const host = await realpath(hostArg);
 const node = process.env.KUJO_ACCEPTANCE_NODE || process.execPath;
 const loader = npmHostArg ? null : join(host, "cli/node_modules/tsx/dist/loader.mjs");
-const hostEntry = npmHostArg ? join(host, "node_modules/@paperclipai/server/dist/index.js") : join(host, "server/src/index.ts");
+const hostEntry = await realpath(npmHostArg ? join(host, "node_modules/@paperclipai/server/dist/index.js") : join(host, "server/src/index.ts"));
 const npmHostPackage = npmHostArg ? JSON.parse(await readFile(join(host, "node_modules/@paperclipai/server/package.json"), "utf8")) : null;
 if (npmHostPackage) assert.equal(npmHostPackage.name, "@paperclipai/server");
+const baselineHostArg = process.env.KUJO_ACCEPTANCE_BASELINE_NPM_HOST;
+if (baselineHostArg && (!npmHostArg || !production)) throw new Error("Host migration rehearsal requires production mode and two npm host prefixes");
+const baselineHost = baselineHostArg ? await realpath(baselineHostArg) : null;
+const baselineEntry = baselineHost ? await realpath(join(baselineHost, "node_modules/@paperclipai/server/dist/index.js")) : null;
+const baselinePackage = baselineHost ? JSON.parse(await readFile(join(baselineHost, "node_modules/@paperclipai/server/package.json"), "utf8")) : null;
+if (baselinePackage) {
+  assert.equal(baselinePackage.name, "@paperclipai/server");
+  assert.notEqual(baselinePackage.version, npmHostPackage.version, "Migration rehearsal must cross host versions");
+  await access(baselineEntry);
+}
+let activeHostEntry = baselineEntry ?? hostEntry;
 await Promise.all([...(loader ? [access(loader)] : []), access(hostEntry), access(join(repo, "node_modules/esbuild"))]);
 const packageDependencies = process.env.KUJO_ACCEPTANCE_PACKAGE_DEPENDENCIES ? await realpath(process.env.KUJO_ACCEPTANCE_PACKAGE_DEPENDENCIES) : join(repo, "node_modules");
 // mkdtemp guarantees a new instance; never reuse a caller-selected database/config.
@@ -63,10 +76,10 @@ async function call(route, { method = "GET", body, status = 200, session = cooki
   return { data, cookies: response.headers.getSetCookie().map(value => value.split(";", 1)[0]).join("; ") };
 }
 const env = Object.fromEntries(["PATH", "HOME", "USER", "LOGNAME", "TMPDIR", "TEMP", "TMP", "SystemRoot"].filter(key => process.env[key]).map(key => [key, process.env[key]]));
-Object.assign(env, { PAPERCLIP_CONFIG: join(root, "config.json"), PAPERCLIP_HOME: join(root, "home"), PAPERCLIP_INSTANCE_ID: "acceptance",
+Object.assign(env, { HOME: join(root, "home"), PAPERCLIP_CONFIG: join(root, "config.json"), PAPERCLIP_HOME: join(root, "home"), PAPERCLIP_INSTANCE_ID: "acceptance",
   PAPERCLIP_DEPLOYMENT_MODE: "authenticated", PAPERCLIP_DEPLOYMENT_EXPOSURE: "private", PAPERCLIP_AUTH_BASE_URL_MODE: "explicit", PAPERCLIP_AUTH_PUBLIC_BASE_URL: base,
   PAPERCLIP_MIGRATION_AUTO_APPLY: "true", PAPERCLIP_MIGRATION_PROMPT: "never", PAPERCLIP_TELEMETRY_DISABLED: "1", HEARTBEAT_SCHEDULER_ENABLED: "false",
-  PAPERCLIP_ANNOUNCEMENTS_ENABLED: "false", HOST: "127.0.0.1", PORT: String(httpPort), SERVE_UI: "false",
+  PAPERCLIP_ANNOUNCEMENTS_ENABLED: "false", HOST: "127.0.0.1", PORT: String(httpPort), SERVE_UI: String(browserQualification),
   BETTER_AUTH_SECRET: randomBytes(32).toString("hex"), PAPERCLIP_AGENT_JWT_SECRET: randomBytes(32).toString("hex") });
 function stop() {
   stopping ??= stopOwned().finally(() => { stopping = undefined; });
@@ -100,7 +113,7 @@ for (const [signal, exitCode] of [["SIGINT", 130], ["SIGTERM", 143]]) process.on
 async function start() {
   log = await open(join(root, "server.log"), "a", 0o600);
   // Both modes run the host in this exact child PID, without a CLI wrapper.
-  child = spawn(node, loader ? ["--import", pathToFileURL(loader).href, hostEntry] : [hostEntry], { cwd: root, env, stdio: ["ignore", log.fd, log.fd] });
+  child = spawn(node, loader ? ["--import", pathToFileURL(loader).href, activeHostEntry] : [activeHostEntry], { cwd: root, env, stdio: ["ignore", log.fd, log.fd] });
   let launchError;
   child.on("error", error => { launchError = error; });
   const deadline = Date.now() + 120_000;
@@ -120,6 +133,14 @@ async function waitUntil(check, timeout = 15_000) {
   const end = Date.now() + timeout;
   while (Date.now() < end) { if (await check()) return; await delay(100); }
   throw new Error("Acceptance condition timed out");
+}
+async function observeHostVersion() {
+  // Authenticated hosts deliberately omit version from anonymous health responses.
+  const health = (await call("/health")).data;
+  const expected = activeHostEntry === baselineEntry ? baselinePackage?.version : npmHostPackage?.version;
+  if (expected) assert.equal(health.version, expected, "Authenticated health must match the installed host");
+  evidence.observedHostVersions ??= [];
+  if (typeof health.version === "string" && !evidence.observedHostVersions.includes(health.version)) evidence.observedHostVersions.push(health.version);
 }
 try {
   await mkdir(join(fixture, "dist"), { recursive: true });
@@ -141,6 +162,7 @@ try {
       manifestSha256: createHash("sha256").update(await readFile(join(fixture, "dist/manifest.js"))).digest("hex") };
   } else {
   await symlink(join(repo, "bundled"), join(fixture, "bundled"), process.platform === "win32" ? "junction" : "dir");
+  await symlink(join(repo, "examples"), join(fixture, "examples"), process.platform === "win32" ? "junction" : "dir");
   await symlink(join(repo, "node_modules"), join(fixture, "node_modules"), process.platform === "win32" ? "junction" : "dir");
   await writeFile(join(fixture, "package.json"), JSON.stringify({ name: "@kujolang/approval-acceptance-fixture", version: "0.0.0", private: true, type: "module",
     paperclipPlugin: { manifest: "./dist/manifest.js", worker: "./dist/worker.js" } }));
@@ -151,7 +173,7 @@ try {
   }
   await json("config.json", { $meta: { version: 1, updatedAt: new Date().toISOString(), source: "doctor" },
     database: { mode: "embedded-postgres", embeddedPostgresDataDir: join(root, "db"), embeddedPostgresPort: dbPort, backup: { enabled: false, dir: join(root, "backups") } },
-    logging: { mode: "file", logDir: join(root, "logs") }, server: { deploymentMode: "authenticated", exposure: "private", bind: "loopback", host: "127.0.0.1", port: httpPort, serveUi: false },
+    logging: { mode: "file", logDir: join(root, "logs") }, server: { deploymentMode: "authenticated", exposure: "private", bind: "loopback", host: "127.0.0.1", port: httpPort, serveUi: browserQualification },
     auth: { baseUrlMode: "explicit", publicBaseUrl: base, disableSignUp: false }, storage: { provider: "local_disk", localDisk: { baseDir: join(root, "storage") } },
     secrets: { provider: "local_encrypted", strictMode: false, localEncrypted: { keyFilePath: join(root, "secrets/master.key") } }, telemetry: { enabled: false }, updates: { checkEnabled: false } });
   console.log(`Isolated acceptance evidence: ${root}`);
@@ -160,6 +182,7 @@ try {
   cookie = signup.cookies; assert.ok(cookie);
   const userId = signup.data.user.id;
   await call("/bootstrap/claim", { method: "POST", body: {} });
+  await observeHostVersion();
   const companyId = (await call("/companies", { method: "POST", status: 201, body: { name: "Kujo execution acceptance" } })).data.id;
   const projectId = (await call(`/companies/${companyId}/projects`, { method: "POST", status: 201, body: { name: "Fixed-program fixture" } })).data.id;
   await call(`/projects/${projectId}/workspaces`, { method: "POST", status: 201, body: { name: "Isolated fixture", cwd: join(root, "workspace"), isPrimary: true } });
@@ -170,12 +193,13 @@ try {
     const previous = await realpath(previousPackage);
     const previousManifest = JSON.parse(await readFile(join(previous, "package.json"), "utf8"));
     assert.equal(previousManifest.name, "@kujolang/paperclip");
-    assert.equal(previousManifest.version, "0.1.9");
+    assert.match(previousManifest.version, /^\d+\.\d+\.\d+$/, "Previous plugin must identify its actual stable version");
     const upgradeFixture = join(root, "upgrade-plugin");
     await cp(previous, upgradeFixture, { recursive: true });
     await symlink(resolve(previous, "../.."), join(upgradeFixture, "node_modules"));
     const initial = (await call("/plugins/install", { method: "POST", body: { packageName: upgradeFixture, isLocalPath: true } })).data;
     assert.equal(initial.status, "ready");
+    assert.equal(initial.version, previousManifest.version);
     const target = { entityType: "issue", entityId: issueId };
     const captured = (await call("/plugins/kujolang.paperclip/bridge/action", { method: "POST", body: { companyId, key: "capture-failure", params: { ...target, title: "Retained before 0.2 upgrade", command: "fixture-check", exitCode: 1, log: "Upgrade evidence fixture" } } })).data;
     const legacyId = captured.data?.failureEvidenceId ?? captured.result?.failureEvidenceId ?? captured.failureEvidenceId;
@@ -192,14 +216,48 @@ try {
     await stop(); await start();
     await waitUntil(async () => { try { return JSON.stringify(await detail()).includes(legacyId); } catch { return false; } }, 30_000);
     assert.ok(JSON.stringify(await detail()).includes(legacyId), "Migrated evidence must survive a further host restart");
-    checks.push("published 0.1.9 evidence survives packaged upgrade, capability admission and full host restart");
+    checks.push(`previous plugin ${previousManifest.version} evidence survives packaged upgrade, capability admission and full host restart`);
     evidence.upgrade = { from: previousManifest.version, to: evidence.package.version, legacyEvidenceRetained: true };
   } else {
     const installed = (await call("/plugins/install", { method: "POST", body: { packageName: fixture, isLocalPath: true } })).data;
     assert.equal(installed.status, "ready");
     checks.push("fresh authenticated instance and local worker installation");
   }
+  if (baselinePackage) {
+    const target = { entityType: "issue", entityId: issueId };
+    const captured = (await call("/plugins/kujolang.paperclip/bridge/action", { method: "POST", body: { companyId, key: "capture-failure", params: { ...target, title: "Host migration sentinel", command: "offline-fixture", exitCode: 1, log: "Retain this evidence across host migrations" } } })).data;
+    const retainedId = captured.data?.failureEvidenceId;
+    assert.ok(retainedId, "Baseline host must store real plugin evidence");
+    assert.ok(evidence.observedHostVersions.includes(baselinePackage.version), "Baseline health must report its installed version");
+    await stop();
+    // The entire state is task-owned and offline; copy only after PostgreSQL stops.
+    await assert.rejects(access(join(root, "db", "postmaster.pid")), { code: "ENOENT" });
+    await cp(join(root, "db"), join(root, "pre-upgrade-db"), { recursive: true });
+    activeHostEntry = hostEntry;
+    await start();
+    await observeHostVersion();
+    assert.ok(evidence.observedHostVersions.includes(npmHostPackage.version), "Target health must report its installed version");
+    const retained = async () => (await call("/plugins/kujolang.paperclip/bridge/data", { method: "POST", body: { companyId, key: "detail", params: target } })).data;
+    await waitUntil(async () => { try { return JSON.stringify(await retained()).includes(retainedId); } catch { return false; } }, 30_000);
+    await stop(); await start();
+    await waitUntil(async () => { try { return JSON.stringify(await retained()).includes(retainedId); } catch { return false; } }, 30_000);
+    evidence.hostUpgrade = { from: baselinePackage.version, to: npmHostPackage.version, offlineBackup: "pre-upgrade-db", evidenceRetained: true };
+    checks.push("official host upgrade preserves company/project/issue identity, login session and plugin evidence through migrations and another restart");
+  }
   if (production) {
+    if (process.env.KUJO_ACCEPTANCE_PACK === "install") {
+      const { qualifyProductionInstall } = await import("./production-install.mjs");
+      await qualifyProductionInstall({ call, companyId, root, host, node, base, checks, json });
+    }
+    if (browserQualification) {
+      const { qualifyProductionUi } = await import("./production-ui.mjs");
+      await qualifyProductionUi({ call, companyId, projectId, issueId, root, base, cookie, checks });
+    }
+    if (!process.env.KUJO_ACCEPTANCE_PACK || process.env.KUJO_ACCEPTANCE_PACK === "core") {
+      const { qualifyProductionCore } = await import("./production-core.mjs");
+      await qualifyProductionCore({ call, companyId, projectId, issueId, root, node, checks, json, stop, start, waitUntil });
+    }
+    if (!["core", "ui", "install"].includes(process.env.KUJO_ACCEPTANCE_PACK)) {
     if (!["workflows", "knowledge"].includes(process.env.KUJO_ACCEPTANCE_PACK)) {
     const { qualifyProductionEvaluation } = await import("./production-eval.mjs");
     await qualifyProductionEvaluation({ call, companyId, projectId, issueId, userId, root, node, checks, json, stop, start, waitUntil });
@@ -217,6 +275,7 @@ try {
     if (process.env.KUJO_ACCEPTANCE_PACK !== "workflows") {
       const { qualifyProductionKnowledge } = await import("./production-knowledge.mjs");
       await qualifyProductionKnowledge({ call, companyId, projectId, root, checks, json, stop, start, waitUntil });
+    }
     }
   } else {
   const bridge = "/plugins/kujolang.paperclip/bridge/action";
@@ -330,11 +389,16 @@ try {
   assert.equal(await readFile(heartbeat, "utf8"), stoppedHeartbeat);
   checks.push("abrupt authenticated worker crash stops native heartbeat before its deadline; lost observation remains uncertain and cannot replay");
   const restartPending = await prepare("restart-pending");
+  const beforeReinstall = (await call("/plugins/kujolang.paperclip")).data;
   await call("/plugins/kujolang.paperclip?purge=false", { method: "DELETE" });
-  await call("/plugins/kujolang.paperclip/enable", { method: "POST", body: {} });
+  // Uninstalled is distinct from disabled in current hosts; restore through the
+  // documented non-purge reinstall path, not the enable endpoint.
+  const reinstalled = (await call("/plugins/install", { method: "POST", body: { packageName: fixture, isLocalPath: true } })).data;
+  assert.equal(reinstalled.id, beforeReinstall.id);
+  assert.equal(reinstalled.status, "ready");
   assert.equal((await status(restartPending.id)).state, "pending");
   assert.deepEqual(await status(succeeded.id), succeeded);
-  checks.push("worker reload preserves pending approval and terminal receipt");
+  checks.push("non-purge reinstall preserves plugin identity, pending approval and terminal receipt");
   await stop(); await start();
   await waitUntil(async () => { try { return (await status(restartPending.id)).state === "pending"; } catch { return false; } });
   assert.deepEqual(await status(succeeded.id), succeeded);

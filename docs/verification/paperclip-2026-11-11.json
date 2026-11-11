@@ -1,0 +1,399 @@
+{
+  "schemaVersion": 1,
+  "baselineCommit": "c6fa2874b2e66ad7650e8669ca076638f7c20a3f",
+  "codeCommits": [
+    "6567b1f",
+    "e470222",
+    "224214b"
+  ],
+  "localVerify": {
+    "status": "passed",
+    "files": 44,
+    "testsPassed": 328,
+    "platformNotApplicable": 2,
+    "durationSeconds": 639.7,
+    "node": "26.12.1",
+    "platform": "darwin-x64"
+  },
+  "browserFixture": {
+    "passedCases": 59,
+    "initialPassed": 57,
+    "unchangedSerialRetriesPassed": 2,
+    "browser": "Chrome 157.0.8103.51",
+    "baselineUpdated": false
+  },
+  "runs": [
+    {
+      "name": "packaged-host-migration-all",
+      "startedAt": "2026-11-11T22:19:57.729Z",
+      "finishedAt": "2026-11-11T22:29:51.690Z",
+      "status": "passed",
+      "hostStopped": true,
+      "hostPackage": {
+        "name": "@paperclipai/server",
+        "version": "2026.1106.0",
+        "entrySha256": "cde8cd927214edb31edf173aec7667dd86b174799a58c822f6abf41089786480"
+      },
+      "observedHostVersions": [
+        "2026.1012.0",
+        "2026.1106.0"
+      ],
+      "package": {
+        "mode": "npm-installed local archive with separately installed dependencies",
+        "version": "0.2.1",
+        "workerSha256": "a2af470dbf91b17c2c491050cca33c62b76206be12e923b3c4ce93f7663cde0d",
+        "manifestSha256": "1c0d6f4d33f89c463ecd6279bb74cf2d40e5bf92f49de9dff59e92e3ba654370"
+      },
+      "hostUpgrade": {
+        "from": "2026.1012.0",
+        "to": "2026.1106.0",
+        "offlineBackup": "pre-upgrade-db",
+        "evidenceRetained": true
+      },
+      "checks": [
+        "fresh authenticated instance and local worker installation",
+        "official host upgrade preserves company/project/issue identity, login session and plugin evidence through migrations and another restart",
+        "core board actions execute real pinned review/context/failure/map/language/Spec/Fence/Concord/ShipCheck/import workflows without workspace writes",
+        "core evidence preserves integrity and redaction across full host/database restart",
+        "core actions reject invalid input, traversal, unauthenticated access and private issue/project workspace access while open issues remain readable",
+        "authenticated assigned-agent core tools return structured native evidence, enforce two-stage context selection, redact run evidence and reject disabled/forged requests",
+        "production handlers require settings, authenticated human identity and exact approval; duplicate preparation reconciles",
+        "production worker runs approved native Eval and retains immutable public receipt without ownership secrets",
+        "production handler rejects changed approval and preserves canonical failed checks",
+        "disabled production execution retains bounded recovery metadata and cancellation only",
+        "agent history list/read enforce assigned issue and export the verified parent plan with native outcome",
+        "authenticated agent tool binds real checkout/run, cannot self-approve, and executes only after board approval",
+        "production success and failure receipts survive full authenticated host/database restart",
+        "production receipt access rejects a different tenant even for the shared board administrator",
+        "restarted native Evidence history supports parent-linked export, comparison, explicit attachment and tenant isolation",
+        "explicit history clearing survives status/detail reconciliation without rerunning or losing the independent execution outcome",
+        "production package inspection uses canonical declarations, preserves input bytes and retains scoped exportable evidence",
+        "package evidence survives full authenticated host/database restart",
+        "package inspection enforces tenant ownership and company profile admission",
+        "native script, fixture-agent and pinned API/MCP starter previews respect company profiles and preserve the project workspace",
+        "source run requires separate settings and human-only approval, deduplicates requests and executes a frozen copy with retained host receipts",
+        "native test-file and fixture commands retain observed output; changed source invalidates earlier approval",
+        "source preparation failure retains a safe stage/code, null native result and no replay after source restoration",
+        "source receipts and parent-linked history survive authenticated host/database restart; disabled cancellation and tenant isolation hold",
+        "actual assigned agent run can prepare/start source execution only after board approval and cannot accept its own card",
+        "all four canonical starters create exact reviewed files only after board approval; duplicate submissions replay retained outcomes without writing again",
+        "late destination conflicts preserve existing bytes and become stale; disabled cancellation creates no project files",
+        "creation receipts, linked export and publication acknowledgment survive full host/database restart; foreign tenant reads are denied",
+        "assigned current agent run can create only its own approved starter; agent cannot accept the human-only card",
+        "workflow linked history exports preserve canonical receipts without raw commands; disabled recovery and cancellation remain available and foreign tenant reads fail",
+        "production workflow job executes a projectless human-approved start after full host/database restart; native checkpoint requires a separate exact-revision human confirmation and explicit queued decision",
+        "completed workflow and canonical host receipt survive another restart; cancelled pending start does not execute",
+        "knowledge fresh host migration, explicit selection, native cited query and bounded evidence export",
+        "private knowledge index and native cited queries survive full authenticated host/database restart",
+        "knowledge detects changed sources, preserves failed replacement, isolates tenants and permits disabled cleanup"
+      ]
+    },
+    {
+      "name": "published-plugin-reinstall",
+      "startedAt": "2026-11-11T22:21:45.826Z",
+      "finishedAt": "2026-11-11T22:25:29.440Z",
+      "status": "passed",
+      "hostStopped": true,
+      "hostPackage": {
+        "name": "@paperclipai/server",
+        "version": "2026.1106.0",
+        "entrySha256": "cde8cd927214edb31edf173aec7667dd86b174799a58c822f6abf41089786480"
+      },
+      "observedHostVersions": [
+        "2026.1106.0"
+      ],
+      "package": {
+        "mode": "npm-installed local archive with separately installed dependencies",
+        "version": "0.2.1",
+        "workerSha256": "a2af470dbf91b17c2c491050cca33c62b76206be12e923b3c4ce93f7663cde0d",
+        "manifestSha256": "1c0d6f4d33f89c463ecd6279bb74cf2d40e5bf92f49de9dff59e92e3ba654370"
+      },
+      "upgrade": {
+        "from": "0.2.1",
+        "to": "0.2.1",
+        "legacyEvidenceRetained": true
+      },
+      "checks": [
+        "previous plugin 0.2.1 evidence survives packaged upgrade, capability admission and full host restart",
+        "core board actions execute real pinned review/context/failure/map/language/Spec/Fence/Concord/ShipCheck/import workflows without workspace writes",
+        "core evidence preserves integrity and redaction across full host/database restart",
+        "core actions reject invalid input, traversal, unauthenticated access and private issue/project workspace access while open issues remain readable",
+        "authenticated assigned-agent core tools return structured native evidence, enforce two-stage context selection, redact run evidence and reject disabled/forged requests"
+      ]
+    },
+    {
+      "name": "execution-fixture",
+      "startedAt": "2026-11-11T22:18:53.885Z",
+      "finishedAt": "2026-11-11T22:21:21.310Z",
+      "status": "passed",
+      "hostStopped": true,
+      "hostPackage": {
+        "name": "@paperclipai/server",
+        "version": "2026.1106.0",
+        "entrySha256": "cde8cd927214edb31edf173aec7667dd86b174799a58c822f6abf41089786480"
+      },
+      "observedHostVersions": [
+        "2026.1106.0"
+      ],
+      "checks": [
+        "fresh authenticated instance and local worker installation",
+        "duplicate prepare reconciles one card; unauthenticated and unapproved start denied",
+        "authenticated nonmember cannot approve or start another company's request",
+        "agent with real host run attribution cannot accept human-only card or forge board identity",
+        "cross-company status, start and cancel denied even for shared administrator",
+        "host-recorded board acceptance authorizes native Kujo; terminal replay immutable",
+        "host-approved canonical Eval retains native pass/fail receipts without replay",
+        "company-configured host workspace capture, review preview and approved native execution",
+        "changed host inputs invalidate approval; disabled execution still permits scoped cancellation",
+        "late acceptance cannot undo durable cancellation",
+        "concurrent worker cancellation stops running native fixture and remains final",
+        "abrupt authenticated worker crash stops native heartbeat before its deadline; lost observation remains uncertain and cannot replay",
+        "non-purge reinstall preserves plugin identity, pending approval and terminal receipt",
+        "full authenticated host/database restart preserves session, pending card, cancellation and terminal result",
+        "explicit authenticated queue survives host/database restart; independent host job executes with fresh company scope and skips cancelled work",
+        "real PostgreSQL enforces twenty active request slots and releases cancelled capacity",
+        "real PostgreSQL admits two running owners and keeps a third approved request pending"
+      ]
+    },
+    {
+      "name": "core-extended-target-pass",
+      "startedAt": "2026-11-11T22:29:50.056Z",
+      "finishedAt": "2026-11-11T22:31:04.530Z",
+      "status": "passed",
+      "hostStopped": true,
+      "hostPackage": {
+        "name": "@paperclipai/server",
+        "version": "2026.1106.0",
+        "entrySha256": "cde8cd927214edb31edf173aec7667dd86b174799a58c822f6abf41089786480"
+      },
+      "observedHostVersions": [
+        "2026.1106.0"
+      ],
+      "checks": [
+        "fresh authenticated instance and local worker installation",
+        "core board actions execute real pinned review/context/failure/map/language/Spec/Fence/Concord/ShipCheck/import workflows without workspace writes",
+        "core evidence preserves integrity and redaction across full host/database restart",
+        "core actions reject invalid input, traversal, unauthenticated access and private issue/project workspace access while open issues remain readable",
+        "core agent package inspection, native knowledge ingest/query/freshness/delete and assigned workflow inspect/list cover three additional public tools with malformed negatives",
+        "authenticated assigned-agent core tools return structured native evidence, enforce two-stage context selection, redact run evidence and reject disabled/forged requests",
+        "core revoked agent credential is rejected by the public tool endpoint"
+      ]
+    },
+    {
+      "name": "actual-host-ui",
+      "startedAt": "2026-11-11T22:18:58.555Z",
+      "finishedAt": "2026-11-11T22:20:24.929Z",
+      "status": "passed",
+      "hostStopped": true,
+      "hostPackage": {
+        "name": "@paperclipai/server",
+        "version": "2026.1106.0",
+        "entrySha256": "cde8cd927214edb31edf173aec7667dd86b174799a58c822f6abf41089786480"
+      },
+      "observedHostVersions": [
+        "2026.1106.0"
+      ],
+      "checks": [
+        "fresh authenticated instance and local worker installation",
+        "actual host task detail renders the Kujo workspace with authenticated bridge data",
+        "actual host task UI action retains failure evidence and displays its returned result",
+        "actual host project Kujo detail tab renders and does not carry issue evidence across navigation"
+      ]
+    },
+    {
+      "name": "actual-host-run-ui-blocked",
+      "startedAt": "2026-11-11T22:23:51.445Z",
+      "finishedAt": "2026-11-11T22:26:39.723Z",
+      "status": "failed",
+      "hostStopped": true,
+      "hostPackage": {
+        "name": "@paperclipai/server",
+        "version": "2026.1106.0",
+        "entrySha256": "cde8cd927214edb31edf173aec7667dd86b174799a58c822f6abf41089786480"
+      },
+      "observedHostVersions": [
+        "2026.1106.0"
+      ],
+      "checks": [
+        "fresh authenticated instance and local worker installation",
+        "actual host task detail renders the Kujo workspace with authenticated bridge data",
+        "actual host task UI action retains failure evidence and displays its returned result",
+        "actual host project Kujo detail tab renders and does not carry issue evidence across navigation"
+      ],
+      "observedLimitation": "Host RunDetail renders Details/Transcript/Events but no Kujo plugin tab; public run evidence tool succeeds."
+    },
+    {
+      "name": "isolated-cli-install",
+      "startedAt": "2026-11-11T22:40:57.591Z",
+      "finishedAt": "2026-11-11T22:41:43.908Z",
+      "status": "passed",
+      "hostStopped": true,
+      "hostPackage": {
+        "name": "@paperclipai/server",
+        "version": "2026.1106.0",
+        "entrySha256": "cde8cd927214edb31edf173aec7667dd86b174799a58c822f6abf41089786480"
+      },
+      "observedHostVersions": [
+        "2026.1106.0"
+      ],
+      "package": {
+        "mode": "npm-installed local archive with separately installed dependencies",
+        "version": "0.2.1",
+        "workerSha256": "a2af470dbf91b17c2c491050cca33c62b76206be12e923b3c4ce93f7663cde0d",
+        "manifestSha256": "1c0d6f4d33f89c463ecd6279bb74cf2d40e5bf92f49de9dff59e92e3ba654370"
+      },
+      "checks": [
+        "fresh authenticated instance and local worker installation",
+        "fixed bundled run-example executes through the authenticated board bridge with exact expected output",
+        "official target CLI scoped package plus separate --version installs registry plugin 0.2.1 and host reports exact version",
+        "official target CLI scoped name@version still fails package-path resolution; separate --version is the verified pinned workaround"
+      ],
+      "details": {
+        "cliVersion": "2026.1106.0",
+        "example": {
+          "output": {
+            "items": 2,
+            "language": "Kujo",
+            "total": 36
+          },
+          "runtimeVersion": "1.8.1"
+        },
+        "separateVersion": {
+          "exitCode": 0,
+          "observedVersion": "0.2.1",
+          "status": "ready",
+          "isolatedPackageVersion": "0.2.1"
+        },
+        "suffixedVersion": {
+          "exitCode": 1,
+          "missingPackagePathDiagnostic": true
+        }
+      }
+    },
+    {
+      "name": "home-isolated-packaged-core",
+      "startedAt": "2026-11-11T22:44:26.380Z",
+      "finishedAt": "2026-11-11T22:45:37.318Z",
+      "status": "passed",
+      "hostStopped": true,
+      "hostPackage": {
+        "name": "@paperclipai/server",
+        "version": "2026.1106.0",
+        "entrySha256": "cde8cd927214edb31edf173aec7667dd86b174799a58c822f6abf41089786480"
+      },
+      "observedHostVersions": [
+        "2026.1106.0"
+      ],
+      "package": {
+        "mode": "npm-installed local archive with separately installed dependencies",
+        "version": "0.2.1",
+        "workerSha256": "a2af470dbf91b17c2c491050cca33c62b76206be12e923b3c4ce93f7663cde0d",
+        "manifestSha256": "1c0d6f4d33f89c463ecd6279bb74cf2d40e5bf92f49de9dff59e92e3ba654370"
+      },
+      "checks": [
+        "fresh authenticated instance and local worker installation",
+        "core board actions execute real pinned review/context/failure/map/language/Spec/Fence/Concord/ShipCheck/import workflows without workspace writes",
+        "core evidence preserves integrity and redaction across full host/database restart",
+        "core actions reject invalid input, traversal, unauthenticated access and private issue/project workspace access while open issues remain readable",
+        "core agent package inspection, native knowledge ingest/query/freshness/delete and assigned workflow inspect/list cover three additional public tools with malformed negatives",
+        "authenticated assigned-agent core tools return structured native evidence, enforce two-stage context selection, redact run evidence and reject disabled/forged requests",
+        "core revoked agent credential is rejected by the public tool endpoint"
+      ]
+    }
+  ],
+  "isolationRecovery": {
+    "initialRegistryProbe": "Excluded from isolated qualification: host loader used global npm prefix despite PAPERCLIP_HOME",
+    "harnessFix": "Host HOME is now task-owned; installed package path asserted beneath disposable root",
+    "restored": "Observed empty manifest and absent plugin; 13 probe packages and two bin links quarantined reversibly",
+    "limitation": "Pre-probe dependency inventory and prior lockfile bytes unavailable; restored observed manifest/plugin state, not byte-exact complete prefix",
+    "persistentServiceOrDatabaseChanged": false
+  },
+  "remoteCI": {
+    "sourceCommit": "03c024b99e0378e8d4206c705c78270f1eed12de",
+    "runs": [
+      43114661354,
+      43114661400,
+      43114661569
+    ],
+    "checks": [
+      {
+        "name": "CodeQL",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/kujolang/paperclip/runs/130839811510"
+      },
+      {
+        "name": "dependency-review",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/kujolang/paperclip/actions/runs/43114661569/job/130839399416"
+      },
+      {
+        "name": "codeql",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/kujolang/paperclip/actions/runs/43114661569/job/130839398929"
+      },
+      {
+        "name": "sdk-node (24.x, latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/kujolang/paperclip/actions/runs/43114661400/job/130839398836"
+      },
+      {
+        "name": "sdk-node (24.x, minimum)",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/kujolang/paperclip/actions/runs/43114661400/job/130839398818"
+      },
+      {
+        "name": "sdk-node (24.11.0, latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/kujolang/paperclip/actions/runs/43114661400/job/130839398792"
+      },
+      {
+        "name": "verify (windows-2025)",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/kujolang/paperclip/actions/runs/43114661354/job/130839398675"
+      },
+      {
+        "name": "verify (ubuntu-24.04)",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/kujolang/paperclip/actions/runs/43114661354/job/130839398599"
+      },
+      {
+        "name": "verify (macos-14)",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/kujolang/paperclip/actions/runs/43114661354/job/130839398493"
+      },
+      {
+        "name": "verify (ubuntu-24.04-arm)",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/kujolang/paperclip/actions/runs/43114661354/job/130839398480"
+      },
+      {
+        "name": "verify (macos-15-intel)",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/kujolang/paperclip/actions/runs/43114661354/job/130839398416"
+      },
+      {
+        "name": "sdk-node (24.11.0, minimum)",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/kujolang/paperclip/actions/runs/43114661400/job/130839398310"
+      },
+      {
+        "name": "browser-ui",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/kujolang/paperclip/actions/runs/43114661354/job/130839398025"
+      }
+    ]
+  }
+}

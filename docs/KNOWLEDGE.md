@@ -1,10 +1,11 @@
-# Knowledge integration (development)
+# Knowledge integration
 
-The unpublished expansion includes **Ask your project** on project and issue pages.
+Version 0.2.0 introduced **Ask your project** on project and issue pages.
 It uses the pinned RAG 1.0.0 snapshot, works offline and needs no provider key.
-The packaged knowledge journey passes against official npm Paperclip 2026.1012.0
-with freshly installed plugin dependencies and Node 24.20.0;
-public npm 0.1.9 does not include it. Final release and manual usability review remain open.
+The November 11 packaged journey passes against official npm Paperclip 2026.1106.0
+on Node 26.12.1, including cited queries, restart continuity, changed-source detection
+and disabled cleanup. Earlier qualification references below are historical;
+see [the sweep matrix](COMPATIBILITY_SWEEP_2026_11_11.md) for current coverage and limits.
 
 1. Select **Refresh index status**, then **Choose knowledge files**. Discovery lists
    eligible names without reading their contents.

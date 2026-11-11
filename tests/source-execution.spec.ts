@@ -31,6 +31,7 @@ async function fixture() {
   await writeFile(join(cwd, "eval.json"), JSON.stringify({ name: "Separate Eval", tests: [{ name: "text", check: "file_exists", params: { path: "main.kujo" } }] }));
   const h = createTestHarness({ manifest, config: { features: { sourceExecution: true, execution: true } } });
   h.ctx.issues.get = async (id, companyId) => ({ id, companyId, projectId: "project", assigneeAgentId: "agent", checkoutRunId: "run" } as Awaited<ReturnType<PluginContext["issues"]["get"]>>);
+  h.seed({ projects: [{ id: "project", companyId: "company", visibility: "open" } as NonNullable<Awaited<ReturnType<typeof h.ctx.projects.get>>>] });
   h.ctx.projects.getWorkspaceForIssue = async () => ({ id: "workspace", projectId: "project", path: cwd } as Awaited<ReturnType<PluginContext["projects"]["getWorkspaceForIssue"]>>);
   type Card = Awaited<ReturnType<PluginContext["issues"]["requestConfirmation"]>>;
   const cards: Card[] = [];
@@ -113,7 +114,7 @@ describe("approved Kujo run/test", () => {
     for (const path of ["../escape.kujo", "/absolute.kujo", "C:/escape.kujo", "main.json"]) await expect(f.prepare("bad", "run", path)).rejects.toThrow();
     await expect(f.action({ operation: "inspect", mode: "fixtures", path: "elsewhere" })).rejects.toThrow(/omit path/);
     const request = await f.prepare();
-    await expect(f.h.performAction("manage-kujo-execution", { operation: "status", issueId: "issue", id: request.id }, { companyId: "other", actor: { type: "user", companyId: "other", userId: "board" } })).rejects.toThrow(/operation/);
+    await expect(f.h.performAction("manage-kujo-execution", { operation: "status", issueId: "issue", id: request.id }, { companyId: "other", actor: { type: "user", companyId: "other", userId: "board" } })).rejects.toThrow("Project or issue was not found or is unavailable in this company");
     expect(f.cards).toHaveLength(1);
   });
   it("invalidates changed source, policy and native-operation bindings before execution", async () => {

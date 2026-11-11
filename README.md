@@ -19,8 +19,11 @@ npx paperclipai plugin install @kujolang/paperclip
 ```
 
 Restart Paperclip if it is already running, then open an issue. The Kujo workspace
-appears in the task view. You can also open the **Kujo** tab on project, issue detail,
-and run pages.
+appears in the task view. You can also open the **Kujo** tab on project and issue
+detail pages where the host exposes detail tabs. Paperclip `2026.1106.0` does not
+mount plugin tabs on its run page, so the run evidence panel is unavailable there.
+The plugin retains its read-only run component and agent run-evidence tools; see
+[the observed host limitation](docs/COMPATIBILITY_SWEEP_2026_11_11.md).
 
 The npm package includes the right Kujo runtime for macOS arm64/x64, Linux arm64/x64,
 and Windows x64. You do not need a separate Kujo install or Kujo API key. Installation
@@ -233,15 +236,15 @@ recommended agent sequence.
 
 | Package | Version |
 | --- | --- |
-| Paperclip host (unpublished expansion) | Official `2026.1012.0` or newer; tested release `2026.1012.0` |
-| `@paperclipai/plugin-sdk` | `2026.1012.0` |
+| Paperclip host | Minimum `2026.1012.0`; stable `2026.1106.0` tested in isolated authenticated hosts; see the [sweep results and limits](docs/COMPATIBILITY_SWEEP_2026_11_11.md) |
+| `@paperclipai/plugin-sdk` | `2026.1106.0` |
 | `@kujolang/kujo-runtime` | `1.8.1` |
 | Node.js | `>=24.22.1 <25` or `>=26.12.1` |
 
 The npm package is `@kujolang/paperclip`. Its Paperclip manifest ID is
 `kujolang.paperclip` because manifest IDs do not accept npm scope syntax.
 
-The plugin tests the minimum supported Paperclip SDK and the latest compatible SDK in
+The plugin tests the locked Paperclip SDK and the latest stable SDK in
 CI. Live-host acceptance separately uses official Paperclip from npm with a fresh
 Kujo package install. No custom Paperclip fork or separately installed Kujo tools
 are required. The expansion raises the host floor to `2026.1012.0`; see

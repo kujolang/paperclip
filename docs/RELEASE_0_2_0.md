@@ -1,5 +1,8 @@
 # Kujo for Paperclip 0.2.0
 
+Historical release notes. Current installations require the patched Node versions
+and host guidance in [Installation](INSTALLATION.md).
+
 Kujo now brings repository understanding, private offline project knowledge, native quality checks and human-approved workflows into Paperclip.
 
 ## Highlights

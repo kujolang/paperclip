@@ -107,6 +107,7 @@ describe("canonical Concord snapshot inspection", () => {
 describe("scoped Concord integration", () => {
   async function harness(input: Awaited<ReturnType<typeof fixture>>, profile = "installed") {
     const h = createTestHarness({ manifest, config: { features: { verification: true }, capabilityProfile: profile } });
+    h.seed({ projects: [{ id: "project", companyId: "company", visibility: "open" } as NonNullable<Awaited<ReturnType<typeof h.ctx.projects.get>>>] });
     const workspace: PluginWorkspace = { id: input.workspaceId, projectId: input.projectId, path: input.cwd, name: "Fixture", repoUrl: null, repoRef: null, defaultRef: null, isPrimary: true, createdAt: "", updatedAt: "" };
     vi.spyOn(h.ctx.projects, "getPrimaryWorkspace").mockImplementation(async (_id, companyId) => companyId === "company" ? workspace : null);
     await plugin.definition.setup(h.ctx);

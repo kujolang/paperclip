@@ -5,6 +5,7 @@ import type { ExecutionRecord, ExecutionRequest, ExecutionScope } from "../../ex
 import { executionAbilityReceipt } from "../../execution/receipt.js";
 import { evidenceDigest } from "../../storage/history.js";
 import { normalizeError } from "../../runtime/errors.js";
+import { requireReadableEntity } from "../../paperclip/workspace.js";
 import { requireAgentIssue } from "../eval/bridge.js";
 import { createStarterCreationService } from "./creation.js";
 import { publishStarterCreation, reconcileStarterCreationHistory } from "./history.js";
@@ -29,6 +30,7 @@ export function starterCreationView(scope: ExecutionScope, record: ExecutionReco
 export function registerStarterCreation(ctx: PluginContext) {
   const service = createStarterCreationService(ctx);
   async function execute(value: z.infer<typeof starterCreationInput>, scope: ExecutionScope, requester: ExecutionRequest["requester"]) {
+    await requireReadableEntity(ctx, { entityType: "issue", entityId: scope.issueId, companyId: scope.companyId });
     if (value.operation === "inspect") return service.inspect(scope, { kind: value.kind, name: value.name });
     if (value.operation === "prepare") {
       const record = await service.prepare(scope, { kind: value.kind, name: value.name }, `starter:${evidenceDigest(value.submissionId)}`, requester);

@@ -73,6 +73,7 @@ describe("canonical Eval frozen-input execution", () => {
     const prepared = await prepare([{ name: "missing", check: "file_exists", params: { path: "missing.txt" } }]);
     const h = createTestHarness({ manifest });
     h.ctx.issues.get = async (id, companyId) => ({ id, companyId, projectId: "project" } as Awaited<ReturnType<typeof h.ctx.issues.get>>);
+    h.seed({ projects: [{ id: "project", companyId: "company", visibility: "open" } as NonNullable<Awaited<ReturnType<typeof h.ctx.projects.get>>>] });
     h.ctx.projects.getWorkspaceForIssue = async () => ({ id: "workspace", projectId: "project", path: process.cwd() } as Awaited<ReturnType<typeof h.ctx.projects.getWorkspaceForIssue>>);
     type Card = Awaited<ReturnType<PluginContext["issues"]["requestConfirmation"]>>;
     const cards: Card[] = [];

@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { link, lstat, mkdir, mkdtemp, open, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, open, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { promisify } from "node:util";
@@ -70,17 +70,15 @@ export async function prepareContextWorkspace(cwd: string, task: string): Promis
       const destination = resolve(mirror, relative);
       if (!isPathInside(mirror, destination)) continue;
       await mkdir(dirname(destination), { recursive: true });
+      // Hardlink creation/removal changes the original file's ctime and would
+      // invalidate our own dirty-workspace fingerprint before content is read.
+      const handle = await open(source, "r");
       try {
-        await link(source, destination);
-      } catch {
-        const handle = await open(source, "r");
-        try {
-          const buffer = Buffer.alloc(Math.min(info.size, CONTEXT_COPY_BYTES));
-          const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
-          await writeFile(destination, buffer.subarray(0, bytesRead));
-        } finally {
-          await handle.close();
-        }
+        const buffer = Buffer.alloc(Math.min(info.size, CONTEXT_COPY_BYTES));
+        const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+        await writeFile(destination, buffer.subarray(0, bytesRead));
+      } finally {
+        await handle.close();
       }
     }
     await execFileAsync("git", ["init", "--quiet", mirror], {

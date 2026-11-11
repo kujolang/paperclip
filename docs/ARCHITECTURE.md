@@ -16,10 +16,17 @@ All execution enters through `executeKujo()`. It uses `spawn`, never a shell, va
 
 Artifacts use company/entity-scoped database rows: Review and Context Packs are stored against their project or issue; Failure Evidence is stored against its run. Generated CaseFile/Scent scratch output is created in a private temporary directory and removed after normalization. Project repositories remain read-only.
 
+Project/issue admission checks the current host entity and company before resolving
+workspace paths or reading retained evidence. Private entities are denied, including
+an issue's private parent project. Paperclip 2026.1106.0 workspace lookup does not
+itself provide equivalent privacy filtering, so this local boundary remains required.
+Context scratch inputs use bounded private byte copies: hardlinks change source
+ctime and can invalidate the snapshot used by the separate content-read operation.
+
 ## Public contracts
 
 - npm packages and runtime resolver API documented in the Kujo runtime repository
-- Paperclip manifest API version 1 and minimum host version `2026.824.1`
+- Paperclip manifest API version 1 and minimum host version `2026.1012.0`
 - twelve namespaced agent tools declared in the manifest and worker
 - component lock schema version 1
 - Review Pack, Failure Evidence, and Context Pack schema version 1

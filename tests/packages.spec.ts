@@ -87,6 +87,7 @@ describe("canonical offline package inspection", () => {
   });
   it("exposes scoped host tools and history, preserves profile gates and rejects run mutation", async () => {
     const f = await fixture(); const h = createTestHarness({ manifest });
+    h.seed({ projects: [{ id: "project", companyId: "company", visibility: "open" } as NonNullable<Awaited<ReturnType<typeof h.ctx.projects.get>>>] });
     h.ctx.projects.getPrimaryWorkspace = async (_project, company) => company === "company" ? ({ id: "workspace", projectId: "project", path: f.cwd } as Awaited<ReturnType<typeof h.ctx.projects.getPrimaryWorkspace>>) : null;
     await plugin.definition.setup(h.ctx);
     const result = await h.executeTool("inspect-kujo-packages", {}, { companyId: "company", projectId: "project" });

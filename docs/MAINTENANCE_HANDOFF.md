@@ -1,6 +1,27 @@
 # Paperclip maintenance handoff
 
-Updated September 3, 2026.
+## Current handoff — November 11, 2026
+
+Repository package version is `0.2.1`; the manifest already enforces Paperclip
+`2026.1012.0`. Do not restore the historical `0.0.0` workaround described below.
+The latest stable host and SDK are `2026.1106.0`, verified against official GitHub
+and npm metadata. The SDK is pinned to that release. Expanded live acceptance
+found and fixed missing entity admission before workspace/evidence reads and
+Context Pack hardlinks invalidating their own source freshness snapshot.
+Initial ENOSPC failures were environmental; dependencies were restored before
+testing. Disposable host state must live under a directory whose ancestors permit
+directory syncing (the Codex Documents workspace did not; `/private/tmp` did).
+See [the sweep report](COMPATIBILITY_SWEEP_2026_11_11.md) for current evidence,
+the capability matrix, measured outcomes, retained workarounds, and rollback
+requirements. The separate existing host fork and persistent instance were not
+upgraded. Do not infer their state from disposable qualification.
+
+## Historical handoff — September 3, 2026
+
+The material below is retained as historical release evidence, not current
+version or deployment instructions. In particular, its version-floor action
+was completed in 0.2.0. PR #12745 is still open as checked November 11, but its
+status does not describe every fix independently shipped by upstream.
 
 ## Current state
 

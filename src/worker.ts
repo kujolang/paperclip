@@ -19,7 +19,7 @@ import { failureEvidenceSchema, type FailureEvidence } from "./features/failure/
 import { generateContextPack } from "./features/context/generate.js";
 import { contextPackSchema, type ContextPack } from "./features/context/schema.js";
 import { getContextContent } from "./features/context/content.js";
-import { inspectWorkspace, resolveProjectWorkspace, resolveWorkspace } from "./paperclip/workspace.js";
+import { inspectWorkspace, requireReadableEntity, resolveProjectWorkspace, resolveWorkspace } from "./paperclip/workspace.js";
 import { clearArtifacts, ensureHistory, loadArtifact, saveArtifact, type StateTarget } from "./storage/state.js";
 import { listEvidence, getEvidence, exportEvidence, compareEvidence, type ArtifactKind } from "./storage/history.js";
 import { toolEnabled, applyCapabilityProfile, capabilityCatalog, projectionReceipt } from "./abilities/catalog.js";
@@ -174,9 +174,8 @@ async function reviewForProject(ctx: PluginContext, runCtx: ToolRunContext, para
 async function importForTarget(ctx: PluginContext, target: StateTarget, json: string) {
   const config = await configFor(ctx, target.companyId, importVerificationTool);
   if (!config.features.verification) throw new Error("Verification imports are disabled by configuration or profile");
-  const entity = target.entityType === "project" ? await ctx.projects.get(target.entityId, target.companyId)
-    : target.entityType === "issue" ? await ctx.issues.get(target.entityId, target.companyId) : null;
-  if (!entity || entity.companyId !== target.companyId) throw new Error("Project or issue was not found in this company");
+  if (target.entityType === "run") throw new Error("Choose a project or issue");
+  await requireReadableEntity(ctx, { ...target, entityType: target.entityType });
   const report = importVerification(json);
   await saveArtifact(ctx, target, "verification-latest", report, { inputs: { sourceDigest: report.sourceDigest }, definition: importVerificationTool, projection: projectionReceipt(importVerificationTool) });
   await audit(ctx, { ...target, operation: "verification.imported", artifactId: report.id });
@@ -312,6 +311,7 @@ function registerTools(ctx: PluginContext) {
       const entityId = input.scope === "issue" ? input.issueId! : input.scope === "run" ? runCtx.runId : runCtx.projectId;
       if (!entityId || !runCtx.companyId) throw new Error("Host project/run and company context are required");
       const target: StateTarget = { companyId: runCtx.companyId, entityType: input.scope, entityId };
+      if (target.entityType !== "run") await requireReadableEntity(ctx, { ...target, entityType: target.entityType });
       const config = await configFor(ctx, target.companyId);
       await ensureHistory(ctx, target);
       if (tool.name === "list-evidence") {
@@ -468,6 +468,7 @@ function registerUiBridge(ctx: PluginContext, executions: ReturnType<typeof regi
       entityId: z.string().min(1),
       companyId: z.string().min(1),
     }).parse(params) as StateTarget;
+    if (target.entityType !== "run") await requireReadableEntity(ctx, { ...target, entityType: target.entityType });
     const config = await configFor(ctx, target.companyId);
     const inspection = target.entityType === "run"
       ? null
@@ -682,6 +683,7 @@ function registerUiBridge(ctx: PluginContext, executions: ReturnType<typeof regi
     if (!actionCtx.companyId) throw new Error("Company context is required");
     const value = historyTarget.parse(actionParams(params));
     const target = { entityType: value.entityType, entityId: value.entityId, companyId: actionCtx.companyId };
+    if (target.entityType !== "run") await requireReadableEntity(ctx, { ...target, entityType: target.entityType });
     if (operation === "attach-evidence" && (target.entityType !== "issue" || actionCtx.actor.type !== "user" || !actionCtx.actor.userId || actionCtx.actor.companyId !== target.companyId)) {
       throw new Error("Issue attachment requires an authenticated human in this company");
     }
@@ -721,8 +723,7 @@ function registerUiBridge(ctx: PluginContext, executions: ReturnType<typeof regi
   ctx.actions.register("clear-artifacts", async (params, actionCtx) => {
     if (!actionCtx.companyId) throw new Error("Company context is required");
     const target = actionTarget.parse(actionParams(params));
-    const entity = target.entityType === "project" ? await ctx.projects.get(target.entityId, actionCtx.companyId) : await ctx.issues.get(target.entityId, actionCtx.companyId);
-    if (!entity || entity.companyId !== actionCtx.companyId) throw new Error("Project or issue was not found in this company");
+    await requireReadableEntity(ctx, { ...target, companyId: actionCtx.companyId });
     await clearArtifacts(ctx, { ...target, companyId: actionCtx.companyId });
     await ctx.activity.log({
       companyId: actionCtx.companyId,
