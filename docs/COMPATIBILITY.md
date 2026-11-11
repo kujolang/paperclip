@@ -11,6 +11,10 @@
 
 The plugin supports macOS arm64/x64, Linux arm64/x64, and Windows x64. CI runs the plugin suite across native targets. A separate compatibility job tests the locked and latest Paperclip SDK on patched Node 24.22.1. These SDK tests do not establish compatibility with a running host.
 
+The protected `verify (macos-14)` status now runs macOS 15 ARM: GitHub retired
+macOS 14 runners on November 2, 2026. The legacy name is retained so branch
+protection continues to require the same architecture check.
+
 The November 11 sweep pins the SDK to official stable Paperclip `2026.1106.0`
 and tests that exact npm host using disposable authenticated instances. See
 [the sweep evidence](COMPATIBILITY_SWEEP_2026_11_11.md) for the capability matrix,

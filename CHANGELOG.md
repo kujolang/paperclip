@@ -6,6 +6,7 @@
 - Check company and entity access before workspace resolution and retained project/issue evidence reads. Reject private entities locally where Paperclip workspace lookups do not enforce the same boundary.
 - Copy Context Pack inputs into private scratch space instead of hardlinking them, preventing context generation from changing source metadata and invalidating its own freshness binding.
 - Expand authenticated host acceptance to core board/agent workflows, privacy negatives and backed-up host migration rehearsals. Reconcile installation and maintenance guidance; see the November 11 compatibility report for measured coverage and remaining limits.
+- Replace the retired macOS 14 ARM CI runner with macOS 15 while preserving the protected status name and all five native architecture checks.
 
 ## 0.2.1 — 2026-10-21
 
