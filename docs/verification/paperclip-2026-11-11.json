@@ -305,7 +305,95 @@
     "initialRegistryProbe": "Excluded from isolated qualification: host loader used global npm prefix despite PAPERCLIP_HOME",
     "harnessFix": "Host HOME is now task-owned; installed package path asserted beneath disposable root",
     "restored": "Observed empty manifest and absent plugin; 13 probe packages and two bin links quarantined reversibly",
-    "limitation": "Prior lockfile bytes unavailable; empty-manifest lockfiles reconstructed, not byte-exact verified",
+    "limitation": "Pre-probe dependency inventory and prior lockfile bytes unavailable; restored observed manifest/plugin state, not byte-exact complete prefix",
     "persistentServiceOrDatabaseChanged": false
+  },
+  "remoteCI": {
+    "sourceCommit": "03c024b99e0378e8d4206c705c78270f1eed12de",
+    "runs": [
+      43114661354,
+      43114661400,
+      43114661569
+    ],
+    "checks": [
+      {
+        "name": "CodeQL",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/kujolang/paperclip/runs/130839811510"
+      },
+      {
+        "name": "dependency-review",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/kujolang/paperclip/actions/runs/43114661569/job/130839399416"
+      },
+      {
+        "name": "codeql",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/kujolang/paperclip/actions/runs/43114661569/job/130839398929"
+      },
+      {
+        "name": "sdk-node (24.x, latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/kujolang/paperclip/actions/runs/43114661400/job/130839398836"
+      },
+      {
+        "name": "sdk-node (24.x, minimum)",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/kujolang/paperclip/actions/runs/43114661400/job/130839398818"
+      },
+      {
+        "name": "sdk-node (24.11.0, latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/kujolang/paperclip/actions/runs/43114661400/job/130839398792"
+      },
+      {
+        "name": "verify (windows-2025)",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/kujolang/paperclip/actions/runs/43114661354/job/130839398675"
+      },
+      {
+        "name": "verify (ubuntu-24.04)",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/kujolang/paperclip/actions/runs/43114661354/job/130839398599"
+      },
+      {
+        "name": "verify (macos-14)",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/kujolang/paperclip/actions/runs/43114661354/job/130839398493"
+      },
+      {
+        "name": "verify (ubuntu-24.04-arm)",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/kujolang/paperclip/actions/runs/43114661354/job/130839398480"
+      },
+      {
+        "name": "verify (macos-15-intel)",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/kujolang/paperclip/actions/runs/43114661354/job/130839398416"
+      },
+      {
+        "name": "sdk-node (24.11.0, minimum)",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/kujolang/paperclip/actions/runs/43114661400/job/130839398310"
+      },
+      {
+        "name": "browser-ui",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/kujolang/paperclip/actions/runs/43114661354/job/130839398025"
+      }
+    ]
   }
 }

@@ -153,8 +153,9 @@ Recovery restored the observed pre-run empty `package.json` and absence of Kujo.
 Thirteen probe-installed package directories and two executable links were moved
 reversibly into the private task-owned `global-prefix-recovery` backup, with the
 modified manifests/locks and checksums preserved. Existing parent directories were
-retained. Both npm lockfiles were reconstructed for the empty manifest; their
-original bytes were not captured, so byte-for-byte restoration is **unverified**.
+retained. Both npm lockfiles were reconstructed for the empty manifest. A complete pre-probe
+dependency inventory and original lockfile bytes were not captured, so byte-for-byte
+restoration of the entire prefix is **unverified**.
 Do not discard that recovery backup as routine test cleanup. This exception is also
 recorded in the Strata handoff.
 
@@ -267,7 +268,7 @@ Names are prefixed with `kujolang.paperclip:`. Entries are declared by
 | Duplicate submissions, concurrent owners and resource bounds | Ledger tests cover idempotent requests, two owners/twenty active requests; workflow parents retain bounded ownership | PASS: production/fixture host and full suite |
 | Retained sessions/context across restart | Core evidence, approvals, native outcomes, private knowledge and workflow state survive target restarts; selected context content and stale denial verified | PASS |
 | Background scheduling | Only explicit `dispatch-workflows` minute job; production workflow acceptance observes queued pickup after restart | PASS: production/fixture host and full suite |
-| macOS arm64/x64, Linux arm64/x64, Windows x64 | Five CI runtime targets; Dispatch specifically macOS/Linux only | PASS: macOS x64, Linux arm64/x64, Windows x64 in CI 43113027656; macOS ARM BLOCKED by retired runner, replacement verification pending |
+| macOS arm64/x64, Linux arm64/x64, Windows x64 | Five CI runtime targets; Dispatch specifically macOS/Linux only | PASS: all five targets in CI 43114661354 on source 03c024b; protected macos-14 label executes macOS 15 ARM |
 | Bundled runtime, configured absolute override, allowed PATH fallback | `resolve-kujo`/doctor/integration contracts; require runtime >=1.8.1 | PASS: unit admission/doctor checks |
 | Provider-backed agents, persistent API/MCP execution, generic command execution, webhooks, general v2 workflow recovery | Not supported integration modes; starter previews do not promise execution/deployment; no webhook registration exists | NOT APPLICABLE |
 | Credential expiry and external API rate limits | Integration has no external-provider credentials or provider API; host session/token rejection still needs live auth negatives | Provider-specific NOT APPLICABLE; anonymous/nonmember/forged access and revoked agent key denied PASS; timed credential expiry not separately observed |
@@ -330,13 +331,15 @@ For actual browser qualification, use `KUJO_ACCEPTANCE_PACK=ui` and optionally
 `KUJO_ACCEPTANCE_RUN_UI=1` to reproduce the known run-tab failure; do not omit this
 probe when reassessing that blocker. The ordinary UI pack covers task/project views.
 
-Remaining limits: actual run-detail UI FAIL (missing host mount); nonlocal
-macOS ARM qualification awaits the replacement runner. Node 24.22.1 locked/latest
-SDK lanes all passed [Compatibility 43113027859](https://github.com/kujolang/paperclip/actions/runs/43113027859).
-The other four platform lanes and browser passed [CI 43113027656](https://github.com/kujolang/paperclip/actions/runs/43113027656),
-and [Security 43113027800](https://github.com/kujolang/paperclip/actions/runs/43113027800) passed.
-These runs tested source commit `40e4d7b`; the runner/isolation follow-up is rechecked
-through [PR 95](https://github.com/kujolang/paperclip/pull/95). Timed credential
+All five platform lanes and browser passed [CI 43114661354](https://github.com/kujolang/paperclip/actions/runs/43114661354);
+Node 24.22.1 locked/latest SDK lanes passed [Compatibility 43114661400](https://github.com/kujolang/paperclip/actions/runs/43114661400),
+and [Security 43114661569](https://github.com/kujolang/paperclip/actions/runs/43114661569) passed.
+All 13 reported checks, including the 11 protected contexts, succeeded on source
+`03c024b`. The final evidence-only commit records those completed runs;
+[PR 95](https://github.com/kujolang/paperclip/pull/95) retains current-head checks.
+
+Remaining limits: actual run-detail UI FAIL (missing host mount), and exact original
+global-prefix restoration unverified. Timed credential
 expiry, managed-cloud distribution and backup restoration were not separately exercised. Revoked-key
 and forged/anonymous/nonmember authorization negatives passed. No replacement
 capability is claimed for retained workarounds without a validated target path.
