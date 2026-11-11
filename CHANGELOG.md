@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Pin the Paperclip SDK to official stable 2026.1106.0 and update its affected lockfile entries, including the fast-uri 3.1.9 security patch.
+- Check company and entity access before workspace resolution and retained project/issue evidence reads. Reject private entities locally where Paperclip workspace lookups do not enforce the same boundary.
+- Copy Context Pack inputs into private scratch space instead of hardlinking them, preventing context generation from changing source metadata and invalidating its own freshness binding.
+- Expand authenticated host acceptance to core board/agent workflows, privacy negatives and backed-up host migration rehearsals. Reconcile installation and maintenance guidance; see the November 11 compatibility report for measured coverage and remaining limits.
+
 ## 0.2.1 — 2026-10-21
 
 - Require the October 2026 Node.js security patches: 24.22.1 on Node 24 or 26.12.1 and later. Pin development and CI to patched releases.

@@ -4,7 +4,7 @@ Thanks for improving Kujo for Paperclip.
 
 ## Set up
 
-Use Node.js `24.11.0` or later. Build Kujo `1.2.3` in the sibling `kujo` repository,
+Use patched Node.js `>=24.22.1 <25` or `>=26.12.1`. Build compatible Kujo `1.8.1` or newer in the sibling `kujo` repository,
 then install dependencies without lifecycle scripts:
 
 ```bash

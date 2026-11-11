@@ -2,7 +2,7 @@
 
 ## Paperclip UI
 
-Open an issue and Kujo appears inline in Paperclip's current task view. There is no Classic Task Interface prerequisite. Project, issue detail, and run pages also expose the **Kujo** detail tab where the host supports tabs.
+Open an issue and Kujo appears inline in Paperclip's current task view. There is no Classic Task Interface prerequisite. Project and issue detail pages also expose the **Kujo** detail tab where the host supports tabs. The exported read-only run panel requires a host run-tab mount; Paperclip `2026.1106.0` lacks that mount, as verified in the [compatibility sweep](COMPATIBILITY_SWEEP_2026_11_11.md). Use scoped `list-evidence` and `get-evidence` agent tools for retained run records in this host.
 
 - **Generate Review Pack** measures the current working tree and builds a handoff.
 - **Generate Context Pack** selects files for a task at minimal, focused, or broad depth.
@@ -129,7 +129,7 @@ On an issue or project, select an eligible `.kujo` source in **Build with Kujo**
 The source catalog lists at most 1,000 Git-visible `.kujo` paths and excludes sensitive filename patterns. Ignored/unlisted files, absolute/traversal paths, outside symlinks, binary text and files over 64 KiB are rejected. The native beneath-root reader admits a bounded file snapshot; check/lint/format run against a private copy. A digest re-read detects source changes during processing. The plugin never executes the user's source in these operations. Diagnostics have single-file lex/parse/compile scope: imports, tests and runtime behavior remain unverified. In Kujo 1.8.1, check success is JSON while failure diagnostics are text; the adapter validates the observed formats and fails closed on unknown output.
 
 
-## Evidence history (upcoming release)
+## Evidence history
 
 Choose a retained record to inspect its receipt and redacted payload, compare it with another record of the same kind, or download JSON. Inspection also reports current workspace freshness separately from the immutable payload; unavailable workspace state is unknown. The browser preview is bounded to 20,000 characters; downloads include the full redacted export.
 

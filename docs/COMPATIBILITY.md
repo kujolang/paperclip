@@ -4,12 +4,18 @@
 
 | Dependency | Supported range | CI coverage |
 | --- | --- | --- |
-| Paperclip expansion host | Official npm `paperclipai@2026.1012.0` | Fresh npm installation and authenticated package acceptance on Node 24.20.0; exact workflow results on PR73 |
-| Paperclip SDK | `2026.1012.0` and latest compatible release | locked minimum and latest |
-| Node.js | `24.11.0` through the latest Node 24 release | minimum and latest Node 24 |
+| Paperclip host | Minimum official npm `paperclipai@2026.1012.0`; tested stable `2026.1106.0` | Isolated authenticated host acceptance on Node 26.12.1; exact coverage and limits in the November 11 sweep report |
+| Paperclip SDK | Locked `2026.1106.0` and latest stable release | locked (legacy `minimum` job label) and latest |
+| Node.js | `>=24.22.1 <25` or `>=26.12.1` | SDK compatibility lanes both pin 24.22.1; their legacy required-status labels are not runtime versions |
 | Kujo runtime | bundled `1.8.1` | five native targets |
 
-The plugin supports macOS arm64/x64, Linux arm64/x64, and Windows x64. CI runs the full plugin suite on each target at the minimum Node version. A separate compatibility job tests the minimum and latest Paperclip SDK against the minimum and latest Node 24 release.
+The plugin supports macOS arm64/x64, Linux arm64/x64, and Windows x64. CI runs the plugin suite across native targets. A separate compatibility job tests the locked and latest Paperclip SDK on patched Node 24.22.1. These SDK tests do not establish compatibility with a running host.
+
+The November 11 sweep pins the SDK to official stable Paperclip `2026.1106.0`
+and tests that exact npm host using disposable authenticated instances. See
+[the sweep evidence](COMPATIBILITY_SWEEP_2026_11_11.md) for the capability matrix,
+migration results, retained workarounds and explicit qualification limits.
+The existing separate host fork and persistent service were not replaced.
 
 ## Change rules
 
@@ -21,7 +27,7 @@ The plugin supports macOS arm64/x64, Linux arm64/x64, and Windows x64. CI runs t
 - Component and runtime updates require the full native matrix and clean-install smoke test.
 
 The SDK matrix is separate from live-host acceptance. The selected minimum host
-is also the latest official stable npm release as checked on 2026-10-14. No fork
+remains `2026.1012.0`; it is no longer the latest stable release. No fork
 is required. Expansion requires database namespace migrations, authenticated
 action actors, issue documents/interactions, scheduled jobs and local folders.
 Earlier prepared-fork checks are supplementary regression evidence. Future host

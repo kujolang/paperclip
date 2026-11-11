@@ -2,17 +2,17 @@
 
 ## Health and audit trail
 
-Paperclip reports worker health and component integrity in the plugin status view. A healthy worker has four verified components. Runtime compatibility is checked when a feature first runs.
+Paperclip reports worker health and component integrity in the plugin status view. A healthy worker verifies all fifteen bundled component snapshots. Runtime compatibility is checked when a feature first runs.
 
 Successful generation, Context content reads, and data clearing write company-scoped Paperclip activity events. Events contain the operation, entity, and artifact ID. They do not contain source, logs, commands, or file contents. Paperclip owns activity-log retention and export.
 
-The upcoming release retains at most 20 records per company/entity for 30 days in its database namespace. Latest cards derive from that history. Expired records are inaccessible and pruned on the next read/write; no background sweep is claimed. Use **Clear Kujo data** on a project or issue to remove retained artifacts and legacy state. Attached issue documents have separate host retention. Paperclip owns backups and database namespace purge.
+The plugin retains at most 20 records per company/entity for 30 days in its database namespace. Latest cards derive from that history. Expired records are inaccessible and pruned on the next read/write; no background sweep is claimed. Use **Clear Kujo data** on a project or issue to remove retained artifacts and legacy state. Attached issue documents have separate host retention. Paperclip owns backups and database namespace purge.
 
 ## Upgrade
 
 1. Read the changelog and compatibility table.
 2. Back up Paperclip by using the host's normal backup process.
-3. Install the exact target version: `npx paperclipai plugin install @kujolang/paperclip@<version>`.
+3. Follow [Installation](INSTALLATION.md), including capability reapproval when upgrading from 0.1.x. Do not rely on a scoped `@version` suffix while the host parser workaround remains. Qualify any exact-version or local-package install on a disposable host before using it for deployment or rollback.
 4. Restart the worker.
 5. Check plugin health, generate a Context Pack in a test project, and run a Review Pack against a small known change.
 
@@ -20,7 +20,7 @@ The reader validates stored artifact schemas. It ignores corrupt or unsupported 
 
 ## Rollback
 
-Install the previous exact version and restart the worker. Do not reuse a Context Pack across a rollback unless its schema, workspace ID, and Git snapshot still match. Generate a new pack when in doubt.
+Restore the previously verified package using its rehearsed install procedure and restart the worker. Do not reuse a Context Pack across a rollback unless its schema, workspace ID, and Git snapshot still match. Generate a new pack when in doubt. For a host downgrade after database migrations, restore the matching pre-upgrade database and configuration backup; do not point the old host at a migrated database without explicit upstream compatibility evidence.
 
 If a bad release affected stored data, clear the entity's Kujo data before regenerating it. A rollback does not restore artifacts that a newer version replaced.
 
