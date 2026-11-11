@@ -8,6 +8,8 @@ import { resolveKujoBinary } from "@kujolang/kujo-runtime";
 import { generateReviewPack } from "../src/features/review/generate.js";
 import { captureFailure } from "../src/features/failure/capture.js";
 import { generateContextPack } from "../src/features/context/generate.js";
+import { getContextContent } from "../src/features/context/content.js";
+import { isSnapshotCurrent } from "../src/paperclip/git.js";
 import { parsePluginConfig } from "../src/config/schema.js";
 
 const execFileAsync = promisify(execFile);
@@ -61,5 +63,13 @@ describe("real Kujo component bridge", () => {
     expect(pack.files.length).toBeGreaterThan(0);
     expect(pack.estimatedTokens).toBeLessThanOrEqual(pack.budget);
     expect(pack.files.some((file) => file.path.includes("oauth"))).toBe(true);
+    // A private context mirror must not change the dirty source's ctime via
+    // hardlinks and invalidate the pack before its separate content read.
+    expect(pack.stale).toBe(false);
+    expect(await isSnapshotCurrent(cwd, pack.snapshot)).toBe(true);
+    const selected = pack.files.find((file) => file.path === "oauth.ts");
+    expect(selected).toBeDefined();
+    const content = await getContextContent({ workspacePath: cwd, pack, paths: [selected!.path], maxTokens: pack.budget });
+    expect(content.files[0]?.content).toContain("'after'");
   }, 90_000);
 });
