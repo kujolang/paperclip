@@ -12,7 +12,7 @@ The plugin retains at most 20 records per company/entity for 30 days in its data
 
 1. Read the changelog and compatibility table.
 2. Back up Paperclip by using the host's normal backup process.
-3. Follow [Installation](INSTALLATION.md), including capability reapproval when upgrading from 0.1.x. Do not rely on a scoped `@version` suffix while the host parser workaround remains. Qualify any exact-version or local-package install on a disposable host before using it for deployment or rollback.
+3. Follow [Installation](INSTALLATION.md), including capability reapproval when upgrading from 0.1.x. Use the verified separate `--version` option for a pin; the combined scoped `@version` suffix remains broken. Qualify the selected artifact on a disposable host before deployment or rollback.
 4. Restart the worker.
 5. Check plugin health, generate a Context Pack in a test project, and run a Review Pack against a small known change.
 

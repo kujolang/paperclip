@@ -221,6 +221,91 @@
         "actual host project Kujo detail tab renders and does not carry issue evidence across navigation"
       ],
       "observedLimitation": "Host RunDetail renders Details/Transcript/Events but no Kujo plugin tab; public run evidence tool succeeds."
+    },
+    {
+      "name": "isolated-cli-install",
+      "startedAt": "2026-11-11T22:40:57.591Z",
+      "finishedAt": "2026-11-11T22:41:43.908Z",
+      "status": "passed",
+      "hostStopped": true,
+      "hostPackage": {
+        "name": "@paperclipai/server",
+        "version": "2026.1106.0",
+        "entrySha256": "cde8cd927214edb31edf173aec7667dd86b174799a58c822f6abf41089786480"
+      },
+      "observedHostVersions": [
+        "2026.1106.0"
+      ],
+      "package": {
+        "mode": "npm-installed local archive with separately installed dependencies",
+        "version": "0.2.1",
+        "workerSha256": "a2af470dbf91b17c2c491050cca33c62b76206be12e923b3c4ce93f7663cde0d",
+        "manifestSha256": "1c0d6f4d33f89c463ecd6279bb74cf2d40e5bf92f49de9dff59e92e3ba654370"
+      },
+      "checks": [
+        "fresh authenticated instance and local worker installation",
+        "fixed bundled run-example executes through the authenticated board bridge with exact expected output",
+        "official target CLI scoped package plus separate --version installs registry plugin 0.2.1 and host reports exact version",
+        "official target CLI scoped name@version still fails package-path resolution; separate --version is the verified pinned workaround"
+      ],
+      "details": {
+        "cliVersion": "2026.1106.0",
+        "example": {
+          "output": {
+            "items": 2,
+            "language": "Kujo",
+            "total": 36
+          },
+          "runtimeVersion": "1.8.1"
+        },
+        "separateVersion": {
+          "exitCode": 0,
+          "observedVersion": "0.2.1",
+          "status": "ready",
+          "isolatedPackageVersion": "0.2.1"
+        },
+        "suffixedVersion": {
+          "exitCode": 1,
+          "missingPackagePathDiagnostic": true
+        }
+      }
+    },
+    {
+      "name": "home-isolated-packaged-core",
+      "startedAt": "2026-11-11T22:44:26.380Z",
+      "finishedAt": "2026-11-11T22:45:37.318Z",
+      "status": "passed",
+      "hostStopped": true,
+      "hostPackage": {
+        "name": "@paperclipai/server",
+        "version": "2026.1106.0",
+        "entrySha256": "cde8cd927214edb31edf173aec7667dd86b174799a58c822f6abf41089786480"
+      },
+      "observedHostVersions": [
+        "2026.1106.0"
+      ],
+      "package": {
+        "mode": "npm-installed local archive with separately installed dependencies",
+        "version": "0.2.1",
+        "workerSha256": "a2af470dbf91b17c2c491050cca33c62b76206be12e923b3c4ce93f7663cde0d",
+        "manifestSha256": "1c0d6f4d33f89c463ecd6279bb74cf2d40e5bf92f49de9dff59e92e3ba654370"
+      },
+      "checks": [
+        "fresh authenticated instance and local worker installation",
+        "core board actions execute real pinned review/context/failure/map/language/Spec/Fence/Concord/ShipCheck/import workflows without workspace writes",
+        "core evidence preserves integrity and redaction across full host/database restart",
+        "core actions reject invalid input, traversal, unauthenticated access and private issue/project workspace access while open issues remain readable",
+        "core agent package inspection, native knowledge ingest/query/freshness/delete and assigned workflow inspect/list cover three additional public tools with malformed negatives",
+        "authenticated assigned-agent core tools return structured native evidence, enforce two-stage context selection, redact run evidence and reject disabled/forged requests",
+        "core revoked agent credential is rejected by the public tool endpoint"
+      ]
     }
-  ]
+  ],
+  "isolationRecovery": {
+    "initialRegistryProbe": "Excluded from isolated qualification: host loader used global npm prefix despite PAPERCLIP_HOME",
+    "harnessFix": "Host HOME is now task-owned; installed package path asserted beneath disposable root",
+    "restored": "Observed empty manifest and absent plugin; 13 probe packages and two bin links quarantined reversibly",
+    "limitation": "Prior lockfile bytes unavailable; empty-manifest lockfiles reconstructed, not byte-exact verified",
+    "persistentServiceOrDatabaseChanged": false
+  }
 }

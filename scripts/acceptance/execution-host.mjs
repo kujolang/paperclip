@@ -76,7 +76,7 @@ async function call(route, { method = "GET", body, status = 200, session = cooki
   return { data, cookies: response.headers.getSetCookie().map(value => value.split(";", 1)[0]).join("; ") };
 }
 const env = Object.fromEntries(["PATH", "HOME", "USER", "LOGNAME", "TMPDIR", "TEMP", "TMP", "SystemRoot"].filter(key => process.env[key]).map(key => [key, process.env[key]]));
-Object.assign(env, { PAPERCLIP_CONFIG: join(root, "config.json"), PAPERCLIP_HOME: join(root, "home"), PAPERCLIP_INSTANCE_ID: "acceptance",
+Object.assign(env, { HOME: join(root, "home"), PAPERCLIP_CONFIG: join(root, "config.json"), PAPERCLIP_HOME: join(root, "home"), PAPERCLIP_INSTANCE_ID: "acceptance",
   PAPERCLIP_DEPLOYMENT_MODE: "authenticated", PAPERCLIP_DEPLOYMENT_EXPOSURE: "private", PAPERCLIP_AUTH_BASE_URL_MODE: "explicit", PAPERCLIP_AUTH_PUBLIC_BASE_URL: base,
   PAPERCLIP_MIGRATION_AUTO_APPLY: "true", PAPERCLIP_MIGRATION_PROMPT: "never", PAPERCLIP_TELEMETRY_DISABLED: "1", HEARTBEAT_SCHEDULER_ENABLED: "false",
   PAPERCLIP_ANNOUNCEMENTS_ENABLED: "false", HOST: "127.0.0.1", PORT: String(httpPort), SERVE_UI: String(browserQualification),
@@ -162,6 +162,7 @@ try {
       manifestSha256: createHash("sha256").update(await readFile(join(fixture, "dist/manifest.js"))).digest("hex") };
   } else {
   await symlink(join(repo, "bundled"), join(fixture, "bundled"), process.platform === "win32" ? "junction" : "dir");
+  await symlink(join(repo, "examples"), join(fixture, "examples"), process.platform === "win32" ? "junction" : "dir");
   await symlink(join(repo, "node_modules"), join(fixture, "node_modules"), process.platform === "win32" ? "junction" : "dir");
   await writeFile(join(fixture, "package.json"), JSON.stringify({ name: "@kujolang/approval-acceptance-fixture", version: "0.0.0", private: true, type: "module",
     paperclipPlugin: { manifest: "./dist/manifest.js", worker: "./dist/worker.js" } }));
@@ -244,6 +245,10 @@ try {
     checks.push("official host upgrade preserves company/project/issue identity, login session and plugin evidence through migrations and another restart");
   }
   if (production) {
+    if (process.env.KUJO_ACCEPTANCE_PACK === "install") {
+      const { qualifyProductionInstall } = await import("./production-install.mjs");
+      await qualifyProductionInstall({ call, companyId, root, host, node, base, checks, json });
+    }
     if (browserQualification) {
       const { qualifyProductionUi } = await import("./production-ui.mjs");
       await qualifyProductionUi({ call, companyId, projectId, issueId, root, base, cookie, checks });
@@ -252,7 +257,7 @@ try {
       const { qualifyProductionCore } = await import("./production-core.mjs");
       await qualifyProductionCore({ call, companyId, projectId, issueId, root, node, checks, json, stop, start, waitUntil });
     }
-    if (!["core", "ui"].includes(process.env.KUJO_ACCEPTANCE_PACK)) {
+    if (!["core", "ui", "install"].includes(process.env.KUJO_ACCEPTANCE_PACK)) {
     if (!["workflows", "knowledge"].includes(process.env.KUJO_ACCEPTANCE_PACK)) {
     const { qualifyProductionEvaluation } = await import("./production-eval.mjs");
     await qualifyProductionEvaluation({ call, companyId, projectId, issueId, userId, root, node, checks, json, stop, start, waitUntil });

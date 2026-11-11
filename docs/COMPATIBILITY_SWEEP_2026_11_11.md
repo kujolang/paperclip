@@ -133,6 +133,36 @@ cause is not established. Do not disable host durability checks. An ignore-scrip
 host install required only its inspected, path-confined embedded-Postgres dylib
 symlink hydration; `initdb --version` then reported PostgreSQL 18.1.
 
+## Installer isolation incident and recovery
+
+The first registry probe exposed an upstream environment assumption: the npm
+loader resolves its install directory from `os.homedir()/.paperclip/plugins`, not
+`PAPERCLIP_HOME`. It therefore wrote the user-global npm prefix despite the
+otherwise disposable database/configuration. No existing host service or database
+was connected and no credentials were overwritten. This first result is not counted
+as isolated qualification.
+
+The harness now sets the host child `HOME` to its own fresh root and asserts that
+the installed package is actually beneath that root. The repeated CLI probe passed
+four checks, including the fixed bundled example. A further packaged core run
+passed all seven checks with the isolated host HOME. `npm ls --depth=0` confirms
+the restored global prefix is empty. This is a justified retained
+isolation measure; setting only `PAPERCLIP_HOME` is insufficient on the target.
+
+Recovery restored the observed pre-run empty `package.json` and absence of Kujo.
+Thirteen probe-installed package directories and two executable links were moved
+reversibly into the private task-owned `global-prefix-recovery` backup, with the
+modified manifests/locks and checksums preserved. Existing parent directories were
+retained. Both npm lockfiles were reconstructed for the empty manifest; their
+original bytes were not captured, so byte-for-byte restoration is **unverified**.
+Do not discard that recovery backup as routine test cleanup. This exception is also
+recorded in the Strata handoff.
+
+Remote CI initially cancelled its macOS ARM lane before any steps with
+`macos-14-arm64-us-default is not supported`. GitHub [retired macOS 14 on November 2](https://github.com/actions/runner-images/blob/main/README.md).
+The workflow now runs macOS 15 ARM while retaining the protected status label;
+no platform lane or assertion was removed.
+
 ## Capability matrix
 
 ### Final local verification
@@ -155,6 +185,7 @@ Implementation commits: SDK `6567b1f`, context freshness `e470222`, privacy `224
 | Execution/admission/crash fixture | PASS: 17 checks; old delete/enable sequence failed, corrected to actual non-purge reinstall; pending approvals and terminal receipts survive |
 | Independent extended core | PASS: seven checks, 18 tools; other production packs exercise the remaining three tools; revoked key returns HTTP 401 |
 | Target-SDK browser fixture | PASS: all 59 cases; two screenshot-stability timeouts passed unchanged serial retry; no screenshot baselines updated |
+| Target CLI installer / bundled example | PASS: four isolated checks; separate version pin succeeds, combined suffix still fails; exact example output verified |
 | Actual target browser | PASS: task/project render, real UI action and scope navigation; FAIL: run tab absent despite successful run evidence tool |
 
 The full gate ran before implementation commits. Subsequent changes are acceptance
@@ -212,7 +243,7 @@ Names are prefixed with `kujolang.paperclip:`. Entries are declared by
 | `generate-review`, `generate-context`, `capture-failure`, `understand-repository` | Feature/profile/workspace admission; expected native or supplied-evidence behavior as above | `production-core.mjs`: target core PASS; baseline UI fixture PASS |
 | `check-kujo-source`, `preview-kujo-format`, `inspect-kujo-packages` | Explicit selection, runtime, bounded reads; diagnostics/previews only | Language/package tests; packages have production acceptance; target production acceptance PASS |
 | `inspect-task-contract`, `inspect-architecture`, `inspect-artifact-drift`, `inspect-release-readiness`, `import-verification` | Independent verification/profile admission; honest not-run/partial/imported classifications | `production-core.mjs`: target core PASS; baseline UI fixture PASS |
-| `run-example`, `preview-starter` | Runtime readiness, selected profile; bundled example is safe fixed code; script/agent/API/MCP previews write no project files | PASS: public onboarding unit tests; all four starter previews on live host. `run-example` not separately invoked on live host |
+| `run-example`, `preview-starter` | Runtime readiness, selected profile; bundled example is safe fixed code; script/agent/API/MCP previews write no project files | PASS: public onboarding tests, four live starter previews and exact live bundled example output `{language: Kujo, items: 2, total: 36}` |
 | `inspect-evidence`, `export-evidence`, `compare-evidence`, `attach-evidence`, `clear-artifacts` | Exact company/entity scope; attachment requires authenticated human and issue-owned record; clear does not rerun execution | `history.spec.ts`, `eval-history.spec.ts`, production Eval acceptance; target production acceptance PASS |
 | Evaluation, source, creation, workflow and knowledge management actions | Same feature boundaries as tools; board-authenticated actions and agent-run identity remain distinct | Public feature tests and respective production acceptance modules; target production acceptance PASS |
 | `config.get`, `projects.get`, `issues.get`, `getPrimaryWorkspace`, `getWorkspaceForIssue` | Host authorization supplies tenant, assignment and canonical workspace; deny missing/foreign objects | 19 authorization tests PASS; target private issue/project action denial PASS |
@@ -236,7 +267,7 @@ Names are prefixed with `kujolang.paperclip:`. Entries are declared by
 | Duplicate submissions, concurrent owners and resource bounds | Ledger tests cover idempotent requests, two owners/twenty active requests; workflow parents retain bounded ownership | PASS: production/fixture host and full suite |
 | Retained sessions/context across restart | Core evidence, approvals, native outcomes, private knowledge and workflow state survive target restarts; selected context content and stale denial verified | PASS |
 | Background scheduling | Only explicit `dispatch-workflows` minute job; production workflow acceptance observes queued pickup after restart | PASS: production/fixture host and full suite |
-| macOS arm64/x64, Linux arm64/x64, Windows x64 | Five CI runtime targets; Dispatch specifically macOS/Linux only; this machine cannot establish all-platform behavior | BLOCKED; nonlocal matrix needed |
+| macOS arm64/x64, Linux arm64/x64, Windows x64 | Five CI runtime targets; Dispatch specifically macOS/Linux only | PASS: macOS x64, Linux arm64/x64, Windows x64 in CI 43113027656; macOS ARM BLOCKED by retired runner, replacement verification pending |
 | Bundled runtime, configured absolute override, allowed PATH fallback | `resolve-kujo`/doctor/integration contracts; require runtime >=1.8.1 | PASS: unit admission/doctor checks |
 | Provider-backed agents, persistent API/MCP execution, generic command execution, webhooks, general v2 workflow recovery | Not supported integration modes; starter previews do not promise execution/deployment; no webhook registration exists | NOT APPLICABLE |
 | Credential expiry and external API rate limits | Integration has no external-provider credentials or provider API; host session/token rejection still needs live auth negatives | Provider-specific NOT APPLICABLE; anonymous/nonmember/forged access and revoked agent key denied PASS; timed credential expiry not separately observed |
@@ -249,7 +280,7 @@ executing replacement behavior in that release.
 
 | Item / affected behavior | Target evidence and disposition | Required qualification |
 | --- | --- | --- |
-| Scoped exact-version npm install | [PR #12745](https://github.com/paperclipai/paperclip/pull/12745) remains open/unmerged. [Target loader](https://github.com/paperclipai/paperclip/blob/v2026.1106.0/server/src/services/plugin-loader.ts#L1215) still uses supplied packageName as the installed directory name, splitting scoped names only on `/`. Retain current unversioned CLI workaround pending exact CLI/server test. | Disposable pinned scoped install and unscoped/local-path regressions; no replacement claimed |
+| Scoped exact-version npm install | [PR #12745](https://github.com/paperclipai/paperclip/pull/12745) remains open/unmerged. Actual target CLI `@kujolang/paperclip@0.2.1` fails path resolution, but `@kujolang/paperclip --version 0.2.1` succeeds and the host reports exact 0.2.1. Replace the unversioned-only advice with the validated separate flag; retain the combined-suffix restriction. | PASS: real CLI, authenticated target, isolated installed package metadata; local-path install also passed |
 | Historical host `0.0.0` reporting and manifest floor | The manifest minimum remains `2026.1012.0` in `src/config/defaults.ts`; the SDK pin is now `2026.1106.0`. The September maintenance handoff describes obsolete plugin state. Retain the real minimum; do not restore the historical exception. | Target fixture and baseline-to-target migration PASS; manifest minimum assertions PASS, not an actual obsolete-host installation test |
 | Added-capability plugin upgrade | [Target loader lines 1844–1858](https://github.com/paperclipai/paperclip/blob/v2026.1106.0/server/src/services/plugin-loader.ts#L1844) still throws on capability escalation before lifecycle approval handling. Retain administrator non-purge uninstall/reinstall path. | Existing plugin identity/evidence survives migration and restart; do not purge |
 | Synchronous bridge duration | [Target manager](https://github.com/paperclipai/paperclip/blob/v2026.1106.0/server/src/services/plugin-worker-manager.ts#L76) keeps default RPC timeout 30,000 ms. Retain plugin 27-second synchronous budget and separate durable workflow job. | Timeout/cancel/crash tests and real host deadlines |
@@ -300,9 +331,13 @@ For actual browser qualification, use `KUJO_ACCEPTANCE_PACK=ui` and optionally
 probe when reassessing that blocker. The ordinary UI pack covers task/project views.
 
 Remaining limits: actual run-detail UI FAIL (missing host mount); nonlocal
-OS/architecture and Node 24 qualification depend on remote CI. Timed credential
-expiry, managed-cloud distribution, exact scoped-version npm installation, live
-`run-example`, and backup restoration were not separately exercised. Revoked-key
+macOS ARM qualification awaits the replacement runner. Node 24.22.1 locked/latest
+SDK lanes all passed [Compatibility 43113027859](https://github.com/kujolang/paperclip/actions/runs/43113027859).
+The other four platform lanes and browser passed [CI 43113027656](https://github.com/kujolang/paperclip/actions/runs/43113027656),
+and [Security 43113027800](https://github.com/kujolang/paperclip/actions/runs/43113027800) passed.
+These runs tested source commit `40e4d7b`; the runner/isolation follow-up is rechecked
+through [PR 95](https://github.com/kujolang/paperclip/pull/95). Timed credential
+expiry, managed-cloud distribution and backup restoration were not separately exercised. Revoked-key
 and forged/anonymous/nonmember authorization negatives passed. No replacement
 capability is claimed for retained workarounds without a validated target path.
 No provider-backed adapter, webhook, arbitrary command or persistent generated
@@ -310,7 +345,9 @@ API/MCP execution capability is claimed by this plugin.
 
 ## Rollback and deployment boundary
 
-No persistent deployment happened. Disposable target databases were exercised and removed after sanitized evidence preservation. Before a
+No persistent host service or database was deployed. The registry probe temporarily
+changed the global npm plugin prefix as described below; its known logical baseline
+was restored. Disposable databases were removed after evidence preservation. Before a
 future migration, record the exact running host build and fork patches, installed
 plugin artifacts and config, then take a consistent database backup plus required
 encryption-key/config backup through the established host process. Keep secrets
