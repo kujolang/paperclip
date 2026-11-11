@@ -41,6 +41,23 @@ export type EntityTarget = {
   companyId: string;
 };
 
+/** Workspace lookup is not an authorization check on every supported host. */
+export async function requireReadableEntity(ctx: PluginContext, target: EntityTarget) {
+  const entity = target.entityType === "issue"
+    ? await ctx.issues.get(target.entityId, target.companyId)
+    : await ctx.projects.get(target.entityId, target.companyId);
+  // Plugins have no membership in private issues/projects. Older hosts may omit
+  // visibility; keep their public-entity contract while honoring newer privacy.
+  if (!entity || entity.id !== target.entityId || entity.companyId !== target.companyId
+    || ("visibility" in entity && entity.visibility === "private")) {
+    throw new Error("Project or issue was not found or is unavailable in this company");
+  }
+  if (target.entityType === "issue" && "projectId" in entity && entity.projectId) {
+    await requireReadableEntity(ctx, { entityType: "project", entityId: entity.projectId, companyId: target.companyId });
+  }
+  return entity;
+}
+
 export async function validateWorkspace(workspace: PluginWorkspace): Promise<PluginWorkspace & { path: string }> {
   const canonical = await realpath(workspace.path).catch(() => null);
   if (!canonical || !(await stat(canonical)).isDirectory()) {
@@ -55,17 +72,18 @@ export async function validateWorkspace(workspace: PluginWorkspace): Promise<Plu
 }
 
 export async function resolveWorkspace(ctx: PluginContext, target: EntityTarget): Promise<PluginWorkspace & { path: string }> {
+  const entity = await requireReadableEntity(ctx, target);
+  const projectId = target.entityType === "project" ? entity.id : (entity as { projectId?: string | null }).projectId;
   const workspace = target.entityType === "issue"
     ? await ctx.projects.getWorkspaceForIssue(target.entityId, target.companyId)
     : await ctx.projects.getPrimaryWorkspace(target.entityId, target.companyId);
   if (!workspace) {
     throw new KujoPluginError("KUJO_WORKSPACE_NOT_FOUND", `No primary workspace is configured for ${target.entityType}`);
   }
+  if (!projectId || workspace.projectId !== projectId) throw new Error("Workspace does not match the authorized project");
   return await validateWorkspace(workspace);
 }
 
 export async function resolveProjectWorkspace(ctx: PluginContext, projectId: string, companyId: string): Promise<PluginWorkspace & { path: string }> {
-  const workspace = await ctx.projects.getPrimaryWorkspace(projectId, companyId);
-  if (!workspace) throw new KujoPluginError("KUJO_WORKSPACE_NOT_FOUND", "Project has no primary workspace", { projectId });
-  return await validateWorkspace(workspace);
+  return await resolveWorkspace(ctx, { entityType: "project", entityId: projectId, companyId });
 }

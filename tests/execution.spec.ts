@@ -33,6 +33,7 @@ async function fixture(code = 'process.stdout.write("fixture completed");') {
   await writeFile(script, `require('node:fs').appendFileSync(process.argv[2], 'start\\n');\n${code}`);
   const h = createTestHarness({ manifest });
   h.ctx.issues.get = async (id, companyId) => ({ id, companyId, projectId: "project" } as Awaited<ReturnType<typeof h.ctx.issues.get>>);
+  h.seed({ projects: [{ id: "project", companyId: "company", visibility: "open" } as NonNullable<Awaited<ReturnType<typeof h.ctx.projects.get>>>] });
   h.ctx.projects.getWorkspaceForIssue = async () => ({ id: "workspace", projectId: "project", path: cwd } as Awaited<ReturnType<typeof h.ctx.projects.getWorkspaceForIssue>>);
   const cards: Card[] = [];
   const create = vi.fn(async (issueId: string, input: Parameters<typeof h.ctx.issues.requestConfirmation>[1], companyId: string) => {

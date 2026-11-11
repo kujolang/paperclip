@@ -17,6 +17,7 @@ const target = { entityType: "project" as const, entityId: "project", companyId:
 async function fixture() {
   const path = await mkdtemp(join(tmpdir(), "kujo-first-use-test-")); roots.push(path);
   const harness = createTestHarness({ manifest });
+  harness.seed({ projects: [{ id: "project", companyId: "company", visibility: "open" } as NonNullable<Awaited<ReturnType<typeof harness.ctx.projects.get>>>] });
   const workspace: PluginWorkspace = { id: "workspace", projectId: "project", name: "Fixture", path,
     repoUrl: null, repoRef: null, defaultRef: null, isPrimary: true, createdAt: "", updatedAt: "" };
   vi.spyOn(harness.ctx.projects, "getPrimaryWorkspace").mockResolvedValue(workspace);
@@ -26,6 +27,7 @@ async function fixture() {
 describe("first use", () => {
   it("returns setup guidance when no workspace is configured", async () => {
     const harness = createTestHarness({ manifest });
+    harness.seed({ projects: [{ id: "project", companyId: "company", visibility: "open" } as NonNullable<Awaited<ReturnType<typeof harness.ctx.projects.get>>>] });
     await plugin.definition.setup(harness.ctx);
     const detail = await harness.getData<{ workspace: { state: string }; suggestedTask: string }>("detail", target);
     expect(detail.workspace.state).toBe("missing");

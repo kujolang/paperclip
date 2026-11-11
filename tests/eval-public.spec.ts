@@ -21,6 +21,7 @@ async function fixture() {
   await writeFile(join(cwd, "eval.json"), JSON.stringify({ name: "Public suite", tests: [{ name: "answer", check: "json_value_equals", params: { path: "answer.json", json_path: "answer", expected: 42 } }] }));
   const h = createTestHarness({ manifest, config: { features: { execution: true } } });
   h.ctx.issues.get = async (id, companyId) => ({ id, companyId, projectId: "project", assigneeAgentId: "agent", checkoutRunId: "run", executionRunId: null } as Awaited<ReturnType<PluginContext["issues"]["get"]>>);
+  h.seed({ projects: [{ id: "project", companyId: "company", visibility: "open" } as NonNullable<Awaited<ReturnType<typeof h.ctx.projects.get>>>] });
   h.ctx.projects.getWorkspaceForIssue = async () => ({ id: "workspace", projectId: "project", path: cwd } as Awaited<ReturnType<PluginContext["projects"]["getWorkspaceForIssue"]>>);
   type Card = Awaited<ReturnType<PluginContext["issues"]["requestConfirmation"]>>;
   const cards: Card[] = [];

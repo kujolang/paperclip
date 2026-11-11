@@ -90,6 +90,7 @@ describe("Kujo language operations", () => {
   it("stores diagnostics within the company and keeps formatting previews transient", async () => {
     const input = await fixture();
     const harness = createTestHarness({ manifest });
+    harness.seed({ projects: [{ id: "project", companyId: "company", visibility: "open" } as NonNullable<Awaited<ReturnType<typeof harness.ctx.projects.get>>>] });
     const workspace: PluginWorkspace = { id: input.workspaceId, projectId: input.projectId, path: input.cwd, name: "Fixture",
       repoUrl: null, repoRef: null, defaultRef: null, isPrimary: true, createdAt: "", updatedAt: "" };
     vi.spyOn(harness.ctx.projects, "getPrimaryWorkspace").mockResolvedValue(workspace);
@@ -102,7 +103,7 @@ describe("Kujo language operations", () => {
     expect(own.language.check).toBe("passed");
     const evidenceParams = { ...target, evidenceId: own.history[0]!.id };
     expect(await harness.performAction("inspect-evidence", evidenceParams, { companyId: "company" })).toMatchObject({ currentWorkspace: { freshness: "current" } });
-    expect((await harness.getData<{ language: null }>("detail", { ...target, companyId: "other" })).language).toBeNull();
+    await expect(harness.getData("detail", { ...target, companyId: "other" })).rejects.toThrow(/unavailable|not found/i);
     const preview = await harness.performAction("preview-kujo-format", { ...target, path: input.path }, { companyId: "company" });
     expect(preview).toMatchObject({ changed: true });
     const after = await harness.getData<{ language: LanguageReport }>("detail", { ...target, companyId: "company" });

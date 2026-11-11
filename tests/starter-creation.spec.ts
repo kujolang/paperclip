@@ -22,6 +22,7 @@ async function fixture() {
   const root = await mkdtemp(join(tmpdir(), "kujo-starter-host-")); roots.push(root);
   const h = createTestHarness({ manifest, config: { features: { projectCreation: true }, capabilityProfile: "build" } });
   h.ctx.issues.get = async (id, companyId) => ({ id, companyId, projectId: "project", assigneeAgentId: "agent", checkoutRunId: "run" } as Awaited<ReturnType<PluginContext["issues"]["get"]>>);
+  h.seed({ projects: [{ id: "project", companyId: "company", visibility: "open" } as NonNullable<Awaited<ReturnType<typeof h.ctx.projects.get>>>] });
   h.ctx.projects.getWorkspaceForIssue = async () => ({ id: "workspace", projectId: "project", path: root } as Awaited<ReturnType<PluginContext["projects"]["getWorkspaceForIssue"]>>);
   type Card = Awaited<ReturnType<PluginContext["issues"]["requestConfirmation"]>>;
   const cards: Card[] = [];

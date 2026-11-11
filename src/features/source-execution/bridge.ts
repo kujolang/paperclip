@@ -5,6 +5,7 @@ import type { ExecutionRecord, ExecutionRequest, ExecutionScope } from "../../ex
 import { executionAbilityReceipt } from "../../execution/receipt.js";
 import { evidenceDigest } from "../../storage/history.js";
 import { normalizeError } from "../../runtime/errors.js";
+import { requireReadableEntity } from "../../paperclip/workspace.js";
 import { requireAgentIssue } from "../eval/bridge.js";
 import { createSourceExecutionService, sourceMode } from "./host.js";
 import { publishSourceExecution, reconcileSourceExecutionHistory } from "./history.js";
@@ -27,6 +28,7 @@ export function sourceExecutionView(scope: ExecutionScope, record: ExecutionReco
 export function registerSourceExecution(ctx: PluginContext) {
   const service = createSourceExecutionService(ctx);
   async function execute(value: z.infer<typeof sourceExecutionInput>, scope: ExecutionScope, requester: ExecutionRequest["requester"]) {
+    await requireReadableEntity(ctx, { entityType: "issue", entityId: scope.issueId, companyId: scope.companyId });
     if (value.operation === "inspect") return service.inspect(scope, value.mode, value.path);
     if (value.operation === "prepare") {
       const record = await service.prepare(scope, value.mode, value.path, `source:${evidenceDigest(value.submissionId)}`, requester);

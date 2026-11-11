@@ -27,6 +27,7 @@ async function fixture() {
   const h = createTestHarness({ manifest });
   h.ctx.config.get = async () => config;
   h.ctx.issues.get = async (id, companyId) => ({ id, companyId, projectId: "project" } as Awaited<ReturnType<typeof h.ctx.issues.get>>);
+  h.seed({ projects: [{ id: "project", companyId: "company", visibility: "open" } as NonNullable<Awaited<ReturnType<typeof h.ctx.projects.get>>>] });
   h.ctx.projects.getWorkspaceForIssue = async () => ({ id: "workspace", projectId: "project", path: cwd } as Awaited<ReturnType<typeof h.ctx.projects.getWorkspaceForIssue>>);
   const cards: Card[] = [];
   h.ctx.issues.requestConfirmation = async (issueId, input, companyId) => {

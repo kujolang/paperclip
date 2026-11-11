@@ -72,6 +72,7 @@ describe("Scout repository understanding", () => {
   it("persists company-scoped evidence and rejects caller paths or disabled features", async () => {
     const input = await fixture();
     const harness = createTestHarness({ manifest });
+    harness.seed({ projects: [{ id: "project", companyId: "company", visibility: "open" } as NonNullable<Awaited<ReturnType<typeof harness.ctx.projects.get>>>] });
     const workspace: PluginWorkspace = { id: input.workspaceId, projectId: input.projectId, path: input.cwd, name: "Fixture",
       repoUrl: null, repoRef: null, defaultRef: null, isPrimary: true, createdAt: "", updatedAt: "" };
     vi.spyOn(harness.ctx.projects, "getPrimaryWorkspace").mockResolvedValue(workspace);
@@ -91,8 +92,7 @@ describe("Scout repository understanding", () => {
     await writeFile(join(input.cwd, "src", "api.js"), "export const changed = true;\n");
     const changed = await harness.getData<{ understanding: Understanding }>("detail", { ...target, companyId: "company" });
     expect(changed.understanding.stale).toBe(true);
-    const other = await harness.getData<{ understanding: null }>("detail", { ...target, companyId: "other" });
-    expect(other.understanding).toBeNull();
+    await expect(harness.getData("detail", { ...target, companyId: "other" })).rejects.toThrow(/unavailable|not found/i);
     vi.spyOn(harness.ctx.projects, "get").mockResolvedValue({ id: "project", companyId: "company" } as NonNullable<Awaited<ReturnType<typeof harness.ctx.projects.get>>>);
     await harness.performAction("clear-artifacts", target, { companyId: "company" });
     expect((await harness.getData<{ understanding: null }>("detail", { ...target, companyId: "company" })).understanding).toBeNull();

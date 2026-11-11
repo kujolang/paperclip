@@ -3,6 +3,7 @@ import { z } from "zod";
 import { evalTool } from "../../abilities/generated.js";
 import type { ExecutionRecord, ExecutionRequest, ExecutionScope } from "../../execution/contracts.js";
 import { normalizeError } from "../../runtime/errors.js";
+import { requireReadableEntity } from "../../paperclip/workspace.js";
 import { publishEvaluation, reconcileEvaluationHistory, type EvaluationHistory } from "./history.js";
 import { evalAbilityReceipt } from "./receipt.js";
 import { createEvalHostService } from "./host.js";
@@ -40,6 +41,7 @@ export async function requireAgentIssue(ctx: PluginContext, issueId: string, run
 export function registerEvaluation(ctx: PluginContext) {
   const service = createEvalHostService(ctx);
   async function execute(value: z.infer<typeof evalInput>, scope: ExecutionScope, requester: ExecutionRequest["requester"]) {
+    await requireReadableEntity(ctx, { entityType: "issue", entityId: scope.issueId, companyId: scope.companyId });
     if (value.operation === "inspect") return await service.inspect(scope, value.suite);
     if (value.operation === "prepare") {
       const record = await service.prepare(scope, value.suite, value.submissionId, requester);

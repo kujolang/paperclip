@@ -5,7 +5,7 @@ import { z } from "zod";
 import { knowledgeTool } from "../../abilities/generated.js";
 import { projectionReceipt, toolEnabled } from "../../abilities/catalog.js";
 import { parsePluginConfig, type PluginConfig } from "../../config/schema.js";
-import { resolveWorkspace, type EntityTarget } from "../../paperclip/workspace.js";
+import { requireReadableEntity, resolveWorkspace, type EntityTarget } from "../../paperclip/workspace.js";
 import { evidenceDigest } from "../../storage/history.js";
 import { captureKnowledgeFiles, discoverKnowledgeFiles, inspectKnowledgeFreshness, knowledgeSelectionSchema } from "./admission.js";
 import { ingestKnowledge, queryKnowledge, knowledgeNamespace } from "./native.js";
@@ -29,8 +29,7 @@ export function createKnowledgeService(ctx: PluginContext) {
     const config = parsePluginConfig(await ctx.config.get(target.companyId));
     const enabled = toolEnabled(config, knowledgeTool);
     if (!enabled && !allowDisabled) throw new Error("Knowledge is disabled by company settings or profile");
-    const entity = target.entityType === "project" ? await ctx.projects.get(target.entityId, target.companyId) : await ctx.issues.get(target.entityId, target.companyId);
-    if (!entity || entity.id !== target.entityId || entity.companyId !== target.companyId) throw new Error("Knowledge project context is unavailable");
+    const entity = await requireReadableEntity(ctx, target);
     const projectId = target.entityType === "project" ? entity.id : (entity as { projectId?: string | null }).projectId;
     if (!projectId) throw new Error("Knowledge requires a project");
     return { config, enabled, project: { companyId: target.companyId, projectId } };
