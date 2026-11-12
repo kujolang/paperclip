@@ -7,7 +7,7 @@ import sourceLock from "../../../bundled/verification-sources.lock.json" with { 
 import { redactText } from "../failure/redact.js";
 
 export const IMPORT_MAX_BYTES = 65_536;
-export const verificationInput = z.object({ json: z.string().min(1).max(IMPORT_MAX_BYTES), format: z.enum(["evaluation", "runledger"]).default("evaluation"), issueId: z.string().min(1).max(200).optional() }).strict();
+export const verificationInput = z.object({ json: z.string().min(1).max(IMPORT_MAX_BYTES), format: z.enum(["evaluation", "runledger", "watchdog"]).default("evaluation"), issueId: z.string().min(1).max(200).optional() }).strict();
 const ajv = new Ajv2020({ strict: false, allErrors: false, ownProperties: true });
 // The package exposes a CommonJS default while this plugin builds as ESM.
 const addFormats = addFormatsModule as unknown as (instance: Ajv2020) => void;

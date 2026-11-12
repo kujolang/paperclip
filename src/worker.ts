@@ -1,3 +1,8 @@
+import { registerDelegation } from "./features/assurance/delegation.js";
+import { registerAcceptance } from "./features/assurance/acceptance.js";
+import { importWatchdog } from "./features/watchdog/import.js";
+import { registerAssurance } from "./features/assurance/bridge.js";
+import { assuranceTool } from "./abilities/generated.js";
 import { importRunLedger, runledgerReportSchema, type HostBinding } from "./features/runledger/import.js";
 import { knowledgeTool } from "./abilities/generated.js";
 import { registerKnowledge } from "./features/knowledge/service.js";
@@ -94,7 +99,7 @@ async function configFor(ctx: PluginContext, companyId: string, tool?: { name: s
 const historyTarget = z.object({ entityType: z.enum(["project", "issue", "run"]), entityId: z.string().min(1), evidenceId: z.string().min(1).max(100), otherId: z.string().min(1).max(100).optional() }).strict();
 function evidenceEnabled(config: ReturnType<typeof parsePluginConfig>, kind: ArtifactKind) {
   const tool = { "review-latest": reviewTool, "context-latest": contextTool, "failure-latest": failureTool, "understand-latest": understandTool,
-    "packages-latest": packageTool, "language-latest": languageTool, "verification-latest": importVerificationTool, "spec-latest": specTool, "fence-latest": fenceTool, "concord-latest": concordTool, "shipcheck-latest": shipcheckTool, "evaluation-plan": evalTool, "evaluation-result": evalTool, "source-execution-plan": sourceExecutionTool, "source-execution-result": sourceExecutionTool, "starter-creation-plan": starterCreationTool, "starter-creation-result": starterCreationTool, "workflow-plan": workflowTool, "workflow-result": workflowTool, "knowledge-answer": knowledgeTool, "runledger-import": importVerificationTool } as const;
+    "packages-latest": packageTool, "language-latest": languageTool, "verification-latest": importVerificationTool, "spec-latest": specTool, "fence-latest": fenceTool, "concord-latest": concordTool, "shipcheck-latest": shipcheckTool, "evaluation-plan": evalTool, "evaluation-result": evalTool, "source-execution-plan": sourceExecutionTool, "source-execution-result": sourceExecutionTool, "starter-creation-plan": starterCreationTool, "starter-creation-result": starterCreationTool, "workflow-plan": workflowTool, "workflow-result": workflowTool, "knowledge-answer": knowledgeTool, "acceptance-result": assuranceTool, "assurance-plan": assuranceTool, "assurance-result": assuranceTool, "watchdog-import": importVerificationTool, "runledger-import": importVerificationTool } as const;
   return toolEnabled(config, tool[kind]);
 }
 
@@ -172,19 +177,19 @@ async function reviewForProject(ctx: PluginContext, runCtx: ToolRunContext, para
   return pack;
 }
 
-async function importForTarget(ctx: PluginContext, target: StateTarget, json: string, format: "evaluation" | "runledger" = "evaluation", importer?: ToolRunContext) {
+async function importForTarget(ctx: PluginContext, target: StateTarget, json: string, format: "evaluation" | "runledger" | "watchdog" = "evaluation", importer?: ToolRunContext) {
   const config = await configFor(ctx, target.companyId, importVerificationTool);
   if (!config.features.verification) throw new Error("Verification imports are disabled by configuration or profile");
   if (target.entityType === "run") throw new Error("Choose a project or issue");
   await requireReadableEntity(ctx, { ...target, entityType: target.entityType });
-  if (format === "runledger") {
+  if (format === "runledger" || format === "watchdog") {
     const issue = target.entityType === "issue" ? await ctx.issues.get(target.entityId, target.companyId) : null;
     const host: HostBinding = { companyId: target.companyId, projectId: issue?.projectId ?? (target.entityType === "project" ? target.entityId : null),
       issueId: issue?.id ?? null, parentIssueId: issue?.parentId ?? null, agentId: importer?.agentId ?? null, runId: importer?.runId ?? null,
       attribution: importer ? "host-agent-importer" : "human-importer" };
-    const report = importRunLedger(json, host);
-    await saveArtifact(ctx, target, "runledger-import", report, { inputs: { sourceDigest: report.sourceDigest, host }, definition: "runledger-import/v1" });
-    await audit(ctx, { ...target, operation: "runledger.imported", artifactId: report.id });
+    const report = format === "runledger" ? importRunLedger(json, host) : importWatchdog(json, host);
+    await saveArtifact(ctx, target, format === "runledger" ? "runledger-import" : "watchdog-import", report, { inputs: { sourceDigest: report.sourceDigest, host }, definition: `${format}-import/v1` });
+    await audit(ctx, { ...target, operation: `${format}.imported`, artifactId: report.id });
     return report;
   }
   const report = importVerification(json);
@@ -585,7 +590,7 @@ function registerUiBridge(ctx: PluginContext, executions: ReturnType<typeof regi
   ctx.actions.register("import-verification", async (params, actionCtx) => {
     if (!actionCtx.companyId) throw new Error("Company context is required");
     const value = actionTarget.extend({ json: verificationInput.shape.json, format: verificationInput.shape.format }).parse(actionParams(params));
-    if (value.format === "runledger" && (actionCtx.actor?.type !== "user" || !actionCtx.actor.userId || actionCtx.actor.companyId !== actionCtx.companyId)) throw new Error("Authenticated human company context is required");
+    if (["runledger", "watchdog"].includes(value.format) && (actionCtx.actor?.type !== "user" || !actionCtx.actor.userId || actionCtx.actor.companyId !== actionCtx.companyId)) throw new Error("Authenticated human company context is required");
     return await importForTarget(ctx, { entityType: value.entityType, entityId: value.entityId, companyId: actionCtx.companyId }, value.json, value.format);
   });
 
@@ -759,6 +764,7 @@ let health: { status: "ok" | "degraded" | "error"; message: string; details: Rec
 let workflows: ReturnType<typeof registerWorkflows> | undefined;
 let evaluation: ReturnType<typeof registerEvaluation> | undefined;
 let starterCreations: ReturnType<typeof registerStarterCreation> | undefined;
+let assurance: ReturnType<typeof registerAssurance> | undefined;
 let sourceExecutions: ReturnType<typeof registerSourceExecution> | undefined;
 const plugin = definePlugin({
   async setup(ctx) {
@@ -766,6 +772,9 @@ const plugin = definePlugin({
     workflows = registerWorkflows(ctx);
     evaluation = registerEvaluation(ctx);
     sourceExecutions = registerSourceExecution(ctx);
+    assurance = registerAssurance(ctx);
+    registerAcceptance(ctx);
+    registerDelegation(ctx);
     starterCreations = registerStarterCreation(ctx);
     registerTools(ctx);
     registerUiBridge(ctx, evaluation, sourceExecutions, starterCreations, workflows);
@@ -780,7 +789,7 @@ const plugin = definePlugin({
     ctx.logger.info("Kujo plugin initialized", { pluginId: ctx.manifest.id, componentCount: report.components.length, status: report.status });
   },
   async onHealth() { return health; },
-  async onShutdown() { await Promise.all([workflows?.shutdown(), evaluation?.shutdown(), sourceExecutions?.shutdown(), starterCreations?.shutdown()]); await terminateActiveKujoProcesses(); },
+  async onShutdown() { await Promise.all([assurance?.shutdown(), workflows?.shutdown(), evaluation?.shutdown(), sourceExecutions?.shutdown(), starterCreations?.shutdown()]); await terminateActiveKujoProcesses(); },
   async onValidateConfig(value) {
     try {
       const parsed = parsePluginConfig(value);

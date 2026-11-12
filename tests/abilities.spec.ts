@@ -27,7 +27,8 @@ describe("canonical Ability projection", () => {
     const register = vi.spyOn(harness.ctx.tools, "register");
     await plugin.definition.setup(harness.ctx);
     expect(register.mock.calls.map(([name]) => name).sort()).toEqual(manifest.tools!.map((item) => item.name).sort());
-    expect(manifest.tools).toHaveLength(21);
+    expect(manifest.tools).toHaveLength(22);
+    expect(manifest.tools!.filter(tool => tool.name !== "manage-kujo-assurance")).toHaveLength(21);
     await expect(harness.executeTool("kujo.rag.knowledge.ingest", {}, { companyId: "company" })).rejects.toThrow();
   });
 

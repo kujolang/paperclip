@@ -16,6 +16,7 @@ const manifest: PaperclipPluginManifestV1 = {
   minimumHostVersion: MINIMUM_HOST_VERSION,
   capabilities: [
     "jobs.schedule",
+    "events.subscribe",
     "local.folders",
     "issue.documents.write",
     "issue.interactions.create",
@@ -23,6 +24,7 @@ const manifest: PaperclipPluginManifestV1 = {
     "agent.tools.register",
     "projects.read",
     "issues.read",
+    "issues.orchestration.read",
     "project.workspaces.read",
     "database.namespace.read",
     "database.namespace.write",
@@ -37,7 +39,7 @@ const manifest: PaperclipPluginManifestV1 = {
   database: { namespaceSlug: "kujo_evidence", migrationsDir: "migrations" },
   instanceConfigSchema: instanceConfigJsonSchema,
   tools: projectedTools,
-  jobs: [{ jobKey: "dispatch-workflows", displayName: "Approved Kujo workflow operations", description: "Pick up explicitly submitted and human-approved workflow operations.", schedule: "* * * * *" }],
+  jobs: [{ jobKey: "assurance-workflows", displayName: "Approved verification workflows", description: "Pick up explicitly queued assurance operations.", schedule: "* * * * *" }, { jobKey: "dispatch-workflows", displayName: "Approved Kujo workflow operations", description: "Pick up explicitly submitted and human-approved workflow operations.", schedule: "* * * * *" }],
   localFolders: [{ folderKey: "workflow-state", displayName: "Kujo workflow state", description: "Existing private (0700) directory owned by the Paperclip OS user. Stores retained company workflow state; never a project workspace.", access: "readWrite" }],
   skills: [{
     skillKey: "scoped-repository-context",
