@@ -3418,7 +3418,7 @@ export const projections = [
     "tool": {
       "name": "import-verification",
       "displayName": "Import Verification Evidence",
-      "description": "Retain a redacted summary of supplied canonical evaluation-result JSON in the current project. Classifies skipped, partial, blocked and failed claims explicitly. Does not execute checks, authenticate the producer, or verify referenced evidence.",
+      "description": "Import a bounded evaluation result or RunLedger receipt into the current project or assigned issue. Retains supplied claims with host importer attribution; does not execute checks, authenticate producers, or grant verified completion.",
       "parametersSchema": {
         "type": "object",
         "additionalProperties": false,
@@ -3431,6 +3431,21 @@ export const projections = [
             "minLength": 1,
             "maxLength": 65536,
             "description": "Supplied kujo.evaluation-result/v1 JSON, at most 64 KiB. References are not opened."
+          },
+          "format": {
+            "type": "string",
+            "enum": [
+              "evaluation",
+              "runledger"
+            ],
+            "default": "evaluation",
+            "description": "Input format; existing evaluation imports remain the default."
+          },
+          "issueId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200,
+            "description": "Optional assigned issue; host assignment and current agent run are checked."
           }
         }
       }
@@ -3438,9 +3453,9 @@ export const projections = [
     "definition": {
       "schema": "kujo.ability/v1",
       "id": "kujo.paperclip.verification.import",
-      "version": "1.0.0",
+      "version": "1.1.0",
       "title": "Import Verification Evidence",
-      "description": "Retain a redacted summary of supplied canonical evaluation-result JSON in the current project. Classifies skipped, partial, blocked and failed claims explicitly. Does not execute checks, authenticate the producer, or verify referenced evidence.",
+      "description": "Import a bounded evaluation result or RunLedger receipt into the current project or assigned issue. Retains supplied claims with host importer attribution; does not execute checks, authenticate producers, or grant verified completion.",
       "input_schema": {
         "type": "object",
         "additionalProperties": false,
@@ -3453,6 +3468,21 @@ export const projections = [
             "minLength": 1,
             "maxLength": 65536,
             "description": "Supplied kujo.evaluation-result/v1 JSON, at most 64 KiB. References are not opened."
+          },
+          "format": {
+            "type": "string",
+            "enum": [
+              "evaluation",
+              "runledger"
+            ],
+            "default": "evaluation",
+            "description": "Input format; existing evaluation imports remain the default."
+          },
+          "issueId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200,
+            "description": "Optional assigned issue; host assignment and current agent run are checked."
           }
         }
       },
@@ -3487,7 +3517,7 @@ export const projections = [
         "executes_code": false
       }
     },
-    "definitionDigest": "ecbcf0b7ad700f0ec6aee8fedbcc9750f56142cfcd162c1e5bbf7760012bb82a",
+    "definitionDigest": "0382f8fd10420bb3a3478560cdfbdb54814fa30e2db88aeb1e691ace5de5df63",
     "canonicalDefinitions": []
   },
   {

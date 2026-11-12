@@ -9,7 +9,7 @@ export const EVIDENCE_NAMESPACE = "plugin_kujo_evidence_c15d42de56";
 export const HISTORY_LIMIT = 20;
 export const HISTORY_DAYS = 30;
 export const LEGACY_ARTIFACT_KINDS = ["review-latest", "context-latest", "failure-latest", "understand-latest", "language-latest", "verification-latest", "spec-latest", "fence-latest", "concord-latest", "shipcheck-latest"] as const;
-export const ARTIFACT_KINDS = [...LEGACY_ARTIFACT_KINDS, "packages-latest", "evaluation-plan", "evaluation-result", "source-execution-plan", "source-execution-result", "starter-creation-plan", "starter-creation-result", "workflow-plan", "workflow-result", "knowledge-answer"] as const;
+export const ARTIFACT_KINDS = [...LEGACY_ARTIFACT_KINDS, "packages-latest", "evaluation-plan", "evaluation-result", "source-execution-plan", "source-execution-result", "starter-creation-plan", "starter-creation-result", "workflow-plan", "workflow-result", "knowledge-answer", "runledger-import"] as const;
 export type ArtifactKind = typeof ARTIFACT_KINDS[number];
 export type ReceiptOptions = { inputs?: unknown; definition?: unknown; parentId?: string; legacy?: boolean; projection?: ProjectionReceipt };
 export const evidenceMetadataSchema = z.object({
@@ -35,6 +35,7 @@ export function canonicalJson(value: unknown): string {
 }
 export function evidenceDigest(value: unknown) { return createHash("sha256").update(canonicalJson(value)).digest("hex"); }
 function resultLabel(kind: ArtifactKind, payload: Record<string, unknown>) {
+  if (kind === "runledger-import") return `RunLedger ${payload.classification}`;
   if (kind === "knowledge-answer") return `knowledge ${(payload.answer as { status: string }).status}`;
   if (kind === "packages-latest") return `package inspection ${payload.status}`;
   if (kind === "shipcheck-latest") return `release signals ${payload.status}`;
@@ -74,7 +75,7 @@ export async function appendEvidence(ctx: PluginContext, target: StateTarget, ki
   const inserted = await ctx.db.execute(`INSERT INTO ${table(ctx)}
     (id, company_id, entity_type, entity_id, kind, artifact_id, source_kind, result, digest, input_digest, definition_digest, parent_id, payload_bytes, payload)
     VALUES ($4, $1, $2, $3, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14::jsonb) ON CONFLICT DO NOTHING`,
-    [...targetParams(target), id, kind, artifactId, options.legacy ? "legacy" : kind === "failure-latest" ? "supplied" : kind === "verification-latest" ? "imported" : "observed",
+    [...targetParams(target), id, kind, artifactId, options.legacy ? "legacy" : kind === "failure-latest" ? "supplied" : ["verification-latest", "runledger-import"].includes(kind) ? "imported" : "observed",
       resultLabel(kind, payload), digest, inputDigest, definitionDigest, options.parentId ?? null, bytes, serialized]);
   if (inserted.rowCount === 0) {
     const stored = await getEvidence(ctx, target, id);
@@ -135,7 +136,7 @@ export function compareEvidence(left: Awaited<ReturnType<typeof getEvidence>>, r
     const footprint = payload.footprint as Record<string, unknown> | undefined;
     const intelligence = payload.intelligence as Record<string, unknown> | undefined;
     const contract = payload.contract as Record<string, unknown> | null | undefined;
-    return { executionState: payload.executionState, nativeExitCode: (payload.native as Record<string, unknown> | undefined)?.exitCode, nativeChecks: ((payload.evaluation as Record<string, unknown> | null)?.result as Record<string, unknown> | undefined)?.checks, classification: payload.classification, sourceKind: payload.sourceKind, claimedChecks: (payload.result as Record<string, unknown> | undefined)?.checks, check: payload.check, lint: payload.lint, status: payload.status, staleAtCreation: payload.stale,
+    return { runledger: payload.producer === "RunLedger" ? { host: payload.host, record: payload.record, verificationMethod: payload.verificationMethod } : undefined, executionState: payload.executionState, nativeExitCode: (payload.native as Record<string, unknown> | undefined)?.exitCode, nativeChecks: ((payload.evaluation as Record<string, unknown> | null)?.result as Record<string, unknown> | undefined)?.checks, classification: payload.classification, sourceKind: payload.sourceKind, claimedChecks: (payload.result as Record<string, unknown> | undefined)?.checks, check: payload.check, lint: payload.lint, status: payload.status, staleAtCreation: payload.stale,
       declaredDependencies: payload.dependencyCount, lockStatus: (payload.lock as Record<string, unknown> | undefined)?.status,
       lockRecords: (payload.lock as Record<string, unknown> | undefined)?.count, truncated: payload.truncated,
       contractValidation: (payload.validation as Record<string, unknown> | undefined)?.status,
