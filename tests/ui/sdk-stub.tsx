@@ -159,6 +159,7 @@ export function usePluginAction(action: string) {
     if (action === "attach-evidence") return { status: "attached", documentId: "document" };
     if (action === "import-verification") {
       if (window.__KUJO_DELAY_IMPORT__) await new Promise<void>((resolve) => { window.__KUJO_RESOLVE_IMPORT__ = resolve; });
+      if ((input as { format?: string }).format === "runledger") return { classification: "unverified", record: { id: "fixture-attempt", model: "fixture", status: "pass", start_commit: null, end_commit: null, tests: [], usage: { input_tokens: null }, cost: null, correlation: null }, host: { agentId: null, runId: null, parentIssueId: null }, notice: "Imported claim; producer not authenticated." };
       return { classification: "partial", result: { evaluator: { name: "eval", version: "2.0.0" }, checks: { passed: 3, failed: 0, warned: 0, skipped: 1 }, verdict: "pass", subject: { run_id: "supplied-run" }, finished_at: "2026-10-12T00:00:00Z" }, generatedAt: "2026-10-12T01:00:00Z", referenceCount: 2 };
     }
     if (action === "inspect-release-readiness") {

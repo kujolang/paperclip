@@ -757,3 +757,22 @@ test("knowledge navigation discards delayed private results", async ({ page }) =
   await expect(page.getByText("private delayed knowledge result", { exact: true })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Choose knowledge files", exact: true })).toBeEnabled();
 });
+
+
+test("RunLedger imports remain unverified and cannot cross company navigation", async ({ page }) => {
+  await page.goto("/?surface=task&entity=issue&verification=1");
+  const section = page.getByRole("region", { name: "RunLedger accountability" });
+  await expect(section.getByText("No RunLedger evidence retained. Verification is incomplete.")).toBeVisible();
+  await section.getByLabel("RunLedger record JSON").fill('{"id":"fixture"}');
+  await section.getByRole("button", { name: "Import RunLedger receipt" }).click();
+  await expect(section.getByText("Verification: unverified", { exact: true })).toBeVisible();
+  await expect.poll(() => page.evaluate(() => window.__KUJO_ACTIONS__?.at(-1))).toMatchObject({ action: "import-verification", input: { format: "runledger", entityType: "issue" } });
+  await page.evaluate(() => { window.__KUJO_DELAY_IMPORT__ = true; });
+  await section.getByLabel("RunLedger record JSON").fill('{"id":"private"}');
+  await section.getByRole("button", { name: "Import RunLedger receipt" }).click();
+  await expect.poll(() => page.evaluate(() => Boolean(window.__KUJO_RESOLVE_IMPORT__))).toBe(true);
+  await page.evaluate(() => window.__KUJO_NAVIGATE__?.("other-company"));
+  await page.evaluate(() => window.__KUJO_RESOLVE_IMPORT__?.());
+  await expect(section.getByLabel("RunLedger record JSON")).toHaveValue("");
+  await expect(section.getByText("Verification: unverified", { exact: true })).toHaveCount(0);
+});
