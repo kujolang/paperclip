@@ -1,0 +1,46 @@
+{
+  "observedAt": "2026-11-12T02:24:21.456306+00:00",
+  "status": "pass",
+  "prefixState": "empty consistent npm prefix",
+  "globalPrefixUnchanged": true,
+  "recoveryBackupMetadataHashesVerified": 3,
+  "quarantinedPackageManifestsVerified": 13,
+  "quarantinedBinLinksVerified": 2,
+  "checks": [
+    {
+      "check": "empty-npm-ls",
+      "exitCode": 0
+    },
+    {
+      "check": "offline-npm-ci",
+      "exitCode": 0
+    },
+    {
+      "check": "local-fixture-install",
+      "exitCode": 0
+    },
+    {
+      "check": "node-resolution",
+      "exitCode": 0
+    },
+    {
+      "check": "bin-resolution",
+      "exitCode": 0
+    },
+    {
+      "check": "local-fixture-uninstall",
+      "exitCode": 0
+    },
+    {
+      "check": "empty-npm-ls-after-uninstall",
+      "exitCode": 0
+    }
+  ],
+  "metadataSha256": {
+    "package.json": "ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356",
+    "package-lock.json": "24e6624d0b098816131651c0cdd596a3f8562d444450ec5ee6d11ecdde72b324",
+    "node_modules/.package-lock.json": "3554885ac9319bde071c3133a225faee7361494aac2ba7af77c4490b3fa247cd"
+  },
+  "historicalByteExactRestoration": "Unverifiable without authentic pre-probe metadata and inventory; backup beforeSha256 values are post-probe/pre-recovery.",
+  "repairRequired": false
+}
