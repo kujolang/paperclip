@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add optional RunLedger receipt imports through the existing verification tool and UI, with assigned-issue/current-run attribution, conservative classifications, retained comparison/export, bounded redaction and no new execution dependencies. Add native receipt and isolated host correlation demonstrations; Workcell/Lens and policy enforcement remain deferred.
+
 - Extend live run-tab acceptance to cancellation/reload and cross-run evidence isolation; verify a separate host UI repair against official 2026.1106.0. Add a read-only, disposable-copy verifier for the recovered empty plugin prefix. See the run-tab/recovery follow-up for deployment and historical-restoration limits.
 - Pin the Paperclip SDK to official stable 2026.1106.0 and update its affected lockfile entries, including the fast-uri 3.1.9 security patch.
 - Check company and entity access before workspace resolution and retained project/issue evidence reads. Reject private entities locally where Paperclip workspace lookups do not enforce the same boundary.

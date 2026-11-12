@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "fixture": "production Kujo workflows",
+  "startedAt": "2026-11-12T15:24:14.026Z",
+  "hostPackage": {
+    "name": "@paperclipai/server",
+    "version": "2026.1106.0",
+    "entrySha256": "cde8cd927214edb31edf173aec7667dd86b174799a58c822f6abf41089786480"
+  },
+  "pluginCommit": "cde1b21e669455bb7a5776ea9c69125e0362e552",
+  "checks": [
+    "fresh authenticated instance and local worker installation",
+    "accountability: four real host agents with hierarchy and parent-child assignments import distinct native RunLedger failed/corrected records with host attribution; forged identities rejected; all eight records survive full host/database restart"
+  ],
+  "observedHostVersions": [
+    "2026.1106.0"
+  ],
+  "status": "passed",
+  "hostStopped": true,
+  "finishedAt": "2026-11-12T15:25:22.668Z",
+  "pluginCommitScope": "Base commit; qualification ran the modified working tree. Compiled worker hashes identify tested bytes.",
+  "workerSha256": "bbe47f90ae7c9de84b610e970a1331083bf2ca9f72ea8f0bb360b865a24698dc",
+  "manifestSha256": "051492b81de7b947918a5d0a74c2255f357b692acff55b9e6bf770393f8aa5ca"
+}

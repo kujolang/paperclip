@@ -1,0 +1,49 @@
+{
+  "schemaVersion": 1,
+  "date": "2026-11-12",
+  "baseCommit": "cde1b21e669455bb7a5776ea9c69125e0362e552",
+  "scope": "Partial RunLedger accountability increment, working tree",
+  "baseline": {
+    "testFiles": 44,
+    "passed": 328,
+    "skipped": 2,
+    "durationSeconds": 315.2
+  },
+  "finalVerify": {
+    "status": "passed",
+    "testFiles": 45,
+    "passed": 333,
+    "skipped": 2,
+    "durationSeconds": 364.67,
+    "packageFiles": 354,
+    "packageBytes": 1383248
+  },
+  "browserUi": {
+    "status": "passed",
+    "cases": 60,
+    "durationSeconds": 38.9,
+    "hostBridge": "mock fixture, not live host"
+  },
+  "liveHost": {
+    "status": "passed",
+    "version": "2026.1106.0",
+    "agents": 4,
+    "retainedReceipts": 8,
+    "fullHostDatabaseRestart": true,
+    "evidence": "../../examples/accountability-evidence/host-result.json"
+  },
+  "nativeProducer": {
+    "status": "passed",
+    "failedAssertionExit": 1,
+    "correctedAssertionExit": 0,
+    "correctedImportedClassification": "unverified"
+  },
+  "unqualified": [
+    "Workcell container execution (daemon unavailable)",
+    "Lens execution",
+    "PackWrite and Muzzle integrations",
+    "direct Watchdog telemetry",
+    "required verification and waivers",
+    "complete autonomous multi-agent delivery"
+  ]
+}

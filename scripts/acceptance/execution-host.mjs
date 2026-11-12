@@ -251,6 +251,10 @@ try {
     checks.push("official host upgrade preserves company/project/issue identity, login session and plugin evidence through migrations and another restart");
   }
   if (production) {
+    if (process.env.KUJO_ACCEPTANCE_PACK === "accountability") {
+      const { qualifyAccountability } = await import("./production-accountability.mjs");
+      await qualifyAccountability({ call, companyId, projectId, issueId, root, node, checks, json, stop, start, waitUntil });
+    }
     if (process.env.KUJO_ACCEPTANCE_PACK === "install") {
       const { qualifyProductionInstall } = await import("./production-install.mjs");
       await qualifyProductionInstall({ call, companyId, root, host, node, base, checks, json });
@@ -263,7 +267,7 @@ try {
       const { qualifyProductionCore } = await import("./production-core.mjs");
       await qualifyProductionCore({ call, companyId, projectId, issueId, root, node, checks, json, stop, start, waitUntil });
     }
-    if (!["core", "ui", "install"].includes(process.env.KUJO_ACCEPTANCE_PACK)) {
+    if (!["core", "ui", "install", "accountability"].includes(process.env.KUJO_ACCEPTANCE_PACK)) {
     if (!["workflows", "knowledge"].includes(process.env.KUJO_ACCEPTANCE_PACK)) {
     const { qualifyProductionEvaluation } = await import("./production-eval.mjs");
     await qualifyProductionEvaluation({ call, companyId, projectId, issueId, userId, root, node, checks, json, stop, start, waitUntil });

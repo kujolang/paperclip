@@ -67,3 +67,10 @@ Inputs are limited to 64 KiB UTF-8 and 32 nested levels. Only result ID, produce
 The source digest hashes the exact supplied UTF-8 JSON bytes. The history receipt hashes the retained redacted summary and adapter provenance. They identify different things. Report IDs and subject IDs are supplied metadata and never select a Paperclip company, project, issue or run. Each import gets a fresh host record identity; importing twice creates two history entries.
 
 Imports share the 20-record/30-day company/entity history limits. Inspect, compare, download a redacted export, or explicitly attach issue-scoped evidence as an authenticated human. Workspace freshness and referenced-evidence integrity remain unknown. Clear Kujo data removes retained imports even when the project has no local workspace.
+
+## RunLedger receipts
+
+The import tool additionally accepts `format: "runledger"` and an optional assigned
+`issueId`. The separate RunLedger panel retains supplied receipt claims and host
+importer attribution. See [the accountability contract](ACCOUNTABILITY.md) for
+classification, retention, supported fields, demonstrations and remaining scope.

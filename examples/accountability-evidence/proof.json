@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "scope": "Real RunLedger CLI and real Node assertions; local adapter only, no Paperclip host or agent delegation",
+  "producerCommit": "ab0ec5d2edb7ffd913f48d092aa6fc17cab58d13",
+  "attempts": [
+    {
+      "filename": "failed-attempt.json",
+      "assertionSource": "const assert = require('node:assert/strict'); const tasks = ['write code', 'verify code']; const search = q => tasks.filter(t => true); assert.deepEqual(search('verify'), ['verify code']);",
+      "actualExitCode": 1,
+      "classification": "failed",
+      "artifactSha256": "12cfaa2c36faa32f76289b8ae133074ed6cdbb8f846e9d3097610e828ac34514"
+    },
+    {
+      "filename": "corrected-attempt.json",
+      "assertionSource": "const assert = require('node:assert/strict'); const tasks = ['write code', 'verify code']; const search = q => tasks.filter(t => t.includes(q)); assert.deepEqual(search('verify'), ['verify code']);",
+      "actualExitCode": 0,
+      "classification": "unverified",
+      "artifactSha256": "718dceced7de8f90d63ae78a87ebcb3a47a3b5c706500e255c4c948fc6f3f9a8"
+    }
+  ]
+}

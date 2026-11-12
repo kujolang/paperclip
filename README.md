@@ -171,6 +171,14 @@ assignment and current run. They can request approval but cannot accept it, and
 can start/cancel only their own run's requests. See [Approved execution](docs/EXECUTION.md)
 for inputs, limits and recovery behavior.
 
+## RunLedger accountability
+
+With Verification enabled, import an existing RunLedger JSON receipt on an issue
+or project. Inspect the recorded commits, reported tests, available usage and
+correlation identifiers; compare attempts in Evidence history. Agent imports can
+bind to their assigned issue/current host run. Imported passes remain unverified.
+See [accountability architecture, audit and limits](docs/ACCOUNTABILITY.md).
+
 ## Verification evidence
 
 Enable **Verification** in company settings to review a Git-visible `.spec.json`, `.spec.yml`, `.spec.yaml` or `.spec.toml` task contract. The native Spec validator reports contract errors and warnings; strict mode treats warnings as failures. Acceptance criteria and declared checks remain **not-run**, and declared approval points do not grant approval. No workspace files or check commands are executed or changed.
