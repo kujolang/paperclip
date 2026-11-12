@@ -52,6 +52,12 @@ let cookie = "";
 const evidence = { schemaVersion: 1, fixture: production ? "production Kujo workflows" : "isolated authenticated execution and host admission", startedAt: new Date().toISOString(),
   ...(npmHostPackage ? { hostPackage: { name: npmHostPackage.name, version: npmHostPackage.version, entrySha256: createHash("sha256").update(await readFile(hostEntry)).digest("hex") } } : { hostCommit: execFileSync("git", ["-C", host, "rev-parse", "HEAD"], { encoding: "utf8" }).trim() }),
   pluginCommit: execFileSync("git", ["-C", repo, "rev-parse", "HEAD"], { encoding: "utf8" }).trim(), checks };
+if (browserQualification) {
+  // The server package version alone cannot identify a locally rebuilt UI.
+  // Record the actual static entry bytes used by this isolated host.
+  const uiIndex = npmHostArg ? join(dirname(hostEntry), "../ui-dist/index.html") : join(host, "ui/dist/index.html");
+  evidence.uiIndexSha256 = createHash("sha256").update(await readFile(uiIndex)).digest("hex");
+}
 async function port() {
   const server = createServer();
   server.listen(0, "127.0.0.1"); await once(server, "listening");

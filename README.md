@@ -24,6 +24,9 @@ detail pages where the host exposes detail tabs. Paperclip `2026.1106.0` does no
 mount plugin tabs on its run page, so the run evidence panel is unavailable there.
 The plugin retains its read-only run component and agent run-evidence tools; see
 [the observed host limitation](docs/COMPATIBILITY_SWEEP_2026_11_11.md).
+An independently tested host repair is available in a fork branch; see
+[run-tab repair and prefix recovery](docs/RUN_TAB_RECOVERY_2026_11_12.md).
+It has not been released upstream or deployed to an existing host.
 
 The npm package includes the right Kujo runtime for macOS arm64/x64, Linux arm64/x64,
 and Windows x64. You do not need a separate Kujo install or Kujo API key. Installation

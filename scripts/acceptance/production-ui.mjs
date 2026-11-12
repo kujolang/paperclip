@@ -48,6 +48,7 @@ export async function qualifyProductionUi({ call, companyId, projectId, issueId,
       } })).data;
       const key = (await call(`/agents/${agent.id}/keys`, { method: "POST", status: 201, body: { name: "Disposable UI key" } })).data;
       let runId;
+      let secondRunId;
       try {
         runId = (await call(`/agents/${agent.id}/heartbeat/invoke`, { method: "POST", status: 202, body: { reason: "ui_qualification", idempotencyKey: `ui-${agent.id}` } })).data.id;
         assert.ok(runId);
@@ -64,11 +65,33 @@ export async function qualifyProductionUi({ call, companyId, projectId, issueId,
           throw error;
         }
         await page.getByRole("tab", { name: "Kujo", exact: true }).click();
-        await expect(page.getByText(title, { exact: true })).toBeVisible();
+        await expect(page.getByText(title, { exact: true }).first()).toBeVisible();
         await expect(page.getByRole("button", { name: /Capture Failure Evidence|Generate Review Pack|Clear Kujo data/ })).toHaveCount(0);
         checks.push("actual host run Kujo tab displays scoped retained evidence read-only");
+        await call(`/heartbeat-runs/${runId}/cancel`, { method: "POST", body: {} });
+        await page.reload();
+        await page.getByRole("tab", { name: "Kujo", exact: true }).click();
+        await expect(page.getByText(title, { exact: true }).first()).toBeVisible();
+        checks.push("run evidence remains readable after cancellation and page reload");
+        secondRunId = (await call(`/agents/${agent.id}/heartbeat/invoke`, { method: "POST", status: 202, body: {
+          reason: "ui_qualification", idempotencyKey: `ui-second-${agent.id}`,
+        } })).data.id;
+        assert.ok(secondRunId && secondRunId !== runId);
+        await page.goto(`${base}/agents/${agent.id}/runs/${secondRunId}`);
+        await page.getByRole("tab", { name: "Kujo", exact: true }).click();
+        await expect(page.getByText("Evidence history", { exact: true })).toBeVisible();
+        await expect(page.getByText(title, { exact: true })).toHaveCount(0);
+        await expect(page.getByRole("button", { name: /Capture Failure Evidence|Generate Review Pack|Clear Kujo data/ })).toHaveCount(0);
+        checks.push("another run has its own empty read-only evidence scope");
+        await page.goto(`${base}/agents/${agent.id}/runs/${runId}`);
+        await page.getByRole("tab", { name: "Kujo", exact: true }).click();
+        await expect(page.getByText(title, { exact: true }).first()).toBeVisible();
+        checks.push("returning to the original run restores only its retained evidence");
       } finally {
-        try { if (runId) await call(`/heartbeat-runs/${runId}/cancel`, { method: "POST", body: {} }); }
+        try {
+          if (secondRunId) await call(`/heartbeat-runs/${secondRunId}/cancel`, { method: "POST", body: {} });
+          if (runId) await call(`/heartbeat-runs/${runId}/cancel`, { method: "POST", body: {} });
+        }
         finally { await call(`/agents/${agent.id}/keys/${key.id}`, { method: "DELETE" }); }
       }
     }

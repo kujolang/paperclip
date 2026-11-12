@@ -1,5 +1,13 @@
 # Paperclip compatibility sweep — 2026-11-11
 
+## Follow-up
+
+The [run-tab repair and prefix verification](RUN_TAB_RECOVERY_2026_11_12.md)
+adds later evidence: the host UI repair is tested in a separate fork, and the
+global prefix's current logical recovery is verified. The historical observations
+below remain unchanged; an upstream release and byte-exact historical restoration
+are not implied.
+
 ## Qualification status
 
 **Upgrade verified with an unresolved host UI limitation.** Baseline
