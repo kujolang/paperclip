@@ -1,0 +1,117 @@
+# Muzzle environment and manifest diagnostics.
+
+from src.common import is_trueish, is_falseish, dict_has_key, path_is_within_muzzle
+from src.workflow import inspect_manifest, validate_workflow_name, resolve_workflow_script, validate_script_path, verify_manifest_integrity
+
+WORKFLOWS_DIR := ".muzzle/workflows"
+MANIFESTS_DIR := ".muzzle/manifests"
+
+func finding(code, severity, message, path) {
+	return {"code": code, "severity": severity, "message": message, "path": path}
+}
+
+func add_finding(findings, code, severity, message, path) {
+	return push(findings, finding(code, severity, message, path))
+}
+
+func runner_command(runner) {
+	if runner == "kujo" {
+		return array(env_or("KUJO_BIN", "kujo"), "--version")
+	}
+	if runner == "bash" {
+		return array("bash", "--version")
+	}
+	if runner == "python" {
+		return array("python3", "--version")
+	}
+	return array("node", "--version")
+}
+
+export func run_doctor() {
+	mut findings := array()
+	managed_dirs := array(".muzzle", WORKFLOWS_DIR, MANIFESTS_DIR, ".muzzle/logs", ".muzzle/reports", ".muzzle/state", ".muzzle/state/loops")
+	mut dir_idx := 0
+	while dir_idx < len(managed_dirs) {
+		managed_dir := managed_dirs[dir_idx]
+		if is_falseish(file_exists(managed_dir)) {
+			findings = add_finding(findings, "DIR_MISSING", "error", "Required Muzzle directory is missing.", managed_dir)
+		} else if is_falseish(path_is_dir(managed_dir)) || is_falseish(path_is_within_muzzle(managed_dir)) {
+			findings = add_finding(findings, "DIR_UNSAFE", "error", "Managed path is not a safe project-local directory.", managed_dir)
+		}
+		dir_idx = dir_idx + 1
+	}
+
+	if is_trueish(path_is_dir(MANIFESTS_DIR)) && is_trueish(path_is_within_muzzle(MANIFESTS_DIR)) {
+		entries := sort(list_dir(MANIFESTS_DIR))
+		mut manifest_idx := 0
+		while manifest_idx < len(entries) {
+			entry_name := to_string(entries[manifest_idx])
+			if is_trueish(ends_with(entry_name, ".json")) {
+				name := substring(entry_name, 0, len(entry_name) - 5)
+				if is_falseish(validate_workflow_name(name)) {
+					findings = add_finding(findings, "MANIFEST_FILENAME", "error", "Manifest filename is not a valid workflow name.", MANIFESTS_DIR + "/" + entry_name)
+				} else {
+					inspection := inspect_manifest(name)
+					if to_string(inspection["status"]) != "valid" {
+						findings = add_finding(findings, to_string(inspection["code"]), "error", to_string(inspection["message"]), MANIFESTS_DIR + "/" + entry_name)
+					} else {
+						manifest := inspection["manifest"]
+						script_path := resolve_workflow_script(name)
+						if script_path == "" || is_falseish(validate_script_path(script_path)) {
+							findings = add_finding(findings, "MANIFEST_SCRIPT_MISSING", "error", "Manifest script is missing or outside .muzzle.", script_path)
+						} else {
+							integrity := verify_manifest_integrity(manifest, script_path)
+							if is_falseish(integrity["ok"]) {
+								findings = add_finding(findings, to_string(integrity["code"]), "error", to_string(integrity["message"]), script_path)
+							}
+						}
+					}
+				}
+			}
+			manifest_idx = manifest_idx + 1
+		}
+	}
+
+	runners := array("kujo", "bash", "python", "node")
+	mut runner_idx := 0
+	while runner_idx < len(runners) {
+		runner := runners[runner_idx]
+		mut available := false
+		try {
+			probe := spawn_process(runner_command(runner), {"timeout_ms": 5000, "max_output_bytes": 4096})
+			available = probe.exitcode == 0
+		} except _err {}
+		if is_falseish(available) {
+			findings = add_finding(findings, "RUNNER_UNAVAILABLE", "warning", "Optional runner is unavailable: " + runner, runner)
+		}
+		runner_idx = runner_idx + 1
+	}
+
+	if is_trueish(path_is_dir(".muzzle/state")) && is_trueish(path_is_within_muzzle(".muzzle/state")) {
+		probe_path := ".muzzle/state/.doctor-write-" + replace(uuid_v4(), "-", "")
+		mut writable := true
+		try {
+			write_file_atomic(probe_path, "ok", false)
+			delete_file(probe_path)
+		} except _err {
+			writable = false
+		}
+		if is_falseish(writable) {
+			findings = add_finding(findings, "ARTIFACT_NOT_WRITABLE", "error", "Muzzle state directory is not writable.", ".muzzle/state")
+		}
+	}
+
+	mut errors := 0
+	mut warnings := 0
+	mut finding_idx := 0
+	while finding_idx < len(findings) {
+		item := findings[finding_idx]
+		if to_string(item["severity"]) == "error" {
+			errors = errors + 1
+		} else if to_string(item["severity"]) == "warning" {
+			warnings = warnings + 1
+		}
+		finding_idx = finding_idx + 1
+	}
+	return {"schema_version": "muzzle.doctor/v1", "command": "doctor", "ok": errors == 0, "errors": errors, "warnings": warnings, "findings": findings}
+}

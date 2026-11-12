@@ -1,0 +1,45 @@
+# Explicit, ownership-checked cleanup for expired local preservation records.
+
+from src.evidence.preservation import retention_expired
+from src.util import ensure_dir, get_or, load_json, parent_of, path_has_symlink, save_json
+from src.workspace.workspace import cleanup_workspace
+
+func retention_error(code, message) {
+    return {"ok": false, "error": {"code": code, "message": message}}
+}
+
+export func cleanup_expired_preservation(path, at_time, dry_run) {
+    if type(path) != "string"||path == ""||file_exists(path) == false||path_has_symlink(path) {return retention_error("invalid_preservation_path", "preservation path is missing or unsafe")}
+    loaded := load_json(path)
+    if loaded["ok"] == false||type(loaded["value"]) != "dict" {return retention_error("invalid_preservation_record", "preservation record is not readable JSON")}
+    outcome := loaded["value"]
+    if get_or(outcome, "schema", "") != "kujo.preservation-outcome/v1" {return retention_error("invalid_preservation_record", "preservation schema is unsupported")}
+    if get_or(outcome, "actual_mode", "none") != "filesystem"||get_or(outcome, "status", "") != "satisfied" {return retention_error("preservation_not_cleanable", "only satisfied local filesystem preservation can be cleaned by this command")}
+    retain_until := get_or(outcome, "retain_until", "")
+    if retain_until == "" {return retention_error("retention_deadline_missing", "preservation has no retention deadline")}
+    if retention_expired(outcome, at_time) == false {return retention_error("retention_not_expired", "preservation retention deadline has not expired")}
+    cleanup := get_or(outcome, "cleanup", {})
+    if get_or(cleanup, "owner", "") != "workcell-clean" {return retention_error("cleanup_owner_mismatch", "preservation cleanup owner is not the local Workcell cleaner")}
+    workspace := {"workspace_path": get_or(cleanup, "handle", ""), "strategy": get_or(cleanup, "strategy", ""), "source_root": get_or(cleanup, "source_root", "")}
+    if dry_run {return {"ok": true, "dry_run": true, "status": "expired", "workspace": workspace, "retain_until": retain_until}}
+    removed := cleanup_workspace(workspace, false)
+    if removed["ok"] == false {return retention_error("preservation_cleanup_failed", get_or(removed, "error", "preserved workspace cleanup failed"))}
+    subject := get_or(outcome, "subject", {})
+    run_identifier := get_or(subject, "run_id", "unknown")
+    deletion := {
+        "schema": "workcell-preservation-deletion/v1",
+        "run_id": run_identifier,
+        "preservation_result_id": get_or(outcome, "result_id", ""),
+        "deleted_at": now_utc(),
+        "retain_until": retain_until,
+        "cleanup_owner": "workcell-clean",
+        "workspace": get_or(cleanup, "handle", ""),
+        "status": "deleted"
+    }
+    run_dir := parent_of(path)
+    deletion_dir := parent_of(run_dir) + "/deletions"
+    if ensure_dir(deletion_dir) == false {return retention_error("deletion_receipt_failed", "deletion receipt directory could not be created")}
+    deletion_path := deletion_dir + "/" + run_identifier + ".json"
+    if save_json(deletion_path, deletion) != true {return retention_error("deletion_receipt_failed", "deletion receipt could not be persisted")}
+    return {"ok": true, "dry_run": false, "status": "deleted", "deletion_receipt": deletion, "deletion_receipt_path": deletion_path}
+}

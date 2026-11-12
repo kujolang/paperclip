@@ -1,0 +1,298 @@
+# Convert a validated definition into an explicit Docker security policy.
+
+from src.util import get_or, join_path_safe, project_version, resolve_run_as, runtime_env_deny_names
+from src.domain.definition import validate_definition
+
+func add_flag(args, flag) {
+    return push(args, flag)
+}
+
+func add_pair(args, flag, value) {
+    mut out := push(args, flag)
+    out = push(out, value)
+    return out
+}
+
+func label_args(args, labels) {
+    names := keys(labels)
+    mut out := args
+    mut i := 0
+    while i < len(names) {
+        name := names[i]
+        out = add_pair(out, "--label", name + "=" + to_string(labels[name]))
+        i = i + 1
+    }
+    return out
+}
+
+func environment_args(args, definition) {
+    mut out := args
+    allow := definition["environment"]["allow"]
+    mut i := 0
+    while i < len(allow) {
+        out = add_pair(out, "--env", allow[i])
+        i = i + 1
+    }
+    configured := definition["environment"]["set"]
+    configured_names := keys(configured)
+    mut configured_i := 0
+    while configured_i < len(configured_names) {
+        name := configured_names[configured_i]
+        out = add_pair(out, "--env", name + "=" + configured[name])
+        configured_i = configured_i + 1
+    }
+    secrets := definition["secrets"]
+    mut secret_i := 0
+    while secret_i < len(secrets) {
+        out = add_pair(out, "--env", secrets[secret_i])
+        secret_i = secret_i + 1
+    }
+    return out
+}
+
+func network_policy_for(definition) {
+    network := definition["network"]
+    configured_egress := network["egress"]
+    mut effective_egress := configured_egress
+    if network["mode"] == "none" {
+        effective_egress = {"policy": "deny-by-default", "dns": "blocked", "proxy": "none", "enforcement_profile": "none"}
+    }
+    mut warnings := []
+    if network["mode"] != "none"&&configured_egress["policy"] == "unmanaged" {
+        warnings = push(warnings, "network egress is unmanaged; enforce a host firewall or transparent proxy before production use")
+    }
+    return {
+        "mode": network["mode"],
+        "name": network["name"],
+        "egress": effective_egress,
+        "configured_egress": configured_egress,
+        "enforcement_profile": effective_egress["enforcement_profile"],
+        "warnings": warnings
+    }
+}
+
+export func labels_for(definition, run_identifier) {
+    definition_check := validate_definition(definition)
+    if definition_check["ok"] == false {
+        return definition_check
+    }
+    return {
+        "dev.kujo.workcell": "true",
+        "dev.kujo.workcell.run_id": run_identifier,
+        "dev.kujo.workcell.project": definition["name"],
+        "dev.kujo.workcell.version": project_version()
+    }
+}
+
+export func build_policy(definition, run_identifier, host_workspace) {
+    definition_check := validate_definition(definition)
+    if definition_check["ok"] == false {
+        return definition_check
+    }
+    if type(run_identifier) != "string"||type(host_workspace) != "string"||run_identifier == ""||host_workspace == "" {
+        return {"ok": false, "error": "policy run identifier and host workspace must be non-empty strings"}
+    }
+    mut mount_workspace := host_workspace
+    if path_exists(host_workspace) {
+        let resolved_workspace := path_absolute(host_workspace)
+        if type(resolved_workspace) == "error" {
+            return {"ok": false, "error": "policy host workspace could not be canonicalized"}
+        }
+        mount_workspace = resolved_workspace
+    }
+    identity := resolve_run_as(definition["workspace"]["run_as"])
+    if identity["ok"] == false {
+        return identity
+    }
+    mount_path := definition["workspace"]["mount_path"]
+    labels := labels_for(definition, run_identifier)
+    backend := definition["runtime"]["backend"]
+    engine := "docker"
+    if backend == "podman" {engine = "podman"}
+    // Image acquisition and verification belong to ensure_image. A vanished
+    // local image must fail launch rather than cause an unchecked implicit pull.
+    mut docker := [engine, "run", "--pull=never"]
+    network_policy := network_policy_for(definition)
+    network_mode := definition["network"]["mode"]
+    if network_mode == "custom" {
+        network_mode = definition["network"]["name"]
+    }
+    docker = label_args(docker, labels)
+    docker = add_pair(docker, "--name", "kujo-workcell-" + run_identifier)
+    docker = add_pair(docker, "--network", network_mode)
+    docker = add_pair(docker, "--user", identity["value"])
+    docker = push(docker, "--init")
+    docker = add_pair(docker, "--ipc", "private")
+    docker = add_flag(docker, "--cap-drop")
+    docker = push(docker, "ALL")
+    docker = add_pair(docker, "--security-opt", "no-new-privileges:true")
+    docker = add_pair(docker, "--cpus", to_string(definition["resources"]["cpus"]))
+    docker = add_pair(docker, "--memory", definition["resources"]["memory"])
+    docker = add_pair(docker, "--pids-limit", to_string(definition["resources"]["pids"]))
+    engine_runtime := get_or(definition["runtime"], "engine_runtime", "")
+    if engine_runtime != "" {
+        docker = add_pair(docker, "--runtime", engine_runtime)
+    }
+    seccomp_profile := definition["filesystem"]["seccomp_profile"]
+    if seccomp_profile != "" {
+        docker = add_pair(docker, "--security-opt", "seccomp=" + seccomp_profile)
+    }
+    apparmor_profile := definition["filesystem"]["apparmor_profile"]
+    if apparmor_profile != "" {
+        docker = add_pair(docker, "--security-opt", "apparmor=" + apparmor_profile)
+    }
+    if definition["filesystem"]["read_only_root"] == true {
+        docker = push(docker, "--read-only")
+    }
+    tmpfs := definition["filesystem"]["tmpfs"]
+    mut tmp_i := 0
+    while tmp_i < len(tmpfs) {
+        docker = add_pair(docker, "--tmpfs", tmpfs[tmp_i] + ":rw,noexec,nosuid,nodev")
+        tmp_i = tmp_i + 1
+    }
+    docker = add_pair(docker, "--volume", mount_workspace + ":" + mount_path + ":rw")
+    docker = add_pair(docker, "--workdir", mount_path)
+    docker = environment_args(docker, definition)
+    if backend == "docker" {
+        // Docker client config may inject proxies even when the process does
+        // not inherit them. Override that implicit channel in the workload.
+        for proxy_name in ["HTTP_PROXY", "HTTPS_PROXY", "FTP_PROXY", "ALL_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "ftp_proxy", "all_proxy", "no_proxy"] {
+            if has_key(definition["environment"]["set"], proxy_name) == 0&&contains(definition["environment"]["allow"], proxy_name) == false&&contains(definition["secrets"], proxy_name) == false {
+                docker = add_pair(docker, "--env", proxy_name + "=")
+            }
+        }
+    }
+    docker = push(docker, definition["runtime"]["image"])
+    command := definition["command"]
+    mut command_i := 0
+    while command_i < len(command) {
+        docker = push(docker, command[command_i])
+        command_i = command_i + 1
+    }
+    return {
+        "docker_args": docker,
+        "container_name": "kujo-workcell-" + run_identifier,
+        "labels": labels,
+        "mounts": [mount_workspace + ":" + mount_path + ":rw"],
+        "network_mode": network_mode,
+        "runtime_backend": backend,
+        "runtime_engine": engine,
+        "network_policy": network_policy,
+        "warnings": network_policy["warnings"],
+        "resource_limits": definition["resources"],
+        "secret_names": definition["secrets"],
+        "effective_security_policy": {
+            "privileged": false,
+            "docker_socket": false,
+            "host_root_mount": false,
+            "host_home_mount": false,
+            "host_pid": false,
+            "host_ipc": false,
+            "host_user_namespace": false,
+            "devices": false,
+            "non_root_user": identity["value"],
+            "workspace_identity": identity["source"],
+            "read_only_root": definition["filesystem"]["read_only_root"],
+            "no_new_privileges": true,
+            "capabilities_dropped": "ALL",
+            "network_mode": network_mode,
+            "network_policy": network_policy,
+            "workspace_mount": mount_path + ":rw",
+            "artifact_export_boundary": "host output directory only"
+        },
+        "ok": true,
+        "run_as": identity
+    }
+}
+
+export func spawn_options(definition) {
+    definition_check := validate_definition(definition)
+    if definition_check["ok"] == false {
+        return definition_check
+    }
+    path_value := env("PATH")
+    mut environment := {"PATH": path_value}
+    allow := definition["environment"]["allow"]
+    mut allow_keys := ["PATH"]
+    mut i := 0
+    while i < len(allow) {
+        name := allow[i]
+        value := env(name)
+        if type(value) == "null" {
+            return {"ok": false, "error": "allowed environment variable is not set: " + name}
+        }
+        environment[name] := value
+        allow_keys = push(allow_keys, name)
+        i = i + 1
+    }
+    secrets := definition["secrets"]
+    mut secret_i := 0
+    while secret_i < len(secrets) {
+        name := secrets[secret_i]
+        value := env(name)
+        if type(value) == "null" {
+            return {"ok": false, "error": "declared secret is not set: " + name}
+        }
+        environment[name] := value
+        allow_keys = push(allow_keys, name)
+        secret_i = secret_i + 1
+    }
+    deny := runtime_env_deny_names()
+    return {
+        "ok": true,
+        "options": {
+            "inherit_env": false,
+            "env_allow": allow_keys,
+            "env_deny": deny,
+            "env": environment,
+            "timeout_ms": definition["resources"]["timeout_ms"],
+            "max_output_bytes": definition["resources"]["max_output_bytes"]
+        }
+    }
+}
+
+export func inspect_policy(definition, run_identifier, host_workspace, output_root) {
+    policy := build_policy(definition, run_identifier, host_workspace)
+    if policy["ok"] == false {
+        return policy
+    }
+    configured_names := keys(definition["environment"]["set"])
+    engine := "docker"
+    if definition["runtime"]["backend"] == "podman" {engine = "podman"}
+    return {
+        "ok": true,
+        "definition": {
+            "name": definition["name"],
+            "version": definition["version"],
+            "runtime": definition["runtime"],
+            "workspace": definition["workspace"],
+            "command": definition["command"],
+            "environment_allow": definition["environment"]["allow"],
+            "environment_set_names": configured_names,
+            "secret_names": definition["secrets"],
+            "resources": definition["resources"],
+            "network": definition["network"],
+            "filesystem": definition["filesystem"],
+            "artifacts": definition["artifacts"],
+            "cleanup": definition["cleanup"],
+            "trust_profile": definition["trust_profile"],
+            "receipt": definition["receipt"],
+            "integrations": definition["integrations"]
+        },
+        "run_id": run_identifier,
+        "runtime_backend": definition["runtime"]["backend"],
+        "runtime_engine": engine,
+        "source_workspace": host_workspace,
+        "output_root": output_root,
+        "container_name": policy["container_name"],
+        "mounts": policy["mounts"],
+        "network_mode": policy["network_mode"],
+        "network_policy": policy["network_policy"],
+        "resource_limits": policy["resource_limits"],
+        "secret_names": policy["secret_names"],
+        "docker_security_arguments": policy["docker_args"],
+        "effective_security_policy": policy["effective_security_policy"],
+        "cleanup": definition["cleanup"],
+        "receipt_destination": join_path_safe(output_root, "receipt.json")
+    }
+}

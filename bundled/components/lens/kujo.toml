@@ -1,0 +1,9 @@
+# kujo.toml — Kujo project configuration for Lens
+
+[kujo]
+minimum_version = "1.2.3"
+
+[project]
+name = "lens"
+version = "1.1.1"
+description = "Deterministic browser/visual QA tool for AI-built software. Gives agents eyes."

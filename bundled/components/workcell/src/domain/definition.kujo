@@ -1,0 +1,1182 @@
+# Workcell definition loading and semantic validation.
+
+from src.util import get_or, has_key_safe, host_control_env_names, load_json, normalized_relative
+
+export func default_definition() {
+    return {
+        "version": 1,
+        "name": "workcell-project-check",
+        "runtime": {
+            "backend": "docker",
+            "engine_runtime": "",
+            "image": "kujolang/workcell-base:local",
+            "build_context": "",
+            "image_digest": "",
+            "signature_key": "",
+            "require_digest": false,
+            "require_signature": false,
+            "registry_allowlist": []
+        },
+        "workspace": {
+            "strategy": "git-worktree",
+            "mount_path": "/workspace",
+            "run_as": "host",
+            "scan": {
+                "max_files": 100000,
+                "max_bytes": 1000000000,
+                "max_depth": 128
+            }
+        },
+        "command": ["sh", "-lc", "printf 'Workcell ready\\n'"],
+        "environment": {
+            "allow": [],
+            "set": {}
+        },
+        "secrets": [],
+        "resources": {
+            "cpus": 2,
+            "memory": "1g",
+            "pids": 256,
+            "timeout_ms": 300000,
+            "max_output_bytes": 4000000
+        },
+        "network": {
+            "mode": "none",
+            "name": "",
+            "egress": {
+                "policy": "deny-by-default",
+                "dns": "blocked",
+                "proxy": "none",
+                "enforcement_profile": "none"
+            }
+        },
+        "filesystem": {
+            "read_only_root": true,
+            "tmpfs": ["/tmp"],
+            "seccomp_profile": "",
+            "apparmor_profile": ""
+        },
+        "artifacts": {
+            "export": [],
+            "limits": {},
+            "max_bytes": 0,
+            "max_files": 0,
+            "max_depth": 32,
+            "allowed_extensions": [],
+            "secret_action": "allow"
+        },
+        "cleanup": {
+            "keep_failed": false
+        },
+        "trust_profile": "contained-standard",
+        "verification": {
+            "version": 1,
+            "commands": []
+        },
+        "receipt": {
+            "path": ".workcell/runs"
+        },
+        "integrations": {
+            "runledger": {"enabled": false, "command": ["runledger"], "timeout_ms": 30000},
+            "changebucket": {"enabled": false, "command": ["changebucket"], "timeout_ms": 30000},
+            "shipcheck": {"enabled": false, "command": ["shipcheck"], "mode": "scan", "timeout_ms": 120000},
+            "fence": {"enabled": false, "command": [], "timeout_ms": 120000},
+            "packwrite": {"enabled": false, "command": ["packwrite"], "mode": "validate", "timeout_ms": 120000},
+            "muzzle": {"enabled": false, "command": ["muzzle"], "mode": "list", "timeout_ms": 120000}
+        }
+    }
+}
+
+func type_error(field, expected) {
+    return field + " must be " + expected
+}
+
+func validate_keys(section, allowed, label) {
+    if type(section) != "dict" {
+        return {"ok": false, "error": type_error(label, "an object")}
+    }
+    names := keys(section)
+    mut i := 0
+    while i < len(names) {
+        found := false
+        mut j := 0
+        while j < len(allowed) {
+            if names[i] == allowed[j] {
+                found = true
+            }
+            j = j + 1
+        }
+        if found == false {
+            return {"ok": false, "error": "unknown field " + label + "." + names[i]}
+        }
+        i = i + 1
+    }
+    return {"ok": true}
+}
+
+func parse_timeout(value) {
+    if type(value) == "int"&&value > 0 {
+        return {"ok": true, "value": value}
+    }
+    if type(value) != "string" {
+        return {"ok": false, "error": "timeout_ms must be a positive integer or duration string"}
+    }
+    text := to_lower(trim(value))
+    if len(text) < 2 {
+        return {"ok": false, "error": "invalid timeout: " + value}
+    }
+    suffix := substring(text, len(text) - 1, len(text))
+    amount_text := substring(text, 0, len(text) - 1)
+    mut digit_i := 0
+    while digit_i < len(amount_text) {
+        if contains("0123456789", substring(amount_text, digit_i, digit_i + 1)) == 0 {
+            return {"ok": false, "error": "invalid timeout: " + value}
+        }
+        digit_i = digit_i + 1
+    }
+    mut amount := 0
+    try {
+        amount = parse_int(amount_text)
+    } except err {
+        return {"ok": false, "error": "invalid timeout: " + value}
+    }
+    mut multiplier := 0
+    if suffix == "s" {
+        multiplier = 1000
+    } else if suffix == "m" {
+        multiplier = 60000
+    } else if suffix == "h" {
+        multiplier = 3600000
+    } else {
+        return {"ok": false, "error": "timeout must end in s, m, or h: " + value}
+    }
+    if amount <= 0 {
+        return {"ok": false, "error": "timeout must be positive: " + value}
+    }
+    mut milliseconds := 0
+    try {
+        milliseconds = amount * multiplier
+    } except err {
+        return {"ok": false, "error": "invalid timeout: " + value}
+    }
+    return {"ok": true, "value": milliseconds}
+}
+
+func valid_token(value, label) {
+    if type(value) != "string"||trim(value) == "" {
+        return {"ok": false, "error": label + " must be a non-empty string"}
+    }
+    if starts_with(value, "-")||contains(value, "\n") == 1||contains(value, "\r") == 1 {
+        return {"ok": false, "error": label + " contains prohibited characters"}
+    }
+    return {"ok": true}
+}
+
+func valid_runtime_class(value, label) {
+    if type(value) != "string"||trim(value) == ""||len(value) > 64 {
+        return {"ok": false, "error": label + " must be a bounded runtime class name"}
+    }
+    mut i := 0
+    while i < len(value) {
+        if contains("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-", substring(value, i, i + 1)) == 0 {
+            return {"ok": false, "error": label + " contains unsafe characters"}
+        }
+        i = i + 1
+    }
+    return {"ok": true}
+}
+
+func valid_image_digest(value, label) {
+    if type(value) != "string"||value == ""||starts_with(value, "sha256:") == false||len(value) != 71 {
+        return {"ok": false, "error": label + " must be a sha256 digest"}
+    }
+    mut i := 7
+    while i < len(value) {
+        if contains("0123456789abcdefABCDEF", substring(value, i, i + 1)) == 0 {
+            return {"ok": false, "error": label + " must be a sha256 digest"}
+        }
+        i = i + 1
+    }
+    return {"ok": true}
+}
+
+func valid_registry(value, label) {
+    if type(value) != "string"||trim(value) == ""||len(value) > 255||starts_with(value, "-") {
+        return {"ok": false, "error": label + " must be a bounded registry host name"}
+    }
+    mut i := 0
+    while i < len(value) {
+        if contains("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._:-", substring(value, i, i + 1)) == 0 {
+            return {"ok": false, "error": label + " contains unsafe characters"}
+        }
+        i = i + 1
+    }
+    return {"ok": true}
+}
+
+func image_registry(image) {
+    parts := split(image, "/")
+    if len(parts) == 1 {return "docker.io"}
+    first := parts[0]
+    if contains(first, ".") == 1||contains(first, ":") == 1||first == "localhost" {
+        return first
+    }
+    return "docker.io"
+}
+
+func registry_allowed(image, allowlist) {
+    if len(allowlist) == 0 {return true}
+    registry := image_registry(image)
+    mut i := 0
+    while i < len(allowlist) {
+        if registry == allowlist[i] {return true}
+        i = i + 1
+    }
+    return false
+}
+
+func valid_network_name(value, label) {
+    if type(value) != "string"||trim(value) == ""||len(value) > 63 {
+        return {"ok": false, "error": label + " must be a Docker network name"}
+    }
+    mut i := 0
+    while i < len(value) {
+        if contains("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-.", substring(value, i, i + 1)) == 0 {
+            return {"ok": false, "error": label + " contains unsafe characters"}
+        }
+        i = i + 1
+    }
+    return {"ok": true}
+}
+
+func validate_network_egress(value, network_mode) {
+    if type(value) != "dict" {
+        return {"ok": false, "error": "network.egress must be an object"}
+    }
+    keys_check := validate_keys(value, ["policy", "dns", "proxy", "enforcement_profile"], "network.egress")
+    if keys_check["ok"] == false {
+        return keys_check
+    }
+    policy := get_or(value, "policy", "")
+    if policy != "deny-by-default"&&policy != "operator-managed"&&policy != "unmanaged" {
+        return {"ok": false, "error": "network.egress.policy must be deny-by-default, operator-managed, or unmanaged"}
+    }
+    dns := get_or(value, "dns", "")
+    if dns != "blocked"&&dns != "operator-managed"&&dns != "inherited" {
+        return {"ok": false, "error": "network.egress.dns must be blocked, operator-managed, or inherited"}
+    }
+    proxy := get_or(value, "proxy", "")
+    if proxy != "none"&&proxy != "operator-managed" {
+        return {"ok": false, "error": "network.egress.proxy must be none or operator-managed"}
+    }
+    profile := get_or(value, "enforcement_profile", "")
+    if profile != "none" {
+        profile_check := valid_runtime_class(profile, "network.egress.enforcement_profile")
+        if profile_check["ok"] == false {return profile_check}
+    }
+    if network_mode == "none" {
+        if policy != "deny-by-default"||dns != "blocked"||proxy != "none"||profile != "none" {
+            return {"ok": false, "error": "network.mode none requires deny-by-default, blocked DNS, no proxy, and no enforcement profile"}
+        }
+        return {"ok": true}
+    }
+    if policy == "unmanaged" {
+        if dns != "inherited"||proxy != "none"||profile != "none" {
+            return {"ok": false, "error": "unmanaged network egress requires inherited DNS, no proxy, and no enforcement profile"}
+        }
+        return {"ok": true}
+    }
+    if profile == "none" {
+        return {"ok": false, "error": "network.egress.enforcement_profile is required for managed egress"}
+    }
+    if dns == "inherited" {
+        return {"ok": false, "error": "managed network egress cannot inherit DNS policy"}
+    }
+    return {"ok": true}
+}
+
+func valid_security_profile(value, label) {
+    if type(value) != "string"||trim(value) == ""||value == "unconfined"||len(value) > 128 {
+        return {"ok": false, "error": label + " must be a bounded profile name and cannot be unconfined"}
+    }
+    mut i := 0
+    while i < len(value) {
+        if contains("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.-", substring(value, i, i + 1)) == 0 {
+            return {"ok": false, "error": label + " contains unsafe characters"}
+        }
+        i = i + 1
+    }
+    return {"ok": true}
+}
+
+func valid_env_name(value, label) {
+    if type(value) != "string"||len(value) == 0 {
+        return {"ok": false, "error": label + " must be a non-empty environment variable name"}
+    }
+    first := substring(value, 0, 1)
+    letters := "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_"
+    if contains(letters, first) == 0 {
+        return {"ok": false, "error": label + " must start with a letter or underscore"}
+    }
+    allowed := letters + "0123456789"
+    mut i := 1
+    while i < len(value) {
+        if contains(allowed, substring(value, i, i + 1)) == 0 {
+            return {"ok": false, "error": label + " contains invalid environment-variable characters"}
+        }
+        i = i + 1
+    }
+    return {"ok": true}
+}
+
+func valid_run_as(value) {
+    if type(value) != "string"||trim(value) == "" {
+        return {"ok": false, "error": "workspace.run_as must be host, rootless, or a non-root uid:gid pair"}
+    }
+    if value == "host"||value == "rootless" {
+        return {"ok": true}
+    }
+    parts := split(value, ":")
+    if len(parts) != 2 {
+        return {"ok": false, "error": "workspace.run_as must be host, rootless, or a non-root uid:gid pair"}
+    }
+    mut i := 0
+    while i < len(parts) {
+        part := parts[i]
+        if part == "" {
+            return {"ok": false, "error": "workspace.run_as must be host, rootless, or a non-root uid:gid pair"}
+        }
+        mut digit_i := 0
+        while digit_i < len(part) {
+            if contains("0123456789", substring(part, digit_i, digit_i + 1)) == 0 {
+                return {"ok": false, "error": "workspace.run_as must be host, rootless, or a non-root uid:gid pair"}
+            }
+            digit_i = digit_i + 1
+        }
+        mut numeric := 0
+        try {
+            numeric = parse_int(part)
+        } except err {
+            return {"ok": false, "error": "workspace.run_as contains an invalid uid/gid number"}
+        }
+        if numeric <= 0||numeric > 65534 {
+            return {"ok": false, "error": "workspace.run_as uid and gid must be between 1 and 65534"}
+        }
+        i = i + 1
+    }
+    return {"ok": true}
+}
+
+func validate_env_names(value, label) {
+    if type(value) != "array" {
+        return {"ok": false, "error": label + " must be an array"}
+    }
+    mut i := 0
+    while i < len(value) {
+        check := valid_env_name(value[i], label + "[" + to_string(i) + "]")
+        if check["ok"] == false {
+            return check
+        }
+        i = i + 1
+    }
+    return {"ok": true}
+}
+
+func host_control_env_name(name) {
+    names := host_control_env_names()
+    mut i := 0
+    while i < len(names) {
+        if name == names[i] {
+            return true
+        }
+        i = i + 1
+    }
+    return false
+}
+
+func valid_memory(value) {
+    if type(value) != "string" {
+        return false
+    }
+    text := to_lower(trim(value))
+    if len(text) < 2 {
+        return false
+    }
+    suffix := substring(text, len(text) - 1, len(text))
+    if contains("kmgt", suffix) == 0 {
+        return false
+    }
+    amount_text := substring(text, 0, len(text) - 1)
+    if amount_text == "" {
+        return false
+    }
+    mut i := 0
+    while i < len(amount_text) {
+        if contains("0123456789", substring(amount_text, i, i + 1)) == 0 {
+            return false
+        }
+        i = i + 1
+    }
+    mut amount := 0
+    try {
+        amount = parse_int(amount_text)
+    } except err {
+        return false
+    }
+    if amount <= 0 {
+        return false
+    }
+    if suffix == "g"&&amount > 64 {
+        return false
+    }
+    if suffix == "t"||(suffix == "m"&&amount > 65536)||(suffix == "k"&&amount > 67108864) {
+        return false
+    }
+    return true
+}
+
+func validate_string_array(value, label) {
+    if type(value) != "array" {
+        return {"ok": false, "error": label + " must be an array"}
+    }
+    mut i := 0
+    while i < len(value) {
+        item := value[i]
+        if type(item) != "string"||trim(item) == ""||contains(item, "\n") == 1||contains(item, "\r") == 1 {
+            return {"ok": false, "error": label + "[" + to_string(i) + "] must be a non-empty safe string"}
+        }
+        i = i + 1
+    }
+    return {"ok": true}
+}
+
+func validate_argv(value, label) {
+    if type(value) != "array" {
+        return {"ok": false, "error": label + " must be an array"}
+    }
+    mut i := 0
+    while i < len(value) {
+        item := value[i]
+        if type(item) != "string"||contains(item, "\n") == 1||contains(item, "\r") == 1||(i == 0&&trim(item) == "") {
+            return {"ok": false, "error": label + " must contain a non-empty executable and safe string arguments"}
+        }
+        i = i + 1
+    }
+    return {"ok": true}
+}
+
+func validate_unique_strings(value, label) {
+    mut seen := {}
+    mut i := 0
+    while i < len(value) {
+        item := value[i]
+        if has_key_safe(seen, item) {
+            return {"ok": false, "error": label + " contains duplicate entry: " + item}
+        }
+        seen[item] := true
+        i = i + 1
+    }
+    return {"ok": true}
+}
+
+func valid_extension(value, label) {
+    if type(value) != "string"||len(value) < 2||substring(value, 0, 1) != "." {
+        return {"ok": false, "error": label + " must start with a dot"}
+    }
+    mut i := 1
+    while i < len(value) {
+        if contains("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-.", substring(value, i, i + 1)) == 0 {
+            return {"ok": false, "error": label + " contains unsafe characters"}
+        }
+        i = i + 1
+    }
+    return {"ok": true}
+}
+
+func validate_artifact_limits(value) {
+    if type(value) != "dict" {
+        return {"ok": false, "error": "artifacts.limits must be an object"}
+    }
+    names := keys(value)
+    mut normalized_names := []
+    mut i := 0
+    mut normalized_i := 0
+    while i < len(names) {
+        name := names[i]
+        path_check := normalized_relative(name)
+        if path_check["ok"] == false {
+            return {"ok": false, "error": "artifacts.limits path: " + path_check["error"]}
+        }
+        if path_check["path"] != name {
+            return {"ok": false, "error": "artifacts.limits path must be normalized: " + name}
+        }
+        normalized_i = 0
+        while normalized_i < len(normalized_names) {
+            if normalized_names[normalized_i] == path_check["path"] {
+                return {"ok": false, "error": "artifacts.limits contains duplicate path after normalization: " + path_check["path"]}
+            }
+            normalized_i = normalized_i + 1
+        }
+        normalized_names = push(normalized_names, path_check["path"])
+        limit := value[name]
+        limit_keys := validate_keys(limit, ["max_bytes", "max_files", "max_depth"], "artifacts.limits." + name)
+        if limit_keys["ok"] == false {
+            return limit_keys
+        }
+        if has_key_safe(limit, "max_bytes")&&(type(limit["max_bytes"]) != "int"||limit["max_bytes"] <= 0||limit["max_bytes"] > 1000000000) {
+            return {"ok": false, "error": "artifacts.limits." + name + ".max_bytes must be between 1 and 1000000000"}
+        }
+        if has_key_safe(limit, "max_files")&&(type(limit["max_files"]) != "int"||limit["max_files"] <= 0||limit["max_files"] > 100000) {
+            return {"ok": false, "error": "artifacts.limits." + name + ".max_files must be between 1 and 100000"}
+        }
+        if has_key_safe(limit, "max_depth")&&(type(limit["max_depth"]) != "int"||limit["max_depth"] <= 0||limit["max_depth"] > 128) {
+            return {"ok": false, "error": "artifacts.limits." + name + ".max_depth must be between 1 and 128"}
+        }
+        i = i + 1
+    }
+    return {"ok": true}
+}
+
+func validate_verification(value) {
+    if type(value) != "dict" {
+        return {"ok": false, "error": "verification must be an object"}
+    }
+    keys_check := validate_keys(value, ["version", "commands"], "verification")
+    if keys_check["ok"] == false {
+        return keys_check
+    }
+
+    if get_or(value, "version", 0) != 1 {
+        return {"ok": false, "error": "verification.version must be exactly 1"}
+    }
+    commands := get_or(value, "commands", [])
+    if type(commands) != "array"||len(commands) > 32 {
+        return {"ok": false, "error": "verification.commands must be an array with at most 32 checks"}
+    }
+    mut verification_name_list := []
+    mut i := 0
+    while i < len(commands) {
+        check := commands[i]
+        check_keys := validate_keys(check, ["name", "command"], "verification.commands[" + to_string(i) + "]")
+        if check_keys["ok"] == false {
+            return check_keys
+        }
+        name_check := valid_token(get_or(check, "name", ""), "verification.commands[" + to_string(i) + "].name")
+        if name_check["ok"] == false {
+            return name_check
+        }
+        verification_name_list = push(verification_name_list, get_or(check, "name", ""))
+        command_check := validate_argv(get_or(check, "command", []), "verification.commands[" + to_string(i) + "].command")
+        if command_check["ok"] == false||len(get_or(check, "command", [])) == 0 {
+            if command_check["ok"] == false {
+                return command_check
+            }
+            return {"ok": false, "error": "verification command must not be empty"}
+        }
+        i = i + 1
+    }
+    mut name_i := 0
+    while name_i < len(verification_name_list) {
+        mut compare_i := name_i + 1
+        while compare_i < len(verification_name_list) {
+            if verification_name_list[name_i] == verification_name_list[compare_i] {
+                return {"ok": false, "error": "verification command names contain duplicate entry: " + verification_name_list[name_i]}
+            }
+            compare_i = compare_i + 1
+        }
+        name_i = name_i + 1
+    }
+    return {"ok": true}
+}
+
+func validate_integration_command(value, label) {
+    result := validate_argv(value, label)
+    if result["ok"] == false {
+        return result
+    }
+    if len(value) > 8 {
+        return {"ok": false, "error": label + " must contain at most 8 argv entries"}
+    }
+    return {"ok": true}
+}
+
+func validate_integrations(value) {
+    if type(value) != "dict" {
+        return {"ok": false, "error": "integrations must be an object"}
+    }
+    allowed_names := ["runledger", "changebucket", "shipcheck", "fence", "packwrite", "muzzle"]
+    names_check := validate_keys(value, allowed_names, "integrations")
+    if names_check["ok"] == false {return names_check}
+    for name in allowed_names {
+        if has_key_safe(value, name) == false {continue}
+        config := value[name]
+        if type(config) != "dict" {
+            return {"ok": false, "error": "integrations." + name + " must be an object"}
+        }
+        allowed_fields := ["enabled", "command", "mode", "timeout_ms"]
+        fields_check := validate_keys(config, allowed_fields, "integrations." + name)
+        if fields_check["ok"] == false {return fields_check}
+        if type(get_or(config, "enabled", false)) != "bool" {
+            return {"ok": false, "error": "integrations." + name + ".enabled must be boolean"}
+        }
+        command_check := validate_integration_command(get_or(config, "command", []), "integrations." + name + ".command")
+        if command_check["ok"] == false {return command_check}
+        if get_or(config, "enabled", false)&&len(get_or(config, "command", [])) == 0 {
+            return {"ok": false, "error": "integrations." + name + ".command is required when enabled"}
+        }
+        timeout := get_or(config, "timeout_ms", 120000)
+        if type(timeout) != "int"||timeout <= 0||timeout > 900000 {
+            return {"ok": false, "error": "integrations." + name + ".timeout_ms must be between 1 and 900000"}
+        }
+        mode := get_or(config, "mode", "")
+        if type(mode) != "string"||contains(mode, "\n") == 1||contains(mode, "\r") == 1 {
+            return {"ok": false, "error": "integrations." + name + ".mode must be a safe string"}
+        }
+        if name == "shipcheck"&&(mode != "scan"&&mode != "gate") {
+            return {"ok": false, "error": "integrations.shipcheck.mode must be scan or gate"}
+        }
+        if name == "packwrite"&&(mode != "validate"&&mode != "doctor") {
+            return {"ok": false, "error": "integrations.packwrite.mode must be validate or doctor"}
+        }
+        if name == "muzzle"&&mode != "list" {
+            return {"ok": false, "error": "integrations.muzzle.mode must be list"}
+        }
+    }
+    return {"ok": true}
+}
+
+func validate_workspace_scan(value) {
+    if type(value) != "dict" {
+        return {"ok": false, "error": "workspace.scan must be an object"}
+    }
+    keys_check := validate_keys(value, ["max_files", "max_bytes", "max_depth"], "workspace.scan")
+    if keys_check["ok"] == false {
+        return keys_check
+    }
+    max_files := get_or(value, "max_files", 0)
+    if type(max_files) != "int"||max_files <= 0||max_files > 1000000 {
+        return {"ok": false, "error": "workspace.scan.max_files must be between 1 and 1000000"}
+    }
+    max_bytes := get_or(value, "max_bytes", 0)
+    if type(max_bytes) != "int"||max_bytes <= 0||max_bytes > 10000000000 {
+        return {"ok": false, "error": "workspace.scan.max_bytes must be between 1 and 10000000000"}
+    }
+    max_depth := get_or(value, "max_depth", 0)
+    if type(max_depth) != "int"||max_depth <= 0||max_depth > 256 {
+        return {"ok": false, "error": "workspace.scan.max_depth must be between 1 and 256"}
+    }
+    return {"ok": true}
+}
+
+export func validate_definition(raw) {
+    if type(raw) != "dict" {
+        return {"ok": false, "error": "Workcell definition must be a JSON object"}
+    }
+    top := validate_keys(raw, ["version", "name", "runtime", "workspace", "command", "environment", "secrets", "resources", "network", "filesystem", "artifacts", "cleanup", "trust_profile", "verification", "receipt", "integrations"], "definition")
+    if top["ok"] == false {
+        return top
+    }
+    if has_key_safe(raw, "version") == false||raw["version"] != 1 {
+        return {"ok": false, "error": "version must be exactly 1"}
+    }
+    name_check := valid_token(get_or(raw, "name", ""), "name")
+    if name_check["ok"] == false {
+        return name_check
+    }
+
+    runtime := get_or(raw, "runtime", {})
+    runtime_keys := validate_keys(runtime, ["backend", "engine_runtime", "image", "build_context", "image_digest", "signature_key", "require_digest", "require_signature", "registry_allowlist"], "runtime")
+    if runtime_keys["ok"] == false {
+        return runtime_keys
+    }
+    backend := get_or(runtime, "backend", "")
+    if backend != "docker"&&backend != "podman" {
+        return {"ok": false, "error": "runtime.backend must be docker or podman"}
+    }
+    engine_runtime := get_or(runtime, "engine_runtime", "")
+    if engine_runtime != "" {
+        runtime_check := valid_runtime_class(engine_runtime, "runtime.engine_runtime")
+        if runtime_check["ok"] == false {return runtime_check}
+    }
+    image_check := valid_token(get_or(runtime, "image", ""), "runtime.image")
+    if image_check["ok"] == false {
+        return image_check
+    }
+    image := runtime["image"]
+    if starts_with(image, "-")||contains(image, " ") == 1||contains(image, ";") == 1||contains(image, "|") == 1||contains(image, "&") == 1||contains(image, "$") == 1||contains(image, "`") == 1 {
+        return {"ok": false, "error": "runtime.image contains unsafe shell characters"}
+    }
+    require_digest := get_or(runtime, "require_digest", false)
+    if type(require_digest) != "bool" {return {"ok": false, "error": "runtime.require_digest must be boolean"}}
+    require_signature := get_or(runtime, "require_signature", false)
+    if type(require_signature) != "bool" {return {"ok": false, "error": "runtime.require_signature must be boolean"}}
+    registry_allowlist := get_or(runtime, "registry_allowlist", [])
+    if type(registry_allowlist) != "array"||len(registry_allowlist) > 32 {
+        return {"ok": false, "error": "runtime.registry_allowlist must contain at most 32 registries"}
+    }
+    mut registry_i := 0
+    while registry_i < len(registry_allowlist) {
+        registry_check := valid_registry(registry_allowlist[registry_i], "runtime.registry_allowlist[" + to_string(registry_i) + "]")
+        if registry_check["ok"] == false {return registry_check}
+        registry_i = registry_i + 1
+    }
+    if registry_allowed(image, registry_allowlist) == false {
+        return {"ok": false, "error": "runtime.image registry is not in runtime.registry_allowlist: " + image_registry(image)}
+    }
+    image_digest := get_or(runtime, "image_digest", "")
+    if image_digest != "" {
+        digest_check := valid_image_digest(image_digest, "runtime.image_digest")
+        if digest_check["ok"] == false {
+            return digest_check
+        }
+    }
+    if require_digest&&image_digest == "" {
+        return {"ok": false, "error": "runtime.require_digest requires runtime.image_digest"}
+    }
+    signature_key := get_or(runtime, "signature_key", "")
+    if signature_key != "" {
+        signature_check := normalized_relative(signature_key)
+        if signature_check["ok"] == false {
+            return {"ok": false, "error": "runtime.signature_key: " + signature_check["error"]}
+        }
+    }
+    if require_signature&&signature_key == "" {
+        return {"ok": false, "error": "runtime.require_signature requires runtime.signature_key"}
+    }
+    build_context := get_or(runtime, "build_context", "")
+    if build_context != "" {
+        mut build_check := {"ok": true, "path": "."}
+        if build_context != "." {
+            build_check = normalized_relative(build_context)
+        }
+        if build_check["ok"] == false {
+            return {"ok": false, "error": "runtime.build_context: " + build_check["error"]}
+        }
+    }
+
+    workspace := get_or(raw, "workspace", {})
+    workspace_keys := validate_keys(workspace, ["strategy", "mount_path", "run_as", "scan"], "workspace")
+    if workspace_keys["ok"] == false {
+        return workspace_keys
+    }
+    if get_or(workspace, "strategy", "") != "git-worktree"&&get_or(workspace, "strategy", "") != "isolated-clone" {
+        return {"ok": false, "error": "workspace.strategy must be git-worktree or isolated-clone"}
+    }
+    mount_path := get_or(workspace, "mount_path", "")
+    if type(mount_path) != "string"||starts_with(mount_path, "/") == false||contains(mount_path, "..") == 1||mount_path == "/"||(mount_path != "/workspace"&&starts_with(mount_path, "/workspace/") == false) {
+        return {"ok": false, "error": "workspace.mount_path must be /workspace or a descendant beneath it"}
+    }
+    run_as_check := valid_run_as(get_or(workspace, "run_as", "host"))
+    if run_as_check["ok"] == false {
+        return run_as_check
+    }
+    scan_check := validate_workspace_scan(get_or(workspace, "scan", {"max_files": 100000, "max_bytes": 1000000000, "max_depth": 128}))
+    if scan_check["ok"] == false {
+        return scan_check
+    }
+
+    command_check := validate_argv(get_or(raw, "command", []), "command")
+    if command_check["ok"] == false||len(get_or(raw, "command", [])) == 0 {
+        if command_check["ok"] == false {
+            return command_check
+        }
+        return {"ok": false, "error": "command must not be empty"}
+    }
+    environment := get_or(raw, "environment", {})
+    environment_keys := validate_keys(environment, ["allow", "set"], "environment")
+    if environment_keys["ok"] == false {
+        return environment_keys
+    }
+    secret_names := get_or(raw, "secrets", [])
+    secret_check := validate_env_names(secret_names, "secrets")
+    if secret_check["ok"] == false {
+        return secret_check
+    }
+    secret_unique := validate_unique_strings(secret_names, "secrets")
+    if secret_unique["ok"] == false {
+        return secret_unique
+    }
+    allow_check := validate_env_names(get_or(environment, "allow", []), "environment.allow")
+    if allow_check["ok"] == false {
+        return allow_check
+    }
+    allow_unique := validate_unique_strings(get_or(environment, "allow", []), "environment.allow")
+    if allow_unique["ok"] == false {
+        return allow_unique
+    }
+    allow_names := get_or(environment, "allow", [])
+    mut allow_i := 0
+    while allow_i < len(allow_names) {
+        if host_control_env_name(allow_names[allow_i]) {
+            return {"ok": false, "error": "environment.allow cannot expose host-control variable " + allow_names[allow_i]}
+        }
+        allow_i = allow_i + 1
+    }
+    configured_environment := get_or(environment, "set", {})
+    if type(configured_environment) != "dict" {
+        return {"ok": false, "error": "environment.set must be an object"}
+    }
+    configured_names := keys(configured_environment)
+    mut configured_i := 0
+    while configured_i < len(configured_names) {
+        configured_name := configured_names[configured_i]
+        configured_check := valid_env_name(configured_name, "environment.set." + configured_name)
+        if configured_check["ok"] == false {
+            return configured_check
+        }
+        if host_control_env_name(configured_name) {
+            return {"ok": false, "error": "environment.set cannot configure host-control variable " + configured_name}
+        }
+        mut secret_name_i := 0
+        while secret_name_i < len(secret_names) {
+            if secret_names[secret_name_i] == configured_name {
+                return {"ok": false, "error": "environment.set cannot override declared secret " + configured_name}
+            }
+            secret_name_i = secret_name_i + 1
+        }
+        configured_value := configured_environment[configured_name]
+        if type(configured_value) != "string"||contains(configured_value, "\n") == 1||contains(configured_value, "\r") == 1 {
+            return {"ok": false, "error": "environment.set values must be single-line strings"}
+        }
+        configured_i = configured_i + 1
+    }
+
+    mut secret_i := 0
+    while secret_i < len(secret_names) {
+        secret_name := secret_names[secret_i]
+        if host_control_env_name(secret_name) {
+            return {"ok": false, "error": "secrets cannot expose host-control variable " + secret_name}
+        }
+        secret_i = secret_i + 1
+    }
+
+    resources := get_or(raw, "resources", {})
+    resources_keys := validate_keys(resources, ["cpus", "memory", "pids", "timeout_ms", "max_output_bytes"], "resources")
+    if resources_keys["ok"] == false {
+        return resources_keys
+    }
+    cpus := get_or(resources, "cpus", 0)
+    if type(cpus) != "int"||cpus <= 0||cpus > 64 {
+        return {"ok": false, "error": "resources.cpus must be an integer from 1 through 64"}
+    }
+    memory := get_or(resources, "memory", "")
+    if valid_memory(memory) == false {
+        return {"ok": false, "error": "resources.memory must be a bounded Docker value such as 256m or 4g (maximum 64g)"}
+    }
+    pids := get_or(resources, "pids", 0)
+    if type(pids) != "int"||pids <= 0||pids > 65536 {
+        return {"ok": false, "error": "resources.pids must be an integer from 1 through 65536"}
+    }
+    timeout_check := parse_timeout(get_or(resources, "timeout_ms", 0))
+    if timeout_check["ok"] == false {
+        return timeout_check
+    }
+    if timeout_check["value"] > 86400000 {
+        return {"ok": false, "error": "resources.timeout_ms must not exceed 24 hours"}
+    }
+    max_output_bytes := get_or(resources, "max_output_bytes", 0)
+    if type(max_output_bytes) != "int"||max_output_bytes <= 0||max_output_bytes > 16000000 {
+        return {"ok": false, "error": "resources.max_output_bytes must be an integer from 1 through 16000000"}
+    }
+
+    network := get_or(raw, "network", {})
+    network_keys := validate_keys(network, ["mode", "name", "egress"], "network")
+    if network_keys["ok"] == false {
+        return network_keys
+    }
+    network_mode := get_or(network, "mode", "none")
+    if network_mode != "none"&&network_mode != "default"&&network_mode != "custom" {
+        return {"ok": false, "error": "network.mode must be none, default, or custom; allowlists are not supported"}
+    }
+    network_name := get_or(network, "name", "")
+    if network_mode == "custom" {
+        network_name_check := valid_network_name(network_name, "network.name")
+        if network_name_check["ok"] == false {
+            return network_name_check
+        }
+    } else if network_name != "" {
+        return {"ok": false, "error": "network.name is only allowed when network.mode is custom"}
+    }
+    egress_check := validate_network_egress(get_or(network, "egress", {"policy": "deny-by-default", "dns": "blocked", "proxy": "none", "enforcement_profile": "none"}), network_mode)
+    if egress_check["ok"] == false {
+        return egress_check
+    }
+
+    filesystem := get_or(raw, "filesystem", {})
+    filesystem_keys := validate_keys(filesystem, ["read_only_root", "tmpfs", "seccomp_profile", "apparmor_profile"], "filesystem")
+    if filesystem_keys["ok"] == false {
+        return filesystem_keys
+    }
+    if type(get_or(filesystem, "read_only_root", true)) != "bool" {
+        return {"ok": false, "error": "filesystem.read_only_root must be boolean"}
+    }
+    tmpfs_check := validate_string_array(get_or(filesystem, "tmpfs", []), "filesystem.tmpfs")
+    if tmpfs_check["ok"] == false {
+        return tmpfs_check
+    }
+    tmpfs_unique := validate_unique_strings(get_or(filesystem, "tmpfs", []), "filesystem.tmpfs")
+    if tmpfs_unique["ok"] == false {
+        return tmpfs_unique
+    }
+    seccomp_profile := get_or(filesystem, "seccomp_profile", "")
+    if seccomp_profile != "" {
+        seccomp_check := valid_security_profile(seccomp_profile, "filesystem.seccomp_profile")
+        if seccomp_check["ok"] == false {return seccomp_check}
+    }
+    apparmor_profile := get_or(filesystem, "apparmor_profile", "")
+    if apparmor_profile != "" {
+        apparmor_check := valid_security_profile(apparmor_profile, "filesystem.apparmor_profile")
+        if apparmor_check["ok"] == false {return apparmor_check}
+    }
+    mut tmp_i := 0
+    while tmp_i < len(get_or(filesystem, "tmpfs", [])) {
+        tmp := filesystem["tmpfs"][tmp_i]
+        if starts_with(tmp, "/tmp") == false||(tmp != "/tmp"&&starts_with(tmp, "/tmp/") == false)||contains(tmp, "..") == 1 {
+            return {"ok": false, "error": "filesystem.tmpfs entries must be beneath /tmp"}
+        }
+        tmp_i = tmp_i + 1
+    }
+
+    artifacts := get_or(raw, "artifacts", {})
+    artifacts_keys := validate_keys(artifacts, ["export", "limits", "max_bytes", "max_files", "max_depth", "allowed_extensions", "secret_action"], "artifacts")
+    if artifacts_keys["ok"] == false {
+        return artifacts_keys
+    }
+    artifact_check := validate_string_array(get_or(artifacts, "export", []), "artifacts.export")
+    if artifact_check["ok"] == false {
+        return artifact_check
+    }
+    artifact_unique := validate_unique_strings(get_or(artifacts, "export", []), "artifacts.export")
+    if artifact_unique["ok"] == false {
+        return artifact_unique
+    }
+    limits_check := validate_artifact_limits(get_or(artifacts, "limits", {}))
+    if limits_check["ok"] == false {
+        return limits_check
+    }
+    artifact_max_bytes := get_or(artifacts, "max_bytes", 0)
+    if type(artifact_max_bytes) != "int"||artifact_max_bytes < 0||artifact_max_bytes > 1000000000 {
+        return {"ok": false, "error": "artifacts.max_bytes must be 0 or an integer from 1 through 1000000000"}
+    }
+    artifact_max_files := get_or(artifacts, "max_files", 0)
+    if type(artifact_max_files) != "int"||artifact_max_files < 0||artifact_max_files > 100000 {
+        return {"ok": false, "error": "artifacts.max_files must be 0 or an integer from 1 through 100000"}
+    }
+    artifact_max_depth := get_or(artifacts, "max_depth", 32)
+    if type(artifact_max_depth) != "int"||artifact_max_depth <= 0||artifact_max_depth > 128 {
+        return {"ok": false, "error": "artifacts.max_depth must be an integer from 1 through 128"}
+    }
+    extensions := get_or(artifacts, "allowed_extensions", [])
+    extensions_check := validate_string_array(extensions, "artifacts.allowed_extensions")
+    if extensions_check["ok"] == false {
+        return extensions_check
+    }
+    mut extension_i := 0
+    while extension_i < len(extensions) {
+        extension_check := valid_extension(extensions[extension_i], "artifacts.allowed_extensions[" + to_string(extension_i) + "]")
+        if extension_check["ok"] == false {
+            return extension_check
+        }
+        extension_i = extension_i + 1
+    }
+    extension_unique := validate_unique_strings(extensions, "artifacts.allowed_extensions")
+    if extension_unique["ok"] == false {
+        return extension_unique
+    }
+    secret_action := get_or(artifacts, "secret_action", "allow")
+    if secret_action != "allow"&&secret_action != "reject"&&secret_action != "redact" {
+        return {"ok": false, "error": "artifacts.secret_action must be allow, reject, or redact"}
+    }
+    mut artifact_i := 0
+    while artifact_i < len(get_or(artifacts, "export", [])) {
+        path_check := normalized_relative(artifacts["export"][artifact_i])
+        if path_check["ok"] == false {
+            return {"ok": false, "error": "artifacts.export: " + path_check["error"]}
+        }
+        if path_check["path"] != artifacts["export"][artifact_i] {
+            return {"ok": false, "error": "artifacts.export paths must be normalized: " + artifacts["export"][artifact_i]}
+        }
+        artifact_i = artifact_i + 1
+    }
+
+    cleanup := get_or(raw, "cleanup", {})
+    cleanup_keys := validate_keys(cleanup, ["keep_failed"], "cleanup")
+    if cleanup_keys["ok"] == false {
+        return cleanup_keys
+    }
+    if type(get_or(cleanup, "keep_failed", false)) != "bool" {
+        return {"ok": false, "error": "cleanup.keep_failed must be boolean"}
+    }
+    trust := get_or(raw, "trust_profile", "contained-standard")
+    if trust != "contained-standard"&&trust != "contained-open"&&trust != "native-guarded" {
+        return {"ok": false, "error": "trust_profile must be contained-standard, contained-open, or native-guarded"}
+    }
+    verification_check := validate_verification(get_or(raw, "verification", {"version": 1, "commands": []}))
+    if verification_check["ok"] == false {
+        return verification_check
+    }
+    integrations_check := validate_integrations(get_or(raw, "integrations", default_definition()["integrations"]))
+    if integrations_check["ok"] == false {
+        return integrations_check
+    }
+    receipt := get_or(raw, "receipt", {})
+    receipt_keys := validate_keys(receipt, ["path"], "receipt")
+    if receipt_keys["ok"] == false {
+        return receipt_keys
+    }
+    receipt_path_check := normalized_relative(get_or(receipt, "path", ".workcell/runs"))
+    if receipt_path_check["ok"] == false {
+        return {"ok": false, "error": "receipt.path: " + receipt_path_check["error"]}
+    }
+    return {"ok": true}
+}
+
+func fill_section_defaults(value, defaults, section_name, fields) {
+    section := get_or(value, section_name, null)
+    if type(section) == "dict" {
+        mut filled := section
+        mut i := 0
+        while i < len(fields) {
+            field := fields[i]
+            if has_key_safe(filled, field) == false {
+                filled[field] := defaults[section_name][field]
+            }
+            i = i + 1
+        }
+        value[section_name] := filled
+    }
+    return value
+}
+
+export func resolve_definition(raw) {
+    defaults := default_definition()
+    mut value := raw
+    if type(value) != "dict" {
+        return {"ok": false, "error": "Workcell definition must be an object"}
+    }
+    if has_key_safe(value, "version") == false {
+        value["version"] := defaults["version"]
+    }
+    if has_key_safe(value, "name") == false {
+        value["name"] := defaults["name"]
+    }
+    for section in ["runtime", "workspace", "environment", "resources", "network", "filesystem", "artifacts", "cleanup", "verification", "receipt", "integrations"] {
+        if has_key_safe(value, section) == false {
+            value[section] := defaults[section]
+        }
+    }
+    value = fill_section_defaults(value, defaults, "runtime", ["backend", "engine_runtime", "image", "build_context", "image_digest", "signature_key", "require_digest", "require_signature", "registry_allowlist"])
+    value = fill_section_defaults(value, defaults, "workspace", ["strategy", "mount_path", "run_as", "scan"])
+    value = fill_section_defaults(value, defaults, "environment", ["allow", "set"])
+    value = fill_section_defaults(value, defaults, "resources", ["cpus", "memory", "pids", "timeout_ms", "max_output_bytes"])
+    mut network_had_egress := false
+    if type(value["network"]) == "dict" {
+        network_had_egress = has_key_safe(value["network"], "egress")
+        value = fill_section_defaults(value, defaults, "network", ["mode", "name", "egress"])
+        if network_had_egress == false&&value["network"]["mode"] != "none" {
+            network_value := value["network"]
+            network_value["egress"] := {"policy": "unmanaged", "dns": "inherited", "proxy": "none", "enforcement_profile": "none"}
+            value["network"] := network_value
+        }
+        network_value := value["network"]
+        egress_value := network_value["egress"]
+        if type(egress_value) == "dict" {
+            egress_value = fill_section_defaults({"egress": egress_value}, {"egress": defaults["network"]["egress"]}, "egress", ["policy", "dns", "proxy", "enforcement_profile"])["egress"]
+            network_value["egress"] := egress_value
+            value["network"] := network_value
+        }
+    }
+    value = fill_section_defaults(value, defaults, "filesystem", ["read_only_root", "tmpfs", "seccomp_profile", "apparmor_profile"])
+    value = fill_section_defaults(value, defaults, "artifacts", ["export", "limits", "max_bytes", "max_files", "max_depth", "allowed_extensions", "secret_action"])
+    value = fill_section_defaults(value, defaults, "cleanup", ["keep_failed"])
+    value = fill_section_defaults(value, defaults, "verification", ["version", "commands"])
+    value = fill_section_defaults(value, defaults, "receipt", ["path"])
+    if has_key_safe(value, "command") == false {
+        value["command"] := defaults["command"]
+    }
+    if has_key_safe(value, "secrets") == false {
+        value["secrets"] := defaults["secrets"]
+    }
+    if has_key_safe(value, "trust_profile") == false {
+        value["trust_profile"] := defaults["trust_profile"]
+    }
+    return {"ok": true, "definition": value}
+}
+
+export func load_definition(path) {
+    loaded := load_json(path)
+    if loaded["ok"] == false {
+        return loaded
+    }
+    resolved := resolve_definition(loaded["value"])
+    if resolved["ok"] == false {
+        return resolved
+    }
+    checked := validate_definition(resolved["definition"])
+    if checked["ok"] == false {
+        return checked
+    }
+    mut definition := resolved["definition"]
+    timeout := parse_timeout(definition["resources"]["timeout_ms"])
+    resources := definition["resources"]
+    resources["timeout_ms"] := timeout["value"]
+    definition["resources"] := resources
+    return {"ok": true, "definition": definition}
+}
+
+export func definition_summary(definition) {
+    definition_check := validate_definition(definition)
+    if definition_check["ok"] == false {
+        return definition_check
+    }
+    return {
+        "name": definition["name"],
+        "version": definition["version"],
+        "backend": definition["runtime"]["backend"],
+        "engine_runtime": definition["runtime"]["engine_runtime"],
+        "image": definition["runtime"]["image"],
+        "image_digest": definition["runtime"]["image_digest"],
+        "signature_key": definition["runtime"]["signature_key"],
+        "require_digest": definition["runtime"]["require_digest"],
+        "require_signature": definition["runtime"]["require_signature"],
+        "registry_allowlist": definition["runtime"]["registry_allowlist"],
+        "command": definition["command"],
+        "network_mode": definition["network"]["mode"],
+        "network_egress": definition["network"]["egress"],
+        "timeout_ms": definition["resources"]["timeout_ms"],
+        "max_output_bytes": definition["resources"]["max_output_bytes"],
+        "workspace_run_as": definition["workspace"]["run_as"],
+        "workspace_scan": definition["workspace"]["scan"],
+        "artifact_policy": definition["artifacts"],
+        "verification_checks": len(definition["verification"]["commands"]),
+        "trust_profile": definition["trust_profile"]
+        , "integrations": definition["integrations"]
+    }
+}
+
+export func definition_schema() {
+    return {
+        "schema_version": "workcell-definition/v1",
+        "type": "object",
+        "required": ["version", "name", "runtime", "workspace", "command", "environment", "secrets", "resources", "network", "filesystem", "artifacts", "cleanup", "trust_profile", "verification", "receipt", "integrations"],
+        "unknown_fields": "rejected",
+        "fields": {
+            "version": {"type": "integer", "const": 1},
+            "name": {"type": "string", "non_empty": true},
+            "runtime": {"type": "object", "fields": ["backend", "engine_runtime", "image", "build_context", "image_digest", "signature_key", "require_digest", "require_signature", "registry_allowlist"], "backend_enum": ["docker", "podman"], "provenance": "optional digest/signature requirements and registry allowlist"},
+            "workspace": {"type": "object", "fields": ["strategy", "mount_path", "run_as", "scan"], "run_as": "host, rootless, or non-root uid:gid", "scan": "bounded max_files/max_bytes/max_depth"},
+            "command": {"type": "array", "items": "string", "min_items": 1},
+            "environment": {"type": "object", "fields": ["allow", "set"]},
+            "secrets": {"type": "array", "items": "environment variable name"},
+            "resources": {"type": "object", "fields": ["cpus", "memory", "pids", "timeout_ms", "max_output_bytes"]},
+            "network": {"type": "object", "fields": ["mode", "name", "egress"], "egress": {"fields": ["policy", "dns", "proxy", "enforcement_profile"], "policy_enum": ["deny-by-default", "operator-managed", "unmanaged"], "dns_enum": ["blocked", "operator-managed", "inherited"], "proxy_enum": ["none", "operator-managed"]}},
+            "filesystem": {"type": "object", "fields": ["read_only_root", "tmpfs", "seccomp_profile", "apparmor_profile"]},
+            "artifacts": {"type": "object", "fields": ["export", "limits", "max_bytes", "max_files", "max_depth", "allowed_extensions", "secret_action"]},
+            "verification": {"type": "object", "version": 1, "commands": "array of named argv checks"},
+            "cleanup": {"type": "object", "fields": ["keep_failed"]},
+            "trust_profile": {"enum": ["contained-standard", "contained-open", "native-guarded"]},
+            "receipt": {"type": "object", "fields": ["path"]}
+            , "integrations": {"type": "object", "fields": ["runledger", "changebucket", "shipcheck", "fence", "packwrite", "muzzle"], "opt_in": true}
+        }
+    }
+}

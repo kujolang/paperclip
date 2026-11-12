@@ -1,0 +1,59 @@
+# PackWrite :: prompt
+#
+# Mega prompt resolution and reading. The prompt file is located, in order, from:
+#   1. an explicit CLI argument (positional path)
+#   2. the resolved config `prompt_file`
+#   3. the default "MEGA_PROMPT.md" in the working directory
+#
+# Reading never throws; callers get a friendly envelope.
+
+from src.errors import err, msg_missing_prompt
+from src.util import is_text, read_text, truthy
+
+# Resolve the mega prompt path. `arg_path` is the optional positional path the
+# user passed (or null); `cfg` is the resolved config; `cwd` the working dir.
+export func prompt_resolve(arg_path, cfg, cwd) {
+    if is_text(arg_path) {
+        return resolve_candidate(arg_path, cwd)
+    }
+    configured := cfg["prompt_file"]
+    if is_text(configured) {
+        return resolve_candidate(configured, cwd)
+    }
+    return resolve_candidate("MEGA_PROMPT.md", cwd)
+}
+
+func resolve_candidate(path, cwd) {
+    cand := absolutize(path, cwd)
+    if file_exists(cand) == false {
+        return err(msg_missing_prompt())
+    }
+    if path_is_dir(cand) {
+        return err("Mega prompt path is a directory, not a file: " + cand)
+    }
+    return {"ok": true, "path": cand}
+}
+
+# Join `path` onto `cwd` unless it is already absolute.
+export func absolutize(path, cwd) {
+    if starts_with(path, "/") {
+        return path
+    }
+    return join_path(cwd, path)
+}
+
+# Read the resolved mega prompt. Returns {"ok":true,"text":...} or an error.
+export func prompt_read(path) {
+    if file_exists(path) == false {
+        return err(msg_missing_prompt())
+    }
+    read := read_text(path)
+    if truthy(read["ok"]) == false {
+        return err(read["error"])
+    }
+    text := read["text"]
+    if type(text) != "string" || trim(text) == "" {
+        return err("Mega prompt is empty: " + path)
+    }
+    return {"ok": true, "text": text}
+}

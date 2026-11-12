@@ -1,0 +1,11 @@
+# Workcell entrypoint. Application logic lives under src/.
+
+from src.cli.cli import main
+
+caller_cwd := env_or("WORKCELL_CWD", "")
+if caller_cwd != "" {
+    os_chdir(caller_cwd)
+}
+
+code := main(args())
+exit(code)

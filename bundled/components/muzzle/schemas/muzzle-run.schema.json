@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://kujolang.dev/muzzle/schemas/muzzle-run-v1.json",
+  "title": "Muzzle workflow run result",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "command",
+    "workflow",
+    "status",
+    "exit_code",
+    "started_at",
+    "finished_at",
+    "duration_ms",
+    "log_path",
+    "report_path",
+    "summary",
+    "timed_out",
+    "cancelled",
+    "display_truncated",
+    "error_excerpt"
+  ],
+  "properties": {
+    "schema_version": {"const": "muzzle.run/v1"},
+    "command": {"const": "run"},
+    "workflow": {"type": "string", "minLength": 1, "maxLength": 128},
+    "status": {"enum": ["success", "failed"]},
+    "exit_code": {"type": "integer"},
+    "started_at": {"type": "string"},
+    "finished_at": {"type": "string"},
+    "duration_ms": {"type": "integer", "minimum": 0},
+    "log_path": {"type": "string", "minLength": 1},
+    "report_path": {"type": "string", "minLength": 1},
+    "summary": {"type": "string"},
+    "timed_out": {"type": "boolean"},
+    "cancelled": {"type": "boolean"},
+    "display_truncated": {"type": "boolean"},
+    "error_excerpt": {"type": ["string", "null"]}
+  },
+  "additionalProperties": false
+}

@@ -1,0 +1,266 @@
+# Bounded executable JSONL adapter client.
+
+from src.backend.types import backend_contract_id, backend_error, protocol_result, validate_protocol_request, validate_protocol_result
+from src.util import get_or, lines_of, path_has_symlink, process_ok, redact, run_argv
+
+func request_temp_path() {
+    root := env("TMPDIR")
+    if type(root) != "string"||trim(root) == "" {
+        root = "/tmp"
+    }
+    while len(root) > 1&&ends_with(root, "/") {
+        root = substring(root, 0, len(root) - 1)
+    }
+    return root + "/workcell-backend-request-" + replace(uuid_v4(), "-", "") + ".jsonl"
+}
+
+func cleanup_request_file(path) {
+    if type(path) != "string"||path == ""||file_exists(path) == false {
+        return
+    }
+    try {
+        remove_file(path)
+    } except err {
+        return
+    }
+}
+
+func client_failure(request, code, message, retryable) {
+    return {"ok": false, "events": [], "result": protocol_result(request, false, "failed", retryable, {}, backend_error(code, message, retryable, ""))}
+}
+
+func adapter_env_allow(options) {
+    allowed := get_or(options, "env_allow", [])
+    if type(allowed) != "array" {
+        return allowed
+    }
+    mut names := ["PATH"]
+    mut i := 0
+    while i < len(allowed) {
+        if allowed[i] != "PATH" {
+            names = push(names, allowed[i])
+        }
+        i = i + 1
+    }
+    return names
+}
+
+func executable_check(path) {
+    if type(path) != "string"||trim(path) == ""||contains(path, "\n") == 1||contains(path, "\r") == 1 {
+        return {"ok": false, "error": "adapter executable path is invalid"}
+    }
+    if contains(path, "/") == 1 {
+        if file_exists(path) == false||path_has_symlink(path) {
+            return {"ok": false, "error": "adapter executable is missing or contains a symlink"}
+        }
+    }
+    return {"ok": true}
+}
+
+func validate_echo(request, frame) {
+    if get_or(frame, "contract", "") != backend_contract_id() {
+        return "adapter frame contract mismatch"
+    }
+    for field in ["request_id", "run_id", "operation"] {
+        if get_or(frame, field, "") != request[field] {
+            return "adapter frame " + field + " mismatch"
+        }
+    }
+    return ""
+}
+
+func redact_value(value, secrets) {
+    mut encoded := to_json(value)
+    if type(secrets) != "array" {
+        return value
+    }
+    mut i := 0
+    while i < len(secrets) {
+        secret := to_string(secrets[i])
+        if secret != "" {
+            escaped := to_json(secret)
+            if len(escaped) >= 2 {
+                encoded = replace(encoded, substring(escaped, 1, len(escaped) - 1), "[REDACTED]")
+            }
+            if len(secret) >= 8 {
+                encoded = replace(encoded, encode_base64(secret), "[REDACTED]")
+            }
+        }
+        i = i + 1
+    }
+    mut decoded := null
+    try {
+        decoded = parse_json(encoded)
+    } except err {
+        return "[REDACTED ADAPTER VALUE]"
+    }
+    return decoded
+}
+
+func validate_log_event(frame) {
+    if get_or(frame, "event", "") != "log" {
+        return {"ok": false, "error": "adapter event kind is invalid"}
+    }
+    stream := get_or(frame, "stream", "")
+    if stream != "stdout"&&stream != "stderr" {
+        return {"ok": false, "error": "adapter log stream is invalid"}
+    }
+    encoded := get_or(frame, "bytes_base64", null)
+    if type(encoded) != "string" {
+        return {"ok": false, "error": "adapter log bytes must be base64 text"}
+    }
+    mut decoded := ""
+    try {
+        decoded = decode_base64_utf8(encoded)
+    } except err {
+        return {"ok": false, "error": "adapter log bytes must be valid base64 UTF-8 text"}
+    }
+    return {"ok": true, "decoded": decoded}
+}
+
+export func parse_backend_frames(request, output, bounds) {
+    if type(output) != "string" {
+        return client_failure(request, "PROTOCOL_VIOLATION", "adapter output must be UTF-8 text", false)
+    }
+    max_line_bytes := get_or(bounds, "line_bytes", 1048576)
+    max_events := get_or(bounds, "event_count", 100000)
+    secrets := get_or(bounds, "redact_values", [])
+    raw_lines := lines_of(output)
+    mut events := []
+    mut result := null
+    mut stdout_text := ""
+    mut stderr_text := ""
+    mut stdout_event := null
+    mut stderr_event := null
+    mut i := 0
+    while i < len(raw_lines) {
+        line := trim(raw_lines[i])
+        if line == "" {
+            i = i + 1
+            continue
+        }
+        if len(line) > max_line_bytes {
+            return client_failure(request, "PROTOCOL_VIOLATION", "adapter protocol line exceeded bound", false)
+        }
+        mut frame := null
+        try {
+            frame = parse_json(line)
+        } except err {
+            return client_failure(request, "PROTOCOL_VIOLATION", "adapter stdout contained non-JSON protocol data", false)
+        }
+        if type(frame) != "dict" {
+            return client_failure(request, "PROTOCOL_VIOLATION", "adapter frame must be an object", false)
+        }
+        echo_error := validate_echo(request, frame)
+        if echo_error != "" {
+            return client_failure(request, "PROTOCOL_VIOLATION", echo_error, false)
+        }
+        frame_type := get_or(frame, "type", "")
+        if frame_type == "event" {
+            if type(result) != "null" {
+                return client_failure(request, "PROTOCOL_VIOLATION", "adapter emitted an event after its result", false)
+            }
+            if len(events) >= max_events {
+                return client_failure(request, "PROTOCOL_VIOLATION", "adapter event count exceeded bound", false)
+            }
+            if type(get_or(frame, "sequence", null)) != "int"||frame["sequence"] != len(events) {
+                return client_failure(request, "PROTOCOL_VIOLATION", "adapter event sequence is invalid", false)
+            }
+            validated_event := validate_log_event(frame)
+            if validated_event["ok"] == false {
+                return client_failure(request, "PROTOCOL_VIOLATION", validated_event["error"], false)
+            }
+            if frame["stream"] == "stdout" {
+                stdout_text = stdout_text + validated_event["decoded"]
+                if type(stdout_event) == "null" {stdout_event = frame}
+            } else {
+                stderr_text = stderr_text + validated_event["decoded"]
+                if type(stderr_event) == "null" {stderr_event = frame}
+            }
+            events = push(events, frame)
+        } else if frame_type == "result" {
+            if type(result) != "null" {
+                return client_failure(request, "PROTOCOL_VIOLATION", "adapter emitted multiple results", false)
+            }
+            result_check := validate_protocol_result(request, frame)
+            if result_check["ok"] == false {return client_failure(request, "PROTOCOL_VIOLATION", result_check["error"], false)}
+            result = redact_value(frame, secrets)
+        } else {
+            return client_failure(request, "PROTOCOL_VIOLATION", "adapter frame type is invalid", false)
+        }
+        i = i + 1
+    }
+    if type(result) == "null" {
+        return client_failure(request, "PROTOCOL_VIOLATION", "adapter did not emit a result", false)
+    }
+    mut sanitized_events := []
+    if type(stdout_event) == "dict" {
+        stdout_event = redact_value(stdout_event, secrets)
+        stdout_event["sequence"] = len(sanitized_events)
+        stdout_event["bytes_base64"] = encode_base64(redact(stdout_text, secrets))
+        stdout_event["provider_timestamp"] = null
+        stdout_event["ordering"] = "per-stream"
+        sanitized_events = push(sanitized_events, stdout_event)
+    }
+    if type(stderr_event) == "dict" {
+        stderr_event = redact_value(stderr_event, secrets)
+        stderr_event["sequence"] = len(sanitized_events)
+        stderr_event["bytes_base64"] = encode_base64(redact(stderr_text, secrets))
+        stderr_event["provider_timestamp"] = null
+        stderr_event["ordering"] = "per-stream"
+        sanitized_events = push(sanitized_events, stderr_event)
+    }
+    return {"ok": result["ok"], "events": sanitized_events, "result": result}
+}
+
+export func invoke_backend(executable, request, options) {
+    checked := validate_protocol_request(request)
+    if checked["ok"] == false {
+        return client_failure(request, "PROTOCOL_VIOLATION", checked["error"], false)
+    }
+    executable_state := executable_check(executable)
+    if executable_state["ok"] == false {
+        return client_failure(request, "ADAPTER_UNAVAILABLE", executable_state["error"], false)
+    }
+    encoded := to_json(request) + "\n"
+    request_limit := get_or(options, "request_bytes", 1048576)
+    if len(encoded) > request_limit {
+        return client_failure(request, "PROTOCOL_VIOLATION", "backend request exceeded bound", false)
+    }
+    request_path := request_temp_path()
+    mut written := false
+    try {
+        written = write_file_atomic(request_path, encoded, true)
+    } except err {
+        written = false
+    }
+    if written != true {
+        return client_failure(request, "ADAPTER_INTERNAL", "could not create bounded backend request", false)
+    }
+    chmod := run_argv(["chmod", "600", request_path], 5000)
+    if process_ok(chmod) == false {
+        cleanup_request_file(request_path)
+        return client_failure(request, "ADAPTER_INTERNAL", "could not restrict backend request permissions", false)
+    }
+    timeout_ms := get_or(options, "timeout_ms", request["deadline_ms"])
+    output_limit := get_or(options, "max_output_bytes", 4194304)
+    mut output := ""
+    mut invocation_error := ""
+    try {
+        mut process_options := {"timeout_ms": timeout_ms, "max_output_bytes": output_limit, "inherit_env": get_or(options, "inherit_env", false), "env_allow": adapter_env_allow(options), "env": get_or(options, "env", {})}
+        cancel_file := get_or(options, "cancel_file", "")
+        if type(cancel_file) == "string"&&cancel_file != "" {process_options["cancel_file"] = cancel_file}
+        output = pipe_commands([["cat", request_path], [executable, "protocol"]], process_options)
+    } except err {
+        invocation_error = to_string(err)
+    }
+    cleanup_request_file(request_path)
+    if invocation_error != "" {
+        secrets := get_or(options, "redact_values", [])
+        code := "ADAPTER_UNAVAILABLE"
+        cancel_file := get_or(options, "cancel_file", "")
+        if type(cancel_file) == "string"&&cancel_file != ""&&file_exists(cancel_file) {code = "ADAPTER_CANCELLED"} else if contains(invocation_error, "timed out") == 1 {code = "ADAPTER_TIMEOUT"}
+        return client_failure(request, code, redact(invocation_error, secrets), false)
+    }
+    return parse_backend_frames(request, output, options)
+}

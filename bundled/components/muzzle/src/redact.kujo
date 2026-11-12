@@ -1,0 +1,169 @@
+# Muzzle secret redaction.
+# Scans output for common secret patterns and redacts matching content.
+# Supports both single-line patterns and multi-line blocks (keys, certs).
+
+from src.common import is_trueish
+
+# Single-line patterns — lines containing these are fully redacted.
+SINGLE_LINE_PATTERNS := array(
+	"TOKEN=",
+	"API_KEY=",
+	"SECRET=",
+	"PRIVATE_KEY",
+	"Authorization:",
+	"Bearer ",
+	"password=",
+	"PASSWORD=",
+	"passwd=",
+	"credential=",
+	"CREDENTIAL=",
+	"api_key:",
+	"api_secret:",
+	"access_token:",
+	"refresh_token:",
+	"client_secret:",
+	"private_key:",
+	"secret_key:",
+	"auth_token:",
+	"session_key:",
+	"encryption_key:",
+	"signing_key:"
+)
+
+# Multi-line start markers — everything from the marker to the end marker is redacted.
+MULTI_LINE_STARTS := array(
+	"-----BEGIN PRIVATE KEY-----",
+	"-----BEGIN RSA PRIVATE KEY-----",
+	"-----BEGIN OPENSSH PRIVATE KEY-----",
+	"-----BEGIN EC PRIVATE KEY-----",
+	"-----BEGIN DSA PRIVATE KEY-----",
+	"-----BEGIN PGP PRIVATE KEY BLOCK-----",
+	"-----BEGIN ENCRYPTED PRIVATE KEY-----",
+	"-----BEGIN CERTIFICATE-----",
+	"-----BEGIN ENCRYPTED DATA-----"
+)
+
+MULTI_LINE_ENDS := array(
+	"-----END PRIVATE KEY-----",
+	"-----END RSA PRIVATE KEY-----",
+	"-----END OPENSSH PRIVATE KEY-----",
+	"-----END EC PRIVATE KEY-----",
+	"-----END DSA PRIVATE KEY-----",
+	"-----END PGP PRIVATE KEY BLOCK-----",
+	"-----END ENCRYPTED PRIVATE KEY-----",
+	"-----END CERTIFICATE-----",
+	"-----END ENCRYPTED DATA-----"
+)
+
+REDACTED_MARKER := "[REDACTED — secret pattern detected]"
+
+# Keep the streaming log scanner and in-memory redactor on one pattern catalog.
+export func log_redaction_patterns() {
+	return {"single": join(SINGLE_LINE_PATTERNS, "|"), "starts": join(MULTI_LINE_STARTS, "|"), "ends": join(MULTI_LINE_ENDS, "|"), "marker": REDACTED_MARKER}
+}
+
+# Check if a single line contains a secret pattern.
+export func line_has_secret(line) {
+	line_lower := to_lower(to_string(line))
+	mut idx := 0
+	while idx < len(SINGLE_LINE_PATTERNS) {
+		pattern := SINGLE_LINE_PATTERNS[idx]
+		if is_trueish(contains(line_lower, to_lower(pattern))) {
+			return true
+		}
+		idx = idx + 1
+	}
+	return false
+}
+
+# Check if a line starts a multi-line secret block.
+export func line_starts_multiline_secret(line) {
+	mut idx := 0
+	while idx < len(MULTI_LINE_STARTS) {
+		marker := MULTI_LINE_STARTS[idx]
+		if is_trueish(contains(line, marker)) {
+			return idx
+		}
+		idx = idx + 1
+	}
+	return -1
+}
+
+# Check if a line ends a multi-line secret block.
+export func line_ends_multiline_secret(line, start_idx) {
+	if start_idx < 0 || start_idx >= len(MULTI_LINE_ENDS) {
+		return false
+	}
+	end_marker := MULTI_LINE_ENDS[start_idx]
+	return is_trueish(contains(line, end_marker))
+}
+
+# Redact a full text block, handling both single-line and multi-line secrets.
+# Returns a redacted version of the text.
+export func redact_text(text) {
+	lines_arr := lines(text)
+	mut result_lines := array()
+	mut in_multiline := false
+	mut multiline_start_idx := -1
+	mut idx := 0
+
+	while idx < len(lines_arr) {
+		line := lines_arr[idx]
+
+		if in_multiline {
+			# We are inside a multi-line secret block — check for end marker
+			if line_ends_multiline_secret(line, multiline_start_idx) {
+				in_multiline = false
+				multiline_start_idx = -1
+				result_lines = push(result_lines, REDACTED_MARKER)
+			}
+			# else: continue skipping lines inside the block
+		} else {
+			# Check for multi-line block start
+			start_idx := line_starts_multiline_secret(line)
+			if start_idx >= 0 {
+				if line_ends_multiline_secret(line, start_idx) {
+					result_lines = push(result_lines, REDACTED_MARKER)
+				} else {
+					in_multiline = true
+					multiline_start_idx = start_idx
+				}
+			} else {
+				# Check for single-line secret
+				if line_has_secret(line) {
+					result_lines = push(result_lines, REDACTED_MARKER)
+				} else {
+					result_lines = push(result_lines, line)
+				}
+			}
+		}
+
+		idx = idx + 1
+	}
+
+	# If we ended while still inside a block, add a final marker
+	if in_multiline {
+		result_lines = push(result_lines, REDACTED_MARKER)
+	}
+
+	return join(result_lines, "\n")
+}
+
+# Get a short error excerpt from full output (last N lines, redacted).
+export func error_excerpt(text, max_lines) {
+	# Redact the complete stream before truncating it. Starting at the tail first
+	# can discard a PEM begin marker and expose secret body lines in the excerpt.
+	redacted_text := redact_text(text)
+	lines_arr := lines(redacted_text)
+	mut start := len(lines_arr) - max_lines
+	if start < 0 {
+		start = 0
+	}
+	mut excerpt_lines := array()
+	mut idx := start
+	while idx < len(lines_arr) {
+		excerpt_lines = push(excerpt_lines, lines_arr[idx])
+		idx = idx + 1
+	}
+	return join(excerpt_lines, "\n")
+}

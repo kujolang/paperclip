@@ -1,0 +1,303 @@
+# PackWrite :: util
+#
+# Small, dependency-free helpers shared across modules: predicate normalization,
+# string utilities, list helpers, and safe filesystem read/write primitives that
+# work around the runtime's overwrite restriction.
+
+# Kujo predicates are inconsistent: `contains`/`has_key` return 1/0 while
+# `ends_with` returns true/false. Normalize everything through `truthy`.
+export func truthy(v) {
+    if type(v) == "bool" {
+        return v
+    }
+    if type(v) == "int" {
+        return v != 0
+    }
+    if type(v) == "null" {
+        return false
+    }
+    if type(v) == "string" {
+        return v != ""
+    }
+    return true
+}
+
+# True when `haystack` contains `needle` as a substring.
+export func has_substr(haystack, needle) {
+    return contains(haystack, needle) == 1
+}
+
+# True when text contains line-breaking control characters that would make paths,
+# diagnostics, or generated context ambiguous in terminals and machine output.
+export func has_line_control(value) {
+    if type(value) != "string" {
+        return false
+    }
+    return contains(value, "\n") == 1 || contains(value, "\r") == 1 || contains(value, "\t") == 1
+}
+
+# True when `arr` contains `value` (string/scalar equality).
+export func list_includes(arr, value) {
+    mut li_i := 0
+    li_n := len(arr)
+    while li_i < li_n {
+        if arr[li_i] == value {
+            return true
+        }
+        li_i = li_i + 1
+    }
+    return false
+}
+
+# A present, non-empty string?
+export func is_text(v) {
+    if type(v) != "string" {
+        return false
+    }
+    return trim(v) != ""
+}
+
+# Lowercase helper that tolerates non-strings.
+export func lc(v) {
+    if type(v) != "string" {
+        return ""
+    }
+    return to_lower(v)
+}
+
+# Split text into lines on "\n", trimming a trailing "\r" from each.
+export func lines_of(text) {
+    raw := split(text, "\n")
+    mut out := []
+    mut lo_i := 0
+    lo_n := len(raw)
+    while lo_i < lo_n {
+        line := raw[lo_i]
+        if ends_with(line, "\r") {
+            out = push(out, substring(line, 0, len(line) - 1))
+        } else {
+            out = push(out, line)
+        }
+        lo_i = lo_i + 1
+    }
+    return out
+}
+
+# Does `name` end with any extension in `exts` (case-insensitive)?
+export func has_extension(name, exts) {
+    low := to_lower(name)
+    mut he_i := 0
+    he_n := len(exts)
+    while he_i < he_n {
+        if ends_with(low, exts[he_i]) {
+            return true
+        }
+        he_i = he_i + 1
+    }
+    return false
+}
+
+# Read a file, returning a {"ok": bool, "text"/"error": ...} envelope instead of
+# throwing, so callers can produce friendly messages.
+export func read_text(path) {
+    if file_exists(path) == false {
+        return {"ok": false, "error": "file not found: " + path}
+    }
+    if path_is_dir(path) {
+        return {"ok": false, "error": "path is a directory: " + path}
+    }
+    if path_is_file(path) == false {
+        return {"ok": false, "error": "path is not a regular file: " + path}
+    }
+    mut text := ""
+    try {
+        text = read_file(path)
+    } except err {
+        return {"ok": false, "error": "could not read UTF-8 file: " + path}
+    }
+    if type(text) != "string" {
+        return {"ok": false, "error": "could not read UTF-8 file: " + path}
+    }
+    return {"ok": true, "text": text}
+}
+
+# Write through a sibling temporary file, then promote it atomically. The
+# runtime's overwrite flag is unreliable, so the caller supplies the intended
+# overwrite policy explicitly and the target is never written in place.
+export func write_file_atomic(path, content, overwrite) {
+    return write_file_atomic_mode(path, content, overwrite, "")
+}
+
+# Write sensitive diagnostics with owner-only permissions and the same atomic,
+# no-symlink behavior as normal writes.
+export func write_private_file_atomic(path, content, overwrite) {
+    return write_file_atomic_mode(path, content, overwrite, "600")
+}
+
+func write_file_atomic_mode(path, content, overwrite, mode) {
+    if type(path) != "string" || trim(path) == "" {
+        return false
+    }
+    if symlink_path(path) {
+        return false
+    }
+    if path_is_dir(path) {
+        return false
+    }
+    if file_exists(path) && truthy(overwrite) == false {
+        return false
+    }
+    tmp := path + ".tmp-" + to_string(current_timestamp()) + "-" + to_string(random_int(1000, 999999))
+    try {
+        if file_exists(tmp) {
+            delete_file(tmp)
+        }
+        write_file(tmp, to_string(content))
+        if mode != "" && set_file_mode(tmp, mode) == false {
+            delete_file(tmp)
+            return false
+        }
+        rename_file(tmp, path)
+        return true
+    } except err {
+        if file_exists(tmp) {
+            delete_file(tmp)
+        }
+        return false
+    }
+}
+
+export func symlink_path(path) {
+    mut linked := false
+    try {
+        linked = path_is_symlink(path)
+    } except err {
+        linked = false
+    }
+    return linked
+}
+
+func set_file_mode(path, mode) {
+    mut success := false
+    try {
+        result := spawn_process(["chmod", mode, path])
+        success = truthy(result.success)
+    } except err {
+        success = false
+    }
+    return success
+}
+
+# Create a directory tree one segment at a time (create_dir handles nested dirs
+# on most builds, but this is defensive and idempotent).
+export func ensure_dir(path) {
+    if path == "" || path == "." {
+        return
+    }
+    if path_is_dir(path) {
+        return
+    }
+    parts := split(path, "/")
+    mut cur := ""
+    if starts_with(path, "/") {
+        cur = "/"
+    }
+    mut ed_i := 0
+    ed_n := len(parts)
+    while ed_i < ed_n {
+        part := parts[ed_i]
+        if part != "" && part != "." {
+            if cur == "/" {
+                cur = "/" + part
+            } else if cur == "" {
+                cur = part
+            } else {
+                cur = cur + "/" + part
+            }
+            if path_is_dir(cur) == false {
+                create_dir(cur)
+            }
+        }
+        ed_i = ed_i + 1
+    }
+}
+
+# Parent directory of a path ("" when there is no separator).
+export func parent_of(path) {
+    mut po_i := len(path) - 1
+    while po_i >= 0 {
+        if substring(path, po_i, po_i + 1) == "/" {
+            return substring(path, 0, po_i)
+        }
+        po_i = po_i - 1
+    }
+    return ""
+}
+
+# Basename of a path.
+export func base_of(path) {
+    mut bo_i := len(path) - 1
+    while bo_i >= 0 {
+        if substring(path, bo_i, bo_i + 1) == "/" {
+            return substring(path, bo_i + 1, len(path))
+        }
+        bo_i = bo_i - 1
+    }
+    return path
+}
+
+# IMPORTANT: the runtime's `len`/`index_of` are BYTE-based while `substring` is
+# CHARACTER-based, so mixing index_of+substring corrupts slicing on any text with
+# multi-byte characters (e.g. em dashes). These helpers stay purely char-based by
+# scanning with substring(text, i, i+1). Needles must be ASCII (their byte length
+# then equals their char length, so substring(text, i, i+len(needle)) is correct).
+
+# Char index of `needle` in `text` at or after char index `start_at`, else -1.
+export func str_find_from(text, needle, start_at) {
+    nlen := len(needle)
+    mut sf_i := start_at
+    while substring(text, sf_i, sf_i + 1) != "" {
+        if substring(text, sf_i, sf_i + nlen) == needle {
+            return sf_i
+        }
+        sf_i = sf_i + 1
+    }
+    return -1
+}
+
+# Char index of the first occurrence of `needle` in `text`, else -1.
+export func str_find(text, needle) {
+    return str_find_from(text, needle, 0)
+}
+
+# Char index of the last occurrence of `needle` in `text`, else -1.
+export func str_rfind(text, needle) {
+    nlen := len(needle)
+    mut last := -1
+    mut sr_i := 0
+    while substring(text, sr_i, sr_i + 1) != "" {
+        if substring(text, sr_i, sr_i + nlen) == needle {
+            last = sr_i
+        }
+        sr_i = sr_i + 1
+    }
+    return last
+}
+
+# First non-empty, trimmed paragraph/line of text, capped at `cap` chars.
+export func first_summary(text, cap) {
+    ls := split(text, "\n")
+    mut fs_i := 0
+    fs_n := len(ls)
+    while fs_i < fs_n {
+        line := trim(ls[fs_i])
+        if line != "" && starts_with(line, "#") == false {
+            if len(line) > cap {
+                return substring(line, 0, cap) + "..."
+            }
+            return line
+        }
+        fs_i = fs_i + 1
+    }
+    return ""
+}

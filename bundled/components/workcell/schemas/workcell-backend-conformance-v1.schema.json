@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://kujolang.dev/schemas/workcell-backend-conformance-v1.schema.json",
+  "title": "WorkCell backend conformance report v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "ok", "checks"],
+  "properties": {
+    "schema_version": {"const": "workcell-backend-conformance/v1"},
+    "ok": {"type": "boolean"},
+    "adapter_id": {"type": "string", "maxLength": 64},
+    "run_id": {"type": "string", "pattern": "^wc-[0-9a-f]{32}$"},
+    "checks": {
+      "type": "array",
+      "maxItems": 256,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "ok", "evidence"],
+        "properties": {
+          "id": {"type": "string", "minLength": 1, "maxLength": 128},
+          "ok": {"type": "boolean"},
+          "evidence": {}
+        }
+      }
+    },
+    "failed_operation": {"type": ["string", "null"]},
+    "error": {"type": ["object", "null"]}
+  }
+}

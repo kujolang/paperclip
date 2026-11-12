@@ -1,0 +1,142 @@
+# Built-in Docker/Podman bridge for the portable workload contract.
+
+from src.backend.oci.driver import builtin_backend_valid, resolve_builtin_backend
+from src.domain.definition import default_definition, validate_definition
+from src.evidence.controls import controls_ledger, requirements_from_definition
+from src.evidence.execution_result import write_execution_evidence
+from src.execution.coordinator import run_workcell
+from src.receipts.manifest import write_manifest
+from src.receipts.v2 import finish_v2, new_v2_receipt
+from src.util import get_or, run_argv, save_json
+from src.workspace.workspace import inspect_repository, temp_root
+
+func local_options(profile, backend) {
+    if get_or(profile, "credential_ref", "") != ""||get_or(profile, "region", "") != ""||get_or(profile, "provider_project", "") != ""||get_or(profile, "endpoint", "") != "" {return {"ok": false, "error": "built-in OCI profiles cannot contain remote routing or credentials"}}
+    options := get_or(get_or(profile, "adapter_options", {}), backend, {})
+    if type(options) != "dict" {return {"ok": false, "error": "built-in OCI adapter options must be an object"}}
+    names := keys(options)
+    for name in names {
+        if name != "engine_runtime"&&name != "workspace_run_as" {return {"ok": false, "error": "unknown built-in OCI adapter option: " + name}}
+    }
+    return {"ok": true, "options": options}
+}
+
+export func portable_to_legacy(definition, backend, profile) {
+    if builtin_backend_valid(backend) == false {return {"ok": false, "error": "portable OCI backend must be docker or podman"}}
+    option_state := local_options(profile, backend)
+    if option_state["ok"] == false {return option_state}
+    options := option_state["options"]
+    writable := definition["requirements"]["filesystem"]["writable"]
+    for path in writable {
+        if path != "/workspace"&&starts_with(path, "/workspace/") == false {return {"ok": false, "error": "built-in OCI portable writable paths must remain under /workspace"}}
+    }
+    if definition["requirements"]["network"]["mode"] == "allowlist" {return {"ok": false, "error": "built-in OCI backends do not implement domain allowlists; select an operator-enforced remote profile"}}
+    legacy := default_definition()
+    image := definition["workload"]["image"]
+    legacy["name"] := definition["name"]
+    legacy["runtime"] := {"backend": backend, "engine_runtime": get_or(options, "engine_runtime", ""), "image": image["reference"], "build_context": "", "image_digest": get_or(image, "digest", ""), "signature_key": get_or(image, "signature_key", ""), "require_digest": get_or(image, "digest", "") != "", "require_signature": get_or(image, "signature_key", "") != "", "registry_allowlist": []}
+    legacy["workspace"] := {"strategy": "git-worktree", "mount_path": "/workspace", "run_as": get_or(options, "workspace_run_as", "host"), "scan": definition["workspace"]["scan"]}
+    legacy["command"] := definition["workload"]["command"]
+    legacy["environment"] := definition["environment"]
+    legacy["secrets"] := definition["secrets"]
+    compute := definition["requirements"]["compute"]
+    execution := definition["requirements"]["execution"]
+    legacy["resources"] := {"cpus": compute["cpus"], "memory": compute["memory"], "pids": compute["pids"], "timeout_ms": execution["timeout_ms"], "max_output_bytes": execution["max_output_bytes"]}
+    mode := definition["requirements"]["network"]["mode"]
+    egress := {"policy": "deny-by-default", "dns": "blocked", "proxy": "none", "enforcement_profile": "none"}
+    if mode == "default" {egress = {"policy": "unmanaged", "dns": "inherited", "proxy": "none", "enforcement_profile": "none"}}
+    legacy["network"] := {"mode": mode, "name": "", "egress": egress}
+    filesystem := definition["requirements"]["filesystem"]
+    legacy["filesystem"] := {"read_only_root": filesystem["read_only_root"], "tmpfs": filesystem["tmpfs"], "seccomp_profile": "", "apparmor_profile": ""}
+    legacy["artifacts"] := definition["artifacts"]
+    legacy["verification"] := definition["verification"]
+    legacy["cleanup"] := definition["cleanup"]
+    legacy["receipt"] := definition["receipt"]
+    checked := validate_definition(legacy)
+    if checked["ok"] == false {return checked}
+    return {"ok": true, "definition": legacy}
+}
+
+export func inspect_portable_oci(definition, backend, profile) {
+    translated := portable_to_legacy(definition, backend, profile)
+    if translated["ok"] == false {return translated}
+    requirements := requirements_from_definition(definition)
+    resolution := resolve_builtin_backend(translated["definition"], requirements["requirements"])
+    if resolution["ok"] == false {return {"ok": false, "error": "built-in OCI backend rejected required capabilities", "identity": get_or(resolution, "identity", {}), "rejected": get_or(resolution, "rejected", [])}}
+    ledger := controls_ledger(requirements["requirements"], resolution["states"])
+    return {"ok": ledger["ok"], "identity": resolution["identity"], "controls": get_or(ledger, "controls", []), "rejected": get_or(ledger, "rejected", []), "legacy_definition": translated["definition"]}
+}
+
+func file_bytes(path) {
+    if type(path) != "string"||file_exists(path) == false {return 0}
+    try {return file_size(path)} except err {return 0}
+}
+
+func normalize_local_receipt(result, definition, profile_id, profile_fingerprint, caller, inspection, source) {
+    legacy := result["receipt"]
+    output_dir := result["output_dir"]
+    terminal_status := "exited"
+    terminal_exit := get_or(legacy, "exit_code", get_or(result, "exit_code", 1))
+    terminal_certainty := "terminal"
+    terminal_reason := "oci-engine-exit"
+    if result["stage"] == "validated"||result["stage"] == "preparing"||result["stage"] == "starting"||result["stage"] == "recording"||result["stage"] == "completed"&&get_or(legacy, "final_status", "") == "dry-run" {terminal_status = "unknown"; terminal_exit = null; terminal_certainty = "unknown"; terminal_reason = "execution-not-started"}
+    if get_or(result, "timed_out", false) {terminal_status = "timed-out"; terminal_exit = null}
+    if get_or(result, "cancelled", false) {terminal_status = "cancelled"; terminal_exit = null}
+    receipt := new_v2_receipt({"run_id": result["run_id"], "caller": caller, "backend": inspection["identity"], "profile_id": profile_id, "profile_fingerprint": profile_fingerprint, "definition": {"schema": definition["schema"], "name": definition["name"]}, "source": {"commit": source["commit"], "clean": true}, "workspace": {"source": "clean-git-commit", "materialization": "git-worktree"}, "argv": definition["workload"]["command"], "workdir": "/workspace", "environment_names": keys(definition["environment"]["set"]), "secret_names": definition["secrets"], "artifact_declarations": definition["artifacts"]["export"], "controls": inspection["controls"], "timings": {"total": {"duration_ms": get_or(legacy, "elapsed_ms", 0), "authority": "workcell-monotonic"}}, "cost": {"status": "unknown", "class": "local-operator-compute", "amount": null, "usage": [], "source": "not-reported"}})
+    execution_section := receipt["execution"]
+    execution_section["terminal"] := {"status": terminal_status, "exit_code": terminal_exit, "signal": null, "reason": terminal_reason, "timed_out": get_or(result, "timed_out", false), "cancelled": get_or(result, "cancelled", false), "certainty": terminal_certainty}
+    receipt["execution"] := execution_section
+    logs_truncated := get_or(legacy, "stdout_truncated", false)||get_or(legacy, "stderr_truncated", false)
+    receipt["logs"] := {"capture": "streamed-local", "stdout_stderr": "separate", "ordering": "per-stream", "timestamps": "not-recorded", "completeness": logs_truncated == false, "truncated": logs_truncated, "discontinuities": [], "bytes": {"stdout": file_bytes(output_dir + "/stdout.log"), "stderr": file_bytes(output_dir + "/stderr.log")}, "paths": {"stdout": "stdout.log", "stderr": "stderr.log"}}
+    receipt["changes"] := {"status": "collected", "files": get_or(legacy, "changed_files", []), "patch_path": get_or(legacy, "patch_path", null)}
+    verification := get_or(legacy, "verification", {})
+    verification_status := "failed"
+    if get_or(verification, "verification_succeeded", false) {verification_status = "passed"}
+    if get_or(legacy, "final_status", "") == "dry-run" {verification_status = "not-run"}
+    receipt["verification"] := {"status": verification_status, "offline": true, "checks": get_or(verification, "checks", [])}
+    artifact_status := "failed"
+    if get_or(verification, "artifacts_exported", false) {artifact_status = "collected"}
+    if len(definition["artifacts"]["export"]) == 0 {artifact_status = "not-requested"}
+    receipt["artifacts"] := {"status": artifact_status, "declared": definition["artifacts"]["export"], "results": get_or(legacy, "exported_artifacts", []), "archive": null}
+    receipt["resources"] := {"inventory": [], "metrics": [], "provider_reported": false}
+    mut normalized_errors := []
+    for legacy_error in get_or(legacy, "errors", []) {
+        normalized_errors = push(normalized_errors, {"phase": get_or(legacy_error, "stage", result["stage"]), "code": "OCI_BACKEND_FAILURE", "message": get_or(legacy_error, "message", "local OCI backend failed"), "time": get_or(legacy, "end_time", now_utc())})
+    }
+    receipt["errors"] := normalized_errors
+    receipt["warnings"] := get_or(legacy, "warnings", [])
+    receipt["preservation"] := get_or(legacy, "preservation", null)
+    receipt["preservation_path"] := get_or(legacy, "preservation_path", null)
+    cleanup := {"status": get_or(legacy, "cleanup_status", "unknown"), "journal_path": "", "items": [], "remaining": []}
+    failure_category := null
+    if result["ok"] == false {failure_category = result["stage"]}
+    finished := finish_v2(receipt, result["receipt_path"], result["stage"], failure_category, cleanup)
+    if finished["ok"] == false {return {"ok": false, "error": finished["error"]}}
+    receipt = finished["receipt"]
+    execution_evidence := write_execution_evidence(definition, receipt, output_dir)
+    if execution_evidence["ok"] {
+        receipt["execution_result"] := execution_evidence["result"]
+        receipt["execution_result_path"] := "execution-result.json"
+        receipt["reexecution_descriptor_path"] := "reexecution.json"
+        save_json(result["receipt_path"], receipt)
+    }
+    manifest := write_manifest(output_dir, result["run_id"])
+    if manifest["ok"] == false {return manifest}
+    return {"ok": true, "receipt": receipt}
+}
+
+export func run_portable_oci(definition, repo_path, requested_output, profile_id, profile_fingerprint, profile, backend, caller, flags) {
+    inspection := inspect_portable_oci(definition, backend, profile)
+    if inspection["ok"] == false {return {"ok": false, "run_id": "", "stage": "validated", "error": get_or(inspection, "error", "built-in OCI capability resolution failed") + ": " + to_string(get_or(inspection, "rejected", [])), "exit_code": 2}}
+    source := inspect_repository(repo_path)
+    if source["ok"] == false||source["clean"] == false {return {"ok": false, "run_id": "", "stage": "preparing", "error": get_or(source, "error", "portable execution requires a clean Git source"), "exit_code": 3}}
+    temporary := temp_root() + "/workcell-portable-oci-" + replace(uuid_v4(), "-", "") + ".json"
+    if save_json(temporary, inspection["legacy_definition"]) != true {return {"ok": false, "run_id": "", "stage": "preparing", "error": "portable OCI compatibility definition could not be written", "exit_code": 3}}
+    result := run_workcell(temporary, repo_path, requested_output, flags)
+    run_argv(["rm", "-f", temporary], 5000)
+    if type(get_or(result, "receipt", null)) != "dict"||type(get_or(result, "output_dir", null)) != "string" {return result}
+    normalized := normalize_local_receipt(result, definition, profile_id, profile_fingerprint, caller, inspection, source)
+    if normalized["ok"] == false {result["ok"] := false; result["stage"] := "recording"; result["error"] := normalized["error"]; result["exit_code"] := 10; return result}
+    result["receipt"] := normalized["receipt"]
+    return result
+}

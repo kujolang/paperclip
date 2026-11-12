@@ -1,0 +1,458 @@
+# Muzzle workflow discovery and manifest loading.
+# Discovers workflow scripts and their associated manifests.
+
+from src.common import str_ends_with, str_starts_with, is_trueish, is_falseish, dict_has_key, path_is_within_muzzle
+
+WORKFLOWS_DIR := ".muzzle/workflows"
+MANIFESTS_DIR := ".muzzle/manifests"
+
+# Load a workflow manifest from .muzzle/manifests/<name>.json.
+# Returns a dict or null if not found.
+export func load_manifest(name) {
+	inspection := inspect_manifest(name)
+	if to_string(inspection["status"]) == "valid" {
+		return inspection["manifest"]
+	}
+	return null
+}
+
+func supported_runner_name(runner) {
+	lower := to_lower(to_string(runner))
+	return lower == "kujo" || lower == "bash" || lower == "python" || lower == "node"
+}
+
+func valid_boolean_field(container, field_name) {
+	return is_falseish(dict_has_key(container, field_name)) || type(container[field_name]) == "bool"
+}
+
+func key_is_allowed(allowed, key) {
+	mut idx := 0
+	while idx < len(allowed) {
+		if to_string(allowed[idx]) == to_string(key) {
+			return true
+		}
+		idx = idx + 1
+	}
+	return false
+}
+
+func first_unknown_key(container, allowed) {
+	container_keys := keys(container)
+	mut idx := 0
+	while idx < len(container_keys) {
+		if is_falseish(key_is_allowed(allowed, container_keys[idx])) {
+			return to_string(container_keys[idx])
+		}
+		idx = idx + 1
+	}
+	return ""
+}
+
+export func validate_manifest(name, manifest) {
+	if type(manifest) != "dict" {
+		return {"valid": false, "code": "MANIFEST_ROOT_TYPE", "message": "manifest root must be an object"}
+	}
+	unknown_root := first_unknown_key(manifest, array("schema_version", "name", "summary", "runner", "script", "script_sha256", "quiet_by_default", "allow_extra_args", "args", "safety"))
+	if unknown_root != "" {
+		return {"valid": false, "code": "MANIFEST_UNKNOWN_FIELD", "message": "unknown manifest field: " + unknown_root}
+	}
+	if is_falseish(dict_has_key(manifest, "name")) || type(manifest["name"]) != "string" || to_string(manifest["name"]) != name {
+		return {"valid": false, "code": "MANIFEST_NAME", "message": "name must be a string matching the manifest filename"}
+	}
+	if is_falseish(dict_has_key(manifest, "script")) || type(manifest["script"]) != "string" || normalize_manifest_script_path(manifest["script"]) == "" {
+		return {"valid": false, "code": "MANIFEST_SCRIPT", "message": "script must be a safe path string under workflows/"}
+	}
+	if is_trueish(dict_has_key(manifest, "runner")) && (type(manifest["runner"]) != "string" || is_falseish(supported_runner_name(manifest["runner"]))) {
+		return {"valid": false, "code": "MANIFEST_RUNNER", "message": "runner must be one of: kujo, bash, python, node"}
+	}
+	if is_trueish(dict_has_key(manifest, "summary")) && type(manifest["summary"]) != "string" {
+		return {"valid": false, "code": "MANIFEST_SUMMARY", "message": "summary must be a string"}
+	}
+	if is_trueish(dict_has_key(manifest, "schema_version")) && (type(manifest["schema_version"]) != "string" || to_string(manifest["schema_version"]) != "muzzle.manifest/v1") {
+		return {"valid": false, "code": "MANIFEST_SCHEMA_VERSION", "message": "schema_version must be muzzle.manifest/v1"}
+	}
+	if is_trueish(dict_has_key(manifest, "script_sha256")) && (type(manifest["script_sha256"]) != "string" || regex_match(to_string(manifest["script_sha256"]), "^[A-Fa-f0-9]{64}$") == false) {
+		return {"valid": false, "code": "MANIFEST_SCRIPT_SHA256", "message": "script_sha256 must be a 64-character SHA-256 digest"}
+	}
+	if is_falseish(valid_boolean_field(manifest, "quiet_by_default")) || is_falseish(valid_boolean_field(manifest, "allow_extra_args")) {
+		return {"valid": false, "code": "MANIFEST_BOOLEAN", "message": "quiet_by_default and allow_extra_args must be booleans"}
+	}
+	if is_trueish(dict_has_key(manifest, "args")) {
+		args_meta := manifest["args"]
+		if type(args_meta) != "array" {
+			return {"valid": false, "code": "MANIFEST_ARGS_TYPE", "message": "args must be an array"}
+		}
+		mut arg_idx := 0
+		while arg_idx < len(args_meta) {
+			arg_def := args_meta[arg_idx]
+			if type(arg_def) != "dict" || is_falseish(dict_has_key(arg_def, "name")) || type(arg_def["name"]) != "string" || trim(to_string(arg_def["name"])) == "" {
+				return {"valid": false, "code": "MANIFEST_ARG_NAME", "message": "every argument must be an object with a non-empty string name"}
+			}
+			unknown_arg := first_unknown_key(arg_def, array("name", "required", "description", "allowed_values", "sensitive"))
+			if unknown_arg != "" {
+				return {"valid": false, "code": "MANIFEST_ARG_UNKNOWN_FIELD", "message": "unknown argument field: " + unknown_arg}
+			}
+			if is_falseish(valid_boolean_field(arg_def, "required")) || is_falseish(valid_boolean_field(arg_def, "sensitive")) {
+				return {"valid": false, "code": "MANIFEST_ARG_BOOLEAN", "message": "argument required and sensitive fields must be booleans"}
+			}
+			if is_trueish(dict_has_key(arg_def, "description")) && type(arg_def["description"]) != "string" {
+				return {"valid": false, "code": "MANIFEST_ARG_DESCRIPTION", "message": "argument descriptions must be strings"}
+			}
+			if is_trueish(dict_has_key(arg_def, "allowed_values")) {
+				allowed_values := arg_def["allowed_values"]
+				if type(allowed_values) != "array" {
+					return {"valid": false, "code": "MANIFEST_ARG_ALLOWED_VALUES", "message": "argument allowed_values must be an array of strings"}
+				}
+				mut allowed_idx := 0
+				while allowed_idx < len(allowed_values) {
+					if type(allowed_values[allowed_idx]) != "string" {
+						return {"valid": false, "code": "MANIFEST_ARG_ALLOWED_VALUES", "message": "argument allowed_values must be an array of strings"}
+					}
+					allowed_idx = allowed_idx + 1
+				}
+			}
+			arg_idx = arg_idx + 1
+		}
+	}
+	if is_trueish(dict_has_key(manifest, "safety")) {
+		safety := manifest["safety"]
+		if type(safety) != "dict" {
+			return {"valid": false, "code": "MANIFEST_SAFETY_TYPE", "message": "safety must be an object"}
+		}
+		unknown_safety := first_unknown_key(safety, array("require_git_repo", "allow_dirty_tree", "requires_network", "human_approval_recommended"))
+		if unknown_safety != "" {
+			return {"valid": false, "code": "MANIFEST_SAFETY_UNKNOWN_FIELD", "message": "unknown safety field: " + unknown_safety}
+		}
+		safety_fields := array("require_git_repo", "allow_dirty_tree", "requires_network", "human_approval_recommended")
+		mut safety_idx := 0
+		while safety_idx < len(safety_fields) {
+			if is_falseish(valid_boolean_field(safety, safety_fields[safety_idx])) {
+				return {"valid": false, "code": "MANIFEST_SAFETY_BOOLEAN", "message": "safety fields must be booleans"}
+			}
+			safety_idx = safety_idx + 1
+		}
+	}
+	return {"valid": true, "code": "", "message": ""}
+}
+
+export func verify_manifest_integrity(manifest, script_path) {
+	actual := sha256_file(script_path)
+	if type(actual) == "Error" {
+		return {"ok": false, "code": "INTEGRITY_READ_FAILED", "message": "Could not hash workflow script.", "expected": null, "actual": null}
+	}
+	if manifest == null || is_falseish(dict_has_key(manifest, "script_sha256")) {
+		return {"ok": true, "code": "INTEGRITY_UNPINNED", "message": "Workflow script is not checksum-pinned.", "expected": null, "actual": to_string(actual)}
+	}
+	expected := to_lower(to_string(manifest["script_sha256"]))
+	if to_lower(to_string(actual)) != expected {
+		return {"ok": false, "code": "INTEGRITY_MISMATCH", "message": "Workflow script checksum does not match its manifest.", "expected": expected, "actual": to_lower(to_string(actual))}
+	}
+	return {"ok": true, "code": "INTEGRITY_VERIFIED", "message": "Workflow script checksum matches its manifest.", "expected": expected, "actual": to_lower(to_string(actual))}
+}
+
+# Inspect a manifest without conflating missing, malformed, and schema-invalid.
+export func inspect_manifest(name) {
+	manifest_path := MANIFESTS_DIR + "/" + name + ".json"
+	if is_falseish(path_is_within_muzzle(MANIFESTS_DIR)) {
+		return {"status": "unsafe", "manifest": null, "code": "MANIFEST_DIRECTORY_UNSAFE", "message": "manifest directory resolves outside .muzzle"}
+	}
+	if is_falseish(file_exists(manifest_path)) {
+		return {"status": "missing", "manifest": null, "code": "", "message": ""}
+	}
+	if is_falseish(path_is_within_muzzle(manifest_path)) {
+		return {"status": "unsafe", "manifest": null, "code": "MANIFEST_PATH_UNSAFE", "message": "manifest resolves outside .muzzle"}
+	}
+	mut raw := ""
+	try {
+		raw = read_file(manifest_path)
+	} except _err {
+		return {"status": "unreadable", "manifest": null, "code": "MANIFEST_READ", "message": "manifest could not be read"}
+	}
+	mut parsed := null
+	try {
+		parsed = parse_json(raw)
+	} except _err {
+		return {"status": "malformed", "manifest": null, "code": "MANIFEST_JSON", "message": "manifest contains malformed JSON"}
+	}
+	validation := validate_manifest(name, parsed)
+	if is_falseish(validation["valid"]) {
+		return {"status": "invalid", "manifest": parsed, "code": validation["code"], "message": validation["message"]}
+	}
+	return {"status": "valid", "manifest": parsed, "code": "", "message": ""}
+}
+
+export func first_manifest_issue() {
+	if is_falseish(path_is_dir(MANIFESTS_DIR)) || is_falseish(path_is_within_muzzle(MANIFESTS_DIR)) {
+		return null
+	}
+	entries := sort(list_dir(MANIFESTS_DIR))
+	mut idx := 0
+	while idx < len(entries) {
+		entry_name := to_string(entries[idx])
+		if is_trueish(str_ends_with(entry_name, ".json")) {
+			name := substring(entry_name, 0, len(entry_name) - 5)
+			if is_falseish(validate_workflow_name(name)) {
+				return {"name": name, "status": "invalid", "code": "MANIFEST_FILENAME", "message": "manifest filename is not a valid workflow name"}
+			}
+			inspection := inspect_manifest(name)
+			if to_string(inspection["status"]) != "valid" {
+				return {"name": name, "status": inspection["status"], "code": inspection["code"], "message": inspection["message"]}
+			}
+		}
+		idx = idx + 1
+	}
+	return null
+}
+
+# Find the script path for a workflow by name.
+# Checks multiple runners and extensions.
+# Returns the script path (relative to project root) or "" if not found.
+export func find_script(name) {
+	if is_falseish(path_is_dir(WORKFLOWS_DIR)) || is_falseish(path_is_within_muzzle(WORKFLOWS_DIR)) {
+		return ""
+	}
+	extensions := array(".kujo", ".sh", ".py", ".js")
+	mut idx := 0
+	while idx < len(extensions) {
+		ext := extensions[idx]
+		script_path := WORKFLOWS_DIR + "/" + name + ext
+		if is_trueish(file_exists(script_path)) {
+			return script_path
+		}
+		idx = idx + 1
+	}
+	return ""
+}
+
+# Normalize a manifest script path to a project-relative path.
+# Manifest paths are relative to .muzzle/; .muzzle/workflows/... is accepted too.
+export func normalize_manifest_script_path(script_path) {
+	clean := trim(to_string(script_path))
+	if clean == "" {
+		return ""
+	}
+	if is_trueish(str_starts_with(clean, "/")) {
+		return ""
+	}
+	if is_trueish(contains(clean, "\\")) {
+		return ""
+	}
+	if is_trueish(contains(clean, "..")) {
+		return ""
+	}
+	if is_trueish(str_starts_with(clean, ".muzzle/")) {
+		return clean
+	}
+	return ".muzzle/" + clean
+}
+
+# Resolve the executable script for a workflow, honoring manifest script mappings.
+export func resolve_workflow_script(name) {
+	return resolve_manifest_script(name, load_manifest(name))
+}
+
+# Reuse already validated metadata so one operation cannot mix manifest reads.
+export func resolve_manifest_script(name, manifest) {
+	if manifest != null && dict_has_key(manifest, "script") {
+		manifest_script := normalize_manifest_script_path(manifest["script"])
+		if manifest_script != "" && is_trueish(file_exists(manifest_script)) {
+			return manifest_script
+		}
+		return ""
+	}
+	return find_script(name)
+}
+
+# Validate that a script exists and resolves under the expected workflows directory.
+export func validate_script_path(script_path) {
+	if script_path == "" || is_trueish(contains(script_path, "..")) || is_trueish(contains(script_path, "\\")) {
+		return false
+	}
+	if is_falseish(path_is_file(script_path)) {
+		return false
+	}
+
+	if is_falseish(path_is_within_muzzle(WORKFLOWS_DIR)) || is_falseish(path_is_within_muzzle(script_path)) {
+		return false
+	}
+
+	base_abs := path_absolute(WORKFLOWS_DIR)
+	if type(base_abs) == "Error" {
+		return false
+	}
+	script_abs := path_absolute(script_path)
+	if type(script_abs) == "Error" {
+		return false
+	}
+	base_prefix := to_string(base_abs) + "/"
+	return is_trueish(str_starts_with(to_string(script_abs), base_prefix))
+}
+
+# Validate a workflow name for safety (no path traversal, reasonable length).
+export func validate_workflow_name(name) {
+	if name == "" {
+		return false
+	}
+	if len(name) > 128 {
+		return false
+	}
+	if is_trueish(contains(name, "..")) {
+		return false
+	}
+	if is_trueish(contains(name, "/")) {
+		return false
+	}
+	if is_trueish(contains(name, "\\")) {
+		return false
+	}
+	return true
+}
+
+# List all discovered workflows.
+# Returns an array of dicts with keys: name, runner, summary, script_path.
+export func discover_workflows() {
+	mut workflows := array()
+
+	# First, check manifests directory
+	if is_trueish(path_is_dir(MANIFESTS_DIR)) && is_trueish(path_is_within_muzzle(MANIFESTS_DIR)) {
+		entries := sort(list_dir(MANIFESTS_DIR))
+		mut idx := 0
+		while idx < len(entries) {
+			entry := entries[idx]
+			entry_str := to_string(entry)
+			if is_trueish(str_ends_with(entry_str, ".json")) {
+				name := substring(entry_str, 0, len(entry_str) - 5)
+				manifest := load_manifest(name)
+				if manifest != null {
+					script := ""
+					runner := "kujo"
+					summary := ""
+					script = resolve_manifest_script(name, manifest)
+					if dict_has_key(manifest, "runner") {
+						runner = to_string(manifest["runner"])
+					} else if script != "" {
+						# Infer from extension
+						if is_trueish(str_ends_with(script, ".sh")) {
+							runner = "bash"
+						} else if is_trueish(str_ends_with(script, ".py")) {
+							runner = "python"
+						} else if is_trueish(str_ends_with(script, ".js")) {
+							runner = "node"
+						}
+					}
+					if dict_has_key(manifest, "summary") {
+						summary = to_string(manifest["summary"])
+					}
+
+					if script != "" && is_trueish(validate_script_path(script)) {
+						workflows = push(workflows, {
+							"name": name,
+							"runner": runner,
+							"summary": summary,
+							"script_path": script,
+							"has_manifest": true
+						})
+					}
+				}
+			}
+			idx = idx + 1
+		}
+	}
+
+	# Then, check for scripts without manifests
+	if is_trueish(path_is_dir(WORKFLOWS_DIR)) && is_trueish(path_is_within_muzzle(WORKFLOWS_DIR)) {
+		entries := sort(list_dir(WORKFLOWS_DIR))
+		mut idx := 0
+		while idx < len(entries) {
+			entry := entries[idx]
+			entry_str := to_string(entry)
+			# Skip directories and non-script files
+			ext := ""
+			if is_trueish(str_ends_with(entry_str, ".kujo")) {
+				ext = ".kujo"
+			} else if is_trueish(str_ends_with(entry_str, ".sh")) {
+				ext = ".sh"
+			} else if is_trueish(str_ends_with(entry_str, ".py")) {
+				ext = ".py"
+			} else if is_trueish(str_ends_with(entry_str, ".js")) {
+				ext = ".js"
+			}
+
+			if ext != "" {
+				name := substring(entry_str, 0, len(entry_str) - len(ext))
+				# Check if already discovered via manifest
+				manifest := load_manifest(name)
+				if manifest == null && is_trueish(validate_workflow_name(name)) && is_trueish(validate_script_path(WORKFLOWS_DIR + "/" + entry_str)) {
+					runner := "kujo"
+					if ext == ".sh" {
+						runner = "bash"
+					} else if ext == ".py" {
+						runner = "python"
+					} else if ext == ".js" {
+						runner = "node"
+					}
+
+					workflows = push(workflows, {
+						"name": name,
+						"runner": runner,
+						"summary": "",
+						"script_path": WORKFLOWS_DIR + "/" + entry_str,
+						"has_manifest": false
+					})
+				}
+			}
+			idx = idx + 1
+		}
+	}
+
+	return workflows
+}
+
+# Get workflow info by name.
+# Returns a dict with full details or null if not found.
+export func get_workflow_info(name) {
+	manifest := load_manifest(name)
+	script_path := resolve_manifest_script(name, manifest)
+	if script_path == "" {
+		return null
+	}
+
+	mut info := {
+		"name": name,
+		"script_path": script_path,
+		"has_manifest": manifest != null
+	}
+
+	if manifest != null {
+		if dict_has_key(manifest, "runner") {
+			info["runner"] = to_string(manifest["runner"])
+		}
+		if dict_has_key(manifest, "summary") {
+			info["summary"] = to_string(manifest["summary"])
+		}
+		if dict_has_key(manifest, "args") {
+			info["args"] = manifest["args"]
+		}
+		if dict_has_key(manifest, "safety") {
+			info["safety"] = manifest["safety"]
+		}
+		if dict_has_key(manifest, "quiet_by_default") {
+			info["quiet_by_default"] = manifest["quiet_by_default"]
+		}
+	}
+
+	# Infer runner from extension if not in manifest
+	if is_falseish(dict_has_key(info, "runner")) {
+		if is_trueish(str_ends_with(script_path, ".sh")) {
+			info["runner"] = "bash"
+		} else if is_trueish(str_ends_with(script_path, ".py")) {
+			info["runner"] = "python"
+		} else if is_trueish(str_ends_with(script_path, ".js")) {
+			info["runner"] = "node"
+		} else {
+			info["runner"] = "kujo"
+		}
+	}
+
+	return info
+}

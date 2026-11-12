@@ -1,0 +1,115 @@
+# Muzzle shared utilities.
+# Provides CLI arg parsing, truthy helpers, timestamp formatting,
+# and filesystem path helpers.
+
+from src.cli import parse_subcommand, has_flag, flag_value, positional_args
+
+export parse_subcommand := parse_subcommand
+export has_flag := has_flag
+export flag_value := flag_value
+export positional_args := positional_args
+
+# --- truthy / falsy helpers (Kujo predicates return 1/0 or true/false) ---
+
+export func is_trueish(value) {
+	return value == true || value == 1
+}
+
+export func is_falseish(value) {
+	return value == false || value == 0
+}
+
+# --- string helpers ---
+
+export func str_starts_with(s, prefix) {
+	return is_trueish(starts_with(s, prefix))
+}
+
+export func str_contains(s, substr) {
+	return is_trueish(contains(s, substr))
+}
+
+export func str_ends_with(s, suffix) {
+	return is_trueish(ends_with(s, suffix))
+}
+
+export func dict_has_key(map_obj, key_name) {
+	return is_trueish(has_key(map_obj, key_name))
+}
+
+# --- timestamp formatting ---
+
+# Returns compact timestamp for filenames (epoch milliseconds, unique and filesystem-safe).
+export func timestamp_compact() {
+	return to_string(current_timestamp())
+}
+
+# Returns ISO 8601 timestamp (e.g., "2026-05-28T22:30:00Z").
+export func timestamp_iso() {
+	return now_utc()
+}
+
+# Format duration in milliseconds to a human-readable string.
+export func format_duration_ms(ms) {
+	if ms < 1000 {
+		return to_string(ms) + "ms"
+	}
+	if ms < 60000 {
+		secs := ms / 1000
+		remain := ms % 1000
+		secs_str := to_string(secs)
+		remain_str := to_string(remain / 100)
+		return secs_str + "." + remain_str + "s"
+	}
+	mins := ms / 60000
+	remain_secs := (ms % 60000) / 1000
+	return to_string(mins) + "m" + to_string(remain_secs) + "s"
+}
+
+# --- path helpers ---
+
+export func ensure_dir(path) {
+	if is_falseish(file_exists(path)) {
+		create_dir(path)
+	}
+}
+
+# Join path components with directory separator.
+export func path_join(base, child) {
+	if is_trueish(ends_with(base, "/")) {
+		return base + child
+	}
+	return base + "/" + child
+}
+
+# Return true only when .muzzle resolves to the project-local directory and the
+# requested path resolves inside it. This rejects parent-directory symlink
+# escapes for both read and write paths.
+export func path_is_within_muzzle(path) {
+	mut project_abs := null
+	mut muzzle_abs := null
+	mut path_abs := null
+	try {
+		project_abs = path_absolute(".")
+		muzzle_abs = path_absolute(".muzzle")
+		path_abs = path_absolute(path)
+	} except _err {
+		return false
+	}
+	if type(project_abs) == "Error" || type(muzzle_abs) == "Error" || type(path_abs) == "Error" {
+		return false
+	}
+	expected_muzzle := to_string(project_abs) + "/.muzzle"
+	if to_string(muzzle_abs) != expected_muzzle {
+		return false
+	}
+	if to_string(path_abs) == expected_muzzle {
+		return true
+	}
+	return is_trueish(starts_with(to_string(path_abs), expected_muzzle + "/"))
+}
+
+# Check if the current directory has a .muzzle/ directory.
+export func has_muzzle_dir() {
+	return is_trueish(file_exists(".muzzle")) && is_trueish(path_is_dir(".muzzle")) && is_trueish(path_is_within_muzzle(".muzzle"))
+}

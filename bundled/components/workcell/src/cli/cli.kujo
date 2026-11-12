@@ -1,0 +1,786 @@
+# Workcell command-line surface. This is the only printing/exit-code layer.
+
+from src.domain.definition import default_definition, definition_schema, definition_summary, load_definition
+from src.domain.portable_definition import load_workcell_definition
+from src.doctor.doctor import report
+from src.execution.coordinator import run_workcell
+from src.execution.portable_coordinator import inspect_portable_workcell, run_portable_workcell
+from src.policy.policy import inspect_policy
+from src.backend.oci.driver import backend_clean, backend_inventory
+from src.backend.registry import load_backend_registry
+from src.receipts.manifest import verify_manifest
+from src.receipts.v2 import verify_receipt_file
+from src.recovery.recovery import recover_with_adapter
+from src.evidence.retention import cleanup_expired_preservation
+from src.util import get_or, load_json, project_version, save_json
+from src.workspace.workspace import clean_stale_workspaces, inspect_repository, workspace_inventory
+
+VERSION := project_version()
+
+func print_lines(lines) {
+    mut i := 0
+    while i < len(lines) {
+        print(lines[i])
+        i = i + 1
+    }
+}
+
+func has_flag(parsed, name) {
+    return has_key(parsed["flags"], name) == 1
+}
+
+func flag(parsed, name, fallback) {
+    if has_flag(parsed, name) {
+        return parsed["flags"][name]
+    }
+    return fallback
+}
+
+func parse_args(tokens) {
+    if type(tokens) != "array" {
+        return {"error": "arguments must be an array"}
+    }
+    bool_flags := ["json", "summary", "schema", "keep-failed", "preserve-until-evaluated", "dry-run", "no-pull", "rebuild", "force", "prune-images", "help", "version"]
+    value_flags := ["file", "repo", "output", "backend", "run", "manifest", "journal", "profile", "profiles", "cancel-file", "context", "preservation-mode", "retain-until", "preservation", "at"]
+    mut positionals := []
+    mut flags := {}
+    mut i := 0
+    while i < len(tokens) {
+        token := tokens[i]
+        if type(token) != "string" {
+            return {"error": "arguments must contain only strings"}
+        }
+        if starts_with(token, "--") {
+            name := substring(token, 2, len(token))
+            known := false
+            mut b := 0
+            while b < len(bool_flags) {
+                if name == bool_flags[b] {
+                    known = true
+                }
+                b = b + 1
+            }
+            mut v := 0
+            while v < len(value_flags) {
+                if name == value_flags[v] {
+                    known = true
+                    if i + 1 >= len(tokens)||type(tokens[i + 1]) != "string" {
+                        return {"error": "arguments must contain only strings"}
+                    }
+                    if starts_with(tokens[i + 1], "--") {
+                        return {"error": "missing value for --" + name}
+                    }
+                    flags[name] := tokens[i + 1]
+                    i = i + 1
+                }
+                v = v + 1
+            }
+            if known == false {
+                return {"error": "unknown option --" + name}
+            }
+            mut boolean_i := 0
+            while boolean_i < len(bool_flags) {
+                if name == bool_flags[boolean_i] {
+                    flags[name] := true
+                }
+                boolean_i = boolean_i + 1
+            }
+        } else {
+            positionals = push(positionals, token)
+        }
+        i = i + 1
+    }
+    return {"positionals": positionals, "flags": flags}
+}
+
+func command_name(parsed) {
+    if has_flag(parsed, "help") {
+        return "help"
+    }
+    if has_flag(parsed, "version") {
+        return "version"
+    }
+    if len(parsed["positionals"]) == 0 {
+        return "help"
+    }
+    return parsed["positionals"][0]
+}
+
+func option_allowed(options, name) {
+    mut i := 0
+    while i < len(options) {
+        if options[i] == name {return true}
+        i = i + 1
+    }
+    return false
+}
+
+func options_for(command) {
+    if command == "doctor" {return ["repo", "backend", "json"]}
+    if command == "init" {return ["file", "force"]}
+    if command == "validate" {return ["file", "json", "schema"]}
+    if command == "inspect" {return ["file", "repo", "output", "backend", "manifest", "profiles", "profile", "json", "summary"]}
+    if command == "run" {return ["file", "repo", "output", "backend", "manifest", "profiles", "profile", "cancel-file", "context", "preservation-mode", "retain-until", "dry-run", "keep-failed", "preserve-until-evaluated", "no-pull", "rebuild", "json", "summary"]}
+    if command == "verify" {return ["run", "json"]}
+    if command == "clean" {return ["json", "dry-run", "prune-images", "backend", "preservation", "at"]}
+    if command == "backends" {return ["json", "manifest"]}
+    if command == "recover" {return ["json", "dry-run", "journal", "manifest", "profile"]}
+    if command == "help" {return ["json", "help"]}
+    if command == "version" {return ["version"]}
+    return []
+}
+
+func validate_command_args(parsed, command) {
+    positionals := parsed["positionals"]
+    if (command == "help"||command == "version")&&has_flag(parsed, command) == false&&len(positionals) > 1 {
+        return {"ok": false, "error": "unexpected positional argument for " + command + ": " + to_string(positionals[1])}
+    }
+    if (command == "help"||command == "version")&&(has_flag(parsed, "help")||has_flag(parsed, "version"))&&len(positionals) > 0 {
+        return {"ok": false, "error": "unexpected positional argument for global " + command + ": " + to_string(positionals[0])}
+    }
+    if command != "help"&&command != "version"&&len(positionals) > 1 {
+        return {"ok": false, "error": "unexpected positional argument for " + command + ": " + to_string(positionals[1])}
+    }
+    allowed := options_for(command)
+    names := keys(parsed["flags"])
+    mut i := 0
+    while i < len(names) {
+        if option_allowed(allowed, names[i]) == false {
+            return {"ok": false, "error": "option --" + names[i] + " is not valid for command " + command}
+        }
+        i = i + 1
+    }
+    return {"ok": true}
+}
+
+func definition_path(parsed) {
+    return flag(parsed, "file", "workcell.json")
+}
+
+func repo_path(parsed) {
+    return flag(parsed, "repo", ".")
+}
+
+func help_value() {
+    return {
+        "schema_version": "workcell-cli/v1",
+        "version": VERSION,
+        "global_options": ["--help", "--version"],
+        "commands": [
+        {"name": "doctor", "options": ["--repo", "--backend", "--json"]},
+        {"name": "init", "options": ["--file", "--force"]},
+        {"name": "validate", "options": ["--file", "--json", "--schema"]},
+        {"name": "inspect", "options": ["--file", "--repo", "--output", "--backend", "--manifest", "--profiles", "--profile", "--json", "--summary"]},
+        {"name": "run", "options": ["--file", "--repo", "--output", "--backend", "--manifest", "--profiles", "--profile", "--cancel-file", "--context", "--preservation-mode", "--retain-until", "--dry-run", "--keep-failed", "--preserve-until-evaluated", "--no-pull", "--rebuild", "--json", "--summary"]},
+        {"name": "verify", "options": ["--run", "--json"]},
+        {"name": "clean", "options": ["--json", "--dry-run", "--prune-images", "--backend", "--preservation", "--at"]}
+        , {"name": "backends", "options": ["--json", "--manifest"]}
+        , {"name": "recover", "options": ["--journal", "--manifest", "--profile", "--dry-run", "--json"]}
+        ],
+        "exit_codes": {"0": "success", "2": "usage or definition validation", "3": "source or workspace preparation", "4": "backend or image preparation", "5": "container startup", "6": "timeout", "7": "workload failure or cancellation", "8": "verification or artifact failure", "9": "cleanup failure", "10": "internal failure"},
+        "definition_schema": definition_schema()
+    }
+}
+
+func print_help(json_mode) {
+    if json_mode {
+        print(to_json_pretty(help_value()))
+        return
+    }
+    print_lines([
+    "Workcell v" + VERSION + " — Kujo-native disposable Docker/Podman execution",
+    "",
+    "Usage:",
+    "  workcell --help",
+    "  workcell --version",
+    "  workcell doctor [--repo <path>] [--backend docker|podman] [--json]",
+    "  workcell init [--file <path>] [--force]",
+    "  workcell validate [--file <path>] [--json] [--schema]",
+    "  workcell inspect [--file <path>] [--repo <path>] [--json|--summary]",
+    "  workcell run [--file <path>] [--repo <path>] [--output <dir>] [options]",
+    "  workcell verify --run <dir> [--json]",
+    "  workcell clean [--json] [--dry-run] [--prune-images] [--backend docker|podman]",
+    "  workcell clean --preservation <preservation.json> [--at ISO8601] [--dry-run] [--json]",
+    "  workcell backends [--manifest <path>] [--json]",
+    "  workcell recover --journal <path> --manifest <path> [--profile <path>] [--dry-run] [--json]",
+    "",
+    "Run options:",
+    "  --dry-run       Resolve and record the policy without starting a container",
+    "  --keep-failed   Preserve a failed disposable workspace",
+    "  --preserve-until-evaluated  Retain/export before cleanup, including successful actions (requires deadline)",
+    "  --preservation-mode MODE  none, filesystem, handoff_bundle, snapshot, or live_pause",
+    "  --retain-until ISO8601    Record the operator-owned preservation deadline",
+    "  --no-pull       Do not pull a missing image",
+    "  --rebuild       Rebuild a configured build context",
+    "  --manifest      Explicit external backend manifest (v2)",
+    "  --profiles      Explicit host profiles file (v2)",
+    "  --profile       Host profile ID (v2)",
+    "  --backend       Optional assertion matching the selected profile (v2)",
+    "  --cancel-file   Cancel execution when this operator-owned path appears",
+    "  --context       Bounded caller correlation JSON (v2 only)",
+    "  --json          Emit one machine-readable JSON object",
+    "  --summary       Emit a compact machine summary for inspect or run",
+    "  --schema        Emit the versioned Workcell definition schema (validate only)",
+    "",
+    "Security defaults:",
+    "  Docker default or explicit Podman backend, non-root identity, network none,",
+    "  no-new-privileges, dropped capabilities, bounded resources, and declared artifacts only.",
+    "  Dirty source repositories and unsafe mounts are rejected by default."
+    ])
+}
+
+func print_check_report(value, json_mode) {
+    if json_mode {
+        print(to_json_pretty(value))
+        return
+    }
+    print("Workcell doctor")
+    print("===============")
+    checks := value["checks"]
+    mut i := 0
+    while i < len(checks) {
+        check := checks[i]
+        print("[" + to_upper(check["status"]) + "] " + check["name"] + ": " + check["message"])
+        if check["status"] != "passed"&&check["remediation"] != "" {
+            print("  Remediation: " + check["remediation"])
+        }
+        i = i + 1
+    }
+    print("")
+    print("Passed: " + to_string(value["summary"]["passed"]) + "  Warnings: " + to_string(value["summary"]["warnings"]) + "  Blocked: " + to_string(value["summary"]["blocked"]))
+}
+
+func init_command(parsed) {
+    path := definition_path(parsed)
+    if file_exists(path)&&has_flag(parsed, "force") == false {
+        print("error: refusing to overwrite existing definition: " + path)
+        print("Use --force only when replacing it intentionally.")
+        return 2
+    }
+    written := save_json(path, default_definition())
+    if written != true {
+        print("error: could not write starter definition: " + path)
+        return 10
+    }
+    print("Created " + path)
+    print("Next: edit the definition, then run `workcell validate --file " + path + "`.")
+    return 0
+}
+
+func validate_command(parsed) {
+    if has_flag(parsed, "schema") {
+        print(to_json_pretty(definition_schema()))
+        return 0
+    }
+    path := definition_path(parsed)
+    loaded := load_workcell_definition(path)
+    result := {"ok": loaded["ok"], "definition_path": path}
+    if loaded["ok"] {
+        if get_or(loaded, "version", 1) == 2 {
+            result["definition"] := {"schema": loaded["definition"]["schema"], "name": loaded["definition"]["name"], "workload_kind": loaded["definition"]["workload"]["kind"], "network": loaded["definition"]["requirements"]["network"]["mode"]}
+        } else {
+            result["definition"] := definition_summary(loaded["definition"])
+        }
+    } else {
+        result["error"] := loaded["error"]
+    }
+
+    if has_flag(parsed, "json") {
+        print(to_json_pretty(result))
+    } else if loaded["ok"] {
+        print("Valid Workcell definition: " + path)
+        if get_or(loaded, "version", 1) == 2 {
+            print("Name: " + loaded["definition"]["name"] + "  Backend: host profile  Network: " + loaded["definition"]["requirements"]["network"]["mode"])
+        } else {
+            print("Name: " + loaded["definition"]["name"] + "  Backend: " + loaded["definition"]["runtime"]["backend"] + "  Network: " + loaded["definition"]["network"]["mode"])
+        }
+    } else {
+        print("Validation failed: " + loaded["error"])
+    }
+    if loaded["ok"] {
+        return 0
+    }
+    return 2
+}
+
+func verify_command(parsed) {
+    run_path := flag(parsed, "run", "")
+    if type(run_path) != "string"||trim(run_path) == "" {
+        print("error: verify requires --run <dir>")
+        return 2
+    }
+    result := verify_manifest(run_path)
+    receipt_result := {"ok": false, "error": "manifest verification failed before receipt verification"}
+    if result["ok"] {
+        receipt_result = verify_receipt_file(run_path + "/receipt.json")
+    }
+    receipt_ok := result["ok"]&&receipt_result["ok"]
+    value := {"ok": receipt_ok, "run_dir": run_path, "manifest": result, "receipt": receipt_result}
+    if has_flag(parsed, "json") {
+        print(to_json_pretty(value))
+    } else if value["ok"] {
+        print("Integrity manifest verified: " + run_path)
+        print("Files: " + to_string(result["files"]) + "  Bytes: " + to_string(result["bytes"]))
+    } else {
+        print("Workcell evidence verification failed: " + get_or(result, "error", get_or(receipt_result, "error", "unknown error")))
+    }
+    if value["ok"] {return 0}
+    return 8
+}
+
+func portable_control_summary(controls, rejected) {
+    mut accepted := 0
+    mut degraded := 0
+    mut unknown_enforcement := 0
+    mut unobserved := 0
+    mut rejected_ids := []
+    for control in controls {
+        acceptance := get_or(control, "acceptance", "unknown")
+        if acceptance == "accepted" {accepted = accepted + 1}
+        if acceptance == "degraded" {degraded = degraded + 1}
+        enforcement := get_or(get_or(control, "enforcement", {}), "status", "unknown")
+        if enforcement == "unknown"||enforcement == "unsupported"||enforcement == "not-enforceable" {unknown_enforcement = unknown_enforcement + 1}
+        if get_or(get_or(control, "observation", {}), "status", "unknown") != "observed" {unobserved = unobserved + 1}
+    }
+    for item in rejected {
+        if type(item) == "dict" {rejected_ids = push(rejected_ids, get_or(item, "id", "unknown"))} else {rejected_ids = push(rejected_ids, "unknown")}
+    }
+    return {"total": len(controls), "accepted": accepted, "degraded": degraded, "rejected": len(rejected), "unknown_enforcement": unknown_enforcement, "unobserved": unobserved, "rejected_ids": rejected_ids}
+}
+
+func inspect_summary(value, portable) {
+    if portable {
+        backend := get_or(value, "backend", {})
+        profile := get_or(value, "profile", {})
+        definition := get_or(value, "definition", {})
+        controls := get_or(value, "controls", [])
+        rejected := get_or(value, "rejected", [])
+        return {
+            "schema_version": "workcell-inspect-summary/v1", "ok": get_or(value, "ok", false), "definition": {"schema": get_or(definition, "schema", ""), "name": get_or(definition, "name", "")},
+            "profile": {"id": get_or(profile, "id", ""), "backend": get_or(profile, "backend", ""), "fingerprint": get_or(profile, "fingerprint", "")},
+            "backend": {"adapter_id": get_or(backend, "adapter_id", get_or(backend, "adapter", "")), "provider_id": get_or(backend, "provider_id", get_or(backend, "provider", "")), "substrate": get_or(backend, "substrate", "")},
+            "controls": portable_control_summary(controls, rejected), "error": get_or(value, "error", "")
+        }
+    }
+    definition := get_or(value, "definition", {})
+    resources := get_or(definition, "resources", {})
+    filesystem := get_or(definition, "filesystem", {})
+    return {
+        "schema_version": "workcell-inspect-summary/v1", "ok": get_or(value, "ok", false), "definition": {"schema": "workcell-definition/v1", "name": get_or(definition, "name", "")},
+        "backend": {"adapter_id": get_or(value, "runtime_backend", get_or(get_or(definition, "runtime", {}), "backend", "")), "provider_id": get_or(value, "runtime_engine", ""), "substrate": "oci"},
+        "policy": {"network": get_or(value, "network_mode", ""), "cpus": get_or(resources, "cpus", null), "memory": get_or(resources, "memory", ""), "pids": get_or(resources, "pids", null), "timeout_ms": get_or(resources, "timeout_ms", null), "read_only_root": get_or(filesystem, "read_only_root", null)},
+        "error": get_or(value, "error", "")
+    }
+}
+
+func inspect_command(parsed) {
+    path := definition_path(parsed)
+    loaded := load_workcell_definition(path)
+    if loaded["ok"] == false {
+        value := {"ok": false, "error": loaded["error"], "definition_path": path}
+        if has_flag(parsed, "json") {
+            print(to_json_pretty(value))
+        } else {
+            print("Validation failed: " + loaded["error"])
+        }
+        return 2
+    }
+    if get_or(loaded, "version", 1) == 2 {
+        portable := inspect_portable_workcell(path, flag(parsed, "manifest", ""), flag(parsed, "profiles", ""), flag(parsed, "profile", ""), flag(parsed, "backend", ""))
+        if has_flag(parsed, "summary") {print(to_json(inspect_summary(portable, true)))} else if has_flag(parsed, "json") {print(to_json_pretty(portable))} else if portable["ok"] {print("Resolved portable Workcell policy"); print("Backend: " + portable["profile"]["backend"]); print("Controls: " + to_string(len(portable["controls"])))} else {print("Inspection failed: " + get_or(portable, "error", "capability resolution failed"))}
+        if portable["ok"] {return 0}
+        return 2
+    }
+    repo := inspect_repository(repo_path(parsed))
+    if repo["ok"] == false {
+        print("error: " + repo["error"])
+        return 3
+    }
+    preview_root := env("TMPDIR")
+    if type(preview_root) != "string"||trim(preview_root) == "" {
+        preview_root = "/tmp"
+    }
+    while len(preview_root) > 1&&ends_with(preview_root, "/") {
+        preview_root = substring(preview_root, 0, len(preview_root) - 1)
+    }
+    preview_workspace := preview_root + "/kujo-workcell-inspect"
+    output := flag(parsed, "output", repo["root"] + "/.workcell/runs/inspect")
+    value := inspect_policy(loaded["definition"], "inspect", preview_workspace, output)
+    if get_or(value, "ok", false) == false {
+        if has_flag(parsed, "json") {
+            print(to_json_pretty(value))
+        } else {
+            print("Inspection failed: " + get_or(value, "error", "could not resolve Workcell policy"))
+        }
+        return 3
+    }
+    if has_flag(parsed, "summary") {
+        print(to_json(inspect_summary(value, false)))
+    } else if has_flag(parsed, "json") {
+        print(to_json_pretty(value))
+    } else {
+        print("Resolved Workcell policy")
+        print("=========================")
+        print("Definition: " + path)
+        print("Repository: " + repo["root"])
+        print("Image: " + value["definition"]["runtime"]["image"])
+        print("Command: " + to_string(value["definition"]["command"]))
+        print("Network: " + value["network_mode"])
+        print("Mount: " + to_string(value["mounts"]))
+        print("Secrets: " + to_string(value["secret_names"]))
+        print("Runtime security arguments: " + to_string(value["docker_security_arguments"]))
+        print("Receipt destination: " + value["receipt_destination"])
+    }
+    return 0
+}
+
+func run_exit_code(result) {
+    if result["ok"] {
+        return 0
+    }
+    status := get_or(result, "stage", "internal")
+    if status == "validated" {
+        return 2
+    }
+    if status == "preparing" {
+        if get_or(result, "exit_code", 3) == 4 {
+            return 4
+        }
+        return 3
+    }
+    if status == "starting" {
+        return 5
+    }
+    if status == "timeout" {
+        return 6
+    }
+    if status == "workload-failed" {
+        return 7
+    }
+    if status == "cancelled" {
+        return 7
+    }
+    if status == "artifact-failed" {
+        return 8
+    }
+    if status == "verification-failed" {
+        return 8
+    }
+    if status == "cleanup-failed" {
+        return 9
+    }
+    return 10
+}
+
+func display_value(value, fallback) {
+    if type(value) == "null"||to_string(value) == "" {return fallback}
+    return to_string(value)
+}
+
+func run_summary(result) {
+    receipt := get_or(result, "receipt", {})
+    backend := get_or(receipt, "backend", {})
+    verification := get_or(receipt, "verification", {})
+    changes := get_or(receipt, "changes", {})
+    artifact_section := get_or(receipt, "artifacts", {})
+    preservation := get_or(receipt, "preservation", {})
+    cost := get_or(receipt, "cost", {})
+    return {
+        "schema_version": "workcell-run-summary/v1", "ok": get_or(result, "ok", false), "run_id": get_or(result, "run_id", ""),
+        "stage": get_or(result, "stage", "unknown"), "exit_code": get_or(result, "exit_code", 10), "timed_out": get_or(result, "timed_out", false), "cancelled": get_or(result, "cancelled", false),
+        "backend": {"adapter_id": get_or(backend, "adapter_id", get_or(receipt, "runtime_backend", "")), "provider_id": get_or(backend, "provider_id", "")},
+        "verification": get_or(verification, "status", get_or(verification, "verification_succeeded", null)), "changed_files": len(get_or(changes, "files", get_or(receipt, "changed_files", []))),
+        "declared_artifacts": len(get_or(artifact_section, "declared", [])), "cost": {"status": get_or(cost, "status", "unknown"), "class": get_or(cost, "class", "unknown")},
+        "cleanup_status": get_or(result, "cleanup_status", "unknown"), "preservation": {"status": get_or(preservation, "status", "not-recorded"), "requested_mode": get_or(preservation, "requested_mode", "none"), "actual_mode": get_or(preservation, "actual_mode", "none"), "path": get_or(receipt, "preservation_path", null)}, "receipt_path": get_or(result, "receipt_path", null), "output_dir": get_or(result, "output_dir", null), "error": get_or(result, "error", "")
+    }
+}
+
+func print_run_result(result, json_mode, summary_mode) {
+    if summary_mode {
+        print(to_json(run_summary(result)))
+        return
+    }
+    if json_mode {
+        print(to_json_pretty(result))
+        return
+    }
+    if result["ok"] {
+        print("Workcell completed")
+    } else {
+        print("Workcell failed during " + display_value(get_or(result, "stage", "internal"), "internal"))
+        print("Cause: " + display_value(get_or(result, "error", "see receipt"), "see receipt"))
+    }
+    print("")
+    print("Run:           " + result["run_id"])
+    print("Exit code:     " + to_string(get_or(result, "exit_code", "-")))
+    print("Receipt:       " + display_value(get_or(result, "receipt_path", "-"), "-"))
+    print("Patch:         " + display_value(get_or(result, "patch_path", "-"), "-"))
+    print("Output:        " + display_value(get_or(result, "output_dir", "-"), "-"))
+    print("Cleanup:       " + display_value(get_or(result, "cleanup_status", "unknown"), "unknown"))
+    if has_key(result, "receipt") {
+        receipt := result["receipt"]
+        if get_or(receipt, "schema_version", "") == "workcell-receipt/v2alpha1" {
+            print("Verification:   " + to_string(get_or(receipt["verification"], "status", "unknown")))
+            print("Changed files:  " + to_string(len(get_or(receipt["changes"], "files", []))))
+            print("Artifacts:      " + to_string(len(get_or(receipt["artifacts"], "declared", []))))
+        } else {
+            print("Verification:   " + to_string(receipt["verification"]["verification_succeeded"]))
+            print("Changed files:  " + to_string(len(receipt["changed_files"])))
+            print("Artifacts:      " + to_string(receipt["exported_artifacts"]))
+        }
+    }
+}
+
+func run_command(parsed) {
+    mut run_flags := {
+        "dry_run": has_flag(parsed, "dry-run"),
+        "no_pull": has_flag(parsed, "no-pull"),
+        "rebuild": has_flag(parsed, "rebuild")
+    }
+    cancel_file := flag(parsed, "cancel-file", "")
+    if cancel_file != "" {run_flags["cancel_file"] := cancel_file}
+    caller_context := flag(parsed, "context", "")
+    if caller_context != "" {run_flags["context"] := caller_context}
+    if has_flag(parsed, "keep-failed") {
+        run_flags["keep_failed"] := true
+    }
+    preservation_mode := flag(parsed, "preservation-mode", "")
+    if preservation_mode != "" {
+        if preservation_mode != "none"&&preservation_mode != "filesystem"&&preservation_mode != "handoff_bundle"&&preservation_mode != "snapshot"&&preservation_mode != "live_pause" {
+            print_run_result({"ok": false, "run_id": "", "stage": "validated", "error": "unsupported preservation mode: " + preservation_mode, "exit_code": 2}, has_flag(parsed, "json"), has_flag(parsed, "summary"))
+            return 2
+        }
+        run_flags["preservation_mode"] := preservation_mode
+        run_flags["keep_failed"] := preservation_mode != "none"
+    }
+    retain_until := flag(parsed, "retain-until", "")
+    if retain_until != "" {
+        if contains(retain_until, "T") == 0||ends_with(retain_until, "Z") == 0 {
+            print_run_result({"ok": false, "run_id": "", "stage": "validated", "error": "retain-until must be an ISO 8601 UTC timestamp", "exit_code": 2}, has_flag(parsed, "json"), has_flag(parsed, "summary"))
+            return 2
+        }
+        run_flags["retain_until"] := retain_until
+    }
+
+    if has_flag(parsed, "preserve-until-evaluated") {
+        if retain_until == ""||retain_until <= now_utc() {
+            print_run_result({"ok": false, "run_id": "", "stage": "validated", "error": "preserve-until-evaluated requires a future --retain-until UTC deadline", "exit_code": 2}, has_flag(parsed, "json"), has_flag(parsed, "summary"))
+            return 2
+        }
+        run_flags["preserve_until_evaluated"] := true
+        if preservation_mode == "" {run_flags["preservation_mode"] := "handoff_bundle"}
+    }
+    loaded := load_workcell_definition(definition_path(parsed))
+    mut result := null
+    if loaded["ok"]&&get_or(loaded, "version", 1) == 2 {
+        result = run_portable_workcell(definition_path(parsed), repo_path(parsed), flag(parsed, "output", ""), flag(parsed, "manifest", ""), flag(parsed, "profiles", ""), flag(parsed, "profile", ""), flag(parsed, "backend", ""), run_flags)
+    } else {
+        if has_flag(parsed, "manifest")||has_flag(parsed, "profiles")||has_flag(parsed, "profile")||has_flag(parsed, "backend")||has_flag(parsed, "context") {
+            result = {"ok": false, "run_id": "", "stage": "validated", "error": "portable backend flags require a v2 definition", "exit_code": 2}
+        } else {
+            result = run_workcell(definition_path(parsed), repo_path(parsed), flag(parsed, "output", ""), run_flags)
+        }
+    }
+    print_run_result(result, has_flag(parsed, "json"), has_flag(parsed, "summary"))
+    return run_exit_code(result)
+}
+
+func backends_command(parsed) {
+    paths := []
+    if has_flag(parsed, "manifest") {
+        paths = push(paths, flag(parsed, "manifest", ""))
+    }
+    registry := load_backend_registry(paths)
+    if registry["ok"] == false {
+        if has_flag(parsed, "json") {
+            print(to_json_pretty({"schema_version": "workcell-backends/v1", "ok": false, "error": registry["error"]}))
+        } else {
+            print("error: " + registry["error"])
+        }
+        return 2
+    }
+    mut adapters := [
+    {"id": "docker", "kind": "builtin", "contract": "workcell-backend/v1alpha1"},
+    {"id": "podman", "kind": "builtin", "contract": "workcell-backend/v1alpha1"}
+    ]
+    mut i := 0
+    while i < len(registry["ids"]) {
+        id := registry["ids"][i]
+        manifest := registry["adapters"][id]
+        adapters = push(adapters, {"id": id, "kind": "external", "adapter_version": manifest["adapter_version"], "contract_versions": manifest["contract_versions"], "manifest_path": manifest["manifest_path"]})
+        i = i + 1
+    }
+    result := {"schema_version": "workcell-backends/v1", "ok": true, "adapters": adapters}
+    if has_flag(parsed, "json") {
+        print(to_json_pretty(result))
+    } else {
+        print("Workcell backends")
+        mut adapter_i := 0
+        while adapter_i < len(adapters) {
+            print(adapters[adapter_i]["id"] + " (" + adapters[adapter_i]["kind"] + ")")
+            adapter_i = adapter_i + 1
+        }
+    }
+    return 0
+}
+
+func recover_command(parsed) {
+    journal_path := flag(parsed, "journal", "")
+    manifest_path := flag(parsed, "manifest", "")
+    if journal_path == ""||manifest_path == "" {
+        print("error: recover requires --journal <path> and --manifest <path>")
+        return 2
+    }
+    mut profile := {}
+    if has_flag(parsed, "profile") {
+        loaded := load_json(flag(parsed, "profile", ""))
+        if loaded["ok"] == false||type(loaded["value"]) != "dict" {
+            print("error: recovery profile must be a readable JSON object")
+            return 2
+        }
+        profile = loaded["value"]
+    }
+    result := recover_with_adapter(journal_path, manifest_path, profile, has_flag(parsed, "dry-run"))
+    if has_flag(parsed, "json") {
+        print(to_json_pretty(result))
+    } else if result["ok"] {
+        print("Workcell recovery " + get_or(result, "status", "plan") + ": " + journal_path)
+        print("Remaining resources: " + to_string(get_or(result, "remaining", [])))
+    } else {
+        print("Workcell recovery failed: " + get_or(result, "error", "unknown error"))
+    }
+    if result["ok"] {return 0}
+    return 9
+}
+
+func clean_command(parsed) {
+    preservation_path := flag(parsed, "preservation", "")
+    if preservation_path != "" {
+        at_time := flag(parsed, "at", now_utc())
+        result := cleanup_expired_preservation(preservation_path, at_time, has_flag(parsed, "dry-run"))
+        if has_flag(parsed, "json") {
+            print(to_json_pretty(result))
+        } else if result["ok"] {
+            print("Preservation cleanup " + get_or(result, "status", "ready") + ": " + preservation_path)
+        } else {
+            print("Preservation cleanup refused: " + get_or(get_or(result, "error", {}), "message", "unknown error"))
+        }
+        if result["ok"] {return 0}
+        return 9
+    }
+    prune_images := has_flag(parsed, "prune-images")
+    backend := flag(parsed, "backend", "docker")
+    if backend != "docker"&&backend != "podman" {
+        print("error: --backend must be docker or podman")
+        return 2
+    }
+    if has_flag(parsed, "dry-run") {
+        docker := backend_inventory(backend)
+        temp := workspace_inventory()
+        mut image_action := "preserve"
+        if prune_images {
+            image_action = "remove-owned"
+        }
+        mut inventory_ok := docker["ok"]
+        if temp["ok"] == false {
+            inventory_ok = false
+        }
+        result := {"schema_version": "workcell-clean/v1", "ok": inventory_ok, "dry_run": true, "runtime_backend": backend, "runtime": docker, "docker": docker, "temporary_workspaces": temp, "actions": {"containers": "remove-owned", "images": image_action, "networks": "preserve-operator-owned"}}
+        if has_flag(parsed, "json") {
+            print(to_json_pretty(result))
+        } else {
+            print("Workcell resource inventory (dry run)")
+            print("Runtime containers: " + to_string(get_or(docker, "containers", [])))
+            print("Runtime images: " + to_string(get_or(docker, "images", [])))
+            print("Networks preserved: " + to_string(get_or(docker, "networks", [])))
+            print("Temporary workspaces: " + to_string(get_or(temp, "workspaces", [])))
+        }
+        if result["ok"] {return 0}
+        return 9
+    }
+    docker := backend_clean(prune_images, backend)
+    mut temp := {"ok": false, "removed": [], "skipped": ["runtime inventory failed; temporary workspaces were preserved"]}
+    if docker["ok"] {
+        temp = clean_stale_workspaces(get_or(docker, "active_run_ids", []))
+    }
+    clean_ok := docker["ok"]&&temp["ok"]
+    result := {"schema_version": "workcell-clean/v1", "ok": clean_ok, "runtime_backend": backend, "runtime": docker, "docker": docker, "temporary_workspaces": temp}
+    if has_flag(parsed, "json") {
+        print(to_json_pretty(result))
+    } else {
+        print("Cleaned Workcell-owned resources")
+        print("Runtime containers removed: " + to_string(get_or(docker, "removed", 0)))
+        print("Active runtime containers preserved: " + to_string(get_or(docker, "preserved_active", [])))
+        print("Runtime images removed: " + to_string(len(get_or(docker, "removed_images", []))))
+        print("Temporary workspaces removed: " + to_string(len(get_or(temp, "removed", []))))
+        if result["ok"] == false {
+            print("Warnings: some owned resources could not be removed")
+        }
+    }
+    if result["ok"] {
+        return 0
+    }
+    return 9
+}
+
+export func main(argv) {
+    parsed := parse_args(argv)
+    if has_key(parsed, "error") {
+        print("error: " + parsed["error"])
+        return 2
+    }
+    command := command_name(parsed)
+    arguments_check := validate_command_args(parsed, command)
+    if arguments_check["ok"] == false {
+        print("error: " + arguments_check["error"])
+        return 2
+    }
+    if command == "help"||command == "--help"||command == "-h" {
+        print_help(has_flag(parsed, "json"))
+        return 0
+    }
+    if command == "version"||command == "--version" {
+        print("Workcell " + VERSION)
+        return 0
+    }
+    if command == "doctor" {
+        backend := flag(parsed, "backend", "docker")
+        if backend != "docker"&&backend != "podman" {
+            print("error: --backend must be docker or podman")
+            return 2
+        }
+        value := report(repo_path(parsed), backend)
+        print_check_report(value, has_flag(parsed, "json"))
+        if value["ok"] {
+            return 0
+        }
+        return 3
+    }
+    if command == "init" {
+        return init_command(parsed)
+    }
+    if command == "validate" {
+        return validate_command(parsed)
+    }
+    if command == "inspect" {
+        return inspect_command(parsed)
+    }
+    if command == "run" {
+        return run_command(parsed)
+    }
+    if command == "verify" {
+        return verify_command(parsed)
+    }
+    if command == "clean" {
+        return clean_command(parsed)
+    }
+    if command == "backends" {
+        return backends_command(parsed)
+    }
+    if command == "recover" {
+        return recover_command(parsed)
+    }
+    print("error: unknown command " + command)
+    print_help(has_flag(parsed, "json"))
+    return 2
+}

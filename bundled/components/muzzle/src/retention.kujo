@@ -1,0 +1,167 @@
+# Muzzle artifact retention and guarded cleanup.
+
+from src.common import is_trueish, is_falseish, str_ends_with, path_is_within_muzzle, dict_has_key
+from src.workflow import validate_workflow_name
+
+func parse_artifact(entry_name, extension, directory) {
+	if is_falseish(str_ends_with(entry_name, extension)) {
+		return null
+	}
+	stem := substring(entry_name, 0, len(entry_name) - len(extension))
+	parts := split(stem, "-")
+	if len(parts) < 3 {
+		return null
+	}
+	uuid_part := parts[len(parts) - 1]
+	if is_falseish(regex_match(uuid_part, "^[A-Fa-f0-9]{32}$")) {
+		return null
+	}
+	timestamp_text := parts[len(parts) - 2]
+	workflow := substring(stem, 0, len(stem) - len(uuid_part) - len(timestamp_text) - 2)
+	if is_falseish(regex_match(timestamp_text, "^[0-9]+$")) {
+		return null
+	}
+	mut timestamp_value := null
+	try {
+		timestamp_value = parse_int(timestamp_text)
+	} except _err {
+		return null
+	}
+	if type(timestamp_value) == "Error" || workflow == "" {
+		return null
+	}
+	path := directory + "/" + entry_name
+	if is_falseish(path_is_file(path)) || is_falseish(path_is_within_muzzle(path)) {
+		return null
+	}
+	return {"path": path, "name": entry_name, "workflow": workflow, "timestamp_ms": to_int(timestamp_value), "extension": extension}
+}
+
+func collect_from(directory, extensions) {
+	mut result := {"artifacts": array(), "skipped": 0}
+	if is_falseish(file_exists(directory)) {
+		return result
+	}
+	entries := sort(list_dir(directory))
+	# Names are immutable strings during this collection. Validate each distinct
+	# workflow once; discard this operation-local memo when collection finishes.
+	mut valid_names := dict()
+	mut entry_idx := 0
+	while entry_idx < len(entries) {
+		entry_name := to_string(entries[entry_idx])
+		mut parsed := null
+		mut ext_idx := 0
+		while ext_idx < len(extensions) && parsed == null {
+			parsed = parse_artifact(entry_name, extensions[ext_idx], directory)
+			ext_idx = ext_idx + 1
+		}
+		if parsed != null {
+			name := parsed["workflow"]
+			if is_falseish(dict_has_key(valid_names, name)) {
+				valid_names[name] = validate_workflow_name(name)
+			}
+			if is_falseish(valid_names[name]) {
+				parsed = null
+			}
+		}
+		if parsed == null {
+			result["skipped"] = to_int(result["skipped"]) + 1
+		} else {
+			result["artifacts"] = push(result["artifacts"], parsed)
+		}
+		entry_idx = entry_idx + 1
+	}
+	return result
+}
+
+func protected_paths(artifacts, keep_count) {
+	mut protected := dict()
+	if keep_count <= 0 {
+		return protected
+	}
+	# Sort once by numeric timestamp and filename, then rank each workflow/type.
+	# Padding nonnegative i64 timestamps preserves numeric order in string sort.
+	mut ordered_keys := array()
+	mut by_key := dict()
+	mut idx := 0
+	while idx < len(artifacts) {
+		artifact := artifacts[idx]
+		stamp := pad_left(to_string(artifact["timestamp_ms"]), 19, "0")
+		key := stamp + to_string(artifact["name"])
+		ordered_keys = push(ordered_keys, key)
+		by_key[key] = artifact
+		idx = idx + 1
+	}
+	ordered_keys = sort(ordered_keys)
+	mut counts := dict()
+	mut rank_idx := len(ordered_keys) - 1
+	while rank_idx >= 0 {
+		candidate := by_key[ordered_keys[rank_idx]]
+		group := to_json(array(candidate["workflow"], candidate["extension"]))
+		mut count := 0
+		if dict_has_key(counts, group) {
+			count = to_int(counts[group])
+		}
+		if count < keep_count {
+			protected[candidate["path"]] = true
+		}
+		counts[group] = count + 1
+		rank_idx = rank_idx - 1
+	}
+	return protected
+}
+
+export func clean_artifacts(workflow_filter, older_than_ms, keep_count, dry_run) {
+	logs := collect_from(".muzzle/logs", array(".log"))
+	reports := collect_from(".muzzle/reports", array(".md", ".json"))
+	artifacts := logs["artifacts"]
+	mut report_idx := 0
+	while report_idx < len(reports["artifacts"]) {
+		artifacts = push(artifacts, reports["artifacts"][report_idx])
+		report_idx = report_idx + 1
+	}
+	cutoff := 0
+	if older_than_ms > 0 {
+		cutoff = current_timestamp() - older_than_ms
+	}
+	mut selected := array()
+	protected := protected_paths(artifacts, keep_count)
+	mut idx := 0
+	while idx < len(artifacts) {
+		candidate := artifacts[idx]
+		matches_workflow := workflow_filter == "" || to_string(candidate["workflow"]) == workflow_filter
+		matches_age := older_than_ms <= 0 || to_int(candidate["timestamp_ms"]) < cutoff
+		kept := dict_has_key(protected, candidate["path"])
+		if matches_workflow && matches_age && is_falseish(kept) {
+			selected = push(selected, candidate)
+		}
+		idx = idx + 1
+	}
+	mut removed := 0
+	mut failures := 0
+	mut selected_idx := 0
+	while selected_idx < len(selected) {
+		if is_falseish(dry_run) {
+			try {
+				delete_file(to_string(selected[selected_idx]["path"]))
+				removed = removed + 1
+			} except _err {
+				failures = failures + 1
+			}
+		}
+		selected_idx = selected_idx + 1
+	}
+	return {
+		"schema_version": "muzzle.clean/v1",
+		"command": "clean",
+		"dry_run": dry_run,
+		"workflow": workflow_filter,
+		"older_than_ms": older_than_ms,
+		"keep": keep_count,
+		"selected": len(selected),
+		"removed": removed,
+		"failures": failures,
+		"skipped_unrecognized": to_int(logs["skipped"]) + to_int(reports["skipped"]),
+		"artifacts": selected
+	}
+}

@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://kujolang.dev/muzzle/schemas/muzzle-policy-v1.json",
+  "title": "Muzzle signed policy bundle",
+  "type": "object",
+  "required": ["schema_version", "workflows", "approved"],
+  "properties": {
+    "schema_version": {"const": "muzzle.policy/v1"},
+    "workflows": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1, "maxLength": 128}},
+    "approved": {"type": "boolean"},
+    "issuer": {"type": "string"},
+    "expires_at": {"type": "string"}
+  },
+  "additionalProperties": false
+}

@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://kujolang.ai/schemas/workflow-control/execution-result/v1.json",
+  "title": "Kujo Execution Result v1",
+  "type": "object",
+  "required": ["schema", "result_id", "subject", "producer", "status", "started_at", "finished_at", "attempt", "effects", "evidence"],
+  "properties": {
+    "schema": {"const": "kujo.execution-result/v1"},
+    "result_id": {"type": "string", "minLength": 1},
+    "subject": {"type": "object", "required": ["run_id", "step_id", "attempt_id"]},
+    "producer": {"type": "object", "required": ["name", "version"]},
+    "status": {"enum": ["success", "failure", "timeout", "cancelled", "indeterminate"]},
+    "classification": {"enum": ["execution_failure", "infrastructure_failure", "verification_failure", "artifact_failure", "policy_denial", "unsafe_output", "unknown"]},
+    "started_at": {"type": "string", "format": "date-time"},
+    "finished_at": {"type": "string", "format": "date-time"},
+    "attempt": {"type": "integer", "minimum": 1},
+    "retry": {"type": "object", "required": ["disposition"]},
+    "effects": {"type": "array", "items": {"type": "object", "required": ["effect_id", "class", "state"]}},
+    "evidence": {"type": "array", "items": {"type": "object", "required": ["$ref"]}},
+    "reexecution_descriptor_ref": {"type": "string", "minLength": 1},
+    "warnings": {"type": "array", "items": {"type": "string"}}
+  }
+}

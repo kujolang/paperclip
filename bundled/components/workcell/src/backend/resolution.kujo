@@ -1,0 +1,132 @@
+# Backend capability resolution. Required controls fail closed before mutation.
+
+from src.backend.types import capability_state, validate_capability_state
+from src.util import get_or
+
+func limitation_list(value) {
+    limitations := get_or(value, "limitations", [])
+    if type(limitations) != "array" {
+        return []
+    }
+    return limitations
+}
+
+func enforcement_for(capability, accepted) {
+    enforcement := get_or(capability, "enforcement", {})
+    if type(enforcement) == "dict"&&type(get_or(enforcement, "status", null)) == "string" {
+        return {"status": enforcement["status"], "authority": get_or(enforcement, "authority", "adapter-resolution"), "evidence": get_or(enforcement, "evidence", "")}
+    }
+    if accepted {
+        return {"status": "unknown", "authority": "adapter-resolution", "evidence": ""}
+    }
+    return {"status": "unsupported", "authority": "adapter-resolution", "evidence": ""}
+}
+
+func observation_for(capability) {
+    observation := get_or(capability, "observation", {})
+    if type(observation) == "dict"&&type(get_or(observation, "status", null)) == "string" {
+        return {"status": observation["status"], "method": get_or(observation, "method", ""), "result": get_or(observation, "result", "")}
+    }
+    return {"status": "not-observed", "method": "", "result": ""}
+}
+
+func degradation_allowed(requirement, capability_id) {
+    if get_or(requirement, "allow_degradation", false) != true {
+        return false
+    }
+    return starts_with(capability_id, "metrics.")||starts_with(capability_id, "cost.")
+}
+
+func resolve_one(requirement, capability) {
+    id := get_or(requirement, "id", "")
+    requested := get_or(requirement, "requested", true)
+    required := get_or(requirement, "required", true)
+    support := get_or(capability, "support", "unknown")
+    condition_met := get_or(capability, "condition_met", false)
+    supported := support == "supported"||(support == "conditional"&&condition_met)
+    if requested == false {
+        return capability_state(id, support, false, "not-requested", null, enforcement_for(capability, false), observation_for(capability), limitation_list(capability))
+    }
+    if supported {
+        return capability_state(id, support, true, "accepted", get_or(requirement, "value", true), enforcement_for(capability, true), observation_for(capability), limitation_list(capability))
+    }
+    if required == false&&degradation_allowed(requirement, id) {
+        limitations := limitation_list(capability)
+        limitations = push(limitations, "operator explicitly allowed evidence-only degradation")
+        return capability_state(id, support, true, "degraded", null, enforcement_for(capability, false), observation_for(capability), limitations)
+    }
+    return capability_state(id, support, true, "rejected", null, enforcement_for(capability, false), observation_for(capability), limitation_list(capability))
+}
+
+export func validate_capability_implications(capabilities) {
+    if type(capabilities) != "dict" {
+        return {"ok": false, "error": "capabilities must be an object"}
+    }
+    pause := get_or(capabilities, "lifecycle.pause", {})
+    resume := get_or(capabilities, "lifecycle.resume", {})
+    pause_supported := type(pause) == "dict"&&get_or(pause, "support", "unknown") == "supported"
+    resume_supported := type(resume) == "dict"&&get_or(resume, "support", "unknown") == "supported"
+    if pause_supported&&resume_supported == false {
+        return {"ok": false, "error": "lifecycle.pause cannot be supported without lifecycle.resume"}
+    }
+    return {"ok": true}
+}
+
+export func resolve_capabilities(requirements, capabilities) {
+    if type(requirements) != "array"||type(capabilities) != "dict" {
+        return {"ok": false, "error": "requirements must be an array and capabilities must be an object"}
+    }
+    implications := validate_capability_implications(capabilities)
+    if implications["ok"] == false {
+        return implications
+    }
+    mut states := []
+    mut rejected := []
+    mut degraded := []
+    mut seen := {}
+    mut i := 0
+    while i < len(requirements) {
+        requirement := requirements[i]
+        if type(requirement) != "dict"||type(get_or(requirement, "id", null)) != "string"||trim(requirement["id"]) == "" {
+            return {"ok": false, "error": "capability requirement must have a non-empty id"}
+        }
+        id := requirement["id"]
+        if get_or(seen, id, false) {
+            return {"ok": false, "error": "duplicate capability requirement: " + id}
+        }
+        seen[id] := true
+        capability := get_or(capabilities, id, {"support": "unknown"})
+        if type(capability) != "dict" {
+            return {"ok": false, "error": "capability declaration must be an object: " + id}
+        }
+        state := resolve_one(requirement, capability)
+        state_check := validate_capability_state(state)
+        if state_check["ok"] == false {
+            return state_check
+        }
+        states = push(states, state)
+        if state["acceptance"] == "rejected" {
+            rejected = push(rejected, id)
+        }
+        if state["acceptance"] == "degraded" {
+            degraded = push(degraded, id)
+        }
+        i = i + 1
+    }
+    return {"ok": len(rejected) == 0, "states": states, "rejected": rejected, "degraded": degraded}
+}
+
+export func capability_state_by_id(states, id) {
+    if type(states) != "array"||type(id) != "string" {
+        return null
+    }
+    mut i := 0
+    while i < len(states) {
+        state := states[i]
+        if type(state) == "dict"&&get_or(state, "id", "") == id {
+            return state
+        }
+        i = i + 1
+    }
+    return null
+}

@@ -1,0 +1,64 @@
+# Internal adapter boundary for built-in Docker and Podman backends.
+
+from src.backend.oci.docker import docker_capabilities, docker_identity, resolve_docker
+from src.backend.oci.podman import podman_capabilities, podman_identity, resolve_podman
+from src.backend.oci.shared import oci_clean, oci_destroy, oci_ensure_image, oci_execute, oci_inventory, oci_logs, oci_stop
+from src.runtime.docker import doctor_runtime
+from src.util import get_or
+
+export func builtin_backend_valid(backend) {
+    return backend == "docker"||backend == "podman"
+}
+
+export func builtin_backend_identity(definition) {
+    backend := get_or(get_or(definition, "runtime", {}), "backend", "")
+    if backend == "docker" {return docker_identity(definition)}
+    if backend == "podman" {return podman_identity(definition)}
+    return null
+}
+
+export func builtin_backend_capabilities(definition) {
+    backend := get_or(get_or(definition, "runtime", {}), "backend", "")
+    if backend == "docker" {return docker_capabilities(definition)}
+    if backend == "podman" {return podman_capabilities(definition)}
+    return {}
+}
+
+export func resolve_builtin_backend(definition, requirements) {
+    backend := get_or(get_or(definition, "runtime", {}), "backend", "")
+    if backend == "docker" {return resolve_docker(definition, requirements)}
+    if backend == "podman" {return resolve_podman(definition, requirements)}
+    return {"ok": false, "error": "built-in backend must be docker or podman", "rejected": []}
+}
+
+export func backend_doctor(backend) {
+    return doctor_runtime(backend)
+}
+
+export func backend_ensure_image(definition, source_root, run_identifier, no_pull, rebuild) {
+    return oci_ensure_image(definition, source_root, run_identifier, no_pull, rebuild)
+}
+
+export func backend_execute(definition, policy, stream_options) {
+    return oci_execute(definition, policy, stream_options)
+}
+
+export func backend_stop(container_name, backend) {
+    return oci_stop(container_name, backend)
+}
+
+export func backend_logs(container_name, backend) {
+    return oci_logs(container_name, backend)
+}
+
+export func backend_destroy(container_name, backend) {
+    return oci_destroy(container_name, backend)
+}
+
+export func backend_inventory(backend) {
+    return oci_inventory(backend)
+}
+
+export func backend_clean(prune_images, backend) {
+    return oci_clean(prune_images, backend)
+}

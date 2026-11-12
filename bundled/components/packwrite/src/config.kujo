@@ -1,0 +1,374 @@
+# PackWrite :: config
+#
+# Configuration resolution. A single flat config dict is produced by layering, in
+# increasing precedence:
+#
+#   defaults  <  global config  <  project packwrite.toml  <  CLI flags
+#
+# TOML is parsed with the built-in `parse_toml`; the nested [section] dict it
+# returns is mapped onto our flat keys. Secrets are never read from config — API
+# keys come from the environment (see src/ai.kujo).
+
+from src.util import truthy, is_text, read_text
+from src.errors import err
+
+# Built-in defaults. Every key the rest of the tool reads is present here so the
+# tool works with zero config files and zero flags.
+export func config_defaults() {
+    return {
+        "prompt_file": "MEGA_PROMPT.md",
+        "output_dir": "agent",
+        "output_overwrite": false,
+        "output_mode": "autopilot",
+        "model_provider": "deepseek",
+        "model_model": "deepseek-v4-pro",
+        "model_temperature": 0.1,
+        "model_timeout": 120,
+        "model_endpoint": "",
+        "repo_include": default_include(),
+        "repo_exclude": default_exclude(),
+        "pack_min_phases": 6,
+        "pack_max_phases": 12,
+        "pack_include_deepseek": true,
+        "pack_include_codex": true,
+        "pack_include_checklist": true,
+        "run_name": ""
+    }
+}
+
+# NOTE on key status:
+#   Active (change observable behavior): prompt_file, output_dir, output_overwrite,
+#     model_provider, model_model, model_temperature, model_timeout, model_endpoint,
+#     repo_include (allow-list, src/repo_context.kujo), repo_exclude,
+#     pack_min_phases (validation), pack_max_phases (distillation prompt),
+#     pack_include_deepseek / pack_include_codex / pack_include_checklist
+#     (both the distillation prompt's required-files list and validation).
+#   Reserved (accepted, parsed, but not yet wired — tied to deferred features):
+#     output_mode  -> reserved for a future generation mode toggle.
+#     run_name     -> reserved for the deferred `compare` command.
+#   Reserved keys are documented as such in README/packwrite.example.toml so config
+#   stays honest. Do not silently add behavior to them without updating those docs.
+
+export func default_include() {
+    return ["README.md", "package.json", "pyproject.toml", "Cargo.toml", "go.mod", "kujo.toml", "src", "tests", "docs"]
+}
+
+export func default_exclude() {
+    return [".env", ".env.local", ".git", "node_modules", "vendor", "dist", "build", ".next", "coverage", "target", ".venv"]
+}
+
+# Validate every active config value after all layers are applied. TOML is an
+# untrusted boundary: wrong-but-parseable types must fail cleanly instead of being
+# silently coerced (notably, the string "false" is truthy in Kujo).
+export func config_validate(cfg) {
+    if type(cfg) != "dict" {
+        return err("Invalid configuration: expected a table")
+    }
+    if is_text(cfg["prompt_file"]) == false {
+        return err("Invalid configuration: [prompt].file must be a non-empty string")
+    }
+    if is_text(cfg["output_dir"]) == false {
+        return err("Invalid configuration: [output].dir must be a non-empty string")
+    }
+    if type(cfg["output_overwrite"]) != "bool" {
+        return err("Invalid configuration: [output].overwrite must be a boolean")
+    }
+    if is_text(cfg["output_mode"]) == false {
+        return err("Invalid configuration: [output].mode must be a non-empty string")
+    }
+    if is_text(cfg["model_provider"]) == false || is_text(cfg["model_model"]) == false {
+        return err("Invalid configuration: [model].provider and [model].model must be non-empty strings")
+    }
+    if type(cfg["model_endpoint"]) != "string" {
+        return err("Invalid configuration: [model].endpoint must be a string")
+    }
+    if is_finite_number(cfg["model_temperature"]) == false || cfg["model_temperature"] < 0 || cfg["model_temperature"] > 2 {
+        return err("Invalid configuration: [model].temperature must be a number between 0.0 and 2.0")
+    }
+    if is_finite_number(cfg["model_timeout"]) == false || cfg["model_timeout"] <= 0 {
+        return err("Invalid configuration: [model].timeout must be a positive number of seconds")
+    }
+    if is_string_array(cfg["repo_include"]) == false || is_string_array(cfg["repo_exclude"]) == false {
+        return err("Invalid configuration: [repo_context].include and exclude must be arrays of strings")
+    }
+    if type(cfg["pack_min_phases"]) != "int" || type(cfg["pack_max_phases"]) != "int" {
+        return err("Invalid configuration: [pack].min_phases and max_phases must be integers")
+    }
+    if cfg["pack_min_phases"] <= 0 || cfg["pack_max_phases"] <= 0 || cfg["pack_min_phases"] > cfg["pack_max_phases"] {
+        return err("Invalid configuration: phase bounds must be positive and min_phases must not exceed max_phases")
+    }
+    if type(cfg["pack_include_deepseek"]) != "bool" || type(cfg["pack_include_codex"]) != "bool" || type(cfg["pack_include_checklist"]) != "bool" {
+        return err("Invalid configuration: [pack].include_* values must be booleans")
+    }
+    if type(cfg["run_name"]) != "string" {
+        return err("Invalid configuration: run_name must be a string")
+    }
+    return {"ok": true}
+}
+
+func is_finite_number(value) {
+    if type(value) == "int" {
+        return true
+    }
+    if type(value) != "float" {
+        return false
+    }
+    # Only finite floats subtract from themselves to zero; NaN and infinities
+    # produce NaN. This avoids a magnitude limit on otherwise valid timeouts.
+    return value - value == 0
+}
+
+func is_string_array(values) {
+    if type(values) != "array" {
+        return false
+    }
+    mut sa_i := 0
+    sa_n := len(values)
+    while sa_i < sa_n {
+        if type(values[sa_i]) != "string" {
+            return false
+        }
+        sa_i = sa_i + 1
+    }
+    return true
+}
+
+# Parse a TOML file into a dict, never throwing. Returns {"ok":true,"value":dict}
+# or {"ok":false,"error":...}. A missing file is a soft "ok" with an empty dict.
+export func config_read_toml(path) {
+    if file_exists(path) == false {
+        return {"ok": true, "value": {}}
+    }
+    read := read_text(path)
+    if truthy(read["ok"]) == false {
+        return err("Could not read TOML config at " + path)
+    }
+    text := read["text"]
+    mut parsed := {}
+    mut threw := false
+    try {
+        parsed = parse_toml(text)
+    } except e {
+        threw = true
+    }
+    if threw {
+        return err("Could not parse TOML config at " + path)
+    }
+    if type(parsed) == "error" {
+        return err("Could not parse TOML config at " + path)
+    }
+    if type(parsed) != "dict" {
+        return err("Config at " + path + " did not parse to a table")
+    }
+    sections := ["prompt", "output", "model", "repo_context", "pack"]
+    mut ct_i := 0
+    while ct_i < len(sections) {
+        section := sections[ct_i]
+        if has_key(parsed, section) == 1 && type(parsed[section]) != "dict" {
+            return err("Invalid configuration: [" + section + "] must be a table")
+        }
+        ct_i = ct_i + 1
+    }
+    return {"ok": true, "value": parsed}
+}
+
+# Map a nested TOML dict (sections -> keys) onto the flat config in place.
+func apply_toml(cfg, t) {
+    if type(t) != "dict" {
+        return cfg
+    }
+    cfg = apply_section(cfg, t, "prompt", "file", "prompt_file")
+    cfg = apply_section(cfg, t, "output", "dir", "output_dir")
+    cfg = apply_section(cfg, t, "output", "overwrite", "output_overwrite")
+    cfg = apply_section(cfg, t, "output", "mode", "output_mode")
+    cfg = apply_section(cfg, t, "model", "provider", "model_provider")
+    cfg = apply_section(cfg, t, "model", "model", "model_model")
+    cfg = apply_section(cfg, t, "model", "temperature", "model_temperature")
+    cfg = apply_section(cfg, t, "model", "timeout", "model_timeout")
+    cfg = apply_section(cfg, t, "model", "endpoint", "model_endpoint")
+    cfg = apply_section(cfg, t, "repo_context", "include", "repo_include")
+    cfg = apply_section(cfg, t, "repo_context", "exclude", "repo_exclude")
+    cfg = apply_section(cfg, t, "pack", "min_phases", "pack_min_phases")
+    cfg = apply_section(cfg, t, "pack", "max_phases", "pack_max_phases")
+    cfg = apply_section(cfg, t, "pack", "include_deepseek_prompt", "pack_include_deepseek")
+    cfg = apply_section(cfg, t, "pack", "include_codex_review_prompt", "pack_include_codex")
+    cfg = apply_section(cfg, t, "pack", "include_review_checklist", "pack_include_checklist")
+    return cfg
+}
+
+func apply_section(cfg, t, section, key, target) {
+    if has_key(t, section) == 0 {
+        return cfg
+    }
+    sec := t[section]
+    if type(sec) != "dict" {
+        return cfg
+    }
+    if has_key(sec, key) == 0 {
+        return cfg
+    }
+    cfg[target] := sec[key]
+    return cfg
+}
+
+# The conventional global config path: $HOME/.config/packwrite/config.toml.
+export func global_config_path() {
+    home := env_or("HOME", "")
+    if home == "" {
+        return ""
+    }
+    return join_path(join_path(join_path(home, ".config"), "packwrite"), "config.toml")
+}
+
+# Apply CLI flags (highest precedence). `flags` is the parsed flag dict.
+func apply_flags(cfg, flags) {
+    cfg = flag_str(cfg, flags, "provider", "model_provider")
+    cfg = flag_str(cfg, flags, "model", "model_model")
+    cfg = flag_str(cfg, flags, "endpoint", "model_endpoint")
+    cfg = flag_str(cfg, flags, "output", "output_dir")
+    cfg = flag_str(cfg, flags, "mode", "output_mode")
+    cfg = flag_str(cfg, flags, "run-name", "run_name")
+    cfg = flag_num(cfg, flags, "temperature", "model_temperature")
+    cfg = flag_num(cfg, flags, "timeout", "model_timeout")
+    if has_key(flags, "overwrite") == 1 {
+        cfg["output_overwrite"] := true
+    }
+    return cfg
+}
+
+func flag_str(cfg, flags, name, target) {
+    if has_key(flags, name) == 0 {
+        return cfg
+    }
+    v := flags[name]
+    if is_text(v) {
+        cfg[target] := v
+    }
+    return cfg
+}
+
+# Parse a numeric flag string without ever throwing. parse_int/parse_float raise
+# an uncaught runtime error on non-numeric input, which would otherwise crash the
+# whole program; this contains that. Returns {"ok":true,"value":num} or {"ok":false}.
+export func parse_number(v) {
+    if type(v) != "string" {
+        return {"ok": false}
+    }
+    s := trim(v)
+    if s == "" {
+        return {"ok": false}
+    }
+    mut num := 0
+    mut threw := false
+    try {
+        if contains(s, ".") == 1 {
+            num = parse_float(s)
+        } else {
+            num = parse_int(s)
+        }
+    } except e {
+        threw = true
+    }
+    if threw {
+        return {"ok": false}
+    }
+    return {"ok": true, "value": num}
+}
+
+# Validate numeric CLI flags up front so a malformed or out-of-range
+# --temperature / --timeout produces a clear, actionable error instead of an
+# uncaught VM runtime crash. Returns {"ok":true} or an error envelope.
+export func validate_numeric_flags(flags) {
+    if has_key(flags, "temperature") == 1 && is_text(flags["temperature"]) {
+        tv := flags["temperature"]
+        tn := parse_number(tv)
+        if truthy(tn["ok"]) == false {
+            return err("Invalid --temperature value '" + "${tv}" + "': expected a number (for example 0.1).")
+        }
+        if tn["value"] < 0 || tn["value"] > 2 {
+            return err("Invalid --temperature value '" + "${tv}" + "': must be between 0.0 and 2.0.")
+        }
+    }
+    if has_key(flags, "timeout") == 1 && is_text(flags["timeout"]) {
+        ov := flags["timeout"]
+        on := parse_number(ov)
+        if truthy(on["ok"]) == false {
+            return err("Invalid --timeout value '" + "${ov}" + "': expected a positive number of seconds.")
+        }
+        if on["value"] <= 0 {
+            return err("Invalid --timeout value '" + "${ov}" + "': must be greater than 0 seconds.")
+        }
+    }
+    return {"ok": true}
+}
+
+func flag_num(cfg, flags, name, target) {
+    if has_key(flags, name) == 0 {
+        return cfg
+    }
+    pn := parse_number(flags[name])
+    if truthy(pn["ok"]) {
+        cfg[target] := pn["value"]
+    }
+    return cfg
+}
+
+# Resolve the full config. `flags` is the parsed flag dict; `cwd` is the working
+# directory the project config is looked up in. `--config <file>` overrides the
+# project config path.
+#
+# Returns {"ok":true,"config":dict,"sources":[...]} or a failure envelope.
+export func config_load(flags, cwd) {
+    return config_resolve(flags, cwd, global_config_path())
+}
+
+# Testable core of config_load: the global-config path is injected so tests can
+# exercise the global < project < flags layering without touching $HOME.
+export func config_resolve(flags, cwd, gpath) {
+    mut cfg := config_defaults()
+    mut sources := ["defaults"]
+
+    if gpath != "" && file_exists(gpath) {
+        gres := config_read_toml(gpath)
+        if truthy(gres["ok"]) == false {
+            return gres
+        }
+        cfg = apply_toml(cfg, gres["value"])
+        sources = push(sources, "global:" + gpath)
+    }
+
+    ppath := project_config_path(flags, cwd)
+    if has_key(flags, "config") == 1 && is_text(flags["config"]) && file_exists(ppath) == false {
+        return err("Config file not found: " + ppath)
+    }
+    if ppath != "" && file_exists(ppath) {
+        pres := config_read_toml(ppath)
+        if truthy(pres["ok"]) == false {
+            return pres
+        }
+        cfg = apply_toml(cfg, pres["value"])
+        sources = push(sources, "project:" + ppath)
+    }
+
+    nfe := validate_numeric_flags(flags)
+    if truthy(nfe["ok"]) == false {
+        return nfe
+    }
+
+    cfg = apply_flags(cfg, flags)
+    valid := config_validate(cfg)
+    if truthy(valid["ok"]) == false {
+        return valid
+    }
+    if len(keys(flags)) > 0 {
+        sources = push(sources, "flags")
+    }
+    return {"ok": true, "config": cfg, "sources": sources}
+}
+
+func project_config_path(flags, cwd) {
+    if has_key(flags, "config") == 1 && is_text(flags["config"]) {
+        return flags["config"]
+    }
+    return join_path(cwd, "packwrite.toml")
+}

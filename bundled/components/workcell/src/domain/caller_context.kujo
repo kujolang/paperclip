@@ -1,0 +1,47 @@
+# Bounded, non-secret correlation metadata supplied by an orchestrator at invocation time.
+
+from src.util import get_or, load_json
+
+export func caller_context_schema_version() {return "workcell-caller-context/v1"}
+
+func bounded_identifier(value, required, label) {
+    if type(value) != "string" {return {"ok": false, "error": label + " must be a string"}}
+    if required&&trim(value) == "" {return {"ok": false, "error": label + " must be non-empty"}}
+    if len(value) > 128||contains(value, "\n") == 1||contains(value, "\r") == 1||contains(value, "\t") == 1 {return {"ok": false, "error": label + " must be a bounded single-line identifier"}}
+    return {"ok": true}
+}
+
+export func validate_caller_context(value) {
+    if type(value) != "dict" {return {"ok": false, "error": "caller context must be an object"}}
+    allowed := ["schema", "caller", "workflow_id", "step_id", "attempt_id", "correlation_id", "causation_id"]
+    names := keys(value)
+    mut i := 0
+    while i < len(names) {
+        mut known := false
+        mut j := 0
+        while j < len(allowed) {if names[i] == allowed[j] {known = true}; j = j + 1}
+        if known == false {return {"ok": false, "error": "unknown caller context field: " + names[i]}}
+        i = i + 1
+    }
+    if get_or(value, "schema", "") != caller_context_schema_version() {return {"ok": false, "error": "caller context schema is unsupported"}}
+    for field in ["caller", "correlation_id"] {
+        checked := bounded_identifier(get_or(value, field, null), true, "caller context " + field)
+        if checked["ok"] == false {return checked}
+    }
+    for field in ["workflow_id", "step_id", "attempt_id", "causation_id"] {
+        if has_key(value, field) {
+            checked := bounded_identifier(value[field], false, "caller context " + field)
+            if checked["ok"] == false {return checked}
+        }
+    }
+    return {"ok": true}
+}
+
+export func load_caller_context(path) {
+    if type(path) != "string"||trim(path) == "" {return {"ok": true, "context": null}}
+    loaded := load_json(path)
+    if loaded["ok"] == false {return {"ok": false, "error": "caller context is unreadable or invalid"}}
+    checked := validate_caller_context(loaded["value"])
+    if checked["ok"] == false {return checked}
+    return {"ok": true, "context": loaded["value"]}
+}

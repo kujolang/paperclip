@@ -1,0 +1,478 @@
+# src/redact.kujo — Lens secret and sensitive data redaction.
+#
+# Redact recognized sensitive fields and credential patterns. Arbitrary
+# unlabelled secrets in page content cannot be identified reliably.
+#
+# Redaction is centralized here and applied as defense-in-depth:
+#   1. At capture time, when runtime artifacts (console/network/links/DOM)
+#      are written.
+#   2. At finding-construction time, so in-memory findings are clean.
+#   3. As a final sweep over every finding before any report, eval, or
+#      JSON output is generated.
+#
+# The same recognized patterns apply to reports, metadata, DOM summaries,
+# Eval files, and the Agent Repair Brief.
+
+from src.common import str_starts_with, str_contains, str_lower, is_trueish, is_falseish, str_trim
+
+# Marker tokens used in place of redacted values.
+REDACTED := "[REDACTED]"
+REDACTED_JWT := "[REDACTED_JWT]"
+
+# Sensitive header names (lowercase). Values for these headers
+# are always redacted.
+SENSITIVE_HEADERS := {
+	"authorization": true,
+	"cookie": true,
+	"set-cookie": true,
+	"x-api-key": true,
+	"x-auth-token": true,
+	"x-csrf-token": true,
+	"x-xsrf-token": true,
+	"proxy-authorization": true,
+	"www-authenticate": true,
+	"x-forwarded-for": true,
+	"x-real-ip": true
+}
+
+# Sensitive query parameter names (lowercase). Values for these
+# params are redacted from URLs.
+SENSITIVE_QUERY_PARAMS := {
+	"token": true,
+	"access_token": true,
+	"access-token": true,
+	"refresh_token": true,
+	"refresh-token": true,
+	"id_token": true,
+	"id-token": true,
+	"api_key": true,
+	"api-key": true,
+	"apikey": true,
+	"auth": true,
+	"authorization": true,
+	"password": true,
+	"passwd": true,
+	"pwd": true,
+	"secret": true,
+	"client_secret": true,
+	"client-secret": true,
+	"key": true,
+	"private_key": true,
+	"private-key": true,
+	"signature": true,
+	"sig": true,
+	"session": true,
+	"sessionid": true,
+	"session_id": true,
+	"jsessionid": true,
+	"phpsessid": true,
+	"code": true
+}
+
+# Check if a header name is sensitive.
+export func is_sensitive_header(header_name) {
+	return is_trueish(has_key(SENSITIVE_HEADERS, str_lower(to_string(header_name))))
+}
+
+# Check if a query parameter name is sensitive.
+export func is_sensitive_query_param(param_name) {
+	return is_trueish(has_key(SENSITIVE_QUERY_PARAMS, decode_sensitive_key(to_string(param_name))))
+}
+
+# Redact a single header value. Returns "[REDACTED]" for sensitive headers.
+export func redact_header_value(header_name, header_value) {
+	if is_trueish(is_sensitive_header(header_name)) {
+		return REDACTED
+	}
+	return header_value
+}
+
+# Redact basic-auth credentials embedded in a URL authority.
+# Example: https://user:pass@host/ -> https://[REDACTED]@host/
+func redact_basic_auth(url) {
+	return regex_replace(to_string(url), "://[^/\\s?#\"<>]+@", "://" + REDACTED + "@")
+}
+
+# Decode ASCII percent escapes only for sensitive-name comparison. Preserve the
+# original key spelling and URL values. This uses the Kujo 1.2.3 surface and
+# deliberately does not depend on the newer decode_uri_component builtin.
+func decode_sensitive_key(dk_raw) {
+	dk_value := str_lower(dk_raw)
+	if index_of(dk_value, "%") < 0 { return dk_value }
+	dk_hex := "0123456789abcdef"
+	dk_alphabet := "abcdefghijklmnopqrstuvwxyz"
+	mut dk_out := ""
+	mut dk_i := 0
+	while dk_i < len(dk_value) {
+		if dk_value[dk_i] == "%" && dk_i + 2 < len(dk_value) {
+			dk_hi := index_of(dk_hex, dk_value[dk_i + 1])
+			dk_lo := index_of(dk_hex, dk_value[dk_i + 2])
+			dk_code := dk_hi * 16 + dk_lo
+			if dk_hi >= 0 && dk_lo >= 0 {
+				if dk_code >= 65 && dk_code <= 90 { dk_out = dk_out + dk_alphabet[dk_code - 65]; dk_i = dk_i + 3; continue }
+				if dk_code >= 97 && dk_code <= 122 { dk_out = dk_out + dk_alphabet[dk_code - 97]; dk_i = dk_i + 3; continue }
+				if dk_code == 95 { dk_out = dk_out + "_"; dk_i = dk_i + 3; continue }
+				if dk_code == 45 { dk_out = dk_out + "-"; dk_i = dk_i + 3; continue }
+			}
+		}
+		dk_out = dk_out + dk_value[dk_i]
+		dk_i = dk_i + 1
+	}
+	return dk_out
+}
+
+# Scan parameter components without decoding/re-encoding the URL. Fragment
+# parameters include OAuth callbacks and hash-router query strings.
+func redact_url_parameters(up_value) {
+	mut up_out := ""
+	mut up_start := 0
+	mut up_i := 0
+	while up_i <= len(up_value) {
+		if up_i == len(up_value) || up_value[up_i] == "&" || up_value[up_i] == "?" || up_value[up_i] == "#" {
+			mut up_part := substring(up_value, up_start, up_i)
+			up_eq := index_of(up_part, "=")
+			if up_eq >= 0 && is_trueish(is_sensitive_query_param(substring(up_part, 0, up_eq))) {
+				up_part = substring(up_part, 0, up_eq + 1) + REDACTED
+			}
+			up_out = up_out + up_part
+			if up_i < len(up_value) { up_out = up_out + up_value[up_i] }
+			up_start = up_i + 1
+		}
+		up_i = up_i + 1
+	}
+	return up_out
+}
+
+export func redact_url(raw_url) {
+	url := redact_basic_auth(to_string(raw_url))
+	q := index_of(url, "?")
+	h := index_of(url, "#")
+	mut start := q
+	if start < 0 || (h >= 0 && h < start) { start = h }
+	if start < 0 { return url }
+	return substring(url, 0, start + 1) + redact_url_parameters(substring(url, start + 1, len(url)))
+}
+
+# Redact string leaves before JSON encoding; regexes must never operate on
+# JSON escape syntax. Preserve keys, arrays, numeric/null/bool values and all
+# evidence, including accessibility error payloads.
+export func redact_value(value) {
+	# Iterative postorder traversal keeps nesting off the VM call stack.
+	# In recursive code, use explicit local declarations (let/mut).
+	mut rv_stack := array({ "input": value, "entered": false })
+	mut rv_done := null
+	while len(rv_stack) > 0 {
+		rv_top := len(rv_stack) - 1
+		mut rv_frame := rv_stack[rv_top]
+		rv_input := rv_frame["input"]
+		if is_falseish(rv_frame["entered"]) {
+			if is_trueish(is_dict(rv_input)) || is_trueish(is_array(rv_input)) {
+				rv_frame["entered"] = true
+				rv_frame["index"] = 0
+				rv_frame["array"] = is_trueish(is_array(rv_input))
+				rv_frame["output"] = array()
+				if is_falseish(rv_frame["array"]) { rv_frame["output"] = {}; rv_frame["keys"] = keys(rv_input) }
+			} else {
+				rv_done = rv_input
+				if is_trueish(is_string(rv_input)) { rv_done = redact_text(rv_input) }
+				rv_stack = slice(rv_stack, 0, rv_top)
+				continue
+			}
+		} else if rv_frame["index"] > 0 {
+			if is_trueish(rv_frame["array"]) {
+				rv_frame["output"] = append(rv_frame["output"], rv_done)
+			} else {
+				rv_output := rv_frame["output"]
+				rv_output[rv_frame["keys"][rv_frame["index"] - 1]] = rv_done
+				rv_frame["output"] = rv_output
+			}
+		}
+		if rv_frame["index"] < len(rv_input) {
+			mut rv_key := rv_frame["index"]
+			if is_falseish(rv_frame["array"]) { rv_key = rv_frame["keys"][rv_frame["index"]] }
+			rv_frame["index"] = rv_frame["index"] + 1
+			rv_stack[rv_top] = rv_frame
+			mut rv_child := rv_input[rv_key]
+			if is_falseish(rv_frame["array"]) && is_trueish(is_string(rv_child)) {
+				if is_trueish(is_sensitive_query_param(rv_key)) || is_trueish(is_sensitive_header(rv_key)) { rv_child = REDACTED }
+			}
+			rv_stack = append(rv_stack, { "input": rv_child, "entered": false })
+		} else {
+			rv_done = rv_frame["output"]
+			rv_stack = slice(rv_stack, 0, rv_top)
+		}
+	}
+	return rv_done
+}
+
+# Redact any sensitive values from a free-text string.
+# This is the workhorse used on console text, finding titles/descriptions,
+# evidence strings, DOM text samples, and provider error messages.
+#
+# Handles, in order:
+#   - basic-auth credentials inside URLs
+#   - bearer tokens
+#   - JWTs (eyJ... three base64url segments)
+#   - sensitive key/value assignments (token=..., password: ..., etc.)
+#   - URL query parameters with sensitive names embedded anywhere in text
+export func redact_text(raw_text) {
+	mut text := to_string(raw_text)
+	# Every supported pattern requires an assignment/URL separator, the JWT
+	# prefix or a bearer label. Most schema labels need no regex work.
+	if index_of(text, ":") < 0 && index_of(text, "=") < 0 && index_of(text, "eyJ") < 0 && is_falseish(str_contains(str_lower(text), "bearer")) { return text }
+	# URL-aware sweep also covers encoded keys in diagnostics and nested data.
+	urls := regex_find_all(text, "(?i)https?://[^\\s\"<>]+")
+	mut ui := 0
+	while ui < len(urls) {
+		text = replace(text, urls[ui], redact_url(urls[ui]))
+		ui = ui + 1
+	}
+
+	# Basic-auth credentials inside any URL in the text.
+	text = regex_replace(text, "://[^/\\s?#\"<>]+@", "://" + REDACTED + "@")
+
+	# Bearer tokens.
+	text = regex_replace(text, "(?i)Bearer\\s+[A-Za-z0-9\\-._~+/]+=*", "Bearer " + REDACTED)
+
+	# JWTs — anchored on the standard "eyJ" header prefix to avoid
+	# over-matching arbitrary dotted identifiers.
+	text = regex_replace(text, "eyJ[A-Za-z0-9\\-_]+\\.[A-Za-z0-9\\-_]+\\.[A-Za-z0-9\\-_]*", REDACTED_JWT)
+
+	# Sensitive key=value / key: value assignments (case-insensitive).
+	# Covers query-string params and inline assignments alike.
+	# One assignment scan replaces overlapping per-key scans. Keep longer
+	# names first and retain the separate length-qualified generic key rule.
+	text = redact_assignment(text, "(?:access[_-]token|refresh[_-]token|id[_-]token|client[_-]secret|private[_-]key|api[_-]?key|authorization|password|passwd|pwd|secret|token|session[_-]?id|jsessionid|phpsessid|signature|sig)")
+
+	# Generic "key=<long value>" — length-qualified so it does not
+	# over-match short, benign tokens like "monkey=1" or "key: 3".
+	text = redact_assignment_min(text, "key", 12)
+
+	return text
+}
+
+# Like redact_assignment, but only matches when the value is at least
+# min_len characters long. Used for broad key names where a short value
+# is almost certainly not a secret.
+func redact_assignment_min(text, key_pattern, min_len) {
+	mut result := to_string(text)
+	pattern := "(?i)" + key_pattern + "\"?\\s*[=:]\\s*\"?[^\\s\"&;,}]{" + to_string(min_len) + ",}"
+	matches := regex_find_all(result, pattern)
+	mut idx := 0
+	while idx < len(matches) {
+		full := to_string(matches[idx])
+		sep_pos := first_separator_pos(full)
+		if sep_pos >= 0 {
+			key_part := substring(full, 0, sep_pos + 1)
+			result = replace(result, full, key_part + REDACTED)
+		}
+		idx = idx + 1
+	}
+	return result
+}
+
+# Redact a single sensitive assignment pattern from text.
+# key_pattern is a regex fragment (e.g. "api[_-]?key").
+# Matches:  key = value | key: value | key=value | "key":"value"
+# Replaces the value portion with [REDACTED], preserving the key.
+func redact_assignment(text, key_pattern) {
+	mut result := to_string(text)
+	# Find the whole "key<sep>value" run, then rebuild with the key kept.
+	pattern := "(?i)" + key_pattern + "\"?\\s*[=:]\\s*(?:\"[^\"]*\"|'[^']*'|[^\\s\"&;,#}]+)"
+	matches := regex_find_all(result, pattern)
+	mut idx := 0
+	while idx < len(matches) {
+		full := to_string(matches[idx])
+		# Locate the separator (= or :) to preserve the key prefix.
+		sep_pos := first_separator_pos(full)
+		if sep_pos >= 0 {
+			key_part := substring(full, 0, sep_pos + 1)
+			replacement := key_part + REDACTED
+			result = replace(result, full, replacement)
+		}
+		idx = idx + 1
+	}
+	return result
+}
+
+# Find the index of the first '=' or ':' in a string, or -1.
+func first_separator_pos(s) {
+	eq := index_of(s, "=")
+	co := index_of(s, ":")
+	if eq < 0 {
+		return co
+	}
+	if co < 0 {
+		return eq
+	}
+	if eq < co {
+		return eq
+	}
+	return co
+}
+
+# Redact sensitive data from a console log entry's text. Retained as a
+# named export for backwards compatibility; delegates to redact_text.
+export func redact_console_entry(entry_text) {
+	return redact_text(entry_text)
+}
+
+# Redact a captured console message dict. Only safe, structured fields
+# are retained, and free-text fields (text, location) are scrubbed.
+export func redact_console_message(msg) {
+	mut out := {}
+	if is_trueish(has_key(msg, "type")) {
+		out["type"] = msg["type"]
+	}
+	if is_trueish(has_key(msg, "timestamp")) {
+		out["timestamp"] = msg["timestamp"]
+	}
+	if is_trueish(has_key(msg, "viewport")) {
+		out["viewport"] = msg["viewport"]
+	}
+	if is_trueish(has_key(msg, "location")) {
+		# location is a URL:line:col string — scrub embedded secrets.
+		out["location"] = redact_url(to_string(msg["location"]))
+	}
+	if is_trueish(has_key(msg, "text")) {
+		out["text"] = redact_text(to_string(msg["text"]))
+	}
+	return out
+}
+
+# Redact a captured network event dict into a safe, whitelisted shape.
+# Bodies, cookies, and auth headers are never retained.
+export func redact_network_event(event) {
+	mut out := {}
+	if is_trueish(has_key(event, "url")) {
+		out["url"] = redact_url(to_string(event["url"]))
+	}
+	if is_trueish(has_key(event, "method")) {
+		out["method"] = event["method"]
+	}
+	if is_trueish(has_key(event, "status")) {
+		out["status"] = event["status"]
+	}
+	if is_trueish(has_key(event, "status_text")) {
+		out["status_text"] = redact_text(to_string(event["status_text"]))
+	}
+	if is_trueish(has_key(event, "failure_text")) {
+		out["failure_text"] = redact_text(to_string(event["failure_text"]))
+	}
+	if is_trueish(has_key(event, "resource_type")) {
+		out["resource_type"] = event["resource_type"]
+	}
+	if is_trueish(has_key(event, "timestamp")) {
+		out["timestamp"] = event["timestamp"]
+	}
+	if is_trueish(has_key(event, "viewport")) {
+		out["viewport"] = event["viewport"]
+	}
+	return out
+}
+
+# Redact sensitive data from a network log entry (legacy in-place form).
+# Returns the redacted entry dict.
+export func redact_network_entry(entry) {
+	mut redacted := entry
+
+	if is_trueish(dict_has_key(entry, "url")) {
+		redacted["url"] = redact_url(to_string(entry["url"]))
+	}
+	if is_trueish(dict_has_key(entry, "request_headers")) {
+		redacted["request_headers"] = "[REDACTED_SENSITIVE_HEADERS]"
+	}
+	if is_trueish(dict_has_key(entry, "response_headers")) {
+		redacted["response_headers"] = "[REDACTED_SENSITIVE_HEADERS]"
+	}
+	if is_trueish(dict_has_key(entry, "request_body")) {
+		redacted["request_body"] = "[REDACTED_PAYLOAD]"
+	}
+	if is_trueish(dict_has_key(entry, "response_body")) {
+		redacted["response_body"] = "[REDACTED_PAYLOAD]"
+	}
+
+	return redacted
+}
+
+# Redact a DOM summary dict before it is written to dom-summary.json.
+# URLs are scrubbed of secrets; the visible text sample is scrubbed of
+# any inline secrets that may have been rendered into the page.
+export func redact_dom_summary(summary) {
+	return redact_value(summary)
+}
+
+# Preserve the complete scan structure while scrubbing each textual leaf.
+export func redact_accessibility_scans(scans) {
+	return redact_value(scans)
+}
+
+# Redact a single finding dict's free-text fields. Returns a new dict so
+# the caller's finding is not mutated in place.
+export func redact_finding(finding) {
+	mut out := {}
+	# Copy known fields, scrubbing the free-text ones.
+	if is_trueish(dict_has_key(finding, "id")) { out["id"] = finding["id"] }
+	if is_trueish(dict_has_key(finding, "check_name")) { out["check_name"] = finding["check_name"] }
+	if is_trueish(dict_has_key(finding, "severity")) { out["severity"] = finding["severity"] }
+	if is_trueish(dict_has_key(finding, "title")) { out["title"] = redact_text(to_string(finding["title"])) }
+	if is_trueish(dict_has_key(finding, "description")) { out["description"] = redact_text(to_string(finding["description"])) }
+	if is_trueish(dict_has_key(finding, "evidence")) { out["evidence"] = redact_text(to_string(finding["evidence"])) }
+	if is_trueish(dict_has_key(finding, "suggested_repair_task")) { out["suggested_repair_task"] = redact_text(to_string(finding["suggested_repair_task"])) }
+	return out
+}
+
+# Final defense-in-depth sweep: redact every finding inside every check
+# result. Returns a new array of check results with scrubbed findings.
+export func redact_check_results(check_results) {
+	mut out := array()
+	mut ci := 0
+	while ci < len(check_results) {
+		cr := check_results[ci]
+		mut new_cr := {}
+		# Preserve structural fields.
+		if is_trueish(dict_has_key(cr, "name")) { new_cr["name"] = cr["name"] }
+		if is_trueish(dict_has_key(cr, "id")) { new_cr["id"] = cr["id"] }
+		if is_trueish(dict_has_key(cr, "status")) { new_cr["status"] = cr["status"] }
+		if is_trueish(dict_has_key(cr, "severity")) { new_cr["severity"] = cr["severity"] }
+		if is_trueish(dict_has_key(cr, "finding_count")) { new_cr["finding_count"] = cr["finding_count"] }
+		if is_trueish(dict_has_key(cr, "duration_ms")) { new_cr["duration_ms"] = cr["duration_ms"] }
+		# Carry through any auxiliary fields used by specific checks.
+		if is_trueish(dict_has_key(cr, "scans")) { new_cr["scans"] = redact_accessibility_scans(cr["scans"]) }
+		if is_trueish(dict_has_key(cr, "engine_available")) { new_cr["engine_available"] = cr["engine_available"] }
+		if is_trueish(dict_has_key(cr, "engine_version")) { new_cr["engine_version"] = cr["engine_version"] }
+		if is_trueish(dict_has_key(cr, "engine_note")) { new_cr["engine_note"] = redact_text(to_string(cr["engine_note"])) }
+		# Scrub findings.
+		mut new_findings := array()
+		if is_trueish(dict_has_key(cr, "findings")) {
+			findings := cr["findings"]
+			mut j := 0
+			while j < len(findings) {
+				new_findings = append(new_findings, redact_finding(findings[j]))
+				j = j + 1
+			}
+		}
+		new_cr["findings"] = new_findings
+		out = append(out, new_cr)
+		ci = ci + 1
+	}
+	return out
+}
+
+# Helper: check if a dict has a key.
+func dict_has_key(map_obj, key_name) {
+	return is_trueish(has_key(map_obj, key_name))
+}
+
+# Helper: regex replace.
+# Uses regex_find_all to find matches, then replace to substitute.
+func regex_replace(text, pattern, replacement) {
+	mut result := text
+	matches := regex_find_all(text, pattern)
+	mut idx := 0
+	while idx < len(matches) {
+		result = replace(result, matches[idx], replacement)
+		idx = idx + 1
+	}
+	return result
+}

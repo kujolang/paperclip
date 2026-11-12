@@ -1,0 +1,305 @@
+# Muzzle loop state management.
+# Manages stateful multi-step agent loops with JSON persistence.
+
+from src.common import is_trueish, is_falseish, dict_has_key, str_ends_with, ensure_dir, timestamp_iso, path_is_within_muzzle
+
+from src.workflow import validate_workflow_name
+
+LOOPS_DIR := ".muzzle/state/loops"
+
+func valid_loop_data(loop_data) {
+	if type(loop_data) != "dict" {
+		return false
+	}
+	required_keys := array("workflow", "limit", "current", "status", "started_at", "entries")
+	mut key_idx := 0
+	while key_idx < len(required_keys) {
+		if is_falseish(dict_has_key(loop_data, required_keys[key_idx])) {
+			return false
+		}
+		key_idx = key_idx + 1
+	}
+	if type(loop_data["entries"]) != "array" {
+		return false
+	}
+	if type(loop_data["workflow"]) != "string" || type(loop_data["started_at"]) != "string" || type(loop_data["limit"]) != "int" || type(loop_data["current"]) != "int" {
+		return false
+	}
+	status := to_string(loop_data["status"])
+	if status != "active" && status != "completed" {
+		return false
+	}
+	try {
+		limit := to_int(loop_data["limit"])
+		current := to_int(loop_data["current"])
+		if limit < 1 || limit > 1000 || current < 0 || current > limit {
+			return false
+		}
+	} except _err {
+		return false
+	}
+	if is_falseish(validate_workflow_name(loop_data["workflow"])) {
+		return false
+	}
+	# A writer may have completed the current iteration or have exactly one
+	# iteration open. Completed loops must account for every iteration.
+	entry_count := len(loop_data["entries"])
+	current_count := to_int(loop_data["current"])
+	if entry_count < current_count - 1 || entry_count > current_count {
+		return false
+	}
+	if status == "completed" && (current_count != loop_data["limit"] || entry_count != current_count) {
+		return false
+	}
+	mut entry_idx := 0
+	while entry_idx < len(loop_data["entries"]) {
+		entry := loop_data["entries"][entry_idx]
+		if type(entry) != "dict" {
+			return false
+		}
+		entry_keys := array("loop", "status", "note", "timestamp")
+		mut field_idx := 0
+		while field_idx < len(entry_keys) {
+			if is_falseish(dict_has_key(entry, entry_keys[field_idx])) {
+				return false
+			}
+			field_idx = field_idx + 1
+		}
+		if type(entry["loop"]) != "int" || entry["loop"] != entry_idx + 1 || entry["loop"] > loop_data["current"] || entry["status"] != "done" || type(entry["note"]) != "string" || type(entry["timestamp"]) != "string" {
+			return false
+		}
+		entry_idx = entry_idx + 1
+	}
+	return true
+}
+
+# Find the active loop file, or return "" if none.
+export func find_active_loop() {
+	if is_falseish(file_exists(LOOPS_DIR)) {
+		return ""
+	}
+	entries := sort(list_dir(LOOPS_DIR))
+	mut idx := 0
+	while idx < len(entries) {
+		entry_name := to_string(entries[idx])
+		# Only process .json loop files
+		if is_falseish(str_ends_with(entry_name, ".json")) {
+			idx = idx + 1
+			continue
+		}
+		loop_file := LOOPS_DIR + "/" + entry_name
+		if is_falseish(path_is_within_muzzle(loop_file)) {
+			idx = idx + 1
+			continue
+		}
+		mut parsed := null
+		try {
+			raw := read_file(loop_file)
+			parsed = parse_json(raw)
+		} except _err {
+			idx = idx + 1
+			continue
+		}
+		if is_trueish(valid_loop_data(parsed)) {
+			if dict_has_key(parsed, "status") {
+				if to_string(parsed["status"]) == "active" {
+					return loop_file
+				}
+			}
+		}
+		idx = idx + 1
+	}
+	return ""
+}
+
+# Load loop state from file.
+# Returns a dict or null.
+export func load_loop(loop_file) {
+	if loop_file == "" || is_falseish(file_exists(loop_file)) {
+		return null
+	}
+	if is_falseish(path_is_within_muzzle(loop_file)) {
+		return null
+	}
+	mut parsed := null
+	try {
+		raw := read_file(loop_file)
+		parsed = parse_json(raw)
+	} except _err {
+		return null
+	}
+	if is_falseish(valid_loop_data(parsed)) {
+		return null
+	}
+	return parsed
+}
+
+# Find the first unreadable, malformed, or non-object loop state file.
+export func find_invalid_loop_state() {
+	if is_falseish(file_exists(LOOPS_DIR)) {
+		return ""
+	}
+	entries := sort(list_dir(LOOPS_DIR))
+	mut idx := 0
+	while idx < len(entries) {
+		entry_name := to_string(entries[idx])
+		if is_falseish(str_ends_with(entry_name, ".json")) {
+			idx = idx + 1
+			continue
+		}
+		loop_file := LOOPS_DIR + "/" + entry_name
+		if is_falseish(path_is_within_muzzle(loop_file)) {
+			return loop_file
+		}
+		mut parsed := null
+		try {
+			raw := read_file(loop_file)
+			parsed = parse_json(raw)
+		} except _err {
+			return loop_file
+		}
+		if is_falseish(valid_loop_data(parsed)) {
+			return loop_file
+		}
+		idx = idx + 1
+	}
+	return ""
+}
+
+# Save loop state to file.
+export func save_loop(loop_file, loop_data) {
+	if is_trueish(file_exists(loop_file)) && is_falseish(path_is_within_muzzle(loop_file)) {
+		return false
+	}
+	json_str := to_json(loop_data)
+	write_file_atomic(loop_file, json_str, true)
+	return true
+}
+
+# Create a new loop state.
+export func create_loop(workflow_name, limit, ts_start) {
+	ensure_dir(LOOPS_DIR)
+	loop_file := LOOPS_DIR + "/" + workflow_name + ".json"
+
+	mut data := dict()
+	data["workflow"] = workflow_name
+	data["limit"] = limit
+	data["current"] = 0
+	data["status"] = "active"
+	data["started_at"] = ts_start
+	data["entries"] = array()
+
+	save_loop(loop_file, data)
+	return loop_file
+}
+
+# Advance the loop to the next iteration.
+# Returns updated loop data or null if complete.
+export func advance_loop(loop_file) {
+	loop_data := load_loop(loop_file)
+	if loop_data == null {
+		return null
+	}
+
+	current := to_int(loop_data["current"])
+	limit := to_int(loop_data["limit"])
+	next := current + 1
+
+	if next > limit {
+		loop_data["status"] = "completed"
+		save_loop(loop_file, loop_data)
+		return null
+	}
+
+	loop_data["current"] = next
+	save_loop(loop_file, loop_data)
+	return loop_data
+}
+
+# Record a completed loop iteration.
+export func record_loop_done(loop_file, note, ts) {
+	if type(note) != "string" || type(ts) != "string" {
+		return false
+	}
+	loop_data := load_loop(loop_file)
+	if loop_data == null {
+		return false
+	}
+
+	current := to_int(loop_data["current"])
+	if current < 1 {
+		return false
+	}
+
+	entries := loop_data["entries"]
+	mut existing_idx := 0
+	while existing_idx < len(entries) {
+		existing := entries[existing_idx]
+		if dict_has_key(existing, "loop") && to_int(existing["loop"]) == current {
+			return false
+		}
+		existing_idx = existing_idx + 1
+	}
+
+	mut entry := dict()
+	entry["loop"] = loop_data["current"]
+	entry["status"] = "done"
+	entry["note"] = note
+	entry["timestamp"] = ts
+
+	entries = push(entries, entry)
+	loop_data["entries"] = entries
+
+	save_loop(loop_file, loop_data)
+	return true
+}
+
+# Return true when the current loop iteration has a completion entry.
+export func current_iteration_recorded(loop_data) {
+	if loop_data == null {
+		return false
+	}
+	current := to_int(loop_data["current"])
+	if current < 1 {
+		return true
+	}
+	entries := loop_data["entries"]
+	mut idx := 0
+	while idx < len(entries) {
+		entry := entries[idx]
+		if dict_has_key(entry, "loop") && to_int(entry["loop"]) == current {
+			return true
+		}
+		idx = idx + 1
+	}
+	return false
+}
+
+# Get all loops, active or completed.
+export func list_all_loops() {
+	mut result := array()
+	if is_falseish(file_exists(LOOPS_DIR)) {
+		return result
+	}
+	entries := sort(list_dir(LOOPS_DIR))
+	mut idx := 0
+	while idx < len(entries) {
+		entry_name := to_string(entries[idx])
+		# Only process .json loop files
+		if is_falseish(str_ends_with(entry_name, ".json")) {
+			idx = idx + 1
+			continue
+		}
+		loop_file := LOOPS_DIR + "/" + entry_name
+		if is_falseish(path_is_within_muzzle(loop_file)) {
+			idx = idx + 1
+			continue
+		}
+		loop_data := load_loop(loop_file)
+		if loop_data != null {
+			result = push(result, loop_data)
+		}
+		idx = idx + 1
+	}
+	return result
+}

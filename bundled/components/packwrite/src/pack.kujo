@@ -1,0 +1,999 @@
+# PackWrite :: pack
+#
+# Turns a model JSON manifest into the on-disk /agent pack. Parsing is tolerant
+# (plain JSON, fenced JSON, and single-object extraction from surrounding prose),
+# diagnostics are explicit, and writing is staged so invalid data never leaves a
+# partial output directory behind.
+#
+# Manifest contract: { "files": [ { "path": "...", "content": "..." }, ... ] }
+
+from src.util import truthy, ensure_dir, parent_of, has_substr, str_find, str_rfind, lines_of, base_of, write_file_atomic, has_line_control
+from src.errors import err, msg_unparseable, msg_overwrite
+from src.repo_context import looks_secret
+from src.validate import validate_run, required_files, extract_phase_refs
+
+# Extract a candidate JSON object from raw model text.
+export func extract_json(text) {
+    t := trim(text)
+    if t == "" {
+        return ""
+    }
+
+    unfenced := strip_fences(t)
+    if starts_with(unfenced, "{") && ends_with(unfenced, "}") {
+        return unfenced
+    }
+
+    # Native substring detection is dramatically faster than a character-by-
+    # character scan for large non-JSON error bodies.
+    if contains(unfenced, "{") == 0 || contains(unfenced, "}") == 0 {
+        return unfenced
+    }
+
+    single := extract_single_top_object(unfenced)
+    if single != "" {
+        return single
+    }
+
+    single2 := extract_single_top_object(t)
+    if single2 != "" {
+        return single2
+    }
+
+    return unfenced
+}
+
+# Character length (substring is char-based; len is byte-based, so scan).
+func char_len(text) {
+    mut cl_i := 0
+    while substring(text, cl_i, cl_i + 1) != "" {
+        cl_i = cl_i + 1
+    }
+    return cl_i
+}
+
+# Parse and shape-check the manifest. Returns {"ok":true,"files":[...]} where each
+# file is {"path","content"}, or a failure envelope.
+export func pack_parse(text) {
+    return pack_parse_with_meta(text, null)
+}
+
+export func pack_parse_with_meta(text, meta) {
+    limits := pack_limits()
+    if type(text) != "string" {
+        return err(msg_unparseable() + " (expected a string response).")
+    }
+    if len(text) > limits["response_bytes"] {
+        return err("The model response exceeds the " + "${limits["response_bytes"]}" + "-byte safety limit.")
+    }
+    raw := extract_json(text)
+    mut parsed := null
+    mut threw := false
+    try {
+        parsed = parse_json(raw)
+    } except e {
+        threw = true
+    }
+    if threw {
+        return err(parse_error_with_diagnostics("invalid JSON", text, meta))
+    }
+    if type(parsed) != "dict" {
+        return err(parse_error_with_diagnostics("expected a JSON object", text, meta))
+    }
+    if has_key(parsed, "files") == 0 {
+        return err(parse_error_with_diagnostics("missing \"files\" array", text, meta))
+    }
+    files := parsed["files"]
+    if type(files) != "array" || len(files) == 0 {
+        return err(parse_error_with_diagnostics("\"files\" must be a non-empty array", text, meta))
+    }
+    if len(files) > limits["files"] {
+        return err("The model response contains too many files (maximum " + "${limits["files"]}" + ").")
+    }
+    mut out := []
+    mut total_bytes := 0
+    mut pp_i := 0
+    pp_n := len(files)
+    while pp_i < pp_n {
+        f := files[pp_i]
+        if type(f) != "dict" || has_key(f, "path") == 0 || has_key(f, "content") == 0 {
+            return err(parse_error_with_diagnostics("file entry " + "${pp_i}" + " missing path/content", text, meta))
+        }
+        if type(f["path"]) != "string" || type(f["content"]) != "string" {
+            return err(parse_error_with_diagnostics("file entry " + "${pp_i}" + " path/content not strings", text, meta))
+        }
+        if trim(f["path"]) == "" {
+            return err(parse_error_with_diagnostics("file entry " + "${pp_i}" + " has empty path", text, meta))
+        }
+        if trim(f["content"]) == "" {
+            return err(parse_error_with_diagnostics("file entry " + "${pp_i}" + " has empty content", text, meta))
+        }
+        if len(f["path"]) > limits["path_bytes"] {
+            return err("File entry " + "${pp_i}" + " path exceeds the " + "${limits["path_bytes"]}" + "-byte safety limit.")
+        }
+        if len(f["content"]) > limits["file_bytes"] {
+            return err("File entry " + "${pp_i}" + " content exceeds the " + "${limits["file_bytes"]}" + "-byte safety limit.")
+        }
+        total_bytes = total_bytes + len(f["content"])
+        if total_bytes > limits["total_bytes"] {
+            return err("Generated pack content exceeds the " + "${limits["total_bytes"]}" + "-byte safety limit.")
+        }
+        out = push(out, {"path": f["path"], "content": f["content"]})
+        pp_i = pp_i + 1
+    }
+    return {"ok": true, "files": out}
+}
+
+# Explicit resource ceilings for untrusted model output. They are intentionally
+# generous relative to normal 10-20 file Markdown packs.
+export func pack_limits() {
+    return {
+        "response_bytes": 16777216,
+        "files": 512,
+        "path_bytes": 4096,
+        "file_bytes": 2097152,
+        "total_bytes": 16777216
+    }
+}
+
+# Validate manifest shape and path safety before any file write.
+export func pack_validate_manifest(files, cfg, cwd) {
+    cfg_ok := pack_validate_config(cfg)
+    if truthy(cfg_ok["ok"]) == false {
+        return cfg_ok
+    }
+
+    if type(files) != "array" || len(files) == 0 {
+        return err("Manifest validation failed: files must be a non-empty array")
+    }
+    limits := pack_limits()
+    if len(files) > limits["files"] {
+        return err("Manifest validation failed: too many files (maximum " + "${limits["files"]}" + ")")
+    }
+
+    mut seen_paths := {}
+    mut content_by_path := {}
+    mut phase_count := 0
+    mut total_bytes := 0
+    mut vm_i := 0
+    vm_n := len(files)
+    while vm_i < vm_n {
+        f := files[vm_i]
+        if type(f) != "dict" || has_key(f, "path") == 0 || has_key(f, "content") == 0 {
+            return err("Manifest validation failed: file entry " + "${vm_i}" + " missing path/content")
+        }
+
+        path := f["path"]
+        content := f["content"]
+        if type(path) != "string" || trim(path) == "" {
+            return err("Manifest validation failed: file entry " + "${vm_i}" + " has invalid path")
+        }
+        if type(content) != "string" || trim(content) == "" {
+            return err("Manifest validation failed: file entry " + "${vm_i}" + " has empty content")
+        }
+        if len(path) > limits["path_bytes"] {
+            return err("Manifest validation failed: path exceeds the " + "${limits["path_bytes"]}" + "-byte safety limit")
+        }
+        if len(content) > limits["file_bytes"] {
+            return err("Manifest validation failed: file content exceeds the " + "${limits["file_bytes"]}" + "-byte safety limit: " + path)
+        }
+        total_bytes = total_bytes + len(content)
+        if total_bytes > limits["total_bytes"] {
+            return err("Manifest validation failed: total content exceeds the " + "${limits["total_bytes"]}" + "-byte safety limit")
+        }
+
+        if has_key(seen_paths, path) == 1 {
+            return err("Manifest validation failed: duplicate file path " + path)
+        }
+        if manifest_path_has_secret(path) {
+            return err("Manifest validation failed: secret-looking path is not allowed: " + path)
+        }
+        seen_paths[path] := true
+        content_by_path[path] := content
+
+        safe := safe_target(path, cfg, cwd)
+        if truthy(safe["ok"]) == false {
+            return safe
+        }
+
+        if is_phase_path(path, cfg["output_dir"]) {
+            phase_count = phase_count + 1
+        }
+        vm_i = vm_i + 1
+    }
+
+    # A file cannot also be an ancestor directory, regardless of entry order.
+    # Reject conflicts before dry-run success or staging any content.
+    mut ac_i := 0
+    while ac_i < len(files) {
+        mut ancestor := parent_of(files[ac_i]["path"])
+        while ancestor != "" && ancestor != cfg["output_dir"] {
+            if has_key(seen_paths, ancestor) == 1 {
+                return err("Manifest validation failed: file path is also a parent directory: " + ancestor)
+            }
+            ancestor = parent_of(ancestor)
+        }
+        ac_i = ac_i + 1
+    }
+
+    req := required_files(cfg)
+    out_dir := cfg["output_dir"]
+    mut rq_i := 0
+    rq_n := len(req)
+    while rq_i < rq_n {
+        need := out_dir + "/" + req[rq_i]
+        if has_key(seen_paths, need) == 0 {
+            return err("Manifest validation failed: missing required file " + need)
+        }
+        rq_i = rq_i + 1
+    }
+
+    if phase_count == 0 {
+        return err("Manifest validation failed: no phase files under " + out_dir + "/phases/")
+    }
+
+    todo_path := out_dir + "/TODO.md"
+    if has_key(content_by_path, todo_path) == 1 {
+        refs := extract_phase_refs(content_by_path[todo_path])
+        mut pr_i := 0
+        pr_n := len(refs)
+        while pr_i < pr_n {
+            phase_ref := out_dir + "/phases/" + refs[pr_i]
+            if has_substr(refs[pr_i], "/") || has_key(seen_paths, phase_ref) == 0 {
+                return err("Manifest validation failed: TODO.md references missing phase file " + phase_ref)
+            }
+            pr_i = pr_i + 1
+        }
+    }
+
+    return {"ok": true}
+}
+
+# Validate a manifest path is safe: relative, no traversal, and inside the
+# configured output dir. Returns {"ok":true,"target":...} or an error.
+export func safe_target(path, cfg, cwd) {
+    cfg_ok := pack_validate_config(cfg)
+    if truthy(cfg_ok["ok"]) == false {
+        return cfg_ok
+    }
+    if starts_with(path, "/") {
+        return err("Unsafe manifest path (absolute): " + path)
+    }
+    if has_line_control(path) {
+        return err("Unsafe manifest path (control characters are not allowed)")
+    }
+    if path_has_traversal_segment(path) {
+        return err("Unsafe manifest path (traversal): " + path)
+    }
+    if path_has_empty_segment(path) || path_has_current_segment(path) {
+        return err("Unsafe manifest path (ambiguous segment): " + path)
+    }
+    if has_substr(path, "\\") {
+        return err("Unsafe manifest path (backslash separator): " + path)
+    }
+    if starts_with(path, "~") {
+        return err("Unsafe manifest path (home expansion): " + path)
+    }
+    if ends_with(path, "/") {
+        return err("Unsafe manifest path (directory path): " + path)
+    }
+    out_dir := cfg["output_dir"]
+    location_ok := pack_validate_output_location(cfg, cwd)
+    if truthy(location_ok["ok"]) == false {
+        return location_ok
+    }
+    if starts_with(path, out_dir + "/") == false && path != out_dir {
+        return err("Manifest path escapes output dir '" + out_dir + "': " + path)
+    }
+    if path == out_dir {
+        return err("Manifest path must point to a file under output dir, not the dir itself: " + path)
+    }
+    return {"ok": true, "target": join_path(cwd, path)}
+}
+
+# Validate config paths before a model call or filesystem operation. The output
+# directory may be nested (for example "build/agent") but must stay relative and
+# unambiguous.
+export func pack_validate_config(cfg) {
+    if type(cfg) != "dict" || has_key(cfg, "output_dir") == 0 {
+        return err("Unsafe output dir: missing [output].dir")
+    }
+    out_dir := cfg["output_dir"]
+    if type(out_dir) != "string" || trim(out_dir) == "" {
+        return err("Unsafe output dir: must be a non-empty relative path")
+    }
+    if len(out_dir) > pack_limits()["path_bytes"] {
+        return err("Unsafe output dir: path exceeds the " + "${pack_limits()["path_bytes"]}" + "-byte safety limit")
+    }
+    if starts_with(out_dir, "/") {
+        return err("Unsafe output dir (absolute): " + out_dir)
+    }
+    if has_line_control(out_dir) {
+        return err("Unsafe output dir: control characters are not allowed")
+    }
+    if has_substr(out_dir, "\\") {
+        return err("Unsafe output dir (backslash separator): " + out_dir)
+    }
+    if starts_with(out_dir, "~") {
+        return err("Unsafe output dir (home expansion): " + out_dir)
+    }
+    if out_dir == "." || out_dir == ".." {
+        return err("Unsafe output dir: must name a directory under the project root")
+    }
+    if ends_with(out_dir, "/") {
+        return err("Unsafe output dir (trailing slash): " + out_dir)
+    }
+    if path_has_traversal_segment(out_dir) {
+        return err("Unsafe output dir (traversal): " + out_dir)
+    }
+    if path_has_empty_segment(out_dir) || path_has_current_segment(out_dir) {
+        return err("Unsafe output dir (ambiguous segment): " + out_dir)
+    }
+    return {"ok": true}
+}
+
+# Existing symlink components could redirect staged writes outside the project.
+# Reject them before the model call and again immediately before promotion.
+export func pack_validate_output_location(cfg, cwd) {
+    cfg_ok := pack_validate_config(cfg)
+    if truthy(cfg_ok["ok"]) == false {
+        return cfg_ok
+    }
+    parts := split(cfg["output_dir"], "/")
+    mut cur := cwd
+    mut ol_i := 0
+    ol_n := len(parts)
+    while ol_i < ol_n {
+        cur = join_path(cur, parts[ol_i])
+        if is_symlink_path(cur) {
+            return err("Unsafe output dir: symlink component is not allowed: " + parts[ol_i])
+        }
+        if ol_i < ol_n - 1 && path_exists(cur) && path_is_dir(cur) == false {
+            return err("Unsafe output dir: parent component is not a directory: " + parts[ol_i])
+        }
+        ol_i = ol_i + 1
+    }
+    return {"ok": true}
+}
+
+# Refuse to overwrite an existing output dir unless allowed by config/flag.
+export func pack_guard_overwrite(cfg, cwd) {
+    cfg_ok := pack_validate_output_location(cfg, cwd)
+    if truthy(cfg_ok["ok"]) == false {
+        return cfg_ok
+    }
+    out_root := join_path(cwd, cfg["output_dir"])
+    if path_exists(out_root) && path_is_dir(out_root) == false {
+        return err("Output path exists and is not a directory: " + cfg["output_dir"])
+    }
+    if path_is_dir(out_root) && truthy(cfg["output_overwrite"]) == false {
+        return err(msg_overwrite(cfg["output_dir"]))
+    }
+    return {"ok": true}
+}
+
+# Write (or, when dry_run, simulate) the parsed files. On a real write this is a
+# CLEAN replace: every path is validated first (no partial writes on a bad path),
+# then orphan files left over from a previous pack are pruned, then the manifest
+# files are written. Returns {"ok":true,"written":N,"phases":N,"paths":[...],
+# "pruned":N} or an error envelope.
+export func pack_apply(files, cfg, cwd, dry_run) {
+    manifest_ok := pack_validate_manifest(files, cfg, cwd)
+    if truthy(manifest_ok["ok"]) == false {
+        return manifest_ok
+    }
+
+    # 1. Plan + validate ALL paths before touching the filesystem.
+    mut plans := []
+    mut target_set := {}
+    mut paths := []
+    mut phases := 0
+    mut pa_i := 0
+    pa_n := len(files)
+    while pa_i < pa_n {
+        f := files[pa_i]
+        path := f["path"]
+        guard := safe_target(path, cfg, cwd)
+        if truthy(guard["ok"]) == false {
+            return guard
+        }
+        target := guard["target"]
+        if is_phase_path(path, cfg["output_dir"]) {
+            phases = phases + 1
+        }
+        rel := relative_output_path(path, cfg["output_dir"])
+        plans = push(plans, {"target": target, "content": f["content"], "rel": rel})
+        target_set[target] := true
+        paths = push(paths, path)
+        pa_i = pa_i + 1
+    }
+
+    if dry_run {
+        return {"ok": true, "written": len(paths), "phases": phases, "paths": paths, "pruned": 0}
+    }
+
+    # 2. Stage all writes in a temporary directory and validate before promoting.
+    out_root := join_path(cwd, cfg["output_dir"])
+    output_parent := parent_of(out_root)
+    if prepare_directory(output_parent) == false {
+        return err("Could not create output parent directory for " + cfg["output_dir"])
+    }
+    location_ready := pack_validate_output_location(cfg, cwd)
+    if truthy(location_ready["ok"]) == false {
+        return location_ready
+    }
+    cleanup_result := cleanup_stale_workdirs(out_root)
+    if truthy(cleanup_result["ok"]) == false {
+        return cleanup_result
+    }
+    cleaned := cleanup_result["count"]
+    stage_root := next_stage_root(out_root)
+    if stage_root == "" {
+        return err("Could not reserve a staging directory for " + cfg["output_dir"])
+    }
+    if prepare_directory(stage_root) == false {
+        remove_tree(stage_root)
+        return err("Could not create staging directory for " + cfg["output_dir"])
+    }
+
+    mut wi := 0
+    wn := len(plans)
+    while wi < wn {
+        pl := plans[wi]
+        staged_target := join_path(stage_root, pl["rel"])
+        parent := parent_of(staged_target)
+        if parent != "" && prepare_directory(parent) == false {
+            remove_tree(stage_root)
+            return err("Could not create directory for staged pack file: " + pl["rel"])
+        }
+        wrote := write_file_atomic(staged_target, pl["content"], true)
+        if wrote == false {
+            remove_tree(stage_root)
+            return err("Failed to write staged pack file: " + pl["rel"])
+        }
+        wi = wi + 1
+    }
+
+    staged_validation := validate_run(stage_root, cfg)
+    if truthy(staged_validation["ok"]) == false {
+        remove_tree(stage_root)
+        return err("Generated pack failed validation before write: " + summarize_errors(staged_validation["errors"]))
+    }
+
+    # 3. Promote staged output into place.
+    orphan_result := count_orphans(out_root, target_set)
+    if truthy(orphan_result["ok"]) == false {
+        remove_tree(stage_root)
+        return orphan_result
+    }
+    pruned := orphan_result["count"]
+    location_final := pack_validate_output_location(cfg, cwd)
+    if truthy(location_final["ok"]) == false {
+        remove_tree(stage_root)
+        return location_final
+    }
+    promoted := promote_stage(stage_root, out_root)
+    if truthy(promoted["ok"]) == false {
+        remove_tree(stage_root)
+        return promoted
+    }
+
+    return {"ok": true, "written": len(paths), "phases": phases, "paths": paths, "pruned": pruned, "cleaned": cleaned}
+}
+
+# Convert directory creation failures into the pack writer's error contract.
+# Keep cleanup at the call site, where the owned staging root is known.
+func prepare_directory(path) {
+    try {
+        ensure_dir(path)
+        return path_is_dir(path)
+    } except directory_error {
+        return false
+    }
+}
+
+# Count files under `out_root` whose absolute path is not a manifest target.
+func count_orphans(out_root, target_set) {
+    if path_is_dir(out_root) == false {
+        return {"ok": true, "count": 0}
+    }
+    existing_result := collect_files(out_root)
+    if truthy(existing_result["ok"]) == false {
+        return existing_result
+    }
+    existing := existing_result["files"]
+    mut count := 0
+    mut po_i := 0
+    po_n := len(existing)
+    while po_i < po_n {
+        fp := existing[po_i]
+        if has_key(target_set, fp) == 0 {
+            count = count + 1
+        }
+        po_i = po_i + 1
+    }
+    return {"ok": true, "count": count}
+}
+
+func relative_output_path(path, out_dir) {
+    prefix := out_dir + "/"
+    if starts_with(path, prefix) {
+        return substring(path, len(prefix), len(path))
+    }
+    return path
+}
+
+# Remove only PackWrite-owned sibling work directories that have been untouched
+# for at least 24 hours. Stale stages are always disposable. Backups are removed
+# only when the final output directory exists, preserving the sole recovery copy
+# after a promotion crash. Symlinks and non-directories are never followed.
+func cleanup_stale_workdirs(out_root) {
+    parent := parent_of(out_root)
+    name := base_of(out_root)
+    if path_is_dir(parent) == false {
+        return {"ok": true, "count": 0}
+    }
+    stage_prefix := "." + name + ".packwrite-stage-"
+    backup_prefix := "." + name + ".packwrite-backup-"
+    mut names := []
+    try {
+        names = list_dir(parent)
+    } except cleanup_error {
+        return err("Could not read output parent directory: " + parent)
+    }
+    now_seconds := current_timestamp() / 1000
+    mut removed := 0
+    mut cw_i := 0
+    cw_n := len(names)
+    while cw_i < cw_n {
+        nm := names[cw_i]
+        candidate := join_path(parent, nm)
+        is_stage := starts_with(nm, stage_prefix)
+        is_backup := starts_with(nm, backup_prefix)
+        can_remove := is_stage || (is_backup && path_is_dir(out_root))
+        if can_remove && path_is_dir(candidate) && path_is_symlink(candidate) == false {
+            metadata := io_file_metadata(candidate)
+            if type(metadata) == "dict" && has_key(metadata, "modified") == 1 {
+                age := now_seconds - metadata["modified"]
+                if age >= 86400 {
+                    remove_tree(candidate)
+                    if path_exists(candidate) == false {
+                        removed = removed + 1
+                    }
+                }
+            }
+        }
+        cw_i = cw_i + 1
+    }
+    return {"ok": true, "count": removed}
+}
+
+func next_stage_root(out_root) {
+    parent := parent_of(out_root)
+    name := base_of(out_root)
+    mut idx := 0
+    while idx < 1000 {
+        cand := join_path(parent, "." + name + ".packwrite-stage-" + "${idx}")
+        if path_exists(cand) == false && is_symlink_path(cand) == false {
+            return cand
+        }
+        idx = idx + 1
+    }
+    return ""
+}
+
+func next_backup_root(out_root) {
+    parent := parent_of(out_root)
+    name := base_of(out_root)
+    mut idx := 0
+    while idx < 1000 {
+        cand := join_path(parent, "." + name + ".packwrite-backup-" + "${idx}")
+        if path_exists(cand) == false && is_symlink_path(cand) == false {
+            return cand
+        }
+        idx = idx + 1
+    }
+    return ""
+}
+
+func promote_stage(stage_root, out_root) {
+    if path_is_dir(out_root) {
+        backup := next_backup_root(out_root)
+        if backup == "" {
+            return err("Could not reserve a backup directory for " + out_root)
+        }
+        moved_old := move_path(out_root, backup)
+        if truthy(moved_old["ok"]) == false {
+            return moved_old
+        }
+
+        moved_new := move_path(stage_root, out_root)
+        if truthy(moved_new["ok"]) == false {
+            rollback := move_path(backup, out_root)
+            if truthy(rollback["ok"]) == false {
+                return err("Failed to promote staged pack and rollback failed. Manual cleanup required in " + backup)
+            }
+            return moved_new
+        }
+
+        remove_tree(backup)
+        return {"ok": true}
+    }
+
+    return move_path(stage_root, out_root)
+}
+
+func move_path(src, dst) {
+    res := spawn_process(["mv", src, dst])
+    mut success := false
+    mut stderr := ""
+    mut exitcode := ""
+    mut threw := false
+    try {
+        success = truthy(res.success)
+        if type(res.stderr) == "string" {
+            stderr = trim(res.stderr)
+        }
+        exitcode = "${res.exitcode}"
+    } except ex {
+        threw = true
+    }
+
+    if success {
+        return {"ok": true}
+    }
+
+    if stderr == "" && threw == false && exitcode != "" {
+        stderr = "exitcode=" + exitcode
+    }
+
+    if stderr == "" {
+        return err("Filesystem move failed: " + src + " -> " + dst)
+    }
+    return err("Filesystem move failed: " + src + " -> " + dst + " (" + stderr + ")")
+}
+
+func remove_tree(path) {
+    if path == "" {
+        return
+    }
+    if file_exists(path) == false && path_is_dir(path) == false {
+        return
+    }
+    spawn_process(["rm", "-rf", path])
+}
+
+func summarize_errors(errors) {
+    if type(errors) != "array" || len(errors) == 0 {
+        return "unknown validation error"
+    }
+    mut out := ""
+    mut se_i := 0
+    se_n := len(errors)
+    while se_i < se_n && se_i < 3 {
+        if se_i > 0 {
+            out = out + " | "
+        }
+        out = out + errors[se_i]
+        se_i = se_i + 1
+    }
+    return out
+}
+
+# Collect all file paths under `root` (absolute, joined the same way as
+# safe_target's targets so membership comparison lines up). Iterative with an
+# explicit directory stack: no recursion and only builtin calls in the loop, to
+# avoid the runtime's callee-clobbers-caller-local quirk that bites when a hot
+# loop invokes several user functions (recursion + a helper).
+func collect_files(root) {
+    mut out := []
+    mut stack := [root]
+    while len(stack) > 0 {
+        top_idx := len(stack) - 1
+        dir := stack[top_idx]
+        stack = slice(stack, 0, top_idx)
+        mut names := []
+        try {
+            names = list_dir(dir)
+        } except collect_error {
+            return err("Could not read existing pack directory: " + dir)
+        }
+        mut cf_i := 0
+        cf_n := len(names)
+        while cf_i < cf_n {
+            p := join_path(dir, names[cf_i])
+            if path_is_dir(p) && path_is_symlink(p) == false {
+                stack = push(stack, p)
+            } else {
+                out = push(out, p)
+            }
+            cf_i = cf_i + 1
+        }
+    }
+    return {"ok": true, "files": out}
+}
+
+func strip_fences(text) {
+    t := trim(text)
+    if starts_with(t, "```") == false {
+        return t
+    }
+
+    nl := str_find(t, "\n")
+    if nl < 0 {
+        return t
+    }
+
+    inner := substring(t, nl + 1, char_len(t))
+    inner_trim := trim(inner)
+    if ends_with(inner_trim, "```") {
+        last := str_rfind(inner, "```")
+        if last >= 0 {
+            inner = substring(inner, 0, last)
+        }
+    }
+    return trim(inner)
+}
+
+func extract_single_top_object(text) {
+    t := trim(text)
+    if t == "" {
+        return ""
+    }
+
+    start := str_find(t, "{")
+    if start < 0 {
+        return ""
+    }
+
+    mut in_string := false
+    mut escaped := false
+    mut depth := 0
+    mut idx := start
+    mut end := -1
+    while substring(t, idx, idx + 1) != "" {
+        ch := substring(t, idx, idx + 1)
+        if in_string {
+            if escaped {
+                escaped = false
+            } else if ch == "\\" {
+                escaped = true
+            } else if ch == "\"" {
+                in_string = false
+            }
+            idx = idx + 1
+            continue
+        }
+
+        if ch == "\"" {
+            in_string = true
+        } else if ch == "{" {
+            depth = depth + 1
+        } else if ch == "}" {
+            depth = depth - 1
+            if depth == 0 {
+                end = idx
+                break
+            }
+        }
+        idx = idx + 1
+    }
+
+    if end < start {
+        return ""
+    }
+
+    prefix := trim(substring(t, 0, start))
+    suffix := trim(substring(t, end + 1, char_len(t)))
+    if has_substr(prefix, "{") || has_substr(prefix, "}") || has_substr(suffix, "{") || has_substr(suffix, "}") {
+        return ""
+    }
+
+    return trim(substring(t, start, end + 1))
+}
+
+func parse_error_with_diagnostics(reason, text, meta) {
+    provider := meta_value(meta, "provider", "unknown")
+    model := meta_value(meta, "model", "unknown")
+    finish_reason := meta_value(meta, "finish_reason", "")
+    empty := trim(text) == ""
+
+    head := compact_preview(sanitize_diagnostic_text(first_n_chars(text, 500)))
+    mut tail := "[omitted for large response]"
+    if len(text) <= 20000 {
+        tail = compact_preview(sanitize_diagnostic_text(last_n_chars(text, 500)))
+    }
+
+    mut msg := msg_unparseable() + " (" + reason + ")."
+    msg = msg + " diagnostics provider=" + provider
+    msg = msg + ", model=" + model
+    msg = msg + ", response_length=" + "${len(text)}"
+    msg = msg + ", empty=" + bool_word(empty)
+    if finish_reason != "" {
+        msg = msg + ", finish_reason=" + finish_reason
+    } else {
+        msg = msg + ", finish_reason=unknown"
+    }
+    msg = msg + ", finish_reason_length=" + bool_word(finish_reason == "length")
+    msg = msg + ", head=\"" + head + "\""
+    msg = msg + ", tail=\"" + tail + "\""
+    msg = msg + ". Hint: response may be truncated or the provider did not return strict JSON output mode."
+    return msg
+}
+
+func meta_value(meta, key, fallback) {
+    if type(meta) == "dict" && has_key(meta, key) == 1 && type(meta[key]) == "string" && trim(meta[key]) != "" {
+        return meta[key]
+    }
+    return fallback
+}
+
+func sanitize_diagnostic_text(text) {
+    ls := lines_of(text)
+    mut out := ""
+    mut sd_i := 0
+    sd_n := len(ls)
+    while sd_i < sd_n {
+        line := ls[sd_i]
+        if secret_like_line(line) {
+            line = redact_line(line)
+        }
+        if sd_i > 0 {
+            out = out + "\n"
+        }
+        out = out + line
+        sd_i = sd_i + 1
+    }
+    return out
+}
+
+func secret_like_line(line) {
+    low := to_lower(line)
+    if has_substr(low, "api_key") || has_substr(low, "api-key") {
+        return true
+    }
+    if has_substr(low, "token") {
+        return true
+    }
+    if has_substr(low, "password") {
+        return true
+    }
+    if has_substr(low, "private_key") || has_substr(low, "private-key") || has_substr(low, "private key") {
+        return true
+    }
+    if has_substr(low, "authorization") || has_substr(low, "bearer ") {
+        return true
+    }
+    if has_substr(low, "secret") {
+        return true
+    }
+    if has_substr(line, "sk-") {
+        return true
+    }
+    return false
+}
+
+func redact_line(line) {
+    eq := str_find(line, "=")
+    if eq >= 0 {
+        return trim(substring(line, 0, eq)) + "=[REDACTED]"
+    }
+    col := str_find(line, ":")
+    if col >= 0 {
+        return trim(substring(line, 0, col)) + ": [REDACTED]"
+    }
+    return "[REDACTED]"
+}
+
+func compact_preview(text) {
+    mut out := ""
+    mut cp_i := 0
+    while substring(text, cp_i, cp_i + 1) != "" {
+        ch := substring(text, cp_i, cp_i + 1)
+        if ch == "\n" || ch == "\r" || ch == "\t" {
+            out = out + " "
+        } else {
+            out = out + ch
+        }
+        cp_i = cp_i + 1
+    }
+    return out
+}
+
+func first_n_chars(text, n) {
+    mut out := ""
+    mut fn_i := 0
+    while fn_i < n {
+        ch := substring(text, fn_i, fn_i + 1)
+        if ch == "" {
+            return out
+        }
+        out = out + ch
+        fn_i = fn_i + 1
+    }
+    return out
+}
+
+func last_n_chars(text, n) {
+    total := char_len(text)
+    if total <= n {
+        return text
+    }
+    return substring(text, total - n, total)
+}
+
+func bool_word(v) {
+    if v {
+        return "true"
+    }
+    return "false"
+}
+
+func path_has_traversal_segment(path) {
+    parts := split(path, "/")
+    mut pts_i := 0
+    pts_n := len(parts)
+    while pts_i < pts_n {
+        if parts[pts_i] == ".." {
+            return true
+        }
+        pts_i = pts_i + 1
+    }
+    return false
+}
+
+func is_symlink_path(path) {
+    mut linked := false
+    try {
+        linked = path_is_symlink(path)
+    } except err {
+        linked = false
+    }
+    return linked
+}
+
+func path_has_current_segment(path) {
+    parts := split(path, "/")
+    mut pcs_i := 0
+    pcs_n := len(parts)
+    while pcs_i < pcs_n {
+        if parts[pcs_i] == "." {
+            return true
+        }
+        pcs_i = pcs_i + 1
+    }
+    return false
+}
+
+func path_has_empty_segment(path) {
+    parts := split(path, "/")
+    mut pes_i := 0
+    pes_n := len(parts)
+    while pes_i < pes_n {
+        if parts[pes_i] == "" {
+            return true
+        }
+        pes_i = pes_i + 1
+    }
+    return false
+}
+
+func manifest_path_has_secret(path) {
+    parts := split(path, "/")
+    mut mps_i := 0
+    mps_n := len(parts)
+    while mps_i < mps_n {
+        if looks_secret(parts[mps_i]) {
+            return true
+        }
+        mps_i = mps_i + 1
+    }
+    return false
+}
+
+func is_phase_path(path, out_dir) {
+    if parent_of(path) != out_dir + "/phases" {
+        return false
+    }
+    return ends_with(path, ".md")
+}

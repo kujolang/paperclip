@@ -1,0 +1,104 @@
+# Muzzle report generation.
+# Produces Markdown and JSON workflow reports.
+
+from src.common import format_duration_ms, timestamp_iso, path_join, ensure_dir
+from src.redact import redact_text, error_excerpt
+
+REPORTS_DIR := ".muzzle/reports"
+LOGS_DIR := ".muzzle/logs"
+
+# Only replace the final suffix: workflow names may themselves contain .md.
+export func json_report_path(report_path) {
+	return substring(report_path, 0, len(report_path) - 3) + ".json"
+}
+
+func write_private_artifact(path, content) {
+	receipt := io_write_private_file(path, content, 384)
+	if type(receipt) == "Error" {
+		throw("Could not write private Muzzle artifact '" + path + "': " + to_string(receipt))
+	}
+	if type(receipt) != "dict" || receipt["verified"] != true || to_int(receipt["mode"]) != 384 {
+		throw("Could not verify private permissions for Muzzle artifact '" + path + "'.")
+	}
+}
+
+# Generate a Markdown report for a workflow run.
+export func write_markdown_report(workflow_name, status, exit_code, started_at, finished_at, duration_ms, log_path, report_path, summary_line, error_text, timed_out, cancelled, display_truncated) {
+	ensure_dir(REPORTS_DIR)
+
+	mut notes_section := "No failures detected."
+	if status == "failed" {
+		notes_section = "Failure detected. See log for full details."
+		if error_text != "" {
+			notes_section = notes_section + "\n\n### Redacted error excerpt\n\n```text\n" + redact_text(error_text) + "\n```"
+		}
+	}
+
+	report := join(array(
+		"# Muzzle Workflow Report",
+		"",
+		"Workflow: " + workflow_name,
+		"Status: " + status,
+		"Exit code: " + to_string(exit_code),
+		"Started: " + started_at,
+		"Finished: " + finished_at,
+		"Duration: " + format_duration_ms(duration_ms),
+		"Timed out: " + to_string(timed_out),
+		"Cancelled: " + to_string(cancelled),
+		"Terminal output truncated: " + to_string(display_truncated),
+		"",
+		"## Summary",
+		"",
+		summary_line,
+		"",
+		"## Outputs",
+		"",
+		"- Log: " + log_path,
+		"- JSON summary: " + json_report_path(report_path),
+		"",
+		"## Notes",
+		"",
+		notes_section
+	), "\n") + "\n"
+
+	write_private_artifact(report_path, report)
+}
+
+# Generate a JSON report for a workflow run.
+export func write_json_report(workflow_name, status, exit_code, started_at, finished_at, duration_ms, log_path, report_path, summary_line, error_text, timed_out, cancelled, display_truncated) {
+	ensure_dir(REPORTS_DIR)
+
+	mut report := dict()
+	report["schema_version"] = "muzzle.run/v1"
+	report["command"] = "run"
+	report["workflow"] = workflow_name
+	report["status"] = status
+	report["exit_code"] = exit_code
+	report["started_at"] = started_at
+	report["finished_at"] = finished_at
+	report["duration_ms"] = duration_ms
+	report["log_path"] = log_path
+	report["report_path"] = report_path
+	report["summary"] = summary_line
+	report["timed_out"] = timed_out
+	report["cancelled"] = cancelled
+	report["display_truncated"] = display_truncated
+
+	if error_text != "" {
+		redacted_error := redact_text(error_text)
+		report["error_excerpt"] = redacted_error
+	} else {
+		report["error_excerpt"] = null
+	}
+
+	json_str := to_json(report)
+	write_private_artifact(json_report_path(report_path), json_str)
+}
+
+# Generate file paths for a workflow run.
+export func make_paths(workflow_name, ts_compact) {
+	unique_id := replace(uuid_v4(), "-", "")
+	log_path := LOGS_DIR + "/" + workflow_name + "-" + ts_compact + "-" + unique_id + ".log"
+	report_path := REPORTS_DIR + "/" + workflow_name + "-" + ts_compact + "-" + unique_id + ".md"
+	return {"log": log_path, "report": report_path}
+}

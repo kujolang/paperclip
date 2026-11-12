@@ -1,0 +1,89 @@
+# Kujo-native release report renderer. Shell scripts only collect suite evidence.
+
+from src.util import project_version, read_text
+
+func flag_value(argv, name, fallback) {
+    mut i := 0
+    while i < len(argv) {
+        if argv[i] == name&&i + 1 < len(argv) {return argv[i + 1]}
+        i = i + 1
+    }
+    return fallback
+}
+
+func metric_result(text, label) {
+    lines := split(text, "\n")
+    mut i := 0
+    while i < len(lines) {
+        line := trim(lines[i])
+        if starts_with(line, label) {
+            mut value := 0
+            try {
+                value = parse_int(trim(substring(line, len(label), len(line))))
+            } except err {
+                return {"ok": false, "value": 0}
+            }
+            return {"ok": true, "value": value}
+        }
+        i = i + 1
+    }
+    return {"ok": true, "value": 0}
+}
+
+func metric(text, label) {
+    return metric_result(text, label)["value"]
+}
+
+func number_file(path, fallback) {
+    loaded := read_text(path)
+    if loaded["ok"] == false {return fallback}
+    mut value := 0
+    try {
+        value = parse_int(trim(loaded["text"]))
+    } except err {
+        return fallback
+    }
+    return value
+}
+
+func suite_result(report_dir, name) {
+    log := read_text(report_dir + "/" + name + ".log")
+    output := ""
+    if log["ok"] {output = log["text"]}
+    exit_code := number_file(report_dir + "/" + name + ".exit", 127)
+    elapsed_ms := number_file(report_dir + "/" + name + ".elapsed_ms", 0)
+    passed_result := metric_result(output, "Passed: ")
+    failed_result := metric_result(output, "Failed: ")
+    passed := passed_result["value"]
+    failed := failed_result["value"]
+    passed_ok := exit_code == 0&&passed >= 0&&failed >= 0&&failed == 0&&passed_result["ok"]&&failed_result["ok"]
+    return {"name": name, "passed": passed, "failed": failed, "exit_code": exit_code, "elapsed_ms": elapsed_ms, "ok": passed_ok}
+}
+
+export func render_report(report_dir) {
+    names := ["policy-artifact-verification", "workspace-change-report", "performance", "stress-limits"]
+    mut suites := []
+    mut total_passed := 0
+    mut total_failed := 0
+    mut total_elapsed := 0
+    mut ok := true
+    mut i := 0
+    while i < len(names) {
+        suite := suite_result(report_dir, names[i])
+        suites = push(suites, suite)
+        total_passed = total_passed + suite["passed"]
+        total_failed = total_failed + suite["failed"]
+        total_elapsed = total_elapsed + suite["elapsed_ms"]
+        if suite["ok"] == false {ok = false}
+        i = i + 1
+    }
+    return {"schema_version": "workcell-report/v1", "workcell_version": project_version(), "ok": ok, "suites": suites, "totals": {"passed": total_passed, "failed": total_failed, "elapsed_ms": total_elapsed}, "deployment_gates": {"docker_integration": "skipped", "podman_matrix": "skipped", "ecosystem_tools": "skipped"}}
+}
+
+argv := args()
+report_dir := flag_value(argv, "--dir", "")
+if report_dir == ""||path_is_dir(report_dir) == false {
+    print(to_json_pretty({"schema_version": "workcell-report/v1", "workcell_version": project_version(), "ok": false, "error": "report directory does not exist"}))
+    exit(10)
+}
+print(to_json_pretty(render_report(report_dir)))

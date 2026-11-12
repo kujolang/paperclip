@@ -1,0 +1,197 @@
+# Explicit opt-in adapters for the local Kujo ecosystem.
+
+from src.util import ensure_dir, get_or, process_ok, redact_with_env, run_argv_options, save_json
+from src.domain.definition import validate_definition
+
+func enabled(config) {
+    return type(config) == "dict"&&get_or(config, "enabled", false) == true
+}
+
+func command_for(config, fallback) {
+    command := get_or(config, "command", fallback)
+    if type(command) != "array"||len(command) == 0 {
+        return fallback
+    }
+    return command
+}
+
+func append_values(left, right) {
+    mut output := left
+    mut i := 0
+    while i < len(right) {
+        output = push(output, right[i])
+        i = i + 1
+    }
+    return output
+}
+
+func report_path(output_dir, name) {
+    integration_dir := output_dir + "/integrations"
+    ensure_dir(integration_dir)
+    return integration_dir + "/" + name + ".json"
+}
+
+func redacted_argv(argv, secrets) {
+    mut output := []
+    mut i := 0
+    while i < len(argv) {
+        output = push(output, redact_with_env(to_string(argv[i]), secrets))
+        i = i + 1
+    }
+    return output
+}
+
+func process_field(result, key, fallback) {
+    if type(result) == "dict" {
+        return get_or(result, key, fallback)
+    }
+    if key == "exitcode" {return result.exitcode}
+    if key == "stdout" {return result.stdout}
+    if key == "stderr" {return result.stderr}
+    if key == "timed_out" {return result.timed_out}
+    if key == "stdout_truncated" {return result.stdout_truncated}
+    if key == "stderr_truncated" {return result.stderr_truncated}
+    return fallback
+}
+
+func external_report(name, config, argv, cwd, output_dir, secrets) {
+    timeout := get_or(config, "timeout_ms", 120000)
+    result := run_argv_options(argv, {"cwd": cwd, "timeout_ms": timeout, "max_output_bytes": 4000000})
+    stdout := redact_with_env(process_field(result, "stdout", ""), secrets)
+    stderr := redact_with_env(process_field(result, "stderr", ""), secrets)
+    report := {
+        "schema_version": "workcell-integration/v1",
+        "name": name,
+        "enabled": true,
+        "ok": process_ok(result),
+        "exit_code": process_field(result, "exitcode", 127),
+        "timed_out": process_field(result, "timed_out", false),
+        "stdout_truncated": process_field(result, "stdout_truncated", false),
+        "stderr_truncated": process_field(result, "stderr_truncated", false),
+        "command": redacted_argv(argv, secrets),
+        "working_directory": cwd,
+        "stdout": stdout,
+        "stderr": stderr,
+        "report_path": report_path(output_dir, name)
+    }
+    try {
+        persisted := save_json(report["report_path"], report)
+        if persisted != true {
+            report["ok"] := false
+            report["stderr"] := report["stderr"] + "\nCould not persist integration report"
+        }
+    } except err {
+        report["ok"] := false
+        report["stderr"] := report["stderr"] + "\nCould not persist integration report: " + to_string(err)
+    }
+    return report
+}
+
+func disabled_report(name, output_dir) {
+    return {"schema_version": "workcell-integration/v1", "name": name, "enabled": false, "ok": true, "status": "disabled", "report_path": null}
+}
+
+func skipped_report(name, output_dir) {
+    return {"schema_version": "workcell-integration/v1", "name": name, "enabled": true, "ok": true, "status": "skipped-dry-run", "report_path": null}
+}
+
+func run_runledger(config, definition, source_root, output_dir, receipt_path, final_status, final_ok, secrets) {
+    name := "runledger"
+    if enabled(config) == false {return disabled_report(name, output_dir)}
+    ledger_path := output_dir + "/integrations/.runledger"
+    command := command_for(config, ["runledger"])
+    start_args := ["start", "--model", "workcell", "--provider", "workcell", "--task", definition["name"], "--repo", source_root, "--ledger", ledger_path]
+    start := external_report(name + "-start", config, append_values(command, start_args), source_root, output_dir, secrets)
+    if start["ok"] == false {return {"name": name, "enabled": true, "ok": false, "status": "start-failed", "start": start, "report_path": start["report_path"]}}
+    lines := split(start["stdout"], "\n")
+    mut run_id_value := ""
+    mut i := 0
+    while i < len(lines) {
+        line := trim(lines[i])
+        if starts_with(line, "Started run: ") {
+            run_id_value = trim(substring(line, len("Started run: "), len(line)))
+        }
+        i = i + 1
+    }
+    if run_id_value == "" {
+        return {"name": name, "enabled": true, "ok": false, "status": "start-missing-run-id", "start": start, "report_path": start["report_path"]}
+    }
+    ledger_status := "fail"
+    if final_ok {ledger_status = "pass"} else if final_status == "timeout"||final_status == "cancelled" {ledger_status = "abandoned"}
+    verdict := "Workcell " + final_status + "; receipt=" + receipt_path
+    finish_args := ["finish", run_id_value, "--status", ledger_status, "--verdict", verdict, "--repo", source_root, "--ledger", ledger_path]
+    finish := external_report(name + "-finish", config, append_values(command, finish_args), source_root, output_dir, secrets)
+    finish_status := "imported"
+    if finish["ok"] == false {finish_status = "finish-failed"}
+    return {"name": name, "enabled": true, "ok": finish["ok"], "status": finish_status, "run_id": run_id_value, "start": start, "finish": finish, "report_path": finish["report_path"]}
+}
+
+func run_standard(name, config, command, args, source_root, output_dir, secrets) {
+    if enabled(config) == false {return disabled_report(name, output_dir)}
+    return external_report(name, config, append_values(command_for(config, command), args), source_root, output_dir, secrets)
+}
+
+export func run_integrations(definition, source_root, output_dir, receipt_path, final_status, final_ok) {
+    definition_check := validate_definition(definition)
+    if definition_check["ok"] == false {
+        return definition_check
+    }
+    if type(source_root) != "string"||type(output_dir) != "string"||type(receipt_path) != "string"||type(final_status) != "string"||type(final_ok) != "bool"||source_root == ""||output_dir == ""||receipt_path == ""||final_status == "" {
+        return {"ok": false, "error": "integration source, output, receipt, status, and result inputs must have valid types"}
+    }
+    integrations := get_or(definition, "integrations", {})
+    secrets := definition["secrets"]
+    mut results := []
+    runledger := run_runledger(get_or(integrations, "runledger", {}), definition, source_root, output_dir, receipt_path, final_status, final_ok, secrets)
+    results = push(results, runledger)
+    changebucket := run_standard("changebucket", get_or(integrations, "changebucket", {}), ["changebucket"], ["--repo", source_root, "--json"], source_root, output_dir, secrets)
+    results = push(results, changebucket)
+    shipcheck_config := get_or(integrations, "shipcheck", {})
+    shipcheck_mode := get_or(shipcheck_config, "mode", "scan")
+    shipcheck := run_standard("shipcheck", shipcheck_config, ["shipcheck"], [shipcheck_mode, "--dir", source_root, "--format", "json"], source_root, output_dir, secrets)
+    results = push(results, shipcheck)
+    fence_config := get_or(integrations, "fence", {})
+    fence := run_standard("fence", fence_config, [], ["check", "--format", "json"], source_root, output_dir, secrets)
+    results = push(results, fence)
+    packwrite_config := get_or(integrations, "packwrite", {})
+    packwrite_mode := get_or(packwrite_config, "mode", "validate")
+    packwrite := run_standard("packwrite", packwrite_config, ["packwrite"], [packwrite_mode], source_root, output_dir, secrets)
+    results = push(results, packwrite)
+    muzzle_config := get_or(integrations, "muzzle", {})
+    muzzle_mode := get_or(muzzle_config, "mode", "list")
+    muzzle := run_standard("muzzle", muzzle_config, ["muzzle"], [muzzle_mode, "--json"], source_root, output_dir, secrets)
+    results = push(results, muzzle)
+    mut all_ok := true
+    mut i := 0
+    while i < len(results) {
+        if results[i]["enabled"]&&results[i]["ok"] == false {all_ok = false}
+        i = i + 1
+    }
+    return {"schema_version": "workcell-integrations/v1", "ok": all_ok, "results": results}
+}
+
+export func dry_run_integrations(definition, output_dir) {
+    definition_check := validate_definition(definition)
+    if definition_check["ok"] == false {
+        return definition_check
+    }
+    integrations := get_or(definition, "integrations", {})
+    mut results := []
+    mut enabled_count := 0
+    names := ["runledger", "changebucket", "shipcheck", "fence", "packwrite", "muzzle"]
+    mut i := 0
+    while i < len(names) {
+        name := names[i]
+        config := get_or(integrations, name, {})
+        if enabled(config) {
+            enabled_count = enabled_count + 1
+            results = push(results, skipped_report(name, output_dir))
+        } else {
+            results = push(results, disabled_report(name, output_dir))
+        }
+        i = i + 1
+    }
+    status := "disabled"
+    if enabled_count > 0 {status = "skipped"}
+    return {"schema_version": "workcell-integrations/v1", "ok": true, "status": status, "results": results}
+}

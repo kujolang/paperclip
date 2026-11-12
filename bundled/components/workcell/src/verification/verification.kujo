@@ -1,0 +1,131 @@
+# Declarative post-run checks executed inside the same disposable workspace policy.
+
+from src.backend.oci.driver import backend_destroy, backend_execute, backend_logs, backend_stop
+from src.policy.policy import build_policy
+from src.domain.definition import validate_definition
+from src.util import get_or, redact_with_env
+
+func verification_definition(definition, command) {
+    mut value := {}
+    try {
+        value = parse_json(to_json(definition))
+    } except err {
+        return {"ok": false, "error": "unable to copy definition: " + to_string(err)}
+    }
+    value["command"] := command
+    return value
+}
+
+func safe_command(command, secrets) {
+    mut output := []
+    mut i := 0
+    while i < len(command) {
+        output = push(output, redact_with_env(to_string(command[i]), secrets))
+        i = i + 1
+    }
+    return output
+}
+
+func check_result(check, container, cleanup_status, secrets) {
+    mut status := "passed"
+    if get_or(container, "timed_out", false) {
+        status = "timeout"
+    } else if get_or(container, "cancelled", false) {
+        status = "cancelled"
+    } else if get_or(container, "success", false) == false {
+        status = "failed"
+    }
+    return {
+        "name": check["name"],
+        "command": safe_command(check["command"], secrets),
+        "status": status,
+        "exit_code": get_or(container, "exit_code", 5),
+        "stdout": redact_with_env(get_or(container, "stdout", ""), []),
+        "stderr": redact_with_env(get_or(container, "stderr", ""), []),
+        "stdout_truncated": get_or(container, "stdout_truncated", false),
+        "stderr_truncated": get_or(container, "stderr_truncated", false),
+        "cleanup_status": cleanup_status
+    }
+}
+
+func cleanup_result_ok(result) {
+    if get_or(result, "ok", false) == true {
+        return true
+    }
+    message := to_lower(to_string(get_or(result, "message", "")))
+    return contains(message, "no such container") == 1
+}
+
+func cleanup_verification_container(container_name, backend) {
+    stop_result := backend_stop(container_name, backend)
+    remove_result := backend_destroy(container_name, backend)
+    cleanup_status := "complete"
+    if cleanup_result_ok(stop_result) == false||cleanup_result_ok(remove_result) == false {
+        cleanup_status = "failed"
+    }
+    return {"status": cleanup_status, "stop": stop_result, "remove": remove_result}
+}
+
+export func run_verification_checks(definition, workspace, run_identifier, secrets, workload_succeeded) {
+    definition_check := validate_definition(definition)
+    if definition_check["ok"] == false {
+        return definition_check
+    }
+    if type(workspace) != "dict"||type(run_identifier) != "string"||type(secrets) != "array"||type(workload_succeeded) != "bool"||get_or(workspace, "workspace_path", "") == ""||run_identifier == "" {
+        return {"ok": false, "error": "verification workspace, run identifier, secrets, and workload result inputs are invalid"}
+    }
+    checks := get_or(definition["verification"], "commands", [])
+    mut results := []
+    if workload_succeeded == false {
+        mut skipped_i := 0
+        while skipped_i < len(checks) {
+            results = push(results, {"name": checks[skipped_i]["name"], "command": safe_command(checks[skipped_i]["command"], secrets), "status": "skipped", "exit_code": null, "stdout": "", "stderr": "workload did not succeed", "stdout_truncated": false, "stderr_truncated": false, "cleanup_status": "not-run"})
+            skipped_i = skipped_i + 1
+        }
+        return {"ok": false, "checks": results, "error": "verification checks skipped because the workload failed"}
+    }
+    mut i := 0
+    while i < len(checks) {
+        check := checks[i]
+        check_definition := verification_definition(definition, check["command"])
+        check_id := run_identifier + "-verify-" + to_string(i)
+        policy := build_policy(check_definition, check_id, workspace["workspace_path"])
+        if policy["ok"] == false {
+            results = push(results, {"name": check["name"], "command": safe_command(check["command"], secrets), "status": "blocked", "exit_code": null, "stdout": "", "stderr": redact_with_env(policy["error"], secrets), "stdout_truncated": false, "stderr_truncated": false, "cleanup_status": "not-started"})
+            return {"ok": false, "checks": results, "error": "could not build verification policy for " + check["name"]}
+        }
+        container := backend_execute(check_definition, policy, {})
+        if container["ok"] == false {
+            cleanup := cleanup_verification_container(policy["container_name"], definition["runtime"]["backend"])
+            results = push(results, {"name": check["name"], "command": safe_command(check["command"], secrets), "status": "blocked", "exit_code": null, "stdout": "", "stderr": redact_with_env(container["error"], secrets), "stdout_truncated": false, "stderr_truncated": false, "cleanup_status": cleanup["status"]})
+            return {"ok": false, "checks": results, "error": "verification could not start: " + check["name"]}
+        }
+        mut stdout := redact_with_env(get_or(container, "stdout", ""), secrets)
+        mut stderr := redact_with_env(get_or(container, "stderr", ""), secrets)
+        if get_or(container, "timed_out", false) {
+            logs := backend_logs(policy["container_name"], definition["runtime"]["backend"])
+            if logs["ok"] {
+                stdout = redact_with_env(logs["stdout"], secrets)
+                stderr = redact_with_env(logs["stderr"], secrets)
+            }
+        }
+        mut stop_result := {"ok": true}
+        if get_or(container, "timed_out", false) {
+            stop_result = backend_stop(policy["container_name"], definition["runtime"]["backend"])
+        }
+        cleanup := backend_destroy(policy["container_name"], definition["runtime"]["backend"])
+        mut cleanup_status := "complete"
+        if stop_result["ok"] == false||cleanup["ok"] == false {
+            cleanup_status = "failed"
+        }
+        result := check_result(check, container, cleanup_status, secrets)
+        result["stdout"] := stdout
+        result["stderr"] := stderr
+        results = push(results, result)
+        if result["status"] != "passed"||cleanup_status != "complete" {
+            return {"ok": false, "checks": results, "error": "verification check failed: " + check["name"]}
+        }
+        i = i + 1
+    }
+    return {"ok": true, "checks": results}
+}

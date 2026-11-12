@@ -1,0 +1,425 @@
+# Provider-neutral Workcell backend contract value constructors and validators.
+
+from src.util import get_or, has_key_safe, valid_run_id
+
+export func backend_contract_id() {
+    return "workcell-backend/v1alpha1"
+}
+
+export func valid_support(value) {
+    return value == "supported"||value == "unsupported"||value == "conditional"||value == "unknown"
+}
+
+export func valid_acceptance(value) {
+    return value == "accepted"||value == "rejected"||value == "degraded"||value == "not-requested"
+}
+
+export func valid_enforcement_status(value) {
+    return value == "workcell-enforced"||value == "provider-claimed"||value == "operator-claimed"||value == "not-enforceable"||value == "unsupported"||value == "unknown"
+}
+
+export func valid_observation_status(value) {
+    return value == "observed"||value == "not-observed"||value == "contradicted"||value == "not-applicable"
+}
+
+export func valid_operation(value) {
+    return value == "describe"||value == "resolve"||value == "provision"||value == "prepare"||value == "execute"||value == "cancel"||value == "collect"||value == "export"||value == "destroy"||value == "inventory"||value == "pause"||value == "resume"||value == "snapshot"||value == "metrics"
+}
+
+func only_fields(value, allowed) {
+    fields := keys(value)
+    mut i := 0
+    while i < len(fields) {
+        mut found := false
+        mut allowed_i := 0
+        while allowed_i < len(allowed) {
+            if fields[i] == allowed[allowed_i] {found = true}
+            allowed_i = allowed_i + 1
+        }
+        if found == false {return false}
+        i = i + 1
+    }
+    return true
+}
+
+func has_fields(value, required) {
+    mut i := 0
+    while i < len(required) {
+        if has_key_safe(value, required[i]) == false {return false}
+        i = i + 1
+    }
+    return true
+}
+
+func non_empty_string(value) {
+    return type(value) == "string"&&trim(value) != ""&&len(value) <= 4096
+}
+
+func string_array(value, max_items) {
+    if type(value) != "array"||len(value) > max_items {return false}
+    mut i := 0
+    while i < len(value) {
+        if non_empty_string(value[i]) == false {return false}
+        i = i + 1
+    }
+    return true
+}
+
+func validate_ownership(value, expected_run_id) {
+    if type(value) != "dict"||only_fields(value, ["run_id", "nonce"]) == false {return false}
+    if valid_run_id(get_or(value, "run_id", "")) == false||non_empty_string(get_or(value, "nonce", "")) == false {return false}
+    return expected_run_id == ""||value["run_id"] == expected_run_id
+}
+
+func validate_request_payload(operation, payload, run_identifier) {
+    if operation == "describe" {return only_fields(payload, [])}
+    if operation == "resolve" {
+        return only_fields(payload, ["requirements", "intent"])&&has_fields(payload, ["requirements", "intent"])&&type(payload["requirements"]) == "array"&&len(payload["requirements"]) <= 256&&type(payload["intent"]) == "dict"
+    }
+    if operation == "provision" {
+        return only_fields(payload, ["resolved_plan", "ownership", "idempotency_key"])&&has_fields(payload, ["resolved_plan", "ownership", "idempotency_key"])&&type(payload["resolved_plan"]) == "dict"&&validate_ownership(payload["ownership"], run_identifier)&&non_empty_string(payload["idempotency_key"])
+    }
+    if operation == "prepare" {
+        return only_fields(payload, ["handle", "workspace_package", "execution_prerequisites", "idempotency_key"])&&has_fields(payload, ["handle", "workspace_package", "idempotency_key"])&&type(payload["handle"]) == "dict"&&type(payload["workspace_package"]) == "dict"&&non_empty_string(get_or(payload["workspace_package"], "sha256", ""))&&non_empty_string(payload["idempotency_key"])
+    }
+    if operation == "execute" {
+        return only_fields(payload, ["handle", "attempt_id", "argv", "workdir", "environment", "secret_channel", "timeout_ms", "max_output_bytes"])&&has_fields(payload, ["handle", "attempt_id", "argv", "workdir", "environment", "secret_channel", "timeout_ms", "max_output_bytes"])&&type(payload["handle"]) == "dict"&&non_empty_string(payload["attempt_id"])&&string_array(payload["argv"], 1024)&&len(payload["argv"]) > 0&&non_empty_string(payload["workdir"])&&starts_with(payload["workdir"], "/")&&type(payload["environment"]) == "dict"&&string_array(payload["secret_channel"], 1024)&&type(payload["timeout_ms"]) == "int"&&payload["timeout_ms"] > 0&&type(payload["max_output_bytes"]) == "int"&&payload["max_output_bytes"] > 0
+    }
+    if operation == "cancel" {
+        return only_fields(payload, ["handle", "command_id", "idempotency_key"])&&has_fields(payload, ["handle", "command_id", "idempotency_key"])&&type(payload["handle"]) == "dict"&&non_empty_string(payload["command_id"])&&non_empty_string(payload["idempotency_key"])
+    }
+    if operation == "collect" {
+        return only_fields(payload, ["handle", "attempt_id", "stream_cursor"])&&has_fields(payload, ["handle", "attempt_id", "stream_cursor"])&&type(payload["handle"]) == "dict"&&non_empty_string(payload["attempt_id"])
+    }
+    if operation == "export" {
+        return only_fields(payload, ["handle", "declarations", "limits", "exporter_version", "destination", "idempotency_key"])&&has_fields(payload, ["handle", "declarations", "limits", "exporter_version", "destination", "idempotency_key"])&&type(payload["handle"]) == "dict"&&string_array(payload["declarations"], 10000)&&type(payload["limits"]) == "dict"&&non_empty_string(payload["exporter_version"])&&non_empty_string(payload["destination"])&&non_empty_string(payload["idempotency_key"])
+    }
+    if operation == "destroy" {
+        return only_fields(payload, ["handle", "expected_ownership", "idempotency_key"])&&has_fields(payload, ["handle", "expected_ownership", "idempotency_key"])&&type(payload["handle"]) == "dict"&&validate_ownership(payload["expected_ownership"], run_identifier)&&non_empty_string(payload["idempotency_key"])
+    }
+    if operation == "inventory" {
+        return only_fields(payload, ["ownership"])&&has_fields(payload, ["ownership"])&&validate_ownership(payload["ownership"], run_identifier)
+    }
+    if operation == "pause"||operation == "resume"||operation == "snapshot"||operation == "metrics" {
+        return type(get_or(payload, "handle", null)) == "dict"
+    }
+    return false
+}
+
+export func backend_identity(adapter, adapter_version, provider, provider_api, substrate) {
+    return {
+        "adapter": adapter,
+        "adapter_version": adapter_version,
+        "provider": provider,
+        "provider_api": provider_api,
+        "substrate": substrate
+    }
+}
+
+export func validate_backend_identity(value) {
+    if type(value) != "dict" {
+        return {"ok": false, "error": "backend identity must be an object"}
+    }
+    fields := ["adapter", "adapter_version", "provider", "provider_api", "substrate"]
+    mut i := 0
+    while i < len(fields) {
+        field := fields[i]
+        if type(get_or(value, field, null)) != "string"||trim(value[field]) == "" {
+            return {"ok": false, "error": "backend identity " + field + " must be a non-empty string"}
+        }
+        i = i + 1
+    }
+    return {"ok": true}
+}
+
+export func capability_state(id, support, requested, acceptance, resolved, enforcement, observation, limitations) {
+    return {
+        "id": id,
+        "support": support,
+        "requested": requested,
+        "acceptance": acceptance,
+        "resolved": resolved,
+        "enforcement": enforcement,
+        "observation": observation,
+        "limitations": limitations
+    }
+}
+
+export func validate_capability_state(value) {
+    if type(value) != "dict" {
+        return {"ok": false, "error": "capability state must be an object"}
+    }
+    if type(get_or(value, "id", null)) != "string"||trim(value["id"]) == "" {
+        return {"ok": false, "error": "capability id must be a non-empty string"}
+    }
+    if valid_support(get_or(value, "support", null)) == false {
+        return {"ok": false, "error": "invalid capability support for " + value["id"]}
+    }
+    if type(get_or(value, "requested", null)) != "bool" {
+        return {"ok": false, "error": "capability requested must be boolean for " + value["id"]}
+    }
+    if valid_acceptance(get_or(value, "acceptance", null)) == false {
+        return {"ok": false, "error": "invalid capability acceptance for " + value["id"]}
+    }
+    enforcement := get_or(value, "enforcement", null)
+    if type(enforcement) != "dict"||valid_enforcement_status(get_or(enforcement, "status", null)) == false {
+        return {"ok": false, "error": "invalid capability enforcement for " + value["id"]}
+    }
+    if type(get_or(enforcement, "authority", null)) != "string"||type(get_or(enforcement, "evidence", null)) != "string" {
+        return {"ok": false, "error": "capability enforcement evidence is invalid for " + value["id"]}
+    }
+    observation := get_or(value, "observation", null)
+    if type(observation) != "dict"||valid_observation_status(get_or(observation, "status", null)) == false {
+        return {"ok": false, "error": "invalid capability observation for " + value["id"]}
+    }
+    if type(get_or(observation, "method", null)) != "string"||type(get_or(observation, "result", null)) != "string" {
+        return {"ok": false, "error": "capability observation evidence is invalid for " + value["id"]}
+    }
+    if type(get_or(value, "limitations", null)) != "array" {
+        return {"ok": false, "error": "capability limitations must be an array for " + value["id"]}
+    }
+    if string_array(value["limitations"], 256) == false&&len(value["limitations"]) > 0 {
+        return {"ok": false, "error": "capability limitations must contain bounded strings for " + value["id"]}
+    }
+    if value["acceptance"] == "accepted" {
+        status := enforcement["status"]
+        if value["support"] != "supported"&&value["support"] != "conditional" {return {"ok": false, "error": "accepted capability support is invalid for " + value["id"]}}
+        if type(get_or(value, "resolved", null)) == "null" {return {"ok": false, "error": "accepted capability resolution is missing for " + value["id"]}}
+        if status != "workcell-enforced"&&status != "provider-claimed"&&status != "operator-claimed" {return {"ok": false, "error": "accepted capability enforcement is not credible for " + value["id"]}}
+    }
+    return {"ok": true}
+}
+
+export func backend_handle(backend, adapter_version, provider, profile_fingerprint, resource_ids, run_identifier, nonce, provider_state) {
+    return {
+        "backend": backend,
+        "adapter_version": adapter_version,
+        "provider": provider,
+        "profile_fingerprint": profile_fingerprint,
+        "resource_ids": resource_ids,
+        "ownership": {"run_id": run_identifier, "nonce": nonce},
+        "provider_state": provider_state
+    }
+}
+
+export func validate_backend_handle(value, expected_run_id) {
+    if type(value) != "dict" {
+        return {"ok": false, "error": "backend handle must be an object"}
+    }
+    if only_fields(value, ["backend", "adapter_version", "provider", "profile_fingerprint", "resource_ids", "ownership", "provider_state"]) == false {
+        return {"ok": false, "error": "backend handle contains unknown fields"}
+    }
+    fields := ["backend", "adapter_version", "provider", "profile_fingerprint"]
+    mut i := 0
+    while i < len(fields) {
+        field := fields[i]
+        if type(get_or(value, field, null)) != "string"||trim(value[field]) == ""||len(value[field]) > 256 {
+            return {"ok": false, "error": "backend handle " + field + " must be a non-empty string"}
+        }
+        i = i + 1
+    }
+    if type(get_or(value, "resource_ids", null)) != "array"||len(value["resource_ids"]) == 0||len(value["resource_ids"]) > 256 {
+        return {"ok": false, "error": "backend handle resource_ids must be a non-empty array"}
+    }
+    for resource in value["resource_ids"] {
+        if type(resource) != "dict"||only_fields(resource, ["kind", "id"]) == false||type(get_or(resource, "kind", null)) != "string"||trim(resource["kind"]) == ""||len(resource["kind"]) > 128||type(get_or(resource, "id", null)) != "string"||trim(resource["id"]) == ""||len(resource["id"]) > 1024 {
+            return {"ok": false, "error": "backend handle resource identity is invalid"}
+        }
+        resource_text := to_lower(resource["id"])
+        for forbidden in ["://", "authorization", "bearer ", "token", "secret", "password", "api_key", "apikey", "access_key", "x-amz-", "x-goog-", "sharedaccesssignature", "sig="] {
+            if contains(resource_text, forbidden) == 1 {return {"ok": false, "error": "backend handle contains forbidden credential or signed transport material"}}
+        }
+    }
+    ownership := get_or(value, "ownership", null)
+    if type(ownership) != "dict"||only_fields(ownership, ["run_id", "nonce"]) == false||valid_run_id(get_or(ownership, "run_id", "")) == false||type(get_or(ownership, "nonce", null)) != "string"||trim(ownership["nonce"]) == ""||len(ownership["nonce"]) > 256 {
+        return {"ok": false, "error": "backend handle ownership is invalid"}
+    }
+    if type(expected_run_id) == "string"&&expected_run_id != ""&&ownership["run_id"] != expected_run_id {
+        return {"ok": false, "error": "backend handle ownership run id mismatch"}
+    }
+    if type(get_or(value, "provider_state", null)) != "dict" {
+        return {"ok": false, "error": "backend handle provider_state must be an object"}
+    }
+    encoded := to_json(value["provider_state"])
+    if len(encoded) > 65536 {return {"ok": false, "error": "backend handle provider_state exceeds 64 KiB"}}
+    encoded_lower := to_lower(encoded)
+    for forbidden in ["authorization", "bearer ", "token", "secret", "password", "api_key", "apikey", "access_key", "x-amz-", "x-goog-", "sharedaccesssignature", "sig=", "-----begin private key-----"] {
+        if contains(encoded_lower, forbidden) == 1 {return {"ok": false, "error": "backend handle contains forbidden credential or signed transport material"}}
+    }
+    return {"ok": true}
+}
+
+export func terminal_result(status, exit_code, signal, reason, timed_out, cancelled, certainty) {
+    return {
+        "status": status,
+        "exit_code": exit_code,
+        "signal": signal,
+        "reason": reason,
+        "timed_out": timed_out,
+        "cancelled": cancelled,
+        "certainty": certainty
+    }
+}
+
+export func validate_terminal_result(value) {
+    if type(value) != "dict" {
+        return {"ok": false, "error": "terminal result must be an object"}
+    }
+    status := get_or(value, "status", null)
+    if status != "exited"&&status != "signaled"&&status != "timed-out"&&status != "cancelled"&&status != "unknown" {
+        return {"ok": false, "error": "terminal status is invalid"}
+    }
+    if type(get_or(value, "timed_out", null)) != "bool"||type(get_or(value, "cancelled", null)) != "bool" {
+        return {"ok": false, "error": "terminal timeout and cancellation fields must be boolean"}
+    }
+    certainty := get_or(value, "certainty", null)
+    if certainty != "terminal"&&certainty != "unknown" {
+        return {"ok": false, "error": "terminal certainty must be terminal or unknown"}
+    }
+    if status == "unknown"&&certainty != "unknown" {
+        return {"ok": false, "error": "unknown terminal status requires unknown certainty"}
+    }
+    return {"ok": true}
+}
+
+export func backend_error(code, message, retryable, provider_code) {
+    return {"code": code, "message": message, "retryable": retryable, "provider_code": provider_code}
+}
+
+export func protocol_result(request, ok, status, retryable, data, error) {
+    mut result := {
+        "contract": backend_contract_id(),
+        "request_id": get_or(request, "request_id", ""),
+        "run_id": get_or(request, "run_id", ""),
+        "operation": get_or(request, "operation", ""),
+        "type": "result",
+        "ok": ok,
+        "status": status,
+        "retryable": retryable,
+        "data": data
+    }
+    if ok == false {
+        result["error"] := error
+    }
+    return result
+}
+
+export func validate_protocol_request(value) {
+    if type(value) != "dict" {
+        return {"ok": false, "error": "backend request must be an object"}
+    }
+    if only_fields(value, ["contract", "request_id", "run_id", "operation", "deadline_ms", "profile", "payload"]) == false||has_fields(value, ["contract", "request_id", "run_id", "operation", "deadline_ms", "profile", "payload"]) == false {
+        return {"ok": false, "error": "backend request envelope fields are invalid"}
+    }
+    if get_or(value, "contract", "") != backend_contract_id() {
+        return {"ok": false, "error": "backend contract is unsupported"}
+    }
+    if type(get_or(value, "request_id", null)) != "string"||trim(value["request_id"]) == "" {
+        return {"ok": false, "error": "backend request_id must be a non-empty string"}
+    }
+    if valid_run_id(get_or(value, "run_id", "")) == false {
+        return {"ok": false, "error": "backend run_id is invalid"}
+    }
+    if valid_operation(get_or(value, "operation", null)) == false {
+        return {"ok": false, "error": "backend operation is invalid"}
+    }
+    if type(get_or(value, "deadline_ms", null)) != "int"||value["deadline_ms"] <= 0 {
+        return {"ok": false, "error": "backend deadline_ms must be positive"}
+    }
+    if type(get_or(value, "profile", null)) != "dict"||type(get_or(value, "payload", null)) != "dict" {
+        return {"ok": false, "error": "backend profile and payload must be objects"}
+    }
+    if validate_request_payload(value["operation"], value["payload"], value["run_id"]) == false {
+        return {"ok": false, "error": "backend " + value["operation"] + " payload is invalid"}
+    }
+    return {"ok": true}
+}
+
+func valid_result_status(value) {
+    return value == "ok"||value == "failed"||value == "unsupported"||value == "unknown"
+}
+
+func validate_error_value(value) {
+    if type(value) != "dict"||only_fields(value, ["code", "message", "provider_code", "retryable"]) == false||has_fields(value, ["code", "message"]) == false {return false}
+    if has_key_safe(value, "retryable")&&type(value["retryable"]) != "bool" {return false}
+    return non_empty_string(value["code"])&&non_empty_string(value["message"])&&type(get_or(value, "provider_code", "")) == "string"
+}
+
+func validate_logs(value) {
+    if type(value) != "dict" {return false}
+    if type(get_or(value, "complete", null)) != "bool"||type(get_or(value, "ordering", null)) != "string" {return false}
+    if has_key_safe(value, "truncated")&&type(value["truncated"]) != "bool" {return false}
+    if has_key_safe(value, "stdout_bytes")&&(type(value["stdout_bytes"]) != "int"||value["stdout_bytes"] < 0) {return false}
+    if has_key_safe(value, "stderr_bytes")&&(type(value["stderr_bytes"]) != "int"||value["stderr_bytes"] < 0) {return false}
+    return true
+}
+
+func validate_success_data(operation, data, run_identifier) {
+    if operation == "describe" {
+        adapter := get_or(data, "adapter", null)
+        return has_fields(data, ["adapter", "contract_versions", "profile_schema", "credential_refs", "static_capability_hints"])&&type(adapter) == "dict"&&non_empty_string(get_or(adapter, "id", ""))&&non_empty_string(get_or(adapter, "version", ""))&&non_empty_string(get_or(adapter, "build", ""))&&string_array(data["contract_versions"], 32)&&non_empty_string(data["profile_schema"])&&string_array(data["credential_refs"], 64)&&string_array(data["static_capability_hints"], 512)
+    }
+    if operation == "resolve" {
+        if has_fields(data, ["identity", "capabilities", "resolved_plan", "volatile_fields"]) == false||validate_backend_identity(data["identity"])["ok"] == false||type(data["capabilities"]) != "array"||len(data["capabilities"]) > 256||type(data["resolved_plan"]) != "dict"||string_array(data["volatile_fields"], 256) == false {return false}
+        if has_key_safe(data, "cost") {
+            cost := data["cost"]
+            if type(cost) != "dict"||get_or(cost, "status", "") != "unknown"||type(get_or(cost, "class", null)) != "string"||trim(cost["class"]) == ""||type(get_or(cost, "amount", false)) != "null"||type(get_or(cost, "usage", null)) != "array"||type(get_or(cost, "source", null)) != "string" {return false}
+        }
+        mut seen := {}
+        mut i := 0
+        while i < len(data["capabilities"]) {
+            state := data["capabilities"][i]
+            if validate_capability_state(state)["ok"] == false||has_key_safe(seen, state["id"]) {return false}
+            seen[state["id"]] := true
+            i = i + 1
+        }
+        return true
+    }
+    if operation == "provision" {
+        return has_fields(data, ["handle", "resource_inventory", "actual_resolution"])&&validate_backend_handle(data["handle"], run_identifier)["ok"]&&type(data["resource_inventory"]) == "array"&&type(data["actual_resolution"]) == "dict"
+    }
+    if operation == "prepare" {
+        return has_fields(data, ["handle", "workspace_root", "observed_package_digest"])&&validate_backend_handle(data["handle"], run_identifier)["ok"]&&non_empty_string(data["workspace_root"])&&starts_with(data["workspace_root"], "/")&&non_empty_string(data["observed_package_digest"])
+    }
+    if operation == "execute" {
+        return has_fields(data, ["handle", "command_id", "terminal", "logs"])&&validate_backend_handle(data["handle"], run_identifier)["ok"]&&non_empty_string(data["command_id"])&&validate_terminal_result(data["terminal"])["ok"]&&validate_logs(data["logs"])
+    }
+    if operation == "cancel" {
+        result := get_or(data, "cancel_result", "")
+        certainty := get_or(data, "terminal_certainty", "")
+        return (result == "requested"||result == "confirmed"||result == "already-terminal"||result == "unknown")&&(certainty == "terminal"||certainty == "unknown")
+    }
+    if operation == "collect" {
+        delta := get_or(data, "workspace_delta", null)
+        return has_fields(data, ["terminal", "logs", "workspace_delta", "metrics", "attempt_inventory"])&&validate_terminal_result(data["terminal"])["ok"]&&validate_logs(data["logs"])&&type(delta) == "dict"&&type(get_or(delta, "files", null)) == "array"&&type(get_or(delta, "complete", null)) == "bool"&&type(data["metrics"]) == "dict"&&type(data["attempt_inventory"]) == "array"
+    }
+    if operation == "export" {
+        manifest := get_or(data, "manifest", null)
+        archive := get_or(data, "archive", null)
+        return has_fields(data, ["archive", "manifest", "failures", "cleanup_resources"])&&type(manifest) == "dict"&&type(get_or(manifest, "declared", null)) == "array"&&type(get_or(manifest, "files", null)) == "array"&&(type(archive) == "null"||type(archive) == "dict")&&type(data["failures"]) == "array"&&type(data["cleanup_resources"]) == "array"
+    }
+    if operation == "destroy" {
+        return has_fields(data, ["items", "remaining"])&&type(data["items"]) == "array"&&type(data["remaining"]) == "array"
+    }
+    if operation == "inventory" {
+        return has_fields(data, ["resources", "complete"])&&type(data["resources"]) == "array"&&type(data["complete"]) == "bool"
+    }
+    return type(data) == "dict"
+}
+
+export func validate_protocol_result(request, value) {
+    if type(value) != "dict"||has_fields(value, ["contract", "request_id", "run_id", "operation", "type", "ok", "status", "retryable", "data"]) == false {
+        return {"ok": false, "error": "adapter result envelope is incomplete"}
+    }
+    allowed := ["contract", "request_id", "run_id", "operation", "type", "ok", "status", "retryable", "data", "error"]
+    if only_fields(value, allowed) == false||value["type"] != "result"||type(value["ok"]) != "bool"||valid_result_status(value["status"]) == false||type(value["retryable"]) != "bool"||type(value["data"]) != "dict" {
+        return {"ok": false, "error": "adapter result envelope fields are invalid"}
+    }
+    if value["ok"] {
+        if value["status"] != "ok"||has_key_safe(value, "error") {return {"ok": false, "error": "successful adapter result status is invalid"}}
+        if validate_success_data(request["operation"], value["data"], request["run_id"]) == false {return {"ok": false, "error": "adapter " + request["operation"] + " result data is invalid"}}
+    } else {
+        if value["status"] == "ok"||validate_error_value(get_or(value, "error", null)) == false {return {"ok": false, "error": "failed adapter result error is invalid"}}
+    }
+    return {"ok": true}
+}

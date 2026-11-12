@@ -1,0 +1,75 @@
+# Experimental local Git effect adapter; not part of Workcell execution admission.
+# repo is a dedicated operator-owned bare repository, never a producer path.
+func git_effect_command(repo, args, input) {
+    argv := ["git", "--no-replace-objects", "-c", "core.hooksPath=/dev/null", "-c", "core.fsync=reference", "--git-dir=" + repo]
+    for arg in args {argv = push(argv, arg)}
+    return spawn_process(argv, {"inherit_env": false, "env": {"GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": "/dev/null"}, "stdin": input, "timeout_ms": 5000, "max_output_bytes": 8192})
+}
+
+func git_effect_valid(intent, old_oid, new_oid) {
+    if type(intent) != "dict"||len(keys(intent)) != 8 {return false}
+    for field in ["target_sha256", "scope_sha256", "key_sha256", "request_sha256", "precondition_sha256"] {
+        if has_key(intent, field) == false||type(intent[field]) != "string"||regex_match(intent[field], "^[0-9a-f]{64}$") == false {return false}
+    }
+    if type(old_oid) != "string"||type(new_oid) != "string"||regex_match(old_oid, "^[0-9a-f]{40}$") == false||regex_match(new_oid, "^[0-9a-f]{40}$") == false||old_oid == new_oid {return false}
+    return intent["operation"] == "update"&&intent["precondition_sha256"] == sha256(old_oid)&&intent["request_sha256"] == sha256(new_oid)&&type(intent["valid_from"]) == "int"&&type(intent["valid_until"]) == "int"&&intent["valid_from"] >= 0&&intent["valid_until"] <= 253402300799&&intent["valid_until"] > intent["valid_from"]&&intent["valid_until"] - intent["valid_from"] <= 3600
+}
+
+func git_effect_refs(intent) {
+    return {"target": "refs/kujo-targets/" + intent["target_sha256"], "marker": "refs/kujo-effects/" + intent["scope_sha256"] + "/" + intent["key_sha256"]}
+}
+
+export func git_effect_observe(repo, intent, old_oid, new_oid) {
+    if git_effect_valid(intent, old_oid, new_oid) == false {return {"ok": false}}
+    refs := git_effect_refs(intent)
+    target := git_effect_command(repo, ["rev-parse", "--verify", refs["target"]], "")
+    if target.success == false||target.stdout_truncated {return {"ok": false}}
+    marker := git_effect_command(repo, ["for-each-ref", "--format=%(objectname)", refs["marker"]], "")
+    state := "not_started"
+    if marker.success == false||marker.stdout_truncated {return {"ok": false}}
+    if trim(marker.stdout) != "" {
+        body := git_effect_command(repo, ["cat-file", "blob", trim(marker.stdout)], "")
+        if body.success == false||body.stdout_truncated||body.stdout != to_json(intent)||trim(target.stdout) != new_oid {return {"ok": false}}
+        state = "committed"
+    } else {
+        # Successful empty query only: errors never prove absence.
+        if trim(target.stdout) != old_oid {return {"ok": false}}
+    }
+    return {"ok": true, "observation": {"observed_state": state, "mechanism": "git_ref_cas_transaction", "valid_from": intent["valid_from"], "valid_until": intent["valid_until"], "evidence_ref": "sha256:" + sha256(to_json(["git_ref_cas_transaction", sha256(to_json(intent)), state]))}}
+}
+
+func git_effect_apply_impl(repo, intent, old_oid, new_oid, crash_boundary, verify) {
+    if git_effect_valid(intent, old_oid, new_oid) == false {return {"ok": false}}
+    stamp := now_utc_seconds()
+    if stamp < intent["valid_from"]||stamp >= intent["valid_until"] {return {"ok": false}}
+    observed := git_effect_observe(repo, intent, old_oid, new_oid)
+    if observed["ok"] == false {return observed}
+    if observed["observation"]["observed_state"] == "committed" {
+        if type(verify) == "function" {return {"ok": false}}
+        return {"ok": true}
+    }
+    refs := git_effect_refs(intent)
+    blob := git_effect_command(repo, ["hash-object", "-w", "--stdin"], to_json(intent))
+    if blob.success == false||regex_match(trim(blob.stdout), "^[0-9a-f]{40}$") == false {return {"ok": false}}
+    if crash_boundary == "before_commit" {print("CRASH_BOUNDARY"); sleep(30000)}
+    if now_utc_seconds() >= intent["valid_until"] {return {"ok": false}}
+    if type(verify) == "function" {
+        try {if verify() != true {return {"ok":false}}} except denied {return {"ok":false}}
+    }
+    if now_utc_seconds() >= intent["valid_until"] {return {"ok":false}}
+    commands := "start\nupdate " + refs["target"] + " " + new_oid + " " + old_oid + "\ncreate " + refs["marker"] + " " + trim(blob.stdout) + "\nprepare\ncommit\n"
+    changed := git_effect_command(repo, ["update-ref", "--stdin"], commands)
+    if changed.success == false {return {"ok": false}}
+    if crash_boundary == "after_commit" {print("CRASH_BOUNDARY"); sleep(30000)}
+    return {"ok": true}
+}
+
+export func git_effect_apply(repo, intent, old_oid, new_oid, crash_boundary) {
+    return git_effect_apply_impl(repo, intent, old_oid, new_oid, crash_boundary, null)
+}
+# Installed host callback: never deserialized participant authority. The caller
+# retains its run lock; Git's transaction independently enforces target+marker CAS.
+export func git_effect_apply_checked(repo, intent, old_oid, new_oid, verify) {
+    if type(verify) != "function" {return {"ok":false}}
+    return git_effect_apply_impl(repo, intent, old_oid, new_oid, "", verify)
+}

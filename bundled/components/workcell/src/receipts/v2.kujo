@@ -1,0 +1,176 @@
+# Provider-neutral Workcell receipt v2 and atomic lifecycle checkpoints.
+
+from src.backend.types import backend_contract_id, validate_backend_identity
+from src.domain.caller_context import validate_caller_context
+from src.evidence.controls import controls_have_false_enforcement_claim
+from src.util import get_or, load_json, path_has_symlink, redact_with_env, save_json, valid_run_id
+
+export func receipt_v2_schema_version() {
+    return "workcell-receipt/v2alpha1"
+}
+
+func redacted_argv(argv, secret_names) {
+    mut output := []
+    mut i := 0
+    while i < len(argv) {
+        output = push(output, redact_with_env(to_string(argv[i]), secret_names))
+        i = i + 1
+    }
+    return output
+}
+
+export func new_v2_receipt(context) {
+    if type(context) != "dict" {
+        return {"ok": false, "error": "receipt v2 context must be an object"}
+    }
+    run_identifier := get_or(context, "run_id", "")
+    if valid_run_id(run_identifier) == false {
+        return {"ok": false, "error": "receipt v2 run id is invalid"}
+    }
+    identity := get_or(context, "backend", null)
+    identity_check := validate_backend_identity(identity)
+    if identity_check["ok"] == false {return identity_check}
+    controls := get_or(context, "controls", null)
+    if type(controls) != "array"||controls_have_false_enforcement_claim(controls) {
+        return {"ok": false, "error": "receipt v2 controls ledger is invalid or overclaims enforcement"}
+    }
+    secret_names := get_or(context, "secret_names", [])
+    if type(secret_names) != "array" {
+        return {"ok": false, "error": "receipt v2 secret names must be an array"}
+    }
+    return {
+        "schema_version": receipt_v2_schema_version(),
+        "run": {"id": run_identifier, "attempt_id": get_or(context, "attempt_id", "attempt-1"), "start_time": now_utc(), "end_time": null, "status": "created", "failure_category": null},
+        "caller": get_or(context, "caller", null),
+        "definition": get_or(context, "definition", {}),
+        "source": get_or(context, "source", {}),
+        "backend": {"contract": backend_contract_id(), "adapter_id": identity["adapter"], "adapter_version": identity["adapter_version"], "provider_id": identity["provider"], "provider_api": identity["provider_api"], "substrate": identity["substrate"], "profile_id": get_or(context, "profile_id", ""), "profile_fingerprint": get_or(context, "profile_fingerprint", ""), "resource_ids": []},
+        "workspace": get_or(context, "workspace", {}),
+        "execution": {"argv": redacted_argv(get_or(context, "argv", []), secret_names), "workdir": get_or(context, "workdir", "/workspace"), "environment_names": get_or(context, "environment_names", []), "secret_names": secret_names, "terminal": null, "timings": get_or(context, "timings", {})},
+        "controls": controls,
+        "logs": {"capture": "not-started", "stdout_stderr": "unknown", "ordering": "unknown", "timestamps": "unknown", "completeness": "unknown", "truncated": false, "discontinuities": [], "bytes": {"stdout": 0, "stderr": 0}, "paths": {}},
+        "changes": {"status": "pending", "files": [], "patch_path": null},
+        "verification": {"status": "pending", "offline": true, "checks": []},
+        "artifacts": {"status": "pending", "declared": get_or(context, "artifact_declarations", []), "results": [], "archive": null},
+        "resources": {"inventory": [], "metrics": [], "provider_reported": false},
+        "cost": get_or(context, "cost", {"status": "unknown", "class": get_or(context, "cost_class", "unknown"), "amount": null, "usage": [], "source": "not-reported"}),
+        "cleanup": {"status": "pending", "journal_path": get_or(context, "journal_path", ""), "items": [], "remaining": []},
+        "errors": [],
+        "warnings": [],
+        "lifecycle": [{"phase": "record", "status": "created", "time": now_utc()}]
+    }
+}
+
+export func add_v2_error(receipt, phase, code, message) {
+    if type(receipt) != "dict"||type(get_or(receipt, "errors", null)) != "array"||type(phase) != "string"||trim(phase) == "" {
+        return {"ok": false, "error": "receipt v2 error input is invalid"}
+    }
+    secret_names := get_or(get_or(receipt, "execution", {}), "secret_names", [])
+    receipt["errors"] := push(receipt["errors"], {"phase": phase, "code": code, "message": redact_with_env(to_string(message), secret_names), "time": now_utc()})
+    return receipt
+}
+
+export func checkpoint_v2(receipt, output_path, phase, status, updates) {
+    if type(receipt) != "dict"||get_or(receipt, "schema_version", "") != receipt_v2_schema_version()||type(output_path) != "string"||trim(output_path) == ""||type(phase) != "string"||trim(phase) == ""||type(status) != "string"||trim(status) == ""||type(updates) != "dict" {
+        return {"ok": false, "error": "receipt v2 checkpoint input is invalid"}
+    }
+    names := keys(updates)
+    mut i := 0
+    while i < len(names) {
+        section := names[i]
+        if section != "run"&&section != "backend"&&section != "workspace"&&section != "execution"&&section != "logs"&&section != "changes"&&section != "verification"&&section != "artifacts"&&section != "resources"&&section != "cost"&&section != "cleanup" {
+            return {"ok": false, "error": "receipt v2 checkpoint cannot update section: " + section}
+        }
+        if type(updates[section]) != "dict"||type(get_or(receipt, section, null)) != "dict" {
+            return {"ok": false, "error": "receipt v2 checkpoint section must be an object: " + section}
+        }
+        current := receipt[section]
+        fields := keys(updates[section])
+        mut field_i := 0
+        while field_i < len(fields) {
+            current[fields[field_i]] := updates[section][fields[field_i]]
+            field_i = field_i + 1
+        }
+        receipt[section] := current
+        i = i + 1
+    }
+    run := receipt["run"]
+    run["status"] := status
+    receipt["run"] := run
+    receipt["lifecycle"] := push(receipt["lifecycle"], {"phase": phase, "status": status, "time": now_utc()})
+    persisted := save_json(output_path, receipt)
+    if persisted != true {
+        return {"ok": false, "error": "receipt v2 checkpoint could not be persisted", "receipt": receipt}
+    }
+    return {"ok": true, "path": output_path, "receipt": receipt}
+}
+
+export func finish_v2(receipt, output_path, status, failure_category, cleanup) {
+    if type(cleanup) != "dict" {
+        return {"ok": false, "error": "receipt v2 cleanup result must be an object"}
+    }
+    run := receipt["run"]
+    run["end_time"] := now_utc()
+    run["failure_category"] := failure_category
+    updates := {"run": run, "cleanup": cleanup}
+    return checkpoint_v2(receipt, output_path, "record", status, updates)
+}
+
+export func verify_receipt_file(path) {
+    if type(path) != "string"||trim(path) == ""||file_exists(path) == false||path_has_symlink(path) {
+        return {"ok": false, "error": "receipt path is missing or unsafe"}
+    }
+    loaded := load_json(path)
+    if loaded["ok"] == false {return loaded}
+    receipt := loaded["value"]
+    if type(receipt) != "dict" {
+        return {"ok": false, "error": "receipt must be an object"}
+    }
+    schema := get_or(receipt, "schema_version", "")
+    if schema == "workcell-receipt/v1" {
+        if valid_run_id(get_or(receipt, "run_id", "")) == false {
+            return {"ok": false, "error": "receipt v1 run id is invalid"}
+        }
+        return {"ok": true, "schema_version": schema}
+    }
+    if schema != receipt_v2_schema_version() {
+        return {"ok": false, "error": "receipt schema is unsupported"}
+    }
+    run := get_or(receipt, "run", null)
+    if type(run) != "dict"||valid_run_id(get_or(run, "id", "")) == false {
+        return {"ok": false, "error": "receipt v2 run section is invalid"}
+    }
+    caller := get_or(receipt, "caller", null)
+    if type(caller) != "null" {
+        caller_check := validate_caller_context(caller)
+        if caller_check["ok"] == false {return {"ok": false, "error": "receipt v2 caller context is invalid"}}
+    }
+    for section in ["definition", "source", "backend", "workspace", "execution", "logs", "changes", "verification", "artifacts", "resources", "cost", "cleanup"] {
+        if type(get_or(receipt, section, null)) != "dict" {
+            return {"ok": false, "error": "receipt v2 section is missing or invalid: " + section}
+        }
+    }
+    controls := get_or(receipt, "controls", null)
+    if type(controls) != "array"||controls_have_false_enforcement_claim(controls) {
+        return {"ok": false, "error": "receipt v2 controls overclaim or are invalid"}
+    }
+    if type(get_or(receipt, "errors", null)) != "array"||type(get_or(receipt, "warnings", null)) != "array"||type(get_or(receipt, "lifecycle", null)) != "array" {
+        return {"ok": false, "error": "receipt v2 evidence arrays are invalid"}
+    }
+    cost := receipt["cost"]
+    cost_status := get_or(cost, "status", "")
+    if cost_status != "unknown"&&cost_status != "provider-reported" {return {"ok": false, "error": "receipt v2 cost status is invalid"}}
+    if type(get_or(cost, "class", null)) != "string"||trim(cost["class"]) == ""||type(get_or(cost, "usage", null)) != "array"||type(get_or(cost, "source", null)) != "string" {return {"ok": false, "error": "receipt v2 cost evidence is invalid"}}
+    if cost_status == "unknown"&&type(get_or(cost, "amount", false)) != "null" {return {"ok": false, "error": "receipt v2 unknown cost cannot contain an amount"}}
+    if cost_status == "provider-reported" {
+        amount := get_or(cost, "amount", null)
+        if type(amount) != "dict"||type(get_or(amount, "value", null)) != "float"&&type(get_or(amount, "value", null)) != "int"||type(get_or(amount, "currency", null)) != "string"||trim(amount["currency"]) == "" {return {"ok": false, "error": "receipt v2 provider cost amount is invalid"}}
+    }
+    encoded := to_json(receipt)
+    for forbidden in ["X-Amz-Signature", "X-Goog-Signature", "SharedAccessSignature", "-----BEGIN PRIVATE KEY-----"] {
+        if contains(encoded, forbidden) == 1 {
+            return {"ok": false, "error": "receipt v2 contains forbidden credential or signed transport material"}
+        }
+    }
+    return {"ok": true, "schema_version": schema, "run_id": run["id"], "controls": len(controls), "offline": true}
+}

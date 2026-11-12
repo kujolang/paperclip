@@ -1,0 +1,190 @@
+# Explicit local backend adapter manifest registry. It never downloads adapters.
+
+from src.backend.types import backend_contract_id
+from src.util import get_or, load_json, normalized_relative, parent_of, path_has_symlink, path_within
+
+export func backend_manifest_schema_version() {
+    return "workcell-backend-manifest/v1"
+}
+
+func valid_backend_id(value) {
+    if type(value) != "string"||trim(value) == ""||len(value) > 64 {
+        return false
+    }
+    mut i := 0
+    while i < len(value) {
+        if contains("abcdefghijklmnopqrstuvwxyz0123456789-", substring(value, i, i + 1)) == 0 {
+            return false
+        }
+        i = i + 1
+    }
+    return true
+}
+
+func contains_string(items, wanted) {
+    if type(items) != "array" {
+        return false
+    }
+    mut i := 0
+    while i < len(items) {
+        if items[i] == wanted {return true}
+        i = i + 1
+    }
+    return false
+}
+
+func valid_credential_ref(value) {
+    if type(value) != "string"||len(value) < 5||len(value) > 160||contains(value, "=") == 1||contains(value, "\n") == 1||contains(value, "\r") == 1 {return false}
+    return starts_with(value, "env:")||starts_with(value, "kujo-agent:")||starts_with(value, "os-store:")
+}
+
+export func validate_backend_manifest(value) {
+    if type(value) != "dict" {
+        return {"ok": false, "error": "backend manifest must be an object"}
+    }
+    allowed := ["schema_version", "id", "adapter_version", "contract_versions", "executable", "profile_schema", "credential_refs", "static_capability_hints", "platforms", "minimum_workcell_version", "digest"]
+    names := keys(value)
+    mut i := 0
+    while i < len(names) {
+        if contains_string(allowed, names[i]) == false {
+            return {"ok": false, "error": "unknown backend manifest field: " + names[i]}
+        }
+        i = i + 1
+    }
+    if get_or(value, "schema_version", "") != backend_manifest_schema_version() {
+        return {"ok": false, "error": "backend manifest schema is unsupported"}
+    }
+    if valid_backend_id(get_or(value, "id", null)) == false {
+        return {"ok": false, "error": "backend manifest id is invalid"}
+    }
+    if type(get_or(value, "adapter_version", null)) != "string"||trim(value["adapter_version"]) == "" {
+        return {"ok": false, "error": "backend manifest adapter_version is required"}
+    }
+    contracts := get_or(value, "contract_versions", null)
+    if type(contracts) != "array"||contains_string(contracts, backend_contract_id()) == false {
+        return {"ok": false, "error": "backend manifest does not support " + backend_contract_id()}
+    }
+    executable := get_or(value, "executable", null)
+    if type(executable) != "string"||trim(executable) == ""||contains(executable, "\n") == 1||contains(executable, "\r") == 1 {
+        return {"ok": false, "error": "backend manifest executable is invalid"}
+    }
+    if starts_with(executable, "/") == false&&normalized_relative(executable) == null {
+        return {"ok": false, "error": "backend manifest executable must be absolute or a normalized relative path"}
+    }
+    if type(get_or(value, "profile_schema", null)) != "string"||trim(value["profile_schema"]) == "" {
+        return {"ok": false, "error": "backend manifest profile_schema is required"}
+    }
+    for field in ["credential_refs", "static_capability_hints", "platforms"] {
+        if type(get_or(value, field, null)) != "array" {
+            return {"ok": false, "error": "backend manifest " + field + " must be an array"}
+        }
+    }
+    for reference in value["credential_refs"] {
+        if valid_credential_ref(reference) == false {return {"ok": false, "error": "backend manifest credential reference is invalid"}}
+    }
+    digest := get_or(value, "digest", "")
+    if digest != ""&&(type(digest) != "string"||starts_with(digest, "sha256:") == false||len(digest) != 71) {
+        return {"ok": false, "error": "backend manifest digest must be empty or sha256"}
+    }
+    return {"ok": true}
+}
+
+export func validate_backend_credential_ref(manifest, reference) {
+    if type(reference) != "string" {return {"ok": false, "error": "profile credential reference must be a string"}}
+    if reference == "" {return {"ok": true}}
+    if valid_credential_ref(reference) == false {return {"ok": false, "error": "profile credential reference is invalid"}}
+    if type(manifest) != "dict"||contains_string(get_or(manifest, "credential_refs", []), reference) == false {
+        return {"ok": false, "error": "selected backend manifest does not advertise the profile credential reference"}
+    }
+    return {"ok": true}
+}
+
+export func load_backend_manifest(path) {
+    if type(path) != "string"||trim(path) == ""||file_exists(path) == false||path_has_symlink(path) {
+        return {"ok": false, "error": "backend manifest path is missing or unsafe: " + to_string(path)}
+    }
+    loaded := load_json(path)
+    if loaded["ok"] == false {
+        return {"ok": false, "error": loaded["error"]}
+    }
+    checked := validate_backend_manifest(loaded["value"])
+    if checked["ok"] == false {
+        return checked
+    }
+    manifest := loaded["value"]
+    manifest["manifest_path"] := path
+    return {"ok": true, "manifest": manifest}
+}
+
+export func load_backend_registry(manifest_paths) {
+    if type(manifest_paths) != "array" {
+        return {"ok": false, "error": "backend manifest paths must be an array"}
+    }
+    mut adapters := {}
+    mut ordered := []
+    mut i := 0
+    while i < len(manifest_paths) {
+        loaded := load_backend_manifest(manifest_paths[i])
+        if loaded["ok"] == false {
+            return loaded
+        }
+        manifest := loaded["manifest"]
+        id := manifest["id"]
+        if has_key(adapters, id) == 1 {
+            return {"ok": false, "error": "duplicate backend manifest id: " + id}
+        }
+        adapters[id] := manifest
+        ordered = push(ordered, id)
+        i = i + 1
+    }
+    return {"ok": true, "adapters": adapters, "ids": ordered}
+}
+
+export func registry_backend(registry, id) {
+    if type(registry) != "dict"||type(get_or(registry, "adapters", null)) != "dict"||type(id) != "string" {
+        return null
+    }
+    return get_or(registry["adapters"], id, null)
+}
+
+export func backend_executable(manifest) {
+    if type(manifest) != "dict" {
+        return {"ok": false, "error": "backend manifest must be an object"}
+    }
+    mut manifest_contract := {}
+    for field in ["schema_version", "id", "adapter_version", "contract_versions", "executable", "profile_schema", "credential_refs", "static_capability_hints", "platforms", "minimum_workcell_version", "digest"] {
+        if has_key(manifest, field) == 1 {
+            manifest_contract[field] := manifest[field]
+        }
+    }
+    checked := validate_backend_manifest(manifest_contract)
+    if checked["ok"] == false {return checked}
+    executable := manifest["executable"]
+    if starts_with(executable, "/") == false {
+        manifest_path := get_or(manifest, "manifest_path", "")
+        if type(manifest_path) != "string"||trim(manifest_path) == "" {
+            return {"ok": false, "error": "relative backend executable requires manifest_path"}
+        }
+        manifest_root := parent_of(manifest_path)
+        executable = manifest_root + "/" + executable
+        if path_within(manifest_root, executable) == false {
+            return {"ok": false, "error": "backend executable escapes manifest directory"}
+        }
+    }
+    if file_exists(executable) == false||path_has_symlink(executable) {
+        return {"ok": false, "error": "backend executable is missing or unsafe: " + executable}
+    }
+    expected := get_or(manifest, "digest", "")
+    if expected != "" {
+        mut actual := ""
+        try {
+            actual = "sha256:" + sha256_file(executable)
+        } except err {
+            return {"ok": false, "error": "backend executable could not be hashed"}
+        }
+        if actual != expected {
+            return {"ok": false, "error": "backend executable digest mismatch"}
+        }
+    }
+    return {"ok": true, "path": executable}
+}

@@ -1,0 +1,51 @@
+# PackWrite :: errors
+#
+# Canonical, actionable error/result helpers. Modules return {"ok": bool, ...}
+# envelopes; the CLI is the only layer that prints and chooses exit codes.
+
+# A failure envelope carrying a human-actionable message.
+export func err(message) {
+    return {"ok": false, "error": message}
+}
+
+# A success envelope; extra fields are merged by the caller as needed.
+export func ok(value) {
+    return {"ok": true, "value": value}
+}
+
+# True when an envelope represents success.
+export func is_ok(env) {
+    if type(env) != "dict" {
+        return false
+    }
+    if has_key(env, "ok") == 0 {
+        return false
+    }
+    return env["ok"] == true
+}
+
+# Pull the error message out of a failure envelope.
+export func err_msg(env) {
+    if type(env) == "dict" && has_key(env, "error") == 1 {
+        return "${env["error"]}"
+    }
+    return "unknown error"
+}
+
+# Canonical messages referenced in the spec, centralized so the CLI and tests
+# stay consistent.
+export func msg_missing_prompt() {
+    return "Could not find MEGA_PROMPT.md. Pass a file path or set [prompt].file in packwrite.toml."
+}
+
+export func msg_provider_unavailable(provider, model) {
+    return "The selected provider/model was not available through the AI SDK (provider=" + provider + ", model=" + model + ")."
+}
+
+export func msg_unparseable() {
+    return "The model response could not be parsed into files."
+}
+
+export func msg_overwrite(dir) {
+    return "Refusing to overwrite existing " + dir + " directory. Use --overwrite to replace it."
+}

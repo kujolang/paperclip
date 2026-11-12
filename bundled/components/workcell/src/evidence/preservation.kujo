@@ -1,0 +1,138 @@
+# Provider-neutral preservation outcome and handoff evidence.
+
+from src.util import get_or, save_json
+
+export func preservation_schema_version() {
+    return "kujo.preservation-outcome/v1"
+}
+
+func evidence_refs(output_dir) {
+    mut refs := []
+    for name in ["receipt.json", "stdout.log", "stderr.log", "changes.patch", "changes.json", "manifest.json"] {
+        if file_exists(output_dir + "/" + name) {
+            refs = push(refs, {"$ref": name})
+        }
+    }
+    return refs
+}
+
+func handoff_bundle(receipt, output_dir, run_identifier) {
+    source_commit := get_or(receipt, "source_commit", get_or(get_or(receipt, "source", {}), "commit", ""))
+    if source_commit == "" {
+        return {"ok": false, "error": "source commit is unavailable"}
+    }
+    bundle := {
+        "schema": "workcell-handoff-bundle/v1",
+        "run_id": run_identifier,
+        "source_commit": source_commit,
+        "receipt_ref": "receipt.json",
+        "patch_ref": null,
+        "artifact_manifest_ref": null,
+        "created_at": now_utc(),
+        "limitations": ["This bundle reconstructs files from clean source plus captured evidence; it does not freeze process or memory state."]
+    }
+    if file_exists(output_dir + "/changes.patch") {bundle["patch_ref"] := "changes.patch"}
+    if file_exists(output_dir + "/manifest.json") {bundle["artifact_manifest_ref"] := "manifest.json"}
+    path := output_dir + "/handoff-bundle.json"
+    if save_json(path, bundle) != true {return {"ok": false, "error": "handoff bundle could not be persisted"}}
+    return {"ok": true, "path": path, "bundle": bundle}
+}
+
+export func build_preservation_outcome(context) {
+    if type(context) != "dict" {return {"ok": false, "error": "preservation context must be an object"}}
+    run_identifier := get_or(context, "run_id", "")
+    step_id := get_or(context, "step_id", "workflow")
+    attempt_id := get_or(context, "attempt_id", "attempt-1")
+    requested_mode := get_or(context, "requested_mode", "none")
+    cleanup_status := get_or(context, "cleanup_status", "unknown")
+    output_dir := get_or(context, "output_dir", "")
+    workspace_path := get_or(context, "workspace_path", "")
+    provider := get_or(context, "provider", "unknown")
+    if run_identifier == ""||output_dir == "" {return {"ok": false, "error": "preservation context requires run_id and output_dir"}}
+    if requested_mode != "none"&&requested_mode != "filesystem"&&requested_mode != "handoff_bundle"&&requested_mode != "snapshot"&&requested_mode != "live_pause" {
+        return {"ok": false, "error": "unsupported preservation mode: " + to_string(requested_mode)}
+    }
+    actual_mode := "none"
+    status := "satisfied"
+    reconstructability := "none"
+    limitations := []
+    evidence := evidence_refs(output_dir)
+    if requested_mode == "filesystem" {
+        if cleanup_status == "preserved"&&workspace_path != ""&&path_exists(workspace_path) {
+            actual_mode = "filesystem"
+            reconstructability = "same_filesystem"
+            evidence = push(evidence, {"$ref": workspace_path})
+            limitations = push(limitations, "Filesystem preservation does not keep the container or process alive.")
+        } else {
+            status = "unsupported"
+            limitations = push(limitations, "The selected backend did not retain an owned filesystem workspace.")
+        }
+    } else if requested_mode == "handoff_bundle" {
+        bundle := handoff_bundle(get_or(context, "receipt", {}), output_dir, run_identifier)
+        if bundle["ok"] {
+            actual_mode = "handoff_bundle"
+            reconstructability = "clean_source_plus_patch"
+            evidence = push(evidence, {"$ref": "handoff-bundle.json"})
+            limitations = get_or(bundle["bundle"], "limitations", [])
+        } else {
+            status = "degraded"
+            limitations = push(limitations, bundle["error"])
+        }
+    } else if requested_mode == "snapshot"||requested_mode == "live_pause" {
+        status = "unsupported"
+        limitations = push(limitations, "The selected backend did not return the requested provider capability.")
+    }
+    outcome := {
+        "schema": preservation_schema_version(),
+        "result_id": "po_" + substring(sha256(to_json({"run_id": run_identifier, "attempt_id": attempt_id, "requested_mode": requested_mode, "provider": provider})), 0, 24),
+        "subject": {"run_id": run_identifier, "step_id": step_id, "attempt_id": attempt_id},
+        "requested_mode": requested_mode,
+        "actual_mode": actual_mode,
+        "status": status,
+        "provider": {"name": provider, "workspace_id": get_or(context, "workspace_id", "")},
+        "reconstructability": reconstructability,
+        "evidence": evidence,
+        "limitations": limitations,
+        "created_at": now_utc(),
+        "cleanup": {"owner": get_or(context, "cleanup_owner", "workcell"), "handle": get_or(context, "cleanup_handle", workspace_path), "strategy": get_or(context, "workspace_strategy", ""), "source_root": get_or(context, "source_root", "")}
+    }
+    retain_until := get_or(context, "retain_until", "")
+    if retain_until != "" {outcome["retain_until"] := retain_until}
+    return {"ok": true, "outcome": outcome}
+}
+
+export func write_preservation_outcome(context) {
+    built := build_preservation_outcome(context)
+    if built["ok"] == false {return built}
+    path := context["output_dir"] + "/preservation.json"
+    if save_json(path, built["outcome"]) != true {return {"ok": false, "error": "preservation outcome could not be persisted"}}
+    return {"ok": true, "path": path, "outcome": built["outcome"]}
+}
+
+export func retention_expired(outcome, at_time) {
+    retain_until := get_or(outcome, "retain_until", "")
+    if retain_until == "" {return false}
+    return retain_until <= at_time
+}
+
+# Validate intent before any provider admission, not after destructive cleanup.
+export func validate_preservation_intent(flags) {
+    if get_or(flags, "preserve_until_evaluated", false) != true {return {"ok": true}}
+    deadline := get_or(flags, "retain_until", "")
+    valid := false
+    try {
+        # Keep compatibility with the pinned Kujo 1.2.1 runtime. parse_date
+        # validates the calendar date; explicit UTC clock fields avoid newer APIs.
+        if type(deadline) == "string"&&regex_match(deadline, "^[0-9]{4}-[0-9]{2}-[0-9]{2}T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]([.][0-9]+)?Z$") {
+            day := parse_date(substring(deadline, 0, 10), "YYYY-MM-DD")
+            hour := parse_int(substring(deadline, 11, 13))
+            minute := parse_int(substring(deadline, 14, 16))
+            second := parse_float(substring(deadline, 17, len(deadline) - 1))
+            valid = day + hour * 3600 + minute * 60 + second > now_utc_seconds()
+        }
+    } except err {valid = false}
+    if valid == false||get_or(flags, "preservation_mode", "handoff_bundle") == "none" {
+        return {"ok": false, "run_id": "", "stage": "validated", "error": "pre-evaluation preservation requires a real mode and valid future UTC retention deadline", "exit_code": 2}
+    }
+    return {"ok": true}
+}

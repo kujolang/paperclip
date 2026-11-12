@@ -1,0 +1,166 @@
+# Structured Workcell execution receipts.
+
+from src.util import get_or, project_version, redact_with_env, save_json
+from src.domain.definition import validate_definition
+
+func redacted_command(command, secret_names) {
+    mut output := []
+    mut i := 0
+    while i < len(command) {
+        output = push(output, redact_with_env(to_string(command[i]), secret_names))
+        i = i + 1
+    }
+    return output
+}
+
+export func new_receipt(definition, definition_path, run_identifier, source, workspace, policy, output_dir) {
+    definition_check := validate_definition(definition)
+    if definition_check["ok"] == false {
+        return definition_check
+    }
+    if type(run_identifier) != "string"||run_identifier == "" {
+        return {"ok": false, "error": "receipt run identifier must be a non-empty string"}
+    }
+    if type(definition_path) != "string"||definition_path == ""||file_exists(definition_path) == false {
+        return {"ok": false, "error": "receipt definition path is missing or does not exist"}
+    }
+    if type(source) != "dict"||type(get_or(source, "source_root", "")) != "string"||type(get_or(source, "source_commit", "")) != "string"||get_or(source, "source_root", "") == ""||get_or(source, "source_commit", "") == "" {
+        return {"ok": false, "error": "receipt source input is incomplete"}
+    }
+    if type(workspace) != "dict"||type(get_or(workspace, "strategy", "")) != "string"||type(get_or(workspace, "workspace_path", "")) != "string"||get_or(workspace, "strategy", "") == ""||get_or(workspace, "workspace_path", "") == "" {
+        return {"ok": false, "error": "receipt workspace input is incomplete"}
+    }
+    if type(policy) != "dict"||type(get_or(policy, "runtime_backend", "")) != "string"||type(get_or(policy, "container_name", "")) != "string"||get_or(policy, "runtime_backend", "") == ""||get_or(policy, "container_name", "") == "" {
+        return {"ok": false, "error": "receipt policy input is incomplete"}
+    }
+    if type(output_dir) != "string"||output_dir == "" {
+        return {"ok": false, "error": "receipt output directory is missing"}
+    }
+    mut definition_hash := ""
+    try {
+        definition_hash = sha256_file(definition_path)
+    } except err {
+        return {"ok": false, "error": "receipt definition could not be hashed: " + to_string(err)}
+    }
+    return {
+        "schema_version": "workcell-receipt/v1",
+        "run_id": run_identifier,
+        "workcell_name": definition["name"],
+        "workcell_version": project_version(),
+        "definition_version": definition["version"],
+        "workcell_definition_path": definition_path,
+        "workcell_definition_hash": definition_hash,
+        "source_repository": source["source_root"],
+        "source_commit": source["source_commit"],
+        "workspace_strategy": workspace["strategy"],
+        "workspace_path": workspace["workspace_path"],
+        "runtime_backend": policy["runtime_backend"],
+        "container_image": definition["runtime"]["image"],
+        "container_image_digest": "",
+        "container_image_id": "",
+        "container_image_digest_source": "",
+        "container_image_platform": "",
+        "container_image_labels": {},
+        "image_provenance_policy": {
+            "require_digest": definition["runtime"]["require_digest"],
+            "require_signature": definition["runtime"]["require_signature"],
+            "registry_allowlist": definition["runtime"]["registry_allowlist"]
+        },
+        "container_name": policy["container_name"],
+        "command": redacted_command(definition["command"], definition["secrets"]),
+        "start_time": now_utc(),
+        "end_time": null,
+        "elapsed": null,
+        "elapsed_ms": null,
+        "exit_code": null,
+        "timeout": false,
+        "cancelled": false,
+        "stdout_truncated": false,
+        "stderr_truncated": false,
+        "network_mode": policy["network_mode"],
+        "network_policy": policy["network_policy"],
+        "resource_limits": policy["resource_limits"],
+        "secret_names": policy["secret_names"],
+        "mounts": policy["mounts"],
+        "effective_security_policy": policy["effective_security_policy"],
+        "exported_artifacts": [],
+        "artifact_bytes": 0,
+        "artifact_files": 0,
+        "changed_files": [],
+        "change_report_path": null,
+        "patch_path": null,
+        "patch_bytes": 0,
+        "manifest_path": "manifest.json",
+        "manifest_schema_version": "workcell-manifest/v1",
+        "logs_path": output_dir,
+        "cleanup_status": "pending",
+        "final_status": "created",
+        "verification": {
+            "execution_succeeded": false,
+            "verification_succeeded": false,
+            "checks": [],
+            "artifacts_exported": false,
+            "cleanup_succeeded": false
+        },
+        "integrations": [],
+        "integration_status": "disabled",
+        "errors": [],
+        "warnings": policy["warnings"],
+        "lifecycle": ["created"]
+    }
+}
+
+export func add_state(receipt, state) {
+    if type(receipt) != "dict"||type(get_or(receipt, "lifecycle", null)) != "array"||type(state) != "string"||state == "" {
+        return {"ok": false, "error": "receipt input is missing lifecycle"}
+    }
+    receipt["lifecycle"] := push(receipt["lifecycle"], state)
+    receipt["final_status"] := state
+    return receipt
+}
+
+export func add_error(receipt, stage, message) {
+    if type(receipt) != "dict"||type(get_or(receipt, "errors", null)) != "array"||type(get_or(receipt, "secret_names", null)) != "array"||type(stage) != "string"||stage == "" {
+        return {"ok": false, "error": "receipt input is missing errors or secret_names"}
+    }
+    errors := receipt["errors"]
+    safe_message := redact_with_env(to_string(message), receipt["secret_names"])
+    errors = push(errors, {"stage": stage, "message": safe_message})
+    receipt["errors"] := errors
+    return receipt
+}
+
+export func finish_receipt(receipt, final_status, exit_code, timed_out, image_digest, changed, patch_path, artifacts, cleanup_status, elapsed_ms, execution_succeeded, artifacts_succeeded) {
+    if type(receipt) != "dict"||type(get_or(receipt, "verification", null)) != "dict"||type(final_status) != "string"||final_status == ""||type(exit_code) != "int"||type(timed_out) != "bool"||type(image_digest) != "string"||type(changed) != "array"||type(artifacts) != "array"||type(cleanup_status) != "string"||cleanup_status == ""||type(elapsed_ms) != "int"||elapsed_ms < 0||type(execution_succeeded) != "bool"||type(artifacts_succeeded) != "bool"||(type(patch_path) != "null"&&type(patch_path) != "string") {
+        return {"ok": false, "error": "receipt input is missing verification"}
+    }
+    receipt["end_time"] := now_utc()
+    receipt["exit_code"] := exit_code
+    receipt["timeout"] := timed_out
+    receipt["elapsed"] := elapsed_ms
+    receipt["elapsed_ms"] := elapsed_ms
+    receipt["container_image_digest"] := image_digest
+    receipt["changed_files"] := changed
+    receipt["patch_path"] := patch_path
+    receipt["exported_artifacts"] := artifacts
+    receipt["cleanup_status"] := cleanup_status
+    receipt["final_status"] := final_status
+    verification := receipt["verification"]
+    verification["execution_succeeded"] := final_status != "dry-run"&&execution_succeeded&&timed_out == false
+    verification["artifacts_exported"] := final_status != "dry-run"&&artifacts_succeeded == true
+    verification["cleanup_succeeded"] := cleanup_status == "complete"||cleanup_status == "preserved"
+    receipt["verification"] := verification
+    return receipt
+}
+
+export func write_receipt(receipt, output_path) {
+    try {
+        persisted := save_json(output_path, receipt)
+        if persisted != true {
+            return {"ok": false, "path": output_path, "error": "could not write receipt: atomic write returned false"}
+        }
+        return {"ok": true, "path": output_path}
+    } except err {
+        return {"ok": false, "path": output_path, "error": "could not write receipt: " + to_string(err)}
+    }
+}

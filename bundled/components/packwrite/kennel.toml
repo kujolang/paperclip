@@ -1,0 +1,24 @@
+[package]
+name = "packwrite"
+version = "1.1.1"
+description = "Compile project briefs into validated execution packs for coding agents"
+license = "MIT"
+authors = ["Kujolang <contact@kujolang.ai>"]
+repository = "https://github.com/kujolang/packwrite"
+documentation = "https://github.com/kujolang/packwrite#readme"
+readme = "README.md"
+
+[package.exports]
+cli = "packwrite.kujo"
+
+[kujo]
+minimum_version = "1.2.2"
+entry = "packwrite.kujo"
+sources = ["."]
+includes = ["README.md", "LICENSE", "CHANGELOG.md", "SECURITY.md", "CONTRIBUTING.md", "VERSION", "kujo.toml", "bin", "docs", "tests"]
+excludes = [".git", ".packwrite", ".kennel_tmp", "kennel_packages", "node_modules", "target", "dist", "build", "output", "__pycache__", ".runtime", ".loop-engineering"]
+
+[dependencies]
+
+[scripts]
+verify = "bash tests/run.sh"

@@ -1,0 +1,31 @@
+# Shared OCI engine mechanics retained from the Workcell v1 runtime.
+
+from src.runtime.docker import clean_owned_resources_with_options, container_logs, ensure_image, owned_resource_inventory, remove_container, run_container, stop_container
+
+export func oci_ensure_image(definition, source_root, run_identifier, no_pull, rebuild) {
+    return ensure_image(definition, source_root, run_identifier, no_pull, rebuild)
+}
+
+export func oci_execute(definition, policy, stream_options) {
+    return run_container(definition, policy, stream_options)
+}
+
+export func oci_stop(container_name, backend) {
+    return stop_container(container_name, backend)
+}
+
+export func oci_logs(container_name, backend) {
+    return container_logs(container_name, backend)
+}
+
+export func oci_destroy(container_name, backend) {
+    return remove_container(container_name, backend)
+}
+
+export func oci_inventory(backend) {
+    return owned_resource_inventory(backend)
+}
+
+export func oci_clean(prune_images, backend) {
+    return clean_owned_resources_with_options(prune_images, backend)
+}

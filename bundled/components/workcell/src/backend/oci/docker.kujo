@@ -1,0 +1,104 @@
+# Docker-specific capability and identity resolution.
+
+from src.backend.resolution import resolve_capabilities
+from src.backend.types import backend_identity
+from src.runtime.docker import doctor_docker, verify_daemon_security
+from src.util import get_or
+
+func docker_claim(status, evidence) {
+    return {"status": status, "authority": "docker-engine", "evidence": evidence}
+}
+
+func docker_observation(status, method, result) {
+    return {"status": status, "method": method, "result": result}
+}
+
+export func docker_identity(definition) {
+    runtime := get_or(definition, "runtime", {})
+    substrate := "oci/runc"
+    engine_runtime := get_or(runtime, "engine_runtime", "")
+    if engine_runtime != "" {
+        substrate = "oci/" + engine_runtime
+    }
+    return backend_identity("docker", "builtin", "docker-engine", "docker-cli", substrate)
+}
+
+export func docker_capabilities(definition) {
+    security := verify_daemon_security(definition)
+    security_observation := docker_observation("not-observed", "docker-info", "unavailable")
+    if get_or(security, "ok", false) {
+        security_observation = docker_observation("observed", "docker-info", "security profiles inspected")
+    }
+    engine := docker_claim("workcell-enforced", "Docker CLI flags and Workcell watchdog")
+    provider := docker_claim("provider-claimed", "Docker engine configuration")
+    mut capabilities := {}
+    required := [
+    "lifecycle.provision",
+    "lifecycle.terminate",
+    "lifecycle.destroy",
+    "lifecycle.inventory",
+    "workspace.stage",
+    "workspace.collect_delta",
+    "process.argv",
+    "process.exit_status",
+    "execution.timeout",
+    "logs.bounded",
+    "artifact.selective_export",
+    "environment.explicit",
+    "credentials.redacted_transport",
+    "evidence.provider_identity",
+    "ownership.markers",
+    "compute.cpu_limit",
+    "compute.memory_limit",
+    "compute.pid_limit",
+    "network.none",
+    "network.custom",
+    "filesystem.read_only_root",
+    "filesystem.tmpfs",
+    "filesystem.writable_paths",
+    "image.oci",
+    "image.digest",
+    "logs.streaming",
+    "logs.stdout_stderr_separate",
+    "lifecycle.cancel_process"
+    ]
+    mut i := 0
+    while i < len(required) {
+        capabilities[required[i]] := {
+            "support": "supported",
+            "resolved": true,
+            "enforcement": engine,
+            "observation": docker_observation("observed", "v1-conformance", "covered"),
+            "limitations": []
+        }
+        i = i + 1
+    }
+    for id in ["process.argv", "process.exit_status", "compute.cpu_limit", "compute.memory_limit", "compute.pid_limit", "network.none", "network.custom", "filesystem.tmpfs", "filesystem.writable_paths", "image.oci", "image.digest"] {
+        provider_capability := capabilities[id]
+        provider_capability["enforcement"] := provider
+        capabilities[id] := provider_capability
+    }
+    read_only_capability := capabilities["filesystem.read_only_root"]
+    read_only_capability["enforcement"] := provider
+    read_only_capability["observation"] := security_observation
+    capabilities["filesystem.read_only_root"] := read_only_capability
+    capabilities["compute.disk_limit"] := {
+        "support": "unknown",
+        "enforcement": docker_claim("unknown", ""),
+        "observation": docker_observation("not-observed", "", ""),
+        "limitations": ["v1 does not configure an engine-independent writable-layer disk ceiling"]
+    }
+    capabilities["lifecycle.pause"] := {"support": "unsupported", "enforcement": docker_claim("unsupported", ""), "observation": docker_observation("not-applicable", "", ""), "limitations": ["not part of the Workcell lifecycle"]}
+    capabilities["lifecycle.resume"] := {"support": "unsupported", "enforcement": docker_claim("unsupported", ""), "observation": docker_observation("not-applicable", "", ""), "limitations": ["not part of the Workcell lifecycle"]}
+    return capabilities
+}
+
+export func resolve_docker(definition, requirements) {
+    resolution := resolve_capabilities(requirements, docker_capabilities(definition))
+    resolution["identity"] := docker_identity(definition)
+    return resolution
+}
+
+export func doctor_docker_backend() {
+    return doctor_docker()
+}

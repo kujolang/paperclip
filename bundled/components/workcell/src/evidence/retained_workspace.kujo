@@ -1,0 +1,30 @@
+# Read-only local ownership/materialization observation. Never replay authority.
+from src.util import get_or, path_has_symlink, process_ok, run_argv, valid_run_id
+from src.workspace.workspace import temp_root
+
+export func observe_retained_workspace(workspace) {
+    try {
+        path := workspace["workspace_path"]
+        source := workspace["source_root"]
+        strategy := workspace["strategy"]
+        prefix := temp_root() + "/kujo-workcell-"
+        if type(path) != "string"||starts_with(path, prefix) == false||path_has_symlink(path)||path_is_dir(path) == false {throw("workspace_unavailable")}
+        run_id := substring(path, len(prefix), len(path))
+        if valid_run_id(run_id) == false||contains(["git-worktree", "isolated-clone"], strategy) == false {throw("workspace_identity_invalid")}
+        owner := read_file_beneath(temp_root(), basename(path) + ".owner", 4096)
+        if owner != "workcell-run-id=" + run_id + "\n" {throw("workspace_owner_mismatch")}
+        if type(source) != "string"||source == ""||path_has_symlink(source)||path_is_dir(source) == false {throw("source_unavailable")}
+        commit := get_or(workspace, "source_commit", "")
+        if type(commit) != "string"||regex_match(commit, "^([0-9a-f]{40}|[0-9a-f]{64})$") == false {throw("source_identity_invalid")}
+        head := run_argv(["git", "-C", path, "rev-parse", "HEAD"], 10000)
+        common := run_argv(["git", "-C", path, "rev-parse", "--path-format=absolute", "--git-common-dir"], 10000)
+        if process_ok(head) == false||process_ok(common) == false {throw("materialization_unavailable")}
+        if strategy == "git-worktree" {
+            original := run_argv(["git", "-C", source, "rev-parse", "--path-format=absolute", "--git-common-dir"], 10000)
+            if process_ok(original) == false||trim(original.stdout) != trim(common.stdout) {throw("materialization_source_mismatch")}
+        }
+        return {"ok": true, "observation": {"schema": "workcell.retained-workspace-observation/v1alpha1", "workspace_path": path, "source_root": source, "source_commit": commit, "strategy": strategy, "owner_sha256": sha256(owner), "head": trim(head.stdout), "git_common_dir": trim(common.stdout)}}
+    } except err {
+        return {"ok": false, "error": to_string(err)}
+    }
+}

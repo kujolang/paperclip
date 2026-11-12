@@ -1,0 +1,90 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/kujolang/workcell/schemas/workcell-live-certification-v1.schema.json",
+  "title": "WorkCell live provider certification report",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "status", "provider", "mode", "started_at"],
+  "properties": {
+    "schema_version": {"const": "workcell-live-certification/v1"},
+    "status": {"enum": ["passed", "failed", "blocked", "recovery-required"]},
+    "provider": {"enum": ["e2b", "vercel-sandbox", "daytona"]},
+    "mode": {"enum": ["fixture", "live"]},
+    "started_at": {"type": "string", "format": "date-time"},
+    "completed_at": {"type": "string", "format": "date-time"},
+    "error": {"type": "string", "maxLength": 2048},
+    "run_exit_code": {"type": "integer", "minimum": 0, "maximum": 255},
+    "resources_remaining": {"oneOf": [{"type": "integer", "minimum": 0}, {"const": "unknown"}]},
+    "versions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["workcell", "runtime_commit", "adapter"],
+      "properties": {
+        "workcell": {"type": "string"},
+        "runtime_commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "adapter": {"type": "string"}
+      }
+    },
+    "scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["account_plan", "region", "image_template", "profile_fingerprint", "source_commit"],
+      "properties": {
+        "account_plan": {"type": "string"},
+        "region": {"type": "string"},
+        "image_template": {"type": "string"},
+        "profile_fingerprint": {"type": "string"},
+        "source_commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"}
+      }
+    },
+    "bounds": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["max_runtime_seconds", "max_concurrency", "max_upload_bytes", "max_download_bytes", "max_log_bytes", "spend_ceiling"],
+      "properties": {
+        "max_runtime_seconds": {"type": "integer", "minimum": 1, "maximum": 300},
+        "max_concurrency": {"const": 1},
+        "max_upload_bytes": {"type": "integer", "minimum": 1, "maximum": 10485760},
+        "max_download_bytes": {"type": "integer", "minimum": 1, "maximum": 10485760},
+        "max_log_bytes": {"type": "integer", "minimum": 1, "maximum": 1048576},
+        "spend_ceiling": {"type": "string"}
+      }
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["inspect", "run_summary", "verify", "receipt"],
+      "properties": {
+        "inspect": {"type": "string"},
+        "run_summary": {"type": "string"},
+        "verify": {"type": "string"},
+        "receipt": {"type": "string"}
+      }
+    },
+    "cleanup": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "resources_remaining"],
+      "properties": {
+        "status": {"type": "string"},
+        "resources_remaining": {"type": "integer", "minimum": 0}
+      }
+    },
+    "security_probes": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "dns", "ipv4", "ipv6", "metadata", "private_link_local", "redirects", "provider_exceptions", "secret_canary"],
+      "properties": {
+        "status": {"enum": ["not-run", "simulated", "observed", "partial", "contradicted"]},
+        "dns": {"type": "string"},
+        "ipv4": {"type": "string"},
+        "ipv6": {"type": "string"},
+        "metadata": {"type": "string"},
+        "private_link_local": {"type": "string"},
+        "redirects": {"type": "string"},
+        "provider_exceptions": {"type": "string"},
+        "secret_canary": {"type": "string"}
+      }
+    }
+  }
+}

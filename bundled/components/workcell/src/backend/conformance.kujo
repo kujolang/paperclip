@@ -1,0 +1,194 @@
+# Offline backend adapter conformance runner.
+
+from src.backend.client import invoke_backend
+from src.backend.registry import backend_executable, load_backend_manifest
+from src.backend.types import backend_contract_id, validate_backend_handle, validate_backend_identity, validate_terminal_result
+from src.util import get_or, valid_run_id
+
+export func conformance_schema_version() {
+    return "workcell-backend-conformance/v1"
+}
+
+func conformance_request(run_identifier, operation, profile, payload) {
+    return {
+        "contract": backend_contract_id(),
+        "request_id": "conformance-" + replace(uuid_v4(), "-", ""),
+        "run_id": run_identifier,
+        "operation": operation,
+        "deadline_ms": 10000,
+        "profile": profile,
+        "payload": payload
+    }
+}
+
+func invoke(executable, run_identifier, operation, profile, payload) {
+    return invoke_backend(executable, conformance_request(run_identifier, operation, profile, payload), {"timeout_ms": 10000, "max_output_bytes": 1048576})
+}
+
+func failure(report, operation, result) {
+    report["ok"] := false
+    report["failed_operation"] := operation
+    report["error"] := get_or(get_or(result, "result", {}), "error", {"code": "CONFORMANCE_FAILED", "message": "operation failed"})
+    return report
+}
+
+func add_check(report, id, evidence) {
+    report["checks"] := push(report["checks"], {"id": id, "ok": true, "evidence": evidence})
+    return report
+}
+
+func best_effort_destroy(executable, run_identifier, profile, handle) {
+    if type(handle) != "dict" {
+        return
+    }
+    invoke(executable, run_identifier, "destroy", profile, {"handle": handle, "expected_ownership": handle["ownership"], "idempotency_key": run_identifier + ":destroy"})
+}
+
+export func run_backend_conformance(manifest_path, profile, run_identifier) {
+    if type(profile) != "dict"||valid_run_id(run_identifier) == false {
+        return {"schema_version": conformance_schema_version(), "ok": false, "error": {"code": "INPUT_INVALID", "message": "profile or run id is invalid"}, "checks": []}
+    }
+    report := {"schema_version": conformance_schema_version(), "ok": true, "adapter_id": "", "run_id": run_identifier, "checks": [], "failed_operation": null, "error": null}
+    manifest_state := load_backend_manifest(manifest_path)
+    if manifest_state["ok"] == false {return failure(report, "manifest", {"result": {"error": {"code": "MANIFEST_INVALID", "message": manifest_state["error"]}}})}
+    manifest := manifest_state["manifest"]
+    report["adapter_id"] := manifest["id"]
+    executable_state := backend_executable(manifest)
+    if executable_state["ok"] == false {return failure(report, "manifest", {"result": {"error": {"code": "ADAPTER_UNAVAILABLE", "message": executable_state["error"]}}})}
+    executable := executable_state["path"]
+
+    described := invoke(executable, run_identifier, "describe", profile, {})
+    if described["ok"] == false {return failure(report, "describe", described)}
+    adapter := get_or(described["result"]["data"], "adapter", {})
+    if type(adapter) != "dict"||get_or(adapter, "id", "") != manifest["id"] {
+        return failure(report, "describe", {"result": {"error": {"code": "IDENTITY_MISMATCH", "message": "describe adapter identity does not match manifest"}}})
+    }
+    report = add_check(report, "describe.identity", adapter)
+
+    requirements := [
+    {"id": "lifecycle.provision", "requested": true, "required": true, "value": true},
+    {"id": "lifecycle.terminate", "requested": true, "required": true, "value": true},
+    {"id": "lifecycle.destroy", "requested": true, "required": true, "value": true},
+    {"id": "lifecycle.inventory", "requested": true, "required": true, "value": true},
+    {"id": "workspace.stage", "requested": true, "required": true, "value": true},
+    {"id": "workspace.collect_delta", "requested": true, "required": true, "value": true},
+    {"id": "process.argv", "requested": true, "required": true, "value": true},
+    {"id": "process.exit_status", "requested": true, "required": true, "value": true},
+    {"id": "execution.timeout", "requested": true, "required": true, "value": 1000},
+    {"id": "logs.bounded", "requested": true, "required": true, "value": 65536},
+    {"id": "artifact.selective_export", "requested": true, "required": true, "value": true},
+    {"id": "environment.explicit", "requested": true, "required": true, "value": true},
+    {"id": "credentials.redacted_transport", "requested": true, "required": true, "value": true},
+    {"id": "evidence.provider_identity", "requested": true, "required": true, "value": true},
+    {"id": "ownership.markers", "requested": true, "required": true, "value": true}
+    ]
+    resolved := invoke(executable, run_identifier, "resolve", profile, {"requirements": requirements, "intent": {"argv": ["fixture"]}})
+    if resolved["ok"] == false {return failure(report, "resolve", resolved)}
+    identity := get_or(resolved["result"]["data"], "identity", null)
+    if validate_backend_identity(identity)["ok"] == false||identity["adapter"] != manifest["id"]||len(get_or(resolved["result"]["data"], "capabilities", [])) != len(requirements) {
+        return failure(report, "resolve", {"result": {"error": {"code": "RESOLUTION_INVALID", "message": "resolution identity or capability ledger is invalid"}}})
+    }
+    report = add_check(report, "resolve.required-capabilities", {"count": len(requirements)})
+
+    nonce := "nonce-" + replace(uuid_v4(), "-", "")
+    provisioned := invoke(executable, run_identifier, "provision", profile, {"resolved_plan": resolved["result"]["data"]["resolved_plan"], "ownership": {"run_id": run_identifier, "nonce": nonce}, "idempotency_key": run_identifier + ":provision"})
+    if provisioned["ok"] == false {return failure(report, "provision", provisioned)}
+    handle := get_or(provisioned["result"]["data"], "handle", null)
+    if validate_backend_handle(handle, run_identifier)["ok"] == false {
+        return failure(report, "provision", {"result": {"error": {"code": "HANDLE_INVALID", "message": "provision returned invalid handle"}}})
+    }
+    report = add_check(report, "provision.ownership", handle["ownership"])
+
+    reprovisioned := invoke(executable, run_identifier, "provision", profile, {"resolved_plan": resolved["result"]["data"]["resolved_plan"], "ownership": {"run_id": run_identifier, "nonce": nonce}, "idempotency_key": run_identifier + ":provision"})
+    if reprovisioned["ok"] == false||to_json(get_or(reprovisioned["result"]["data"], "handle", null)) != to_json(handle) {
+        best_effort_destroy(executable, run_identifier, profile, handle)
+        return failure(report, "provision", {"result": {"error": {"code": "IDEMPOTENCY_FAILED", "message": "repeated provision did not return the same handle"}}})
+    }
+    report = add_check(report, "provision.idempotent", {"resource_ids": handle["resource_ids"]})
+
+    package_digest := "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    prepared := invoke(executable, run_identifier, "prepare", profile, {"handle": handle, "workspace_package": {"schema_version": "workcell-workspace/v1", "sha256": package_digest}, "idempotency_key": run_identifier + ":prepare"})
+    if prepared["ok"] == false {
+        best_effort_destroy(executable, run_identifier, profile, handle)
+        return failure(report, "prepare", prepared)
+    }
+    if get_or(prepared["result"]["data"], "observed_package_digest", "") != package_digest {
+        best_effort_destroy(executable, run_identifier, profile, handle)
+        return failure(report, "prepare", {"result": {"error": {"code": "DIGEST_MISMATCH", "message": "prepare did not echo observed package digest"}}})
+    }
+    report = add_check(report, "prepare.digest", {"sha256": package_digest})
+
+    executed := invoke(executable, run_identifier, "execute", profile, {"handle": handle, "attempt_id": "attempt-1", "argv": ["fixture", "non-zero"], "workdir": "/workspace", "environment": {}, "secret_channel": [], "timeout_ms": 1000, "max_output_bytes": 65536})
+    if executed["ok"] == false {
+        best_effort_destroy(executable, run_identifier, profile, handle)
+        return failure(report, "execute", executed)
+    }
+    terminal := get_or(executed["result"]["data"], "terminal", null)
+    if validate_terminal_result(terminal)["ok"] == false||terminal["exit_code"] != 7||len(executed["events"]) != 1 {
+        best_effort_destroy(executable, run_identifier, profile, handle)
+        return failure(report, "execute", {"result": {"error": {"code": "EXECUTION_INVALID", "message": "non-zero workload result or log events were not normalized"}}})
+    }
+    report = add_check(report, "execute.nonzero-is-result", terminal)
+
+    mut timeout_profile := {}
+    try {
+        timeout_profile = parse_json(to_json(profile))
+    } except err {
+        best_effort_destroy(executable, run_identifier, profile, handle)
+        return failure(report, "execute", {"result": {"error": {"code": "CONFORMANCE_INTERNAL", "message": "timeout profile could not be copied"}}})
+    }
+    timeout_profile["fixture_timed_out"] := true
+    timed := invoke(executable, run_identifier, "execute", timeout_profile, {"handle": handle, "attempt_id": "attempt-timeout", "argv": ["fixture", "timeout"], "workdir": "/workspace", "environment": {}, "secret_channel": [], "timeout_ms": 1, "max_output_bytes": 65536})
+    timed_terminal := get_or(get_or(timed["result"], "data", {}), "terminal", null)
+    if timed["ok"] == false||validate_terminal_result(timed_terminal)["ok"] == false||timed_terminal["timed_out"] != true||timed_terminal["status"] != "timed-out" {
+        best_effort_destroy(executable, run_identifier, profile, handle)
+        return failure(report, "execute", {"result": {"error": {"code": "TIMEOUT_INVALID", "message": "advertised timeout was not normalized as terminal timeout"}}})
+    }
+    report = add_check(report, "execute.timeout", timed_terminal)
+
+    collected := invoke(executable, run_identifier, "collect", profile, {"handle": handle, "attempt_id": "attempt-1", "stream_cursor": null})
+    if collected["ok"] == false {
+        best_effort_destroy(executable, run_identifier, profile, handle)
+        return failure(report, "collect", collected)
+    }
+    report = add_check(report, "collect.evidence", {"complete": get_or(collected["result"]["data"]["logs"], "complete", false)})
+
+    declarations := ["result.txt"]
+    exported := invoke(executable, run_identifier, "export", profile, {"handle": handle, "declarations": declarations, "limits": {"max_bytes": 1024, "max_files": 1}, "exporter_version": "workcell-artifacts/v1", "destination": "/tmp/workcell-conformance-" + run_identifier, "idempotency_key": run_identifier + ":export"})
+    if exported["ok"] == false||to_json(get_or(exported["result"]["data"]["manifest"], "declared", [])) != to_json(declarations) {
+        best_effort_destroy(executable, run_identifier, profile, handle)
+        return failure(report, "export", exported)
+    }
+    report = add_check(report, "export.declared-only", {"declared": declarations})
+
+    unsafe_export := invoke(executable, run_identifier, "export", profile, {"handle": handle, "declarations": ["../escape"], "limits": {"max_bytes": 1024, "max_files": 1}, "exporter_version": "workcell-artifacts/v1", "destination": "/tmp/workcell-conformance-" + run_identifier, "idempotency_key": run_identifier + ":unsafe-export"})
+    if unsafe_export["ok"]||get_or(get_or(unsafe_export["result"], "error", {}), "code", "") != "PATH_UNSAFE" {
+        best_effort_destroy(executable, run_identifier, profile, handle)
+        return failure(report, "export", {"result": {"error": {"code": "PATH_SAFETY_FAILED", "message": "unsafe artifact declaration was not rejected"}}})
+    }
+    report = add_check(report, "export.path-safety", {"declaration": "../escape"})
+
+    inventory := invoke(executable, run_identifier, "inventory", profile, {"ownership": handle["ownership"]})
+    if inventory["ok"] == false||len(get_or(inventory["result"]["data"], "resources", [])) != 1 {
+        best_effort_destroy(executable, run_identifier, profile, handle)
+        return failure(report, "inventory", inventory)
+    }
+    resource := inventory["result"]["data"]["resources"][0]
+    if get_or(get_or(resource, "ownership", {}), "nonce", "") != nonce {
+        best_effort_destroy(executable, run_identifier, profile, handle)
+        return failure(report, "inventory", {"result": {"error": {"code": "OWNERSHIP_MISMATCH", "message": "inventory ownership nonce does not match"}}})
+    }
+    report = add_check(report, "inventory.ownership", resource["ownership"])
+
+    destroyed := invoke(executable, run_identifier, "destroy", profile, {"handle": handle, "expected_ownership": handle["ownership"], "idempotency_key": run_identifier + ":destroy"})
+    if destroyed["ok"] == false||len(get_or(destroyed["result"]["data"], "remaining", [])) != 0 {
+        return failure(report, "destroy", destroyed)
+    }
+    report = add_check(report, "destroy.zero-remaining", {"items": destroyed["result"]["data"]["items"]})
+    post_inventory := invoke(executable, run_identifier, "inventory", profile, {"ownership": handle["ownership"]})
+    if post_inventory["ok"] == false||get_or(post_inventory["result"]["data"], "complete", false) != true||len(get_or(post_inventory["result"]["data"], "resources", [])) != 0 {
+        return failure(report, "inventory", {"result": {"error": {"code": "CLEANUP_INCOMPLETE", "message": "owned inventory was not empty after destroy"}}})
+    }
+    report = add_check(report, "destroy.zero-inventory", {"resources": []})
+    return report
+}

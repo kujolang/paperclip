@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://kujolang.dev/muzzle/schemas/muzzle-error-v1.json",
+  "title": "Muzzle command error",
+  "type": "object",
+  "required": ["schema_version", "command", "code", "message", "details"],
+  "properties": {
+    "schema_version": {"const": "muzzle.error/v1"},
+    "command": {"type": "string", "minLength": 1},
+    "code": {"type": "string", "minLength": 1},
+    "message": {"type": "string", "minLength": 1},
+    "details": {"type": "object"}
+  },
+  "additionalProperties": false
+}
