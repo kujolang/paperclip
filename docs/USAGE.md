@@ -2,7 +2,7 @@
 
 ## Paperclip UI
 
-Open an issue and Kujo appears inline in Paperclip's current task view. There is no Classic Task Interface prerequisite. Project and issue detail pages also expose the **Kujo** detail tab where the host supports tabs. The exported read-only run panel requires a host run-tab mount; Paperclip `2026.1106.0` lacks that mount, as verified in the [compatibility sweep](COMPATIBILITY_SWEEP_2026_11_11.md). Use scoped `list-evidence` and `get-evidence` agent tools for retained run records in this host.
+Open an issue and Kujo appears inline in Paperclip's current task view. There is no Classic Task Interface prerequisite. Project and issue detail pages also expose the **Kujo** detail tab where the host supports tabs. The exported read-only run panel requires a host run-tab mount; Paperclip `2026.1106.0` lacks that mount, as verified in the [compatibility sweep](COMPATIBILITY_SWEEP_2026_11_11.md). Use scoped `list-evidence` and `get-evidence` agent tools for retained run records in this host. A [verified host repair](RUN_TAB_RECOVERY_2026_11_12.md) adds the run tab in a separate fork branch; it is not yet part of the upstream release. On a patched host, open an agent run and choose **Kujo** to read its retained evidence; creation and clearing controls remain unavailable there.
 
 - **Generate Review Pack** measures the current working tree and builds a handoff.
 - **Generate Context Pack** selects files for a task at minimal, focused, or broad depth.

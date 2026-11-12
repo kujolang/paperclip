@@ -1,0 +1,130 @@
+{
+  "source": {
+    "upstreamTag": "v2026.1106.0",
+    "upstreamCommit": "d69631b01b9c658f80bf8bed389863dce82643e1",
+    "patchCommit": "a1f7a2d8b1fc1224c766ab5cf065437bdefd2a12",
+    "patchBranch": "https://github.com/robertdevore/paperclip/tree/codex/run-plugin-tabs-2026-11-11",
+    "deployedToExistingHost": false
+  },
+  "uiProvenance": {
+    "officialUiIndexSha256": "2e0c5a05cc411fb25e8ef8ed9c332ac51359d9e3d7a2167a87d9f2cad9254ff1",
+    "patchedUiIndexSha256": "5c351e2a0c8c501d3ba61032925a190a45aff8bac72c6b6d39698904ccaf56ea"
+  },
+  "baseline": {
+    "schemaVersion": 1,
+    "fixture": "production Kujo workflows",
+    "startedAt": "2026-11-12T02:15:28.012Z",
+    "hostPackage": {
+      "name": "@paperclipai/server",
+      "version": "2026.1106.0",
+      "entrySha256": "cde8cd927214edb31edf173aec7667dd86b174799a58c822f6abf41089786480"
+    },
+    "pluginCommit": "1e2d9ed011b29599e9b58dbe86715337248089f4",
+    "checks": [
+      "fresh authenticated instance and local worker installation",
+      "actual host task detail renders the Kujo workspace with authenticated bridge data",
+      "actual host task UI action retains failure evidence and displays its returned result",
+      "actual host project Kujo detail tab renders and does not carry issue evidence across navigation"
+    ],
+    "observedHostVersions": [
+      "2026.1106.0"
+    ],
+    "status": "failed",
+    "failure": "expect(locator).toBeVisible() failed\n\nLocator: getByRole('tab', { name: 'Kujo', exact: true })\nExpected: visible\nTimeout: 15000ms\nError: element(s) not found\n\nCall log:\n  - Expect \"toBeVisible\" getByRole('tab', { name: 'Kujo', exact: true }) with timeout 15000ms\n  - waiting for getByRole('tab', { name: 'Kujo', exact: true })\n",
+    "hostStopped": true,
+    "finishedAt": "2026-11-12T02:17:09.575Z"
+  },
+  "patched": {
+    "schemaVersion": 1,
+    "fixture": "production Kujo workflows",
+    "startedAt": "2026-11-12T02:17:40.685Z",
+    "hostPackage": {
+      "name": "@paperclipai/server",
+      "version": "2026.1106.0",
+      "entrySha256": "cde8cd927214edb31edf173aec7667dd86b174799a58c822f6abf41089786480"
+    },
+    "pluginCommit": "1e2d9ed011b29599e9b58dbe86715337248089f4",
+    "checks": [
+      "fresh authenticated instance and local worker installation",
+      "actual host task detail renders the Kujo workspace with authenticated bridge data",
+      "actual host task UI action retains failure evidence and displays its returned result",
+      "actual host project Kujo detail tab renders and does not carry issue evidence across navigation",
+      "actual host run Kujo tab displays scoped retained evidence read-only",
+      "run evidence remains readable after cancellation and page reload",
+      "another run has its own empty read-only evidence scope",
+      "returning to the original run restores only its retained evidence"
+    ],
+    "uiIndexSha256": "5c351e2a0c8c501d3ba61032925a190a45aff8bac72c6b6d39698904ccaf56ea",
+    "observedHostVersions": [
+      "2026.1106.0"
+    ],
+    "status": "passed",
+    "hostStopped": true,
+    "finishedAt": "2026-11-12T02:19:33.000Z"
+  },
+  "independent": {
+    "schemaVersion": 1,
+    "fixture": "production Kujo workflows",
+    "startedAt": "2026-11-12T02:19:58.984Z",
+    "hostPackage": {
+      "name": "@paperclipai/server",
+      "version": "2026.1106.0",
+      "entrySha256": "cde8cd927214edb31edf173aec7667dd86b174799a58c822f6abf41089786480"
+    },
+    "pluginCommit": "1e2d9ed011b29599e9b58dbe86715337248089f4",
+    "checks": [
+      "fresh authenticated instance and local worker installation",
+      "actual host task detail renders the Kujo workspace with authenticated bridge data",
+      "actual host task UI action retains failure evidence and displays its returned result",
+      "actual host project Kujo detail tab renders and does not carry issue evidence across navigation",
+      "actual host run Kujo tab displays scoped retained evidence read-only",
+      "run evidence remains readable after cancellation and page reload",
+      "another run has its own empty read-only evidence scope",
+      "returning to the original run restores only its retained evidence"
+    ],
+    "uiIndexSha256": "5c351e2a0c8c501d3ba61032925a190a45aff8bac72c6b6d39698904ccaf56ea",
+    "observedHostVersions": [
+      "2026.1106.0"
+    ],
+    "status": "passed",
+    "hostStopped": true,
+    "finishedAt": "2026-11-12T02:21:15.532Z"
+  },
+  "hostChecks": {
+    "newComponentTests": 6,
+    "relatedTests": 21,
+    "independentTests": 23,
+    "uiTypecheck": "pass",
+    "uiBuild": "pass",
+    "tokenGates": "pass",
+    "maps": "pass",
+    "wholeHostRecursiveChecks": "not run; bounded UI graph only"
+  },
+  "prefixNegativeValidation": {
+    "status": "pass",
+    "checks": [
+      "reject-symlink-prefix",
+      "reject-symlink-backup",
+      "reject-unexpected-file",
+      "reject-unexpected-package",
+      "reject-symlink-file",
+      "reject-changed-lock"
+    ],
+    "count": 6
+  },
+  "pluginQualification": {
+    "command": "TMPDIR=/private/tmp npm run verify",
+    "status": "pass",
+    "testFiles": 44,
+    "passed": 328,
+    "skipped": 2,
+    "durationSeconds": 438.33,
+    "initialAttempt": {
+      "passed": 326,
+      "failed": 2,
+      "failure": "Unchanged 5000ms source-execution test deadlines during concurrent host validation",
+      "rerun": "Entire gate passed with unchanged tests after host checks stopped"
+    },
+    "staticBuildComponentsSupplyChainPackage": "pass"
+  }
+}
