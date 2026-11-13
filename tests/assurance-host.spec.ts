@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, writeFile, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -72,16 +72,21 @@ it("retains failed Muzzle logs and cancels a running workflow without replay",as
  const failure=await f.action('status',{id:failed.id});
  await expect(f.action('recover',{id:failed.id})).rejects.toThrow(/no Workcell resources/);
  expect(failure.result.classification).toBe('failed');expect(JSON.stringify(failure.result.artifacts)).toContain('observed failure log');expect(failure.history.status).toBe('retained');
- await writeFile(script,'#!/bin/sh\nprintf "observed running log\\n"\nsleep 9\n');
+ const started = join(f.root, "running-marker");
+ const quotedMarker = "'" + started.replaceAll("'", "'\\''") + "'";
+ await writeFile(script, `#!/bin/sh\nprintf "observed running log\\n"\nprintf '%s' "$$" > ${quotedMarker}\nwhile :; do sleep 1; done\n`);
  const slow=await f.action('prepare',{selection:{kind:'muzzle',path:'check'},submissionId:'running-cancel'});f.accept(slow.interactionId);
  await f.action('start',{id:slow.id});const draining=f.service.drainQueued();
  try {
-  await vi.waitFor(async()=>{const entries=await import('node:fs/promises').then(fs=>fs.readdir(join(f.root,'storage'),{recursive:true}));
-   const logs=entries.filter(p=>p.endsWith('.log'));let observed=false;
-   for(const log of logs){const text=await import('node:fs/promises').then(fs=>fs.readFile(join(f.root,'storage',log),'utf8'));if(text.includes('observed running log'))observed=true;}
-   expect(observed).toBe(true);
+  await vi.waitFor(async()=>{
+   expect(await readFile(started, "utf8")).toMatch(/^\d+$/);
+   expect((await f.action("status", { id: slow.id })).state).toBe("running");
   },{timeout:20000,interval:100});
+  const workflowPid = Number(await readFile(started, 'utf8'));
   await f.action('cancel',{id:slow.id});
+  await vi.waitFor(() => {
+   expect(() => process.kill(workflowPid, 0)).toThrow(/ESRCH/);
+  }, { timeout: 2000, interval: 50 });
  } finally { await draining; }
  const cancelled=await f.action('status',{id:slow.id});
  expect(cancelled.state).toBe('cancelled');expect(cancelled.result.classification).toBe('incomplete');expect(JSON.stringify(cancelled.result.artifacts)).toContain('observed running log');expect(cancelled.history.status).toBe('retained');

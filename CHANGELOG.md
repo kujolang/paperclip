@@ -1,6 +1,8 @@
 # Changelog
 
-## 0.3.0 — 2026-11-12
+## 0.3.0 — 2026-11-13
+
+- Preserve interrupted Muzzle logs without retaining its temporary execution snapshots; verify cancellation with an explicit running marker across supported platforms.
 
 - Remove the first-50-only delegated evidence limitation with bounded pages, scope/membership-bound cursors, per-page access checks and UI restart controls. Verify complete multi-page coverage and reject stale or cross-scope cursors.
 

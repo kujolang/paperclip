@@ -139,7 +139,13 @@ export async function nativeAssurance(input: { selection: Selection; directory: 
       if (selection.kind === "muzzle") {
         for (const name of ["logs", "reports", "state"]) {
           const source = join(workspace, ".muzzle", name);
-          if (await lstat(source).then(s => s.isDirectory() && !s.isSymbolicLink()).catch(() => false)) await cp(source, join(output, name), { recursive: true, dereference: false });
+          if (await lstat(source).then(s => s.isDirectory() && !s.isSymbolicLink()).catch(() => false)) await cp(source, join(output, name), {
+            recursive: true, dereference: false,
+            // Muzzle's private execution snapshots may retain symlinks after an
+            // interruption. They are scratch inputs, not evidence artifacts.
+            // Preserve log/report/state evidence and keep rejecting its symlinks.
+            filter: (candidate) => name !== "state" || candidate !== join(source, "executions"),
+          });
         }
       }
       if (contained) await cp(contained.output, join(output, "workcell"), { recursive: true, dereference: false });
