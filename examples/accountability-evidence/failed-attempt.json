@@ -1,0 +1,66 @@
+{
+  "schemaVersion": 1,
+  "id": "runledger_e469a170-c764-4e50-b36f-79c0ecd1beec",
+  "generatedAt": "2026-11-12T15:18:00.934Z",
+  "sourceKind": "imported",
+  "producer": "RunLedger",
+  "record": {
+    "id": "2026-11-12-node-assert-searchable-task-list-001",
+    "created_at": "2026-11-12T15:18:00Z",
+    "updated_at": "2026-11-12T15:18:00Z",
+    "status": "fail",
+    "provider": "local",
+    "model": "node-assert",
+    "task_name": "searchable-task-list",
+    "start_commit": null,
+    "end_commit": null,
+    "git_dirty_start": null,
+    "git_dirty_end": null,
+    "changed_files": [],
+    "tests": [
+      {
+        "at": "2026-11-12T15:18:00Z",
+        "name": "search filters task list",
+        "status": "fail",
+        "details": null
+      }
+    ],
+    "usage": {
+      "input_tokens": null,
+      "output_tokens": null,
+      "cache_read_tokens": null,
+      "cache_write_tokens": null
+    },
+    "cost": {
+      "currency": "USD",
+      "input_cost": null,
+      "output_cost": null,
+      "cache_cost": null,
+      "total_cost": null
+    },
+    "correlation": {
+      "watchdog_trace_id": null,
+      "watchdog_run_id": null,
+      "dispatch_run_id": null,
+      "relay_run_id": null,
+      "eval_run_id": null
+    },
+    "verdict": "Intentional filter failure detected"
+  },
+  "host": {
+    "companyId": "local-demo-only",
+    "projectId": null,
+    "issueId": null,
+    "parentIssueId": null,
+    "agentId": null,
+    "runId": null,
+    "attribution": "human-importer"
+  },
+  "classification": "failed",
+  "verificationMethod": "schema-validation-only",
+  "executionObserved": false,
+  "sourceDigest": "980ebc3448b0149345ebd5472ec4f9e29298c4d99d59e22e6e3023dba0a4cacb",
+  "sourceBytes": 1142,
+  "redactedCount": 0,
+  "notice": "Imported RunLedger claims. Host identity identifies the importer, not the producer. Tests, commits, usage, costs and correlation identifiers are supplied and unverified. No commands or references are opened. Checksums identify bytes, not authenticity. A reported pass never grants verified completion."
+}

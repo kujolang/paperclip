@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://kujolang.dev/schemas/muzzle-command-v1.json",
+  "title": "Muzzle command response",
+  "type": "object",
+  "required": ["schema_version", "command"],
+  "properties": {
+    "schema_version": {"const": "muzzle.command/v1"},
+    "command": {"type": "string", "minLength": 1}
+  },
+  "additionalProperties": true
+}

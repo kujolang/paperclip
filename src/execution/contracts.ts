@@ -7,7 +7,7 @@ const digest = z.string().regex(/^[a-f0-9]{64}$/);
 export const executionScopeSchema = z.object({ companyId: identity, issueId: identity }).strict();
 export type ExecutionScope = z.infer<typeof executionScopeSchema>;
 export const executionPlanSchema = z.object({
-  operation: z.enum(["eval.run", "source.run", "source.test", "source.fixtures", "starter.create", "dispatch.start", "dispatch.decide"]),
+  operation: z.enum(["eval.run", "source.run", "source.test", "source.fixtures", "starter.create", "dispatch.start", "dispatch.decide", "assurance.run"]),
   // Frozen at preparation. Absent on legacy requests; never backfill from a
   // newer catalog when rendering an old immutable outcome.
   abilityReceipt: z.object({
@@ -21,6 +21,8 @@ export const executionPlanSchema = z.object({
   projectId: identity.nullable(),
   workspaceId: identity.nullable(),
   workflow: z.object({ parentId: identity, storageDigest: digest, command: dispatchCommandSchema }).strict().optional(),
+  assurance: z.object({ kind: z.enum(["lens", "muzzle", "workcell", "packwrite"]), path: z.string().max(500), target: z.string().max(2000).optional(), executionId: identity, storageDigest: digest, endpointDigest: digest.optional() }).strict().optional(),
+  sourceSnapshot: z.object({ head: z.string(), fingerprint: digest }).strict().optional(),
   suite: z.string().min(1).max(500),
   summary: z.string().min(1).max(4000),
   preview: z.string().max(12000).optional(),
@@ -35,6 +37,7 @@ export const executionPlanSchema = z.object({
   policyDigest: digest,
   timeoutMs: z.number().int().min(100).max(120000),
 }).strict().superRefine((plan, context) => {
+  if ((plan.operation === "assurance.run") !== !!plan.assurance) context.addIssue({ code: "custom", message: "Invalid assurance plan" });
   if (plan.operation === "dispatch.start" || plan.operation === "dispatch.decide") {
     if (!plan.workflow || plan.projectId !== null || plan.workspaceId !== null || plan.timeoutMs !== 120000
       || plan.workflow.command.operation !== (plan.operation === "dispatch.start" ? "start-fixture" : "decide-approval")) {
@@ -75,6 +78,7 @@ export type ExecutionAdapter = {
   materialize(scope: ExecutionScope, plan: ExecutionPlan, signal: AbortSignal): Promise<{
     invocation: Omit<ExecuteKujoInput, "signal" | "timeoutMs" | "maxStdoutBytes" | "maxStderrBytes">;
     collect(result: ExecuteKujoResult): Promise<Record<string, unknown>>;
+    collectInterrupted?(): Promise<Record<string, unknown>>;
     dispose(): Promise<void>;
   } | null>;
 };

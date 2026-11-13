@@ -2,7 +2,7 @@
 
 ## Health and audit trail
 
-Paperclip reports worker health and component integrity in the plugin status view. A healthy worker verifies all fifteen bundled component snapshots. Runtime compatibility is checked when a feature first runs.
+Paperclip reports worker health and component integrity in the plugin status view. A healthy worker verifies all nineteen bundled component snapshots. Runtime compatibility is checked when a feature first runs.
 
 Successful generation, Context content reads, and data clearing write company-scoped Paperclip activity events. Events contain the operation, entity, and artifact ID. They do not contain source, logs, commands, or file contents. Paperclip owns activity-log retention and export.
 
@@ -66,3 +66,6 @@ Do not post private logs, workspace paths, or exploit details in public issues.
 Kujo for Paperclip is a local plugin. Availability follows the Paperclip host and local Kujo process. The project does not promise a response-time or uptime SLA. GitHub issues are the public support channel for reproducible non-security defects. Security reports use GitHub Security Advisories.
 
 Each operation has a hard time and output budget. Review and Context reject Git-visible files larger than 25 MB or workspaces with more than 100,000 Git-visible files before starting a bundled analyzer. Split or exclude oversized inputs instead of raising this guard.
+
+
+Optional assurance operations retain native files in the operator-owned workflow-state folder. Database history pruning does not reclaim that folder. Monitor disk capacity, export needed receipts, stop the plugin before administratively removing terminal reservations, and never remove active work. See [assurance recovery and retention](ACCOUNTABILITY.md).

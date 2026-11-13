@@ -1,0 +1,50 @@
+{
+  "schemaVersion": 1,
+  "scope": "Real host hierarchy and authenticated tool imports of retained local CLI evidence; no autonomous delivery, Workcell or Lens execution",
+  "retained": [
+    {
+      "role": "lead",
+      "agentId": "393e30bc-2680-426c-9d6e-e4db4a757971",
+      "runId": "0e5f7b16-3755-42ef-8d7c-d303aa0a3b8f",
+      "issueId": "71b53c9b-5678-4afe-b15e-8d112e99f088",
+      "parentIssueId": null,
+      "records": [
+        "runledger_bf3851d7-1627-4291-96b8-899c835c0928",
+        "runledger_2a95d9f8-75c2-4a1e-9449-8e931fffdbe3"
+      ]
+    },
+    {
+      "role": "implementation",
+      "agentId": "268e1e11-653f-4797-80e8-df25e73aec6c",
+      "runId": "baf17cff-9c88-48f6-b73b-f5f329b9eb81",
+      "issueId": "afcae114-4ee7-4282-95cf-401d2d0a520a",
+      "parentIssueId": "71b53c9b-5678-4afe-b15e-8d112e99f088",
+      "records": [
+        "runledger_9beda6c2-e457-4ecb-8646-c2f260f575a0",
+        "runledger_52622b8b-e3f6-4d0a-a735-d138c2851e21"
+      ]
+    },
+    {
+      "role": "testing",
+      "agentId": "8166c4a7-d01e-44e1-8312-0f143c6bfcd3",
+      "runId": "eed2a7a3-6442-4583-a6c6-cd12004a662a",
+      "issueId": "170125ee-07e2-4ab2-bb28-584afd26027e",
+      "parentIssueId": "71b53c9b-5678-4afe-b15e-8d112e99f088",
+      "records": [
+        "runledger_b60fc531-84ca-4a72-8a39-e15128a118c6",
+        "runledger_e5dc9b44-12df-4f5a-83ba-d258338e5263"
+      ]
+    },
+    {
+      "role": "review",
+      "agentId": "a6bec78f-d2bc-4790-bed8-359b18162d2b",
+      "runId": "f3c81475-3a4d-47d5-bf7b-93c32ea46616",
+      "issueId": "6ce1baf5-6a5d-4004-88a3-82b44a005b46",
+      "parentIssueId": "71b53c9b-5678-4afe-b15e-8d112e99f088",
+      "records": [
+        "runledger_dad45bc3-4c9e-4773-8424-fd7e577897e6",
+        "runledger_2bb8b872-3c0a-4862-a6c8-cb8d984238de"
+      ]
+    }
+  ]
+}

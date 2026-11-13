@@ -347,8 +347,7 @@ requires its own source/workspace admission and is not invoked by this preview.
 
 ## Run a Kujo workflow
 
-This development feature is not yet in the published npm package. It requires a
-Paperclip host with company local folders and scheduled plugin jobs, on macOS or
+This optional workflow requires a Paperclip host with company local folders and scheduled plugin jobs, on macOS or
 Linux. Existing Windows features remain available.
 
 1. In company plugin settings, enable **Human-approved Dispatch workflows** and
@@ -388,7 +387,7 @@ There are twenty retained started workflows per company, separate from the
 ordinary active-request limit. Parents are not pruned with thirty-day command
 receipts because they own native state. Never-started cancellation/expiry releases
 its reservation allowance. Automated archive/retirement, live providers, Muzzle,
-Workcell and definitive lost-decision reconciliation are still expansion work;
+Workcell is available through the separate opt-in assurance adapter; definitive lost-decision reconciliation remains expansion work;
 do not treat this slice as the complete durable workflow pack.
 
 
@@ -412,3 +411,33 @@ The original host command receipt remains unchanged, including an **uncertain**
 outcome. Inspection does not resume the workflow, repair state, rewrite history,
 or authorize replay. Both company settings and the original storage identity must
 still match. Agent inspection requires the currently assigned issue and run.
+
+
+## Verification Center and acceptance
+
+See [Accountability](ACCOUNTABILITY.md) for opt-in company configuration, private
+workflow storage, native human approvals, container/browser limits, acceptance
+policies and Watchdog metadata. The [real demo](../examples/assurance/README.md)
+provides setup commands and a four-agent native delegation scenario. Existing
+source, Eval and Dispatch controls retain their own admission contracts.
+
+## Review verification attempts
+
+On an issue, enable only the needed assurance integrations and configure the
+private workflow-state folder as described in [Accountability](ACCOUNTABILITY.md).
+In **Verification Center**, use **Refresh verification** to load retained attempts.
+They appear oldest first with requester/run identity, recorded human approval,
+requested/queued/finished times and the observed classification. Queue time is
+not process start, and missing observations display as unavailable or not recorded.
+Select **Inspect** to open the immutable result, reports, screenshots and logs.
+Use the existing Evidence history to compare or export attempts. A failed attempt
+remains inspectable after later work succeeds; retention limits still apply.
+
+### Inspect larger delegated task trees
+
+Choose **Inspect delegated evidence** to load the first 50 readable assignments.
+Use **Next assignments** for another bounded page and **First assignments** to
+restart. Page ranges refer to the current native task tree. If the tree changes,
+the cursor is rejected: inspect again from the first page. Each page rechecks
+access and shows only that page's related native runs; paging does not copy or
+reassign evidence. Status and evidence can change between reads.

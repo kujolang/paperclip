@@ -1,0 +1,166 @@
+# Muzzle opt-in execution policy and manifest argument validation.
+
+from src.common import dict_has_key, is_trueish, is_falseish, path_is_within_muzzle
+
+func allow_result() {
+	return {"allowed": true, "code": "", "message": "", "details": dict()}
+}
+
+func deny_result(code, message, details) {
+	return {"allowed": false, "code": code, "message": message, "details": details}
+}
+
+func value_in_array(values, expected) {
+	mut idx := 0
+	while idx < len(values) {
+		if to_string(values[idx]) == expected {
+			return true
+		}
+		idx = idx + 1
+	}
+	return false
+}
+
+export func valid_policy_mode(mode) {
+	return mode == "trusted" || mode == "enforce"
+}
+
+export func verify_signed_policy_bundle(bundle_path, public_key_path, signature_path, workflow_name) {
+	if bundle_path == "" || public_key_path == "" || signature_path == "" {
+		return deny_result("POLICY_BUNDLE_OPTIONS", "Signed policy use requires --policy-bundle, --policy-public-key, and --policy-signature.", dict())
+	}
+	if is_falseish(file_exists(bundle_path)) || is_falseish(file_exists(public_key_path)) || is_falseish(file_exists(signature_path)) {
+		return deny_result("POLICY_BUNDLE_FILE_MISSING", "A signed policy bundle input is missing.", {"bundle": bundle_path, "public_key": public_key_path, "signature": signature_path})
+	}
+	if is_falseish(path_is_dir(".muzzle/state")) || is_falseish(path_is_within_muzzle(".muzzle/state")) {
+		return deny_result("POLICY_STATE_UNSAFE", "Policy verification requires a safe project-local state directory.", {"path": ".muzzle/state"})
+	}
+	mut bundle_raw := ""
+	try {
+		bundle_raw = read_file(bundle_path)
+	} except _err {
+		return deny_result("POLICY_BUNDLE_READ", "Policy bundle could not be read.", {"bundle": bundle_path})
+	}
+	# Verify an owner-only immutable snapshot, then parse the same in-memory bytes.
+	# This binds authorization to the exact content OpenSSL accepted even if the
+	# caller-controlled source path changes during verification.
+	snapshot_path := ".muzzle/state/.policy-verify-" + replace(uuid_v4(), "-", "") + ".json"
+	snapshot_receipt := io_write_private_file(snapshot_path, bundle_raw, 384)
+	if type(snapshot_receipt) == "Error" || type(snapshot_receipt) != "dict" || snapshot_receipt["verified"] != true {
+		return deny_result("POLICY_SNAPSHOT_FAILED", "Policy bundle could not be secured for verification.", {"bundle": bundle_path})
+	}
+	mut verification := null
+	try {
+		verification = spawn_process(array("openssl", "dgst", "-sha256", "-verify", public_key_path, "-signature", signature_path, snapshot_path), {"timeout_ms": 10000, "max_output_bytes": 8192})
+	} except _err {
+		try { delete_file(snapshot_path) } except _cleanup_err {}
+		return deny_result("POLICY_VERIFIER_UNAVAILABLE", "OpenSSL is required to verify signed policy bundles.", dict())
+	}
+	try { delete_file(snapshot_path) } except _cleanup_err {}
+	if verification.exitcode != 0 {
+		return deny_result("POLICY_SIGNATURE_INVALID", "Policy bundle signature verification failed.", {"bundle": bundle_path})
+	}
+	mut bundle := null
+	try {
+		bundle = parse_json(bundle_raw)
+	} except _err {
+		return deny_result("POLICY_BUNDLE_JSON", "Policy bundle contains malformed JSON.", {"bundle": bundle_path})
+	}
+	if type(bundle) != "dict" || is_falseish(dict_has_key(bundle, "schema_version")) || to_string(bundle["schema_version"]) != "muzzle.policy/v1" {
+		return deny_result("POLICY_BUNDLE_SCHEMA", "Policy bundle must use schema_version muzzle.policy/v1.", {"bundle": bundle_path})
+	}
+	if is_falseish(dict_has_key(bundle, "workflows")) || type(bundle["workflows"]) != "array" || is_falseish(value_in_array(bundle["workflows"], workflow_name)) {
+		return deny_result("POLICY_WORKFLOW_DENIED", "Signed policy bundle does not authorize this workflow.", {"workflow": workflow_name})
+	}
+	approved := is_trueish(dict_has_key(bundle, "approved")) && type(bundle["approved"]) == "bool" && is_trueish(bundle["approved"])
+	return {"allowed": true, "code": "POLICY_SIGNATURE_VERIFIED", "message": "Signed policy bundle verified.", "details": {"bundle": bundle_path}, "approved": approved}
+}
+
+export func evaluate_safety_policy(manifest, mode, approved) {
+	if mode == "trusted" || manifest == null || is_falseish(dict_has_key(manifest, "safety")) {
+		return allow_result()
+	}
+
+	safety := manifest["safety"]
+	if is_trueish(dict_has_key(safety, "require_git_repo")) && is_trueish(safety["require_git_repo"]) {
+		git_check := spawn_process(array("git", "rev-parse", "--is-inside-work-tree"), {"timeout_ms": 5000, "max_output_bytes": 4096})
+		if git_check.exitcode != 0 || trim(to_string(git_check.stdout)) != "true" {
+			return deny_result("POLICY_GIT_REPO_REQUIRED", "Workflow policy requires a Git repository.", {"policy": mode})
+		}
+	}
+
+	if is_trueish(dict_has_key(safety, "allow_dirty_tree")) && is_falseish(safety["allow_dirty_tree"]) {
+		git_status := spawn_process(array("git", "status", "--porcelain"), {"timeout_ms": 5000, "max_output_bytes": 65536})
+		if git_status.exitcode != 0 {
+			return deny_result("POLICY_GIT_STATUS_FAILED", "Workflow policy could not inspect Git status.", {"policy": mode})
+		}
+		if trim(to_string(git_status.stdout)) != "" {
+			return deny_result("POLICY_DIRTY_TREE", "Workflow policy requires a clean Git working tree.", {"policy": mode})
+		}
+	}
+
+	requires_network := is_trueish(dict_has_key(safety, "requires_network")) && is_trueish(safety["requires_network"])
+	requires_approval := is_trueish(dict_has_key(safety, "human_approval_recommended")) && is_trueish(safety["human_approval_recommended"])
+	if (requires_network || requires_approval) && is_falseish(approved) {
+		return deny_result("POLICY_APPROVAL_REQUIRED", "Workflow policy requires explicit --approve confirmation.", {
+			"policy": mode,
+			"requires_network": requires_network,
+			"human_approval_recommended": requires_approval
+		})
+	}
+
+	return allow_result()
+}
+
+export func validate_manifest_args(manifest, workflow_args) {
+	if manifest == null {
+		return allow_result()
+	}
+	# Omitted argument metadata declares no positions, just like an empty array.
+	# The independent allow_extra_args contract still applies.
+	mut definitions := array()
+	if dict_has_key(manifest, "args") {
+		definitions = manifest["args"]
+	}
+	mut idx := 0
+	while idx < len(definitions) {
+		arg_def := definitions[idx]
+		required := is_trueish(dict_has_key(arg_def, "required")) && is_trueish(arg_def["required"])
+		if required && idx >= len(workflow_args) {
+			return deny_result("ARG_REQUIRED", "Missing required workflow argument '" + to_string(arg_def["name"]) + "'.", {"argument": to_string(arg_def["name"]), "position": idx + 1})
+		}
+		if idx < len(workflow_args) && is_trueish(dict_has_key(arg_def, "allowed_values")) {
+			actual := to_string(workflow_args[idx])
+			allowed_values := arg_def["allowed_values"]
+			if is_falseish(value_in_array(allowed_values, actual)) {
+				return deny_result("ARG_VALUE_NOT_ALLOWED", "Workflow argument '" + to_string(arg_def["name"]) + "' has a value outside its allowlist.", {"argument": to_string(arg_def["name"]), "position": idx + 1, "allowed_values": allowed_values})
+			}
+		}
+		idx = idx + 1
+	}
+	allow_extra := true
+	if is_trueish(dict_has_key(manifest, "allow_extra_args")) {
+		allow_extra = is_trueish(manifest["allow_extra_args"])
+	}
+	if is_falseish(allow_extra) && len(workflow_args) > len(definitions) {
+		return deny_result("ARG_ARITY", "Workflow received more arguments than its manifest allows.", {"maximum": len(definitions), "actual": len(workflow_args)})
+	}
+	return allow_result()
+}
+
+export func display_args(manifest, workflow_args) {
+	mut displayed := array()
+	mut idx := 0
+	while idx < len(workflow_args) {
+		value := to_string(workflow_args[idx])
+		if manifest != null && is_trueish(dict_has_key(manifest, "args")) && idx < len(manifest["args"]) {
+			arg_def := manifest["args"][idx]
+			if is_trueish(dict_has_key(arg_def, "sensitive")) && is_trueish(arg_def["sensitive"]) {
+				value = "[REDACTED]"
+			}
+		}
+		displayed = push(displayed, value)
+		idx = idx + 1
+	}
+	return displayed
+}

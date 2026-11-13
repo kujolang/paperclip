@@ -1,6 +1,6 @@
 {
   "name": "@kujolang/paperclip",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "description": "Make Paperclip agent work easier to scope, review, reproduce, and verify.",
   "license": "MIT",
   "homepage": "https://github.com/kujolang/paperclip#readme",
@@ -85,5 +85,9 @@
   "publishConfig": {
     "access": "public",
     "provenance": true
+  },
+  "optionalDependencies": {
+    "axe-core": "4.11.4",
+    "playwright-core": "1.61.1"
   }
 }

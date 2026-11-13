@@ -1,0 +1,392 @@
+{
+  "schemaVersion": 1,
+  "records": [
+    {
+      "kind": "packwrite",
+      "label": "plan",
+      "execution": {
+        "id": "execution_5cb3f5fd5e883eee3502352502e15b5915d2e691124a9302b2094726803388dc",
+        "state": "succeeded",
+        "requester": {
+          "kind": "human",
+          "id": "YFAEvPhO84OcmNaqSRe6OraLugLM1CeY"
+        },
+        "interactionId": "ad71a6c3-09d9-4134-8bf6-2eaaa0764172",
+        "createdAt": "2026-11-12 19:34:07.837244-05",
+        "finishedAt": "2026-11-12 19:34:11.42383-05",
+        "requestDigest": "aa4aad6b59479d992b02254b0374b996ffad2336d7bed42b6a7a9798bfb86283",
+        "sourceSnapshot": {
+          "head": "unborn",
+          "fingerprint": "fcbf7d92cc50a89ce221bb927019111558e4ca06b4e0a1e1d49ef108add15927"
+        },
+        "classification": "plan-valid",
+        "exitCode": 0,
+        "durationMs": 287,
+        "artifacts": [
+          {
+            "path": "CODEX_REVIEW_PROMPT.md",
+            "bytes": 47,
+            "sha256": "595ebe17194464ebacb11201a9e1283098145ff755a32f745a15064cc531ceb2",
+            "mediaType": "text/plain"
+          },
+          {
+            "path": "DECISIONS.md",
+            "bytes": 82,
+            "sha256": "c19b051f011ec48a05599c38526dcaf33014aeaedecdfc2208c2a47d0d63c1d4",
+            "mediaType": "text/plain"
+          },
+          {
+            "path": "DEEPSEEK_START.md",
+            "bytes": 76,
+            "sha256": "249e28f5405a4d585ba0213439b3bc047275f9f3ca612931070c89d405af7235",
+            "mediaType": "text/plain"
+          },
+          {
+            "path": "HANDOFF.md",
+            "bytes": 609,
+            "sha256": "3c2da7dccb7ebb3ca456db1588fc5a2851810073affc5730f4637664afe9201a",
+            "mediaType": "text/plain"
+          },
+          {
+            "path": "MASTER.md",
+            "bytes": 963,
+            "sha256": "f8d810590c933bfdfe2dffa9aef069849931baa0d133e01aa650390ebc7b0df2",
+            "mediaType": "text/plain"
+          },
+          {
+            "path": "REVIEW_CHECKLIST.md",
+            "bytes": 104,
+            "sha256": "19e0f63b3026c625800997f4144385b942f44f8d645365611761339dd2999be6",
+            "mediaType": "text/plain"
+          },
+          {
+            "path": "TODO.md",
+            "bytes": 245,
+            "sha256": "f7bdaada1b138f02acff1d7b31fa33903ecc91cab1985fec4f04c431925a859d",
+            "mediaType": "text/plain"
+          },
+          {
+            "path": "phases/00-project-brief.md",
+            "bytes": 779,
+            "sha256": "dff8f8b0d05a9d14763b9eb10a75a5b2cfbdc4a6b8c65d8a00a9d2851c81be01",
+            "mediaType": "text/plain"
+          },
+          {
+            "path": "phases/01-alpha.md",
+            "bytes": 822,
+            "sha256": "febf11060e4f325b9c1d5c1e8c4a2db0ab080527f3a8deab0fb7596f752f4f8c",
+            "mediaType": "text/plain"
+          },
+          {
+            "path": "phases/02-beta.md",
+            "bytes": 832,
+            "sha256": "872c0ecd452f19c371eeca9a81637cbd21fe931cb20036af4b58a421e4f14e30",
+            "mediaType": "text/plain"
+          },
+          {
+            "path": "phases/03-gamma.md",
+            "bytes": 834,
+            "sha256": "3059869e11f91d7892cac6a70833712614a1233cd744d6a397b670ac94004340",
+            "mediaType": "text/plain"
+          },
+          {
+            "path": "phases/04-delta.md",
+            "bytes": 819,
+            "sha256": "495ce0cfe29012ef2b529b096c39e190a53844ad2866c429d2bd9f741def2295",
+            "mediaType": "text/plain"
+          },
+          {
+            "path": "phases/05-epsilon.md",
+            "bytes": 811,
+            "sha256": "324aee3a56c7fc367e5aec6ea5c6800907dd9ec7ee079dabeadf2bd8cd8f65e3",
+            "mediaType": "text/plain"
+          }
+        ]
+      }
+    },
+    {
+      "kind": "muzzle",
+      "label": "workflow",
+      "execution": {
+        "id": "execution_95e556389f39073e67355e7cfb8504de64ba68017d5a85adca23c440dd14951d",
+        "state": "succeeded",
+        "requester": {
+          "kind": "human",
+          "id": "YFAEvPhO84OcmNaqSRe6OraLugLM1CeY"
+        },
+        "interactionId": "6f95b500-2220-4070-8986-8a8521b10e02",
+        "createdAt": "2026-11-12 19:34:12.810495-05",
+        "finishedAt": "2026-11-12 19:34:17.609934-05",
+        "requestDigest": "968624129492bcfa8534c4f82ce3b5ac418e591ce40fb515a3914968d9b46e8c",
+        "sourceSnapshot": {
+          "head": "unborn",
+          "fingerprint": "fcbf7d92cc50a89ce221bb927019111558e4ca06b4e0a1e1d49ef108add15927"
+        },
+        "classification": "passed",
+        "exitCode": 0,
+        "durationMs": 1392,
+        "artifacts": [
+          {
+            "path": "logs/check-1794530056506-ab4e9ead94dd40cba62a8e4e320603e0.log",
+            "bytes": 24,
+            "sha256": "6a4a0d409c8cc2df2b5cb6cbe5408f6d77874002e52c79b517352c5e215a96bd",
+            "mediaType": "text/plain"
+          },
+          {
+            "path": "reports/check-1794530056506-ab4e9ead94dd40cba62a8e4e320603e0.json",
+            "bytes": 496,
+            "sha256": "36c4ff997e14bdb937e6db4684bf0c0af31e9256fa9a4bba0989688f6fd0041b",
+            "mediaType": "text/plain"
+          },
+          {
+            "path": "reports/check-1794530056506-ab4e9ead94dd40cba62a8e4e320603e0.md",
+            "bytes": 478,
+            "sha256": "ba8ccff87c19832dc63e865288186394b0f4e82fb9995b4cd1f2d62d4286babe",
+            "mediaType": "text/plain"
+          }
+        ]
+      }
+    },
+    {
+      "kind": "workcell",
+      "label": "contained-check",
+      "execution": {
+        "id": "execution_5ed2b19347dc2d3400de03cd2c4656aca92acc70c6155981f20967ec5d6af977",
+        "state": "succeeded",
+        "requester": {
+          "kind": "human",
+          "id": "YFAEvPhO84OcmNaqSRe6OraLugLM1CeY"
+        },
+        "interactionId": "be8d2b60-0fdc-4fa0-a3f3-6e5c824e2a01",
+        "createdAt": "2026-11-12 19:34:20.055492-05",
+        "finishedAt": "2026-11-12 19:34:36.173185-05",
+        "requestDigest": "1f62be112e068a2fd9c24dd3826c625b01397dd9ad1416d702705b4914d97724",
+        "sourceSnapshot": {
+          "head": "unborn",
+          "fingerprint": "fcbf7d92cc50a89ce221bb927019111558e4ca06b4e0a1e1d49ef108add15927"
+        },
+        "classification": "passed",
+        "exitCode": 0,
+        "durationMs": 10684,
+        "artifacts": [
+          {
+            "path": "wc-dec087ca018a49b69e217b725f645b31/artifacts/proof.txt",
+            "bytes": 15,
+            "sha256": "49d84a7b2dc788e78c2b7e1244898aee19f847bec72df6f0fc0ea8f34979299c",
+            "mediaType": "text/plain"
+          },
+          {
+            "path": "wc-dec087ca018a49b69e217b725f645b31/changes.json",
+            "bytes": 343,
+            "sha256": "a82ba5404d02094fa656d3f2fc9590a299ea7bc9b072d4307093e36e35d7353a",
+            "mediaType": "text/plain"
+          },
+          {
+            "path": "wc-dec087ca018a49b69e217b725f645b31/changes.patch",
+            "bytes": 139,
+            "sha256": "6b4d323148f33b0c380a9c92d0d97fd1d7714848bace1a77d614a4c088a90c11",
+            "mediaType": "text/plain"
+          },
+          {
+            "path": "wc-dec087ca018a49b69e217b725f645b31/execution-result.json",
+            "bytes": 1183,
+            "sha256": "129f01bc8156f0471092e208794444b8412c60b0a5ac0dca8861b44dbc24dcda",
+            "mediaType": "text/plain"
+          },
+          {
+            "path": "wc-dec087ca018a49b69e217b725f645b31/manifest.json",
+            "bytes": 1834,
+            "sha256": "498fbd93d3efd9118a927a3fb91af55adbf98b3cc597647a4b93a32b6cfb79f5",
+            "mediaType": "text/plain"
+          },
+          {
+            "path": "wc-dec087ca018a49b69e217b725f645b31/preservation.json",
+            "bytes": 1615,
+            "sha256": "0a4e00e2d45776ac19b56e3c1eb6c6907d051d9e41e2bf03f5995f336d7c481b",
+            "mediaType": "text/plain"
+          },
+          {
+            "path": "wc-dec087ca018a49b69e217b725f645b31/receipt.json",
+            "bytes": 10423,
+            "sha256": "0e85c1bb2787132a400ca3326c90857cc2dd56f9d8487521498ddc125344f8b3",
+            "mediaType": "text/plain"
+          },
+          {
+            "path": "wc-dec087ca018a49b69e217b725f645b31/reexecution-input.json",
+            "bytes": 2813,
+            "sha256": "25abb70b378abc4ab41e681ff122e2669d83e2f55ee7d0f50cad1c0e31b9c3e4",
+            "mediaType": "text/plain"
+          },
+          {
+            "path": "wc-dec087ca018a49b69e217b725f645b31/reexecution.json",
+            "bytes": 1377,
+            "sha256": "3c88926a635fe0fbbff57906c1fdf113217a1e30163113c0346571c5943cfed0",
+            "mediaType": "text/plain"
+          },
+          {
+            "path": "wc-dec087ca018a49b69e217b725f645b31/stderr.log",
+            "bytes": 0,
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "mediaType": "text/plain"
+          },
+          {
+            "path": "wc-dec087ca018a49b69e217b725f645b31/stdout.log",
+            "bytes": 23,
+            "sha256": "725862fe58e78a984c4736c699ff9c8de9e2f8ac233780ef60338a6600deab9a",
+            "mediaType": "text/plain"
+          }
+        ]
+      }
+    },
+    {
+      "kind": "lens",
+      "label": "intentional-browser-failure",
+      "execution": {
+        "id": "execution_ad6124cca726e9f3df8883b4fa4f431f75bc07246e8fec8192e77cd0551ae045",
+        "state": "failed",
+        "requester": {
+          "kind": "human",
+          "id": "YFAEvPhO84OcmNaqSRe6OraLugLM1CeY"
+        },
+        "interactionId": "806b895f-bf54-4c9e-988f-1b78947fd812",
+        "createdAt": "2026-11-12 19:34:39.470684-05",
+        "finishedAt": "2026-11-12 19:35:01.184797-05",
+        "requestDigest": "dbe0240a30d7a8f0e89ad8e1d03c8b51ff27ff8113714d3df31e85227903cb43",
+        "sourceSnapshot": {
+          "head": "unborn",
+          "fingerprint": "fcbf7d92cc50a89ce221bb927019111558e4ca06b4e0a1e1d49ef108add15927"
+        },
+        "classification": "failed",
+        "exitCode": 1,
+        "durationMs": 17877,
+        "artifacts": [
+          {
+            "path": "console.json",
+            "bytes": 2,
+            "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+            "mediaType": "text/plain"
+          },
+          {
+            "path": "flow-steps.json",
+            "bytes": 1482,
+            "sha256": "48d3509a002cb97e1ff4cfa04d59a4fd64c49d2f70b88d4359eaed0c32c7ad20",
+            "mediaType": "text/plain"
+          },
+          {
+            "path": "flow.json",
+            "bytes": 435,
+            "sha256": "8ecfd3adc55d17a3a2165983240b1eafe5be7a8042c7bb25d03cde29c6e36e5a",
+            "mediaType": "text/plain"
+          },
+          {
+            "path": "lens-report.json",
+            "bytes": 3048,
+            "sha256": "f94d862c2c15567b7729143fa4fb96458c84dd43fdd2028b33e7d4b69d81a0e6",
+            "mediaType": "text/plain"
+          },
+          {
+            "path": "lens-report.md",
+            "bytes": 2292,
+            "sha256": "03c679b83537026080452391bca64e5a5044c611f96600ebfe949cbba0066b74",
+            "mediaType": "text/plain"
+          },
+          {
+            "path": "metadata.json",
+            "bytes": 840,
+            "sha256": "8d57e32b967185e7f69f5be5492f664608dd50ef10d8b3c5dfbafd519563e164",
+            "mediaType": "text/plain"
+          },
+          {
+            "path": "network.json",
+            "bytes": 2,
+            "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+            "mediaType": "text/plain"
+          },
+          {
+            "path": "screenshots/search-results.png",
+            "bytes": 12420,
+            "sha256": "4496d1acf93d577dea1ed14f65dcf25fc4102dd32b7903b016d859ac4016ce44",
+            "mediaType": "image/png"
+          }
+        ]
+      }
+    },
+    {
+      "kind": "lens",
+      "label": "corrected-browser",
+      "execution": {
+        "id": "execution_ecb5de0ed9ca36f5e0ac67319523b65b099f84b57d801f9cb45f0027da5daf2b",
+        "state": "succeeded",
+        "requester": {
+          "kind": "human",
+          "id": "YFAEvPhO84OcmNaqSRe6OraLugLM1CeY"
+        },
+        "interactionId": "c3f3138d-ee76-4660-922d-d5f9f8027d2f",
+        "createdAt": "2026-11-12 19:35:03.467173-05",
+        "finishedAt": "2026-11-12 19:35:21.436569-05",
+        "requestDigest": "3691a41e695ce26dcede8131d65668edc091232468cf9141f2733ecfa3e59d39",
+        "sourceSnapshot": {
+          "head": "unborn",
+          "fingerprint": "fcbf7d92cc50a89ce221bb927019111558e4ca06b4e0a1e1d49ef108add15927"
+        },
+        "classification": "passed",
+        "exitCode": 0,
+        "durationMs": 14180,
+        "artifacts": [
+          {
+            "path": "console.json",
+            "bytes": 2,
+            "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+            "mediaType": "text/plain"
+          },
+          {
+            "path": "flow-steps.json",
+            "bytes": 1457,
+            "sha256": "1aed4d99ac936160d075a943eb9a659295356a0a20367d7915b920e80a952b25",
+            "mediaType": "text/plain"
+          },
+          {
+            "path": "flow.json",
+            "bytes": 435,
+            "sha256": "8ecfd3adc55d17a3a2165983240b1eafe5be7a8042c7bb25d03cde29c6e36e5a",
+            "mediaType": "text/plain"
+          },
+          {
+            "path": "lens-report.json",
+            "bytes": 2112,
+            "sha256": "d07377f4684a43b654d88e47d8d25f2cc83a67987cf8d09ecb5d801d771f7448",
+            "mediaType": "text/plain"
+          },
+          {
+            "path": "lens-report.md",
+            "bytes": 1675,
+            "sha256": "24cf23b86273152a79114a2fff6f43735efe0fc5edae529e17e7946902d3d214",
+            "mediaType": "text/plain"
+          },
+          {
+            "path": "metadata.json",
+            "bytes": 839,
+            "sha256": "9b7be066c8c8ba9d339165ed0f4680c02631cfa241a8b09819ae13fcfe558c35",
+            "mediaType": "text/plain"
+          },
+          {
+            "path": "network.json",
+            "bytes": 2,
+            "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+            "mediaType": "text/plain"
+          },
+          {
+            "path": "screenshots/search-results.png",
+            "bytes": 12471,
+            "sha256": "10fabb49d3d492311e69ea0167f4d6d50e280f99b661dbdc64a5e633608459a2",
+            "mediaType": "image/png"
+          }
+        ]
+      }
+    }
+  ],
+  "shipcheckStatus": "failed",
+  "waiverInteractionId": "57353be7-5f42-42d3-91bb-94171d227f65",
+  "recovery": "Repeated human cleanup retained the original Workcell outcome; assertions in production-assurance.mjs",
+  "restart": "All workflow, child execution and imported RunLedger records re-read after full host/database restart"
+}

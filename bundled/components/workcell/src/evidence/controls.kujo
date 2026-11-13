@@ -1,0 +1,153 @@
+# Core-owned semantic requirements and receipt-visible controls ledger.
+
+from src.backend.types import validate_capability_state
+from src.util import get_or
+
+func requirement(id, value, required) {
+    return {"id": id, "requested": true, "required": required, "value": value, "allow_degradation": false}
+}
+
+export func requirements_from_definition(definition) {
+    if type(definition) != "dict" {
+        return {"ok": false, "error": "definition must be an object"}
+    }
+    runtime := get_or(definition, "runtime", {})
+    resources := get_or(definition, "resources", {})
+    network := get_or(definition, "network", {})
+    filesystem := get_or(definition, "filesystem", {})
+    if get_or(definition, "schema", "") == "workcell-definition/v2alpha1" {
+        workload := get_or(definition, "workload", {})
+        requirements := get_or(definition, "requirements", {})
+        runtime = {"image": get_or(get_or(workload, "image", {}), "reference", ""), "image_digest": get_or(get_or(workload, "image", {}), "digest", ""), "signature_key": get_or(get_or(workload, "image", {}), "signature_key", "")}
+        compute := get_or(requirements, "compute", {})
+        execution := get_or(requirements, "execution", {})
+        resources = {"cpus": get_or(compute, "cpus", null), "memory": get_or(compute, "memory", null), "pids": get_or(compute, "pids", null), "timeout_ms": get_or(execution, "timeout_ms", null), "max_output_bytes": get_or(execution, "max_output_bytes", null)}
+        network = get_or(requirements, "network", {})
+        filesystem = get_or(requirements, "filesystem", {})
+    }
+    mut requirements := []
+    mandatory := [
+    "lifecycle.provision",
+    "lifecycle.terminate",
+    "lifecycle.destroy",
+    "lifecycle.inventory",
+    "workspace.stage",
+    "workspace.collect_delta",
+    "process.argv",
+    "process.exit_status",
+    "artifact.selective_export",
+    "environment.explicit",
+    "credentials.redacted_transport",
+    "evidence.provider_identity",
+    "ownership.markers"
+    ]
+    mut i := 0
+    while i < len(mandatory) {
+        requirements = push(requirements, requirement(mandatory[i], true, true))
+        i = i + 1
+    }
+    requirements = push(requirements, requirement("compute.cpu_limit", get_or(resources, "cpus", null), true))
+    requirements = push(requirements, requirement("compute.memory_limit", get_or(resources, "memory", null), true))
+    requirements = push(requirements, requirement("compute.pid_limit", get_or(resources, "pids", null), true))
+    requirements = push(requirements, requirement("execution.timeout", get_or(resources, "timeout_ms", null), true))
+    requirements = push(requirements, requirement("logs.bounded", get_or(resources, "max_output_bytes", null), true))
+    network_mode := get_or(network, "mode", "none")
+    if network_mode == "none" {
+        requirements = push(requirements, requirement("network.none", {"mode": "deny-all"}, true))
+    } else if network_mode == "allowlist" {
+        requirements = push(requirements, requirement("network.allowlist.domain", get_or(network, "allow", []), true))
+    } else if network_mode == "custom" {
+        requirements = push(requirements, requirement("network.custom", {"name": get_or(network, "name", "")}, true))
+    }
+    if get_or(filesystem, "read_only_root", false) {
+        requirements = push(requirements, requirement("filesystem.read_only_root", true, true))
+    }
+    if len(get_or(filesystem, "tmpfs", [])) > 0 {
+        requirements = push(requirements, requirement("filesystem.tmpfs", filesystem["tmpfs"], true))
+    }
+    if len(get_or(filesystem, "writable", [])) > 0 {
+        requirements = push(requirements, requirement("filesystem.writable_paths", filesystem["writable"], true))
+    }
+    requirements = push(requirements, requirement("image.oci", get_or(runtime, "image", ""), true))
+    if get_or(runtime, "require_digest", false)||get_or(runtime, "image_digest", "") != "" {
+        requirements = push(requirements, requirement("image.digest", get_or(runtime, "image_digest", ""), true))
+    }
+    if get_or(runtime, "require_signature", false)||get_or(runtime, "signature_key", "") != "" {
+        requirements = push(requirements, requirement("image.signature", get_or(runtime, "signature_key", ""), true))
+    }
+    return {"ok": true, "requirements": requirements}
+}
+
+export func controls_ledger(requirements, states) {
+    if type(requirements) != "array"||type(states) != "array" {
+        return {"ok": false, "error": "requirements and capability states must be arrays"}
+    }
+    mut by_id := {}
+    mut state_i := 0
+    while state_i < len(states) {
+        state := states[state_i]
+        checked := validate_capability_state(state)
+        if checked["ok"] == false {return checked}
+        if has_key(by_id, state["id"]) == 1 {
+            return {"ok": false, "error": "duplicate capability state: " + state["id"]}
+        }
+        by_id[state["id"]] := state
+        state_i = state_i + 1
+    }
+    mut controls := []
+    mut rejected := []
+    mut i := 0
+    while i < len(requirements) {
+        request := requirements[i]
+        if type(request) != "dict"||type(get_or(request, "id", null)) != "string" {
+            return {"ok": false, "error": "control requirement is invalid"}
+        }
+        state := get_or(by_id, request["id"], null)
+        if type(state) != "dict" {
+            return {"ok": false, "error": "control resolution is missing: " + request["id"]}
+        }
+        expected_requested := get_or(request, "requested", true)
+        if state["requested"] != expected_requested {return {"ok": false, "error": "control requested state mismatch: " + request["id"]}}
+        if state["acceptance"] == "accepted"&&to_json(state["resolved"]) != to_json(get_or(request, "value", true)) {
+            return {"ok": false, "error": "control resolution changed requested semantics: " + request["id"]}
+        }
+        control := {
+            "id": request["id"],
+            "requested": get_or(request, "value", true),
+            "required": get_or(request, "required", true),
+            "acceptance": state["acceptance"],
+            "resolved": state["resolved"],
+            "enforcement": state["enforcement"],
+            "observation": state["observation"],
+            "limitations": state["limitations"]
+        }
+        controls = push(controls, control)
+        if state["acceptance"] == "rejected" {
+            rejected = push(rejected, request["id"])
+        }
+        i = i + 1
+    }
+    return {"ok": len(rejected) == 0, "controls": controls, "rejected": rejected}
+}
+
+export func controls_have_false_enforcement_claim(controls) {
+    if type(controls) != "array" {
+        return true
+    }
+    mut i := 0
+    while i < len(controls) {
+        control := controls[i]
+        if type(control) != "dict"||type(get_or(control, "enforcement", null)) != "dict" {
+            return true
+        }
+        status := get_or(control["enforcement"], "status", "unknown")
+        if status == "workcell-enforced"&&get_or(control["enforcement"], "authority", "") == "provider-marketing" {
+            return true
+        }
+        if get_or(control, "acceptance", "") == "accepted"&&(status == "unsupported"||status == "not-enforceable") {
+            return true
+        }
+        i = i + 1
+    }
+    return false
+}

@@ -1,0 +1,176 @@
+# Environment diagnostics for Workcell.
+
+from src.backend.oci.driver import backend_doctor
+from src.runtime.docker import podman_security_status
+from src.util import get_or, parent_of, process_error, process_ok, run_argv, run_id
+from src.workspace.workspace import inspect_repository, temp_root
+
+func process_field(result, key, fallback) {
+    if type(result) == "dict" {
+        return get_or(result, key, fallback)
+    }
+    if key == "timed_out" {return result.timed_out}
+    if key == "stdout" {return result.stdout}
+    if key == "stderr" {return result.stderr}
+    return fallback
+}
+
+func command_check(program, arguments, label) {
+    mut argv := [program]
+    mut i := 0
+    while i < len(arguments) {
+        argv = push(argv, arguments[i])
+        i = i + 1
+    }
+    result := run_argv(argv, 10000)
+    if process_ok(result) {
+        return {"name": label, "status": "passed", "message": trim(result.stdout), "remediation": ""}
+    }
+    return {"name": label, "status": "blocked", "message": process_error(result, program), "remediation": "Install or expose " + program + " on PATH"}
+}
+
+func ecosystem_tools_check(repo_root) {
+    parent := parent_of(repo_root)
+    names := ["runledger", "changebucket", "shipcheck", "fence"]
+    mut missing := []
+    mut i := 0
+    while i < len(names) {
+        if path_is_dir(parent + "/" + names[i]) == false {
+            missing = push(missing, names[i])
+        }
+        i = i + 1
+    }
+    if len(missing) == 0 {
+        return {"name": "Optional Kujo tooling", "status": "passed", "message": "RunLedger, ChangeBucket, ShipCheck, and Fence repositories detected", "remediation": ""}
+    }
+    return {"name": "Optional Kujo tooling", "status": "warning", "message": "optional sibling tools not found: " + to_string(missing), "remediation": "Install sibling tools only when their integrations are needed; core Workcell runtime does not require them"}
+}
+
+func runtime_security_check(backend) {
+    if backend == "podman" {
+        security := podman_security_status()
+        if security["ok"] == false {
+            return {"name": "Podman security", "status": "blocked", "message": security["error"], "remediation": "Expose a reachable Podman engine with its default seccomp profile enabled"}
+        }
+        if security["seccomp"] == false {
+            return {"name": "Podman security", "status": "blocked", "message": "Podman security settings do not show seccomp enabled", "remediation": "Enable Podman's default seccomp profile; do not use an unconfined profile"}
+        }
+        if security["rootless"] {
+            if security["apparmor"] {
+                return {"name": "Podman security", "status": "passed", "message": "seccomp, AppArmor, and rootless Podman engine detected", "remediation": ""}
+            }
+            return {"name": "Podman security", "status": "warning", "message": "seccomp and rootless Podman engine detected; AppArmor is not enabled", "remediation": "Review host kernel policy; rootless Podman reduces daemon privilege but does not prove AppArmor enforcement"}
+        }
+        return {"name": "Podman security", "status": "warning", "message": "seccomp enabled but Podman engine is not rootless", "remediation": "Use rootless Podman or a stronger VM/microVM boundary for multi-tenant untrusted workloads"}
+    }
+    result := run_argv(["docker", "info", "--format", "{{json .SecurityOptions}}"], 10000)
+    if process_ok(result) == false {
+        return {"name": "Docker security profiles", "status": "blocked", "message": trim(process_field(result, "stderr", "")), "remediation": "Expose a reachable Docker daemon with its default security profiles enabled"}
+    }
+    options := trim(process_field(result, "stdout", ""))
+    options_lower := to_lower(options)
+    has_seccomp := contains(options_lower, "seccomp") == 1
+    has_apparmor := contains(options_lower, "apparmor") == 1
+    is_rootless := contains(options_lower, "rootless") == 1
+    if has_seccomp == false {
+        return {"name": "Docker security profiles", "status": "blocked", "message": "Docker security options do not show seccomp: " + options, "remediation": "Enable Docker's default seccomp profile; do not use unconfined mode"}
+    }
+    if has_apparmor == false&&is_rootless == false {
+        return {"name": "Docker security profiles", "status": "blocked", "message": "Docker security options do not show AppArmor for a rootful daemon: " + options, "remediation": "Enable Docker's default AppArmor profile or use a rootless daemon"}
+    }
+    if is_rootless {
+        if has_apparmor {
+            return {"name": "Docker security profiles", "status": "passed", "message": "seccomp, AppArmor, and rootless daemon detected", "remediation": ""}
+        }
+        return {"name": "Docker security profiles", "status": "warning", "message": "seccomp and rootless daemon detected; rootless Docker does not advertise AppArmor", "remediation": "Review host kernel AppArmor policy; rootless Docker reduces daemon privilege but does not prove AppArmor enforcement"}
+    }
+    return {"name": "Docker security profiles", "status": "warning", "message": "seccomp and AppArmor detected; daemon is not rootless", "remediation": "Use a rootless daemon or stronger VM/microVM boundary for multi-tenant untrusted workloads"}
+}
+
+export func report(repo_path, backend) {
+    if type(repo_path) != "string"||type(backend) != "string"||repo_path == ""||backend == "" {
+        return {"ok": false, "error": "repository path and runtime backend must be non-empty strings"}
+    }
+    if backend != "docker"&&backend != "podman" {
+        return {"ok": false, "error": "runtime backend must be docker or podman"}
+    }
+    mut checks := []
+    kujo_program := env("KUJO")
+    if type(kujo_program) != "string"||trim(kujo_program) == "" {
+        kujo_program = "kujo"
+    }
+    checks = push(checks, command_check(kujo_program, ["--version"], "Kujo runtime"))
+    checks = push(checks, command_check("git", ["--version"], "Git CLI"))
+    runtime_label := "Docker"
+    if backend == "podman" {runtime_label = "Podman"}
+    checks = push(checks, command_check(backend, ["--version"], runtime_label + " CLI"))
+    checks = push(checks, backend_doctor(backend))
+    checks = push(checks, runtime_security_check(backend))
+    repo := inspect_repository(repo_path)
+    if repo["ok"] {
+        status := "passed"
+        message := "Git repository: " + repo["root"]
+        if repo["clean"] == false {
+            status = "warning"
+            message = message + " (dirty; Workcell run rejects dirty sources by default)"
+        }
+        checks = push(checks, {"name": "Source repository", "status": status, "message": message, "remediation": "Commit or otherwise preserve source changes before running Workcell"})
+        checks = push(checks, ecosystem_tools_check(repo["root"]))
+    } else {
+        checks = push(checks, {"name": "Source repository", "status": "blocked", "message": repo["error"], "remediation": "Run Workcell from a Git repository or pass --repo <path>"})
+    }
+    tmp := temp_root()
+    tmp_status := "blocked"
+    if path_is_dir(tmp) {
+        tmp_status = "passed"
+    }
+    checks = push(checks, {"name": "Temporary directory", "status": tmp_status, "message": tmp, "remediation": "Provide a writable temporary directory"})
+    probe := tmp + "/workcell-doctor-" + run_id() + ".probe"
+    probe_status := "blocked"
+    probe_message := "temporary directory is not writable"
+    try {
+        write_file_atomic(probe, "workcell doctor probe", true)
+        if file_exists(probe) {
+            probe_status = "passed"
+            probe_message = "temporary directory is writable"
+            delete_file(probe)
+        }
+    } except err {
+        probe_message = to_string(err)
+    }
+    checks = push(checks, {"name": "Temporary directory write", "status": probe_status, "message": probe_message, "remediation": "Provide a writable temporary directory"})
+    platform_result := run_argv(["uname", "-s"], 10000)
+    if process_ok(platform_result) == false {
+        checks = push(checks, {"name": "Host platform", "status": "blocked", "message": trim(platform_result.stderr), "remediation": "Run Workcell on a supported Docker host (Linux or macOS)"})
+    } else {
+        platform := trim(platform_result.stdout)
+        if platform == "Linux"||platform == "Darwin" {
+            checks = push(checks, {"name": "Host platform", "status": "passed", "message": platform, "remediation": ""})
+        } else {
+            checks = push(checks, {"name": "Host platform", "status": "blocked", "message": "unsupported host platform: " + platform, "remediation": "Run Workcell on Linux or macOS with Docker"})
+        }
+    }
+    runtime_host_name := "DOCKER_HOST"
+    if backend == "podman" {runtime_host_name = "CONTAINER_HOST"}
+    runtime_host := env(runtime_host_name)
+    if type(runtime_host) == "string"&&trim(runtime_host) != "" {
+        checks = push(checks, {"name": runtime_host_name + " override", "status": "warning", "message": runtime_host_name + " is set; review engine trust before running", "remediation": "Use a trusted local runtime endpoint"})
+    }
+    unsafe_override := env("WORKCELL_UNSAFE")
+    if type(unsafe_override) == "string"&&(to_lower(trim(unsafe_override)) == "1"||to_lower(trim(unsafe_override)) == "true"||to_lower(trim(unsafe_override)) == "yes") {
+        checks = push(checks, {"name": "Unsafe override", "status": "blocked", "message": "WORKCELL_UNSAFE is set", "remediation": "Unset WORKCELL_UNSAFE; the MVP has no unsafe execution mode"})
+    }
+    mut blocking := 0
+    mut warnings := 0
+    mut i := 0
+    while i < len(checks) {
+        if checks[i]["status"] == "blocked" {
+            blocking = blocking + 1
+        }
+        if checks[i]["status"] == "warning" {
+            warnings = warnings + 1
+        }
+        i = i + 1
+    }
+    return {"ok": blocking == 0, "checks": checks, "summary": {"passed": len(checks) - blocking - warnings, "warnings": warnings, "blocked": blocking}}
+}

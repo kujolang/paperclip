@@ -1,6 +1,6 @@
 # Kujo for Paperclip
 
-[![Version](https://img.shields.io/badge/version-0.2.1-black)](https://github.com/kujolang/paperclip/releases/tag/v0.2.1)
+[![Version](https://img.shields.io/badge/version-0.3.0-black)](https://github.com/kujolang/paperclip/releases/tag/v0.3.0)
 [![npm](https://img.shields.io/npm/v/%40kujolang%2Fpaperclip?label=npm&color=black)](https://www.npmjs.com/package/@kujolang/paperclip)
 [![CI](https://img.shields.io/github/actions/workflow/status/kujolang/paperclip/ci.yml?branch=main&label=CI&color=black)](https://github.com/kujolang/paperclip/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-MIT-lightgrey)](LICENSE)
@@ -75,8 +75,8 @@ Kujo retains up to 20 results per company/entity for 30 days in its Paperclip da
 | **Review Pack** | Measures change size, explains risk signals, and prepares a review handoff. | ChangeBucket and PatchBrief |
 | **Failure Evidence** | Turns supplied command details and logs into a bounded, redacted record. | CaseFile |
 
-The fifteen component snapshots are pinned, checksummed, and shipped with the plugin. The
-plugin does not download component code while installing or running. The Eval snapshot
+The nineteen component snapshots are pinned, checksummed, and shipped with the plugin. The
+plugin does not download component code while installing or running. Bundle 0.13.1 pins Workcell `6f5445b` and Lens `7f3ee8b`. Lens page specs accept only `main` and `body` selectors; use executed flows for other CSS assertions. The Eval snapshot
 provides human-approved execution on issue workspaces. The separately enabled
 Dispatch workflow panel runs shipped offline examples through durable host jobs,
 with exact human checkpoint decisions and retained state. The RAG snapshot powers **Ask your project**: explicitly index selected local
@@ -171,6 +171,26 @@ assignment and current run. They can request approval but cannot accept it, and
 can start/cancel only their own run's requests. See [Approved execution](docs/EXECUTION.md)
 for inputs, limits and recovery behavior.
 
+## Verification Center
+
+Opt into approved native Workcell containers, Lens browser checks, Muzzle workflows
+and PackWrite pack validation/compilation from an issue. Inspect artifacts, cancel
+work, recover owned resources and review current-source acceptance across native
+child assignments. Watchdog metadata imports retain only available usage and
+correlation fields. All 21 previous tools remain; `manage-kujo-assurance` is new.
+
+[Configuration and guarantees](docs/ACCOUNTABILITY.md) ·
+[Reproducible four-agent demo](examples/assurance/README.md) ·
+[Test evidence](docs/ACCOUNTABILITY_TESTS.md).
+
+## RunLedger accountability
+
+With Verification enabled, import an existing RunLedger JSON receipt on an issue
+or project. Inspect the recorded commits, reported tests, available usage and
+correlation identifiers; compare attempts in Evidence history. Agent imports can
+bind to their assigned issue/current host run. Imported passes remain unverified.
+See [accountability architecture, audit and limits](docs/ACCOUNTABILITY.md).
+
 ## Verification evidence
 
 Enable **Verification** in company settings to review a Git-visible `.spec.json`, `.spec.yml`, `.spec.yaml` or `.spec.toml` task contract. The native Spec validator reports contract errors and warnings; strict mode treats warnings as failures. Acceptance criteria and declared checks remain **not-run**, and declared approval points do not grant approval. No workspace files or check commands are executed or changed.
@@ -193,10 +213,11 @@ The plugin ships pinned, checksummed Ability contracts/catalogs and generates it
 
 ## Agent tools
 
-Paperclip agents can call twenty-one tools:
+Paperclip agents can call twenty-two tools:
 
 | Tool | Use |
 | --- | --- |
+| `kujolang.paperclip:manage-kujo-assurance` | Prepare, start and inspect approved Workcell, Lens, Muzzle and PackWrite operations; review acceptance and delegated evidence. Human approval and feature-specific prerequisites apply. |
 | `kujolang.paperclip:manage-project-knowledge` | Explicitly index selected project text, query cited snapshots, inspect content freshness and delete private indexes. Offline, with no project execution or external provider. |
 | `kujolang.paperclip:manage-kujo-workflow` | Preview and queue approved offline Dispatch examples, inspect retained state, and cancel owned operations. Human checkpoint decisions use the issue panel. macOS/Linux and operator storage required. |
 | `kujolang.paperclip:manage-kujo-starter` | Preview and create approved canonical starter files in a new issue-workspace directory. No overwrite, dependency installation or generated-program execution. |
@@ -324,4 +345,8 @@ provenance.
 
 Development status: the [approved execution workflow](docs/EXECUTION.md)
 includes company-scoped host admission, bounded suite previews, durable request limits
-and an opt-in authenticated host acceptance harness. Public Eval and separately enabled run/test controls are available on issues; offline Dispatch examples have separate durable job controls; live-provider workflows, Muzzle/Workcell and broader lifecycle acceptance remain unfinished.
+and an opt-in authenticated host acceptance harness. Public Eval and separately enabled run/test controls are available on issues; offline Dispatch examples have separate durable job controls; live-provider Dispatch workflows remain outside the offline adapter. The optional Verification Center adds native Muzzle/Workcell/Lens/PackWrite checks and separate acceptance metadata.
+
+For requirement coverage and current limitations, see the [original assignment review](docs/ATTACHMENT_REVIEW.md). Verification Center shows chronological attempts with recorded requester/run identity, human approval, timing and outcomes.
+
+Delegated evidence supports larger native task trees through bounded 50-assignment pages, with access checks on every page and explicit restart when tree membership changes.

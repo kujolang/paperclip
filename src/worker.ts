@@ -1,3 +1,9 @@
+import { registerDelegation } from "./features/assurance/delegation.js";
+import { registerAcceptance } from "./features/assurance/acceptance.js";
+import { importWatchdog } from "./features/watchdog/import.js";
+import { registerAssurance } from "./features/assurance/bridge.js";
+import { assuranceTool } from "./abilities/generated.js";
+import { importRunLedger, runledgerReportSchema, type HostBinding } from "./features/runledger/import.js";
 import { knowledgeTool } from "./abilities/generated.js";
 import { registerKnowledge } from "./features/knowledge/service.js";
 import { workflowStorageReady } from "./features/dispatch/storage.js";
@@ -93,7 +99,7 @@ async function configFor(ctx: PluginContext, companyId: string, tool?: { name: s
 const historyTarget = z.object({ entityType: z.enum(["project", "issue", "run"]), entityId: z.string().min(1), evidenceId: z.string().min(1).max(100), otherId: z.string().min(1).max(100).optional() }).strict();
 function evidenceEnabled(config: ReturnType<typeof parsePluginConfig>, kind: ArtifactKind) {
   const tool = { "review-latest": reviewTool, "context-latest": contextTool, "failure-latest": failureTool, "understand-latest": understandTool,
-    "packages-latest": packageTool, "language-latest": languageTool, "verification-latest": importVerificationTool, "spec-latest": specTool, "fence-latest": fenceTool, "concord-latest": concordTool, "shipcheck-latest": shipcheckTool, "evaluation-plan": evalTool, "evaluation-result": evalTool, "source-execution-plan": sourceExecutionTool, "source-execution-result": sourceExecutionTool, "starter-creation-plan": starterCreationTool, "starter-creation-result": starterCreationTool, "workflow-plan": workflowTool, "workflow-result": workflowTool, "knowledge-answer": knowledgeTool } as const;
+    "packages-latest": packageTool, "language-latest": languageTool, "verification-latest": importVerificationTool, "spec-latest": specTool, "fence-latest": fenceTool, "concord-latest": concordTool, "shipcheck-latest": shipcheckTool, "evaluation-plan": evalTool, "evaluation-result": evalTool, "source-execution-plan": sourceExecutionTool, "source-execution-result": sourceExecutionTool, "starter-creation-plan": starterCreationTool, "starter-creation-result": starterCreationTool, "workflow-plan": workflowTool, "workflow-result": workflowTool, "knowledge-answer": knowledgeTool, "acceptance-result": assuranceTool, "assurance-plan": assuranceTool, "assurance-result": assuranceTool, "watchdog-import": importVerificationTool, "runledger-import": importVerificationTool } as const;
   return toolEnabled(config, tool[kind]);
 }
 
@@ -171,11 +177,21 @@ async function reviewForProject(ctx: PluginContext, runCtx: ToolRunContext, para
   return pack;
 }
 
-async function importForTarget(ctx: PluginContext, target: StateTarget, json: string) {
+async function importForTarget(ctx: PluginContext, target: StateTarget, json: string, format: "evaluation" | "runledger" | "watchdog" = "evaluation", importer?: ToolRunContext) {
   const config = await configFor(ctx, target.companyId, importVerificationTool);
   if (!config.features.verification) throw new Error("Verification imports are disabled by configuration or profile");
   if (target.entityType === "run") throw new Error("Choose a project or issue");
   await requireReadableEntity(ctx, { ...target, entityType: target.entityType });
+  if (format === "runledger" || format === "watchdog") {
+    const issue = target.entityType === "issue" ? await ctx.issues.get(target.entityId, target.companyId) : null;
+    const host: HostBinding = { companyId: target.companyId, projectId: issue?.projectId ?? (target.entityType === "project" ? target.entityId : null),
+      issueId: issue?.id ?? null, parentIssueId: issue?.parentId ?? null, agentId: importer?.agentId ?? null, runId: importer?.runId ?? null,
+      attribution: importer ? "host-agent-importer" : "human-importer" };
+    const report = format === "runledger" ? importRunLedger(json, host) : importWatchdog(json, host);
+    await saveArtifact(ctx, target, format === "runledger" ? "runledger-import" : "watchdog-import", report, { inputs: { sourceDigest: report.sourceDigest, host }, definition: `${format}-import/v1` });
+    await audit(ctx, { ...target, operation: `${format}.imported`, artifactId: report.id });
+    return report;
+  }
   const report = importVerification(json);
   await saveArtifact(ctx, target, "verification-latest", report, { inputs: { sourceDigest: report.sourceDigest }, definition: importVerificationTool, projection: projectionReceipt(importVerificationTool) });
   await audit(ctx, { ...target, operation: "verification.imported", artifactId: report.id });
@@ -290,7 +306,8 @@ function registerTools(ctx: PluginContext) {
     try {
       const value = verificationInput.parse(raw);
       if (!runCtx.companyId || !runCtx.projectId) throw new Error("Host company and project context are required");
-      const data = await importForTarget(ctx, { companyId: runCtx.companyId, entityType: "project", entityId: runCtx.projectId }, value.json);
+      if (value.issueId) await requireAgentIssue(ctx, value.issueId, runCtx);
+      const data = await importForTarget(ctx, { companyId: runCtx.companyId, entityType: value.issueId ? "issue" : "project", entityId: value.issueId ?? runCtx.projectId }, value.json, value.format, runCtx);
       return { content: JSON.stringify(data), data };
     } catch (error) { return { error: normalizeError(error).message }; }
   });
@@ -478,7 +495,7 @@ function registerUiBridge(ctx: PluginContext, executions: ReturnType<typeof regi
     const suggestedTask = issue
       ? `${issue.title}\n\n${issue.description ?? ""}`.trim().slice(0, 10_000)
       : "Understand this repository and identify the best starting points for the next change.";
-    const [review, failure, context, understanding, language, verification, spec, fence, concord, shipcheck, packages] = await Promise.all([
+    const [review, failure, context, understanding, language, verification, spec, fence, concord, shipcheck, packages, runledger] = await Promise.all([
       config.features.review ? loadArtifact(ctx, target, "review-latest", reviewPackSchema) : null,
       config.features.failureEvidence ? loadArtifact(ctx, target, "failure-latest", failureEvidenceSchema) : null,
       config.features.context ? loadArtifact(ctx, target, "context-latest", contextPackSchema) : null,
@@ -490,6 +507,7 @@ function registerUiBridge(ctx: PluginContext, executions: ReturnType<typeof regi
       evidenceEnabled(config, "concord-latest") ? loadArtifact(ctx, target, "concord-latest", concordReportSchema) : null,
       evidenceEnabled(config, "shipcheck-latest") ? loadArtifact(ctx, target, "shipcheck-latest", shipcheckReportSchema) : null,
       evidenceEnabled(config, "packages-latest") ? loadArtifact(ctx, target, "packages-latest", packageReportSchema) : null,
+      evidenceEnabled(config, "runledger-import") ? loadArtifact(ctx, target, "runledger-import", runledgerReportSchema) : null,
     ]);
     const ownedReview = review && (
       (target.entityType === "project" && review.projectId === target.entityId) ||
@@ -531,7 +549,7 @@ function registerUiBridge(ctx: PluginContext, executions: ReturnType<typeof regi
     const executionActive = target.entityType === "issue" && (await executions.recoveryList({ companyId: target.companyId, issueId: target.entityId })).some(record => ["preparing", "pending", "running", "cancel_requested"].includes(record.state));
     const workflowHistory = target.entityType === "issue" ? await workflows.reconcileHistory({ companyId: target.companyId, issueId: target.entityId }) : null;
     const workflowActive = target.entityType === "issue" && (await workflows.list({ companyId: target.companyId, issueId: target.entityId })).length > 0;
-    return { workflowHistory, workflowActive, starterCreationActive, starterCreationHistory, sourceExecutionActive, sourceExecutionHistory, starters: config.features.examples && ["installed", "build", "full"].includes(config.capabilityProfile) ? starterCatalog : [], packages: ownedPackages, packageFiles, executionHistory, executionActive, catalog: capabilityCatalog(config, readiness, true, config.features.workflows && await workflowStorageReady(ctx, target.companyId)), shipcheck: ownedShipcheck, concord: ownedConcord, fence: ownedFence, spec: ownedSpec, specs, verification, verificationEnabled: config.features.verification, history, language: ownedLanguage, sources, understanding: ownedUnderstanding, review: ownedReview, failure: ownedFailure, context: ownedContext, readiness, workspace: inspection?.readiness, suggestedTask };
+    return { workflowHistory, workflowActive, starterCreationActive, starterCreationHistory, sourceExecutionActive, sourceExecutionHistory, starters: config.features.examples && ["installed", "build", "full"].includes(config.capabilityProfile) ? starterCatalog : [], packages: ownedPackages, packageFiles, executionHistory, executionActive, catalog: capabilityCatalog(config, readiness, true, config.features.workflows && await workflowStorageReady(ctx, target.companyId)), shipcheck: ownedShipcheck, concord: ownedConcord, fence: ownedFence, spec: ownedSpec, specs, verification, runledger, verificationEnabled: config.features.verification, history, language: ownedLanguage, sources, understanding: ownedUnderstanding, review: ownedReview, failure: ownedFailure, context: ownedContext, readiness, workspace: inspection?.readiness, suggestedTask };
   });
 
   ctx.actions.register("inspect-release-readiness", async (params, actionCtx) => {
@@ -571,8 +589,9 @@ function registerUiBridge(ctx: PluginContext, executions: ReturnType<typeof regi
 
   ctx.actions.register("import-verification", async (params, actionCtx) => {
     if (!actionCtx.companyId) throw new Error("Company context is required");
-    const value = actionTarget.extend(verificationInput.shape).parse(actionParams(params));
-    return await importForTarget(ctx, { entityType: value.entityType, entityId: value.entityId, companyId: actionCtx.companyId }, value.json);
+    const value = actionTarget.extend({ json: verificationInput.shape.json, format: verificationInput.shape.format }).parse(actionParams(params));
+    if (["runledger", "watchdog"].includes(value.format) && (actionCtx.actor?.type !== "user" || !actionCtx.actor.userId || actionCtx.actor.companyId !== actionCtx.companyId)) throw new Error("Authenticated human company context is required");
+    return await importForTarget(ctx, { entityType: value.entityType, entityId: value.entityId, companyId: actionCtx.companyId }, value.json, value.format);
   });
 
   for (const operation of ["check-kujo-source", "preview-kujo-format"]) ctx.actions.register(operation, async (params, actionCtx) => {
@@ -745,6 +764,7 @@ let health: { status: "ok" | "degraded" | "error"; message: string; details: Rec
 let workflows: ReturnType<typeof registerWorkflows> | undefined;
 let evaluation: ReturnType<typeof registerEvaluation> | undefined;
 let starterCreations: ReturnType<typeof registerStarterCreation> | undefined;
+let assurance: ReturnType<typeof registerAssurance> | undefined;
 let sourceExecutions: ReturnType<typeof registerSourceExecution> | undefined;
 const plugin = definePlugin({
   async setup(ctx) {
@@ -752,6 +772,9 @@ const plugin = definePlugin({
     workflows = registerWorkflows(ctx);
     evaluation = registerEvaluation(ctx);
     sourceExecutions = registerSourceExecution(ctx);
+    assurance = registerAssurance(ctx);
+    registerAcceptance(ctx);
+    registerDelegation(ctx);
     starterCreations = registerStarterCreation(ctx);
     registerTools(ctx);
     registerUiBridge(ctx, evaluation, sourceExecutions, starterCreations, workflows);
@@ -766,7 +789,7 @@ const plugin = definePlugin({
     ctx.logger.info("Kujo plugin initialized", { pluginId: ctx.manifest.id, componentCount: report.components.length, status: report.status });
   },
   async onHealth() { return health; },
-  async onShutdown() { await Promise.all([workflows?.shutdown(), evaluation?.shutdown(), sourceExecutions?.shutdown(), starterCreations?.shutdown()]); await terminateActiveKujoProcesses(); },
+  async onShutdown() { await Promise.all([assurance?.shutdown(), workflows?.shutdown(), evaluation?.shutdown(), sourceExecutions?.shutdown(), starterCreations?.shutdown()]); await terminateActiveKujoProcesses(); },
   async onValidateConfig(value) {
     try {
       const parsed = parsePluginConfig(value);

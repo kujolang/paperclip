@@ -1,0 +1,509 @@
+# Explicit Workcell lifecycle coordinator.
+
+from src.artifacts.exporter import export_declared_with_policy, write_execution_logs
+from src.domain.definition import load_definition
+from src.receipts.receipt import add_error, add_state, finish_receipt, new_receipt, write_receipt
+from src.receipts.manifest import write_manifest
+from src.backend.oci.driver import backend_destroy, backend_ensure_image, backend_execute, backend_logs, backend_stop
+from src.util import ensure_dir, env_secret_stream_values, get_or, path_has_symlink, path_within, redact_with_env, run_id
+from src.workspace.workspace import changed_files_from_details, change_details, cleanup_workspace, create_workspace_for_user, find_symlink_with_limits, inspect_repository, make_patch, temp_root, write_change_report_from_details
+from src.verification.verification import run_verification_checks
+from src.policy.policy import build_policy
+from src.integrations.integrations import dry_run_integrations, run_integrations
+from src.evidence.preservation import write_preservation_outcome, validate_preservation_intent
+from src.evidence.execution_result import write_execution_evidence
+
+func option(flags, name, fallback) {
+    if type(flags) == "dict"&&has_key(flags, name) == 1 {
+        return flags[name]
+    }
+    return fallback
+}
+
+func is_true(value) {
+    return value == true||value == "true"||value == "1"||value == "yes"
+}
+
+func output_root_for(repo_root, definition, requested) {
+    if type(requested) == "string"&&trim(requested) != "" {
+        if starts_with(requested, "/") {
+            return requested
+        }
+        return repo_root + "/" + requested
+    }
+    return repo_root + "/" + definition["receipt"]["path"]
+}
+
+func output_request_safe(requested) {
+    if type(requested) == "null" {
+        return false
+    }
+    if type(requested) != "string"||trim(requested) == "" {
+        return true
+    }
+    parts := split(replace(requested, "\\", "/"), "/")
+    mut i := 0
+    while i < len(parts) {
+        if parts[i] == ".." {
+            return false
+        }
+        i = i + 1
+    }
+    return true
+}
+
+func absolute_output_safe(repo_root, requested) {
+    if type(requested) != "string"||trim(requested) == "" {
+        return true
+    }
+    if starts_with(requested, "/") == false {
+        return true
+    }
+    return path_within(temp_root(), requested)||path_within(repo_root + "/.workcell", requested)
+}
+
+func write_failure_note(output_dir, stage, message) {
+    ensure_dir(output_dir)
+    write_file_atomic(output_dir + "/failure.txt", "Workcell failure\nStage: " + stage + "\nCause: " + message + "\nRecorded: " + now_utc() + "\n", true)
+}
+
+func final_result(run_identifier, receipt_path, output_dir, receipt, ok, stage, error, exit_code, timed_out, cancelled, cleanup_status) {
+    return {
+        "ok": ok,
+        "run_id": run_identifier,
+        "receipt_path": receipt_path,
+        "output_dir": output_dir,
+        "patch_path": receipt["patch_path"],
+        "stage": stage,
+        "error": error,
+        "exit_code": exit_code,
+        "timed_out": timed_out,
+        "cancelled": cancelled,
+        "cleanup_status": cleanup_status,
+        "preservation": get_or(receipt, "preservation", null),
+        "receipt": receipt
+    }
+}
+
+func attach_preservation(receipt, output_dir, workspace, requested_mode, cleanup_status, provider, retain_until) {
+    recorded := write_preservation_outcome({
+        "run_id": get_or(receipt, "run_id", ""),
+        "step_id": "workflow",
+        "attempt_id": "attempt-1",
+        "requested_mode": requested_mode,
+        "cleanup_status": cleanup_status,
+        "output_dir": output_dir,
+        "workspace_path": get_or(workspace, "workspace_path", ""),
+        "workspace_id": get_or(workspace, "workspace_path", ""),
+        "workspace_strategy": get_or(workspace, "strategy", ""),
+        "source_root": get_or(workspace, "source_root", ""),
+        "provider": provider,
+        "receipt": receipt,
+        "retain_until": retain_until,
+        "cleanup_owner": "workcell-clean",
+        "cleanup_handle": get_or(workspace, "workspace_path", "")
+    })
+    if recorded["ok"] {
+        receipt["preservation"] := recorded["outcome"]
+        receipt["preservation_path"] := "preservation.json"
+    } else {
+        receipt = add_error(receipt, "preservation", recorded["error"])
+    }
+    return receipt
+}
+
+func attach_execution_evidence(receipt, definition, output_dir) {
+    recorded := write_execution_evidence(definition, receipt, output_dir)
+    if recorded["ok"] {
+        receipt["execution_result"] := recorded["result"]
+        receipt["execution_result_path"] := "execution-result.json"
+        receipt["reexecution_descriptor_path"] := "reexecution.json"
+    } else {
+        receipt = add_error(receipt, "evidence", recorded["error"])
+    }
+    return receipt
+}
+
+export func run_workcell(definition_path, repo_path, requested_output, flags) {
+    intent_validation := validate_preservation_intent(flags)
+    if intent_validation["ok"] == false {return intent_validation}
+    run_identifier := run_id()
+    loaded := load_definition(definition_path)
+    if loaded["ok"] == false {
+        return {"ok": false, "run_id": run_identifier, "stage": "validated", "error": loaded["error"], "exit_code": 2}
+    }
+    definition := loaded["definition"]
+    source_info := inspect_repository(repo_path)
+    if source_info["ok"] == false {
+        return {"ok": false, "run_id": run_identifier, "stage": "preparing", "error": source_info["error"], "exit_code": 3}
+    }
+    if output_request_safe(requested_output) == false {
+        return {"ok": false, "run_id": run_identifier, "stage": "preparing", "error": "output path parent traversal is not allowed: " + to_string(requested_output), "exit_code": 3}
+    }
+    if absolute_output_safe(source_info["root"], requested_output) == false {
+        return {"ok": false, "run_id": run_identifier, "stage": "preparing", "error": "absolute output paths must be inside TMPDIR or the repository .workcell directory", "exit_code": 3}
+    }
+    output_root := output_root_for(source_info["root"], definition, requested_output)
+    if path_has_symlink(output_root) {
+        return {"ok": false, "run_id": run_identifier, "stage": "preparing", "error": "output path contains a symlink and is not safe: " + output_root, "exit_code": 3}
+    }
+    if ensure_dir(output_root) == false||path_is_dir(output_root) == false {
+        return {"ok": false, "run_id": run_identifier, "stage": "preparing", "error": "output path is not a writable directory: " + output_root, "exit_code": 3}
+    }
+    output_dir := output_root + "/" + run_identifier
+    if ensure_dir(output_dir) == false||path_is_dir(output_dir) == false {
+        return {"ok": false, "run_id": run_identifier, "stage": "preparing", "error": "run output directory could not be created: " + output_dir, "exit_code": 3}
+    }
+    workspace := create_workspace_for_user(source_info["root"], definition["workspace"]["strategy"], run_identifier, definition["workspace"]["run_as"])
+    if workspace["ok"] == false {
+        write_failure_note(output_dir, get_or(workspace, "stage", "preparing"), workspace["error"])
+        return {"ok": false, "run_id": run_identifier, "stage": get_or(workspace, "stage", "preparing"), "error": workspace["error"], "output_dir": output_dir, "exit_code": 3}
+    }
+    policy := build_policy(definition, run_identifier, workspace["workspace_path"])
+    if policy["ok"] == false {
+        cleanup := cleanup_workspace(workspace, false)
+        mut policy_cleanup_status := "failed"
+        if get_or(cleanup, "ok", false) {
+            policy_cleanup_status = "complete"
+        }
+        return {"ok": false, "run_id": run_identifier, "stage": "preparing", "error": policy["error"], "output_dir": output_dir, "exit_code": 3, "cleanup_status": policy_cleanup_status}
+    }
+    start_clock := current_timestamp()
+    receipt := new_receipt(definition, definition_path, run_identifier, workspace, workspace, policy, output_dir)
+    receipt = add_state(receipt, "validated")
+    receipt = add_state(receipt, "preparing")
+    receipt = add_state(receipt, "prepared")
+    receipt_path := output_dir + "/receipt.json"
+    initial_write := write_receipt(receipt, receipt_path)
+    if initial_write["ok"] == false {
+        receipt = add_error(receipt, "recording", initial_write["error"])
+        cleanup := cleanup_workspace(workspace, false)
+        cleanup_status := "failed"
+        if cleanup["ok"] {
+            cleanup_status = "complete"
+        }
+        return final_result(run_identifier, receipt_path, output_dir, receipt, false, "internal", initial_write["error"], 10, false, false, cleanup_status)
+    }
+
+    preserve_failed := is_true(option(flags, "keep_failed", definition["cleanup"]["keep_failed"]))
+    if is_true(option(flags, "dry_run", false)) {
+        dry_integrations := dry_run_integrations(definition, output_dir)
+        receipt["integrations"] := dry_integrations["results"]
+        receipt["integration_status"] := dry_integrations["status"]
+        receipt = add_state(receipt, "verifying")
+        receipt = add_state(receipt, "exporting")
+        receipt = add_state(receipt, "cleaning")
+        cleanup := cleanup_workspace(workspace, false)
+        dry_cleanup_status := "failed"
+        if get_or(cleanup, "ok", false) {
+            dry_cleanup_status = "complete"
+            receipt = add_state(receipt, "cleaned")
+        }
+        receipt = finish_receipt(receipt, "dry-run", 0, false, "", [], null, [], dry_cleanup_status, current_timestamp() - start_clock, false, false)
+        receipt = attach_preservation(receipt, output_dir, workspace, "none", dry_cleanup_status, definition["runtime"]["backend"], get_or(flags, "retain_until", ""))
+        dry_write := write_receipt(receipt, receipt_path)
+        if dry_write["ok"] == false {
+            return final_result(run_identifier, receipt_path, output_dir, receipt, false, "internal", dry_write["error"], 10, false, false, dry_cleanup_status)
+        }
+        dry_manifest := write_manifest(output_dir, run_identifier)
+        if dry_manifest["ok"] == false {
+            receipt = add_error(receipt, "recording", dry_manifest["error"])
+            write_receipt(receipt, receipt_path)
+            return final_result(run_identifier, receipt_path, output_dir, receipt, false, "internal", dry_manifest["error"], 10, false, false, dry_cleanup_status)
+        }
+        return final_result(run_identifier, receipt_path, output_dir, receipt, true, "completed", "", 0, false, false, dry_cleanup_status)
+    }
+
+    image := backend_ensure_image(definition, workspace["source_root"], run_identifier, is_true(option(flags, "no_pull", false)), is_true(option(flags, "rebuild", false)))
+    if image["ok"] == false {
+        receipt = add_error(receipt, "preparing", image["error"])
+        receipt = add_state(receipt, "failed")
+        logs := write_execution_logs(output_dir, get_or(image, "stdout", ""), get_or(image, "stderr", ""), definition["secrets"])
+        if logs["ok"] == false {
+            receipt = add_error(receipt, "recording", logs["error"])
+        }
+        receipt = add_state(receipt, "cleaning")
+        cleanup := cleanup_workspace(workspace, preserve_failed)
+        cleanup_status := "failed"
+        if cleanup["ok"] {
+            if preserve_failed {
+                cleanup_status = "preserved"
+            } else {
+                cleanup_status = "complete"
+            }
+            receipt = add_state(receipt, "cleaned")
+        }
+        receipt = finish_receipt(receipt, "failed", 4, false, "", [], null, [], cleanup_status, current_timestamp() - start_clock, false, false)
+        preservation_mode := "none"
+        if preserve_failed {preservation_mode = get_or(flags, "preservation_mode", "filesystem")}
+        receipt = attach_preservation(receipt, output_dir, workspace, preservation_mode, cleanup_status, definition["runtime"]["backend"], get_or(flags, "retain_until", ""))
+        receipt = attach_execution_evidence(receipt, definition, output_dir)
+        image_write := write_receipt(receipt, receipt_path)
+        if image_write["ok"] == false {
+            return final_result(run_identifier, receipt_path, output_dir, receipt, false, "internal", image_write["error"], 10, false, false, cleanup_status)
+        }
+        image_manifest := write_manifest(output_dir, run_identifier)
+        if image_manifest["ok"] == false {
+            receipt = add_error(receipt, "recording", image_manifest["error"])
+            write_receipt(receipt, receipt_path)
+            return final_result(run_identifier, receipt_path, output_dir, receipt, false, "internal", image_manifest["error"], 10, false, false, cleanup_status)
+        }
+        return final_result(run_identifier, receipt_path, output_dir, receipt, false, "preparing", redact_with_env(image["error"], definition["secrets"]), 4, false, false, cleanup_status)
+    }
+    receipt["container_image_digest"] := get_or(image, "digest", "")
+    receipt["container_image_id"] := get_or(image, "image_id", "")
+    receipt["container_image_digest_source"] := get_or(image, "digest_source", "")
+    receipt["container_image_platform"] := get_or(image, "platform", "")
+    receipt["container_image_labels"] := get_or(image, "labels", {})
+    receipt = add_state(receipt, "starting")
+    stream_options := {
+        "stream_stdout_path": output_dir + "/stdout.log",
+        "stream_stderr_path": output_dir + "/stderr.log",
+        "redact_values": env_secret_stream_values(definition["secrets"])
+    }
+    cancel_file := get_or(flags, "cancel_file", "")
+    if type(cancel_file) == "string"&&cancel_file != "" {stream_options["cancel_file"] := cancel_file}
+    container := backend_execute(definition, policy, stream_options)
+    if container["ok"] == false {
+        receipt = add_error(receipt, "starting", container["error"])
+        receipt = add_state(receipt, "failed")
+        logs := write_execution_logs(output_dir, "", container["error"], definition["secrets"])
+        if logs["ok"] == false {
+            receipt = add_error(receipt, "recording", logs["error"])
+        }
+        receipt = add_state(receipt, "cleaning")
+        start_stop := backend_stop(policy["container_name"], definition["runtime"]["backend"])
+        if start_stop["ok"] == false {
+            receipt = add_error(receipt, "cleaning", start_stop["message"])
+        }
+        container_cleanup := backend_destroy(policy["container_name"], definition["runtime"]["backend"])
+        if container_cleanup["ok"] == false {
+            receipt = add_error(receipt, "cleaning", container_cleanup["message"])
+        }
+        cleanup := cleanup_workspace(workspace, preserve_failed)
+        cleanup_status := "failed"
+        if cleanup["ok"] {
+            if preserve_failed {
+                cleanup_status = "preserved"
+            } else {
+                cleanup_status = "complete"
+            }
+            if start_stop["ok"]&&container_cleanup["ok"] {
+                receipt = add_state(receipt, "cleaned")
+            }
+        }
+        if start_stop["ok"] == false||container_cleanup["ok"] == false {
+            cleanup_status = "failed"
+        }
+        start_status := "failed"
+        start_stage := "starting"
+        start_exit_code := 5
+        start_error := container["error"]
+        if cleanup_status == "failed" {
+            start_status = "cleanup-failed"
+            start_stage = "cleanup-failed"
+            start_exit_code = 9
+            start_error = "container startup failed and cleanup was incomplete"
+        }
+        receipt = finish_receipt(receipt, start_status, start_exit_code, false, receipt["container_image_digest"], [], null, [], cleanup_status, current_timestamp() - start_clock, false, false)
+        preservation_mode := "none"
+        if preserve_failed {preservation_mode = get_or(flags, "preservation_mode", "filesystem")}
+        receipt = attach_preservation(receipt, output_dir, workspace, preservation_mode, cleanup_status, definition["runtime"]["backend"], get_or(flags, "retain_until", ""))
+        receipt = attach_execution_evidence(receipt, definition, output_dir)
+        start_write := write_receipt(receipt, receipt_path)
+        if start_write["ok"] == false {
+            return final_result(run_identifier, receipt_path, output_dir, receipt, false, "internal", start_write["error"], 10, false, false, cleanup_status)
+        }
+        start_manifest := write_manifest(output_dir, run_identifier)
+        if start_manifest["ok"] == false {
+            receipt = add_error(receipt, "recording", start_manifest["error"])
+            write_receipt(receipt, receipt_path)
+            return final_result(run_identifier, receipt_path, output_dir, receipt, false, "internal", start_manifest["error"], 10, false, false, cleanup_status)
+        }
+        return final_result(run_identifier, receipt_path, output_dir, receipt, false, start_stage, redact_with_env(start_error, definition["secrets"]), start_exit_code, false, false, cleanup_status)
+    }
+    receipt = add_state(receipt, "running")
+    receipt["stdout_truncated"] := container["stdout_truncated"]
+    receipt["stderr_truncated"] := container["stderr_truncated"]
+    receipt["cancelled"] := get_or(container, "cancelled", false)
+    if container["stdout_truncated"]||container["stderr_truncated"] {
+        warnings := receipt["warnings"]
+        warnings = push(warnings, "captured process output exceeded the configured limit")
+        receipt["warnings"] := warnings
+    }
+    mut captured_stdout := container["stdout"]
+    mut captured_stderr := container["stderr"]
+    if container["timed_out"] {
+        timeout_logs := backend_logs(container["container_name"], definition["runtime"]["backend"])
+        if timeout_logs["ok"] {
+            captured_stdout = timeout_logs["stdout"]
+            captured_stderr = timeout_logs["stderr"]
+        }
+    }
+    logs := write_execution_logs(output_dir, captured_stdout, captured_stderr, definition["secrets"])
+    logs_ok := logs["ok"]
+    if logs_ok == false {
+        receipt = add_error(receipt, "collecting", logs["error"])
+    }
+    receipt["logs_path"] := output_dir
+    receipt = add_state(receipt, "collecting")
+    workspace_scan := find_symlink_with_limits(workspace["workspace_path"], definition["workspace"]["scan"])
+    workspace_safe := workspace_scan["ok"]
+    if workspace_safe == false {
+        receipt = add_error(receipt, "collecting", workspace_scan["error"])
+    }
+    change_details_result := change_details(workspace)
+    files := changed_files_from_details(change_details_result)
+    changed := []
+    if files["ok"] {
+        changed = files["files"]
+    } else {
+        receipt = add_error(receipt, "collecting", files["error"])
+    }
+    patch_path := output_dir + "/changes.patch"
+    patch := make_patch(workspace, patch_path, definition["secrets"], get_or(definition["artifacts"], "secret_action", "allow"))
+    if patch["ok"] == false {
+        receipt = add_error(receipt, "collecting", patch["error"])
+        patch_path = null
+    }
+    if get_or(patch, "redacted", false) {
+        warnings := receipt["warnings"]
+        warnings = push(warnings, "declared secret values were redacted from the persisted Git patch")
+        receipt["warnings"] := warnings
+    }
+    receipt["patch_bytes"] := get_or(patch, "bytes", 0)
+    change_report_path := output_dir + "/changes.json"
+    change_report := write_change_report_from_details(workspace, change_report_path, get_or(patch, "bytes", 0), change_details_result)
+    if change_report["ok"] == false {
+        receipt = add_error(receipt, "collecting", change_report["error"])
+        change_report_path = null
+    }
+    receipt["change_report_path"] := change_report_path
+    receipt = add_state(receipt, "verifying")
+    execution_success := container["success"] == true&&container["timed_out"] == false&&get_or(container, "cancelled", false) == false
+    if container["timed_out"] {
+        receipt = add_error(receipt, "running", "container execution exceeded the configured timeout")
+    } else if get_or(container, "cancelled", false) {
+        receipt = add_error(receipt, "running", "container execution was cancelled by the parent process or cancellation hook")
+    } else if container["success"] == false {
+        receipt = add_error(receipt, "running", "container exited with code " + to_string(container["exit_code"]))
+    }
+    verification := receipt["verification"]
+    verification["verification_succeeded"] := execution_success&&workspace_safe&&logs_ok&&patch["ok"]&&change_report["ok"]
+    verification_run := run_verification_checks(definition, workspace, run_identifier, definition["secrets"], execution_success&&workspace_safe)
+    verification["checks"] := verification_run["checks"]
+    verification["verification_succeeded"] := verification["verification_succeeded"]&&verification_run["ok"]
+    receipt["verification"] := verification
+    if verification_run["ok"] == false {
+        receipt = add_error(receipt, "verifying", verification_run["error"])
+    }
+    artifacts := export_declared_with_policy(workspace["workspace_path"], output_dir + "/artifacts", definition["artifacts"], definition["secrets"])
+    artifact_list := []
+    if artifacts["ok"] {
+        artifact_list = artifacts["artifacts"]
+        receipt["artifact_bytes"] := get_or(artifacts, "bytes", 0)
+        receipt["artifact_files"] := get_or(artifacts, "files", 0)
+    } else {
+        receipt = add_error(receipt, "exporting", artifacts["error"])
+    }
+    receipt = add_state(receipt, "exporting")
+    if artifacts["ok"] == false {
+        receipt = add_state(receipt, "failed")
+    } else if execution_success&&workspace_safe&&logs_ok&&patch["ok"]&&change_report["ok"]&&verification_run["ok"] {
+        receipt = add_state(receipt, "completed")
+    } else {
+        receipt = add_state(receipt, "failed")
+    }
+    receipt = add_state(receipt, "cleaning")
+    mut stop_result := {"ok": true, "message": "not required"}
+    if container["timed_out"]||get_or(container, "cancelled", false) {
+        stop_result = backend_stop(container["container_name"], definition["runtime"]["backend"])
+        if stop_result["ok"] == false {
+            receipt = add_error(receipt, "cleaning", stop_result["message"])
+        }
+    }
+    container_cleanup := backend_destroy(container["container_name"], definition["runtime"]["backend"])
+    if container_cleanup["ok"] == false {
+        receipt = add_error(receipt, "cleaning", container_cleanup["message"])
+    }
+    preserve_workspace := execution_success == false||workspace_safe == false||logs_ok == false||patch["ok"] == false||change_report["ok"] == false||verification_run["ok"] == false||artifacts["ok"] == false
+    cleanup := cleanup_workspace(workspace, (preserve_failed&&preserve_workspace)||(get_or(flags, "preserve_until_evaluated", false)&&get_or(flags, "preservation_mode", "handoff_bundle") == "filesystem"))
+    cleanup_status := "failed"
+    if cleanup["ok"] {
+        if get_or(cleanup, "preserved", false) {
+            cleanup_status = "preserved"
+        } else {
+            cleanup_status = "complete"
+        }
+    } else {
+        receipt = add_error(receipt, "cleaning", cleanup["error"])
+    }
+    if stop_result["ok"] == false||container_cleanup["ok"] == false {
+        cleanup_status = "failed"
+    }
+    if cleanup["ok"]&&stop_result["ok"]&&container_cleanup["ok"] {
+        receipt = add_state(receipt, "cleaned")
+    }
+    exit_code := container["exit_code"]
+    final_status := "completed"
+    final_ok := execution_success&&workspace_safe&&logs_ok&&artifacts["ok"]&&patch["ok"]&&change_report["ok"]&&verification_run["ok"]&&cleanup["ok"]&&stop_result["ok"]&&container_cleanup["ok"]
+    mut final_error := ""
+    if container["timed_out"] {
+        exit_code = 6
+        final_status = "timeout"
+        final_ok = false
+        final_error = "container execution exceeded the configured timeout"
+    } else if get_or(container, "cancelled", false) {
+        exit_code = 130
+        final_status = "cancelled"
+        final_ok = false
+        final_error = "container execution was cancelled by the parent process or cancellation hook"
+    } else if container["success"] == false {
+        final_status = "workload-failed"
+        final_ok = false
+        final_error = "container exited with code " + to_string(container["exit_code"])
+    } else if workspace_safe == false||logs_ok == false||patch["ok"] == false||change_report["ok"] == false||verification_run["ok"] == false {
+        exit_code = 8
+        final_status = "verification-failed"
+        final_ok = false
+        final_error = "post-run verification failed; see receipt errors"
+    } else if artifacts["ok"] == false {
+        exit_code = 8
+        final_status = "artifact-failed"
+        final_ok = false
+        final_error = artifacts["error"]
+    } else if cleanup["ok"] == false||stop_result["ok"] == false||container_cleanup["ok"] == false {
+        exit_code = 9
+        final_status = "cleanup-failed"
+        final_ok = false
+        final_error = "Workcell cleanup failed; see receipt errors"
+    }
+    receipt = finish_receipt(receipt, final_status, exit_code, container["timed_out"], receipt["container_image_digest"], changed, patch_path, artifact_list, cleanup_status, current_timestamp() - start_clock, execution_success, artifacts["ok"])
+    preservation_mode := "none"
+    if preserve_failed&&final_ok == false {preservation_mode = get_or(flags, "preservation_mode", "filesystem")}
+    if get_or(flags, "preserve_until_evaluated", false) {preservation_mode = get_or(flags, "preservation_mode", "handoff_bundle")}
+    receipt = attach_preservation(receipt, output_dir, workspace, preservation_mode, cleanup_status, definition["runtime"]["backend"], get_or(flags, "retain_until", ""))
+    integration_results := run_integrations(definition, source_info["root"], output_dir, receipt_path, final_status, final_ok)
+    receipt["integrations"] := integration_results["results"]
+    if integration_results["ok"] {
+        receipt["integration_status"] := "passed"
+    } else {
+        receipt["integration_status"] := "failed"
+        warnings := receipt["warnings"]
+        warnings = push(warnings, "one or more opt-in ecosystem integrations failed; see receipt.integrations")
+        receipt["warnings"] := warnings
+    }
+    receipt = attach_execution_evidence(receipt, definition, output_dir)
+    final_write := write_receipt(receipt, receipt_path)
+    if final_write["ok"] == false {
+        receipt = add_error(receipt, "recording", final_write["error"])
+        return final_result(run_identifier, receipt_path, output_dir, receipt, false, "internal", final_write["error"], 10, container["timed_out"], get_or(container, "cancelled", false), cleanup_status)
+    }
+    manifest_result := write_manifest(output_dir, run_identifier)
+    if manifest_result["ok"] == false {
+        receipt = add_error(receipt, "recording", manifest_result["error"])
+        write_receipt(receipt, receipt_path)
+        return final_result(run_identifier, receipt_path, output_dir, receipt, false, "internal", manifest_result["error"], 10, container["timed_out"], get_or(container, "cancelled", false), cleanup_status)
+    }
+    return final_result(run_identifier, receipt_path, output_dir, receipt, final_ok, final_status, redact_with_env(final_error, definition["secrets"]), exit_code, container["timed_out"], get_or(container, "cancelled", false), cleanup_status)
+}

@@ -84,7 +84,7 @@ async function materializeBounded(adapter: ExecutionAdapter, scope: ExecutionSco
     };
     controller.signal.addEventListener("abort", onAbort, { once: true });
   });
-  const timer = setTimeout(() => { timedOut = true; controller.abort(); }, plan.workflow ? 15_000 : 5_000);
+  const timer = setTimeout(() => { timedOut = true; controller.abort(); }, (plan.workflow || plan.assurance) ? 15_000 : 5_000);
   timer.unref();
   const work = Promise.resolve().then(() => {
     if (controller.signal.aborted) throw new KujoPluginError("KUJO_EXEC_CANCELLED", "Execution cancelled before preparation");
@@ -222,7 +222,8 @@ export function createExecutionCoordinator(ctx: PluginContext, adapter: Executio
     } catch (error) {
       const cancelled = error instanceof KujoPluginError && error.code === "KUJO_EXEC_CANCELLED";
       const uncertain = lostObservation || (enteredProcess && !(error instanceof KujoPluginError));
-      await ledger.finish(scope, id, ownerId, claimId, uncertain ? "uncertain" : cancelled ? "cancelled" : "failed", null,
+      const interrupted = await materialized?.collectInterrupted?.().then(redactedResult).catch(() => null);
+      await ledger.finish(scope, id, ownerId, claimId, uncertain ? "uncertain" : cancelled ? "cancelled" : "failed", interrupted ?? null,
         uncertain ? "execution_outcome_unconfirmed" : error instanceof KujoPluginError ? error.code : error instanceof SourcePreparationError ? error.diagnostic : "materialization_failed");
     } finally {
       clearInterval(timer);

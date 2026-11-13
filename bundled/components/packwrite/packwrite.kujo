@@ -1,0 +1,14 @@
+# PackWrite entrypoint.
+#
+# Thin wrapper: no logic here. Hand user arguments to the CLI module and
+# translate its return code into a process exit code.
+#
+# Run with:
+#   kujo run packwrite.kujo -- <command> [arguments]
+# or via the bin/packwrite wrapper:
+#   ./bin/packwrite <command> [arguments]
+
+from src.command import main
+
+code := main(args())
+exit(code)

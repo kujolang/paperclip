@@ -1,0 +1,390 @@
+# src/validate.kujo — Lens URL validation and safety checks.
+#
+# Lens is local-first. By default, only localhost, 127.0.0.1, and ::1
+# are allowed. External URLs require the --allow-external flag.
+
+from src.common import str_starts_with, str_contains, str_lower, is_trueish, is_falseish, str_trim
+
+# Extract the host portion from a URL string.
+# Handles: http://host, https://host, http://host:port, https://host:port,
+# and bracketed IPv6 like http://[::1]:port.
+# Returns empty string on parse failure.
+export func extract_host(raw_url) {
+	mut url := str_lower(to_string(raw_url))
+	# Browsers normalize embedded ASCII controls and backslashes. Reject these
+	# ambiguous inputs instead of validating a different destination.
+	if len(regex_find_all(url, "[\\x00-\\x20\\x7f\\\\]")) > 0 { return "" }
+	
+	# Strip scheme
+	mut host_part := ""
+	if is_trueish(str_starts_with(url, "https://")) {
+		host_part = substring(url, 8, len(url))
+	} else if is_trueish(str_starts_with(url, "http://")) {
+		host_part = substring(url, 7, len(url))
+	} else {
+		return ""
+	}
+	
+	# Strip path and query
+	mut idx := 0
+	while idx < len(host_part) {
+		ch := host_part[idx]
+		if ch == "/" || ch == "?" || ch == "#" {
+			host_part = substring(host_part, 0, idx)
+			idx = len(host_part) + 1
+		}
+		idx = idx + 1
+	}
+	
+	# Userinfo ends at the LAST @, before host/port parsing.
+	mut at := index_of(host_part, "@")
+	while at >= 0 {
+		host_part = substring(host_part, at + 1, len(host_part))
+		at = index_of(host_part, "@")
+	}
+
+	# Handle IPv6 bracket notation: [::1]:port → [::1]. A suffix
+	# other than a valid port must not be mistaken for loopback.
+	if is_trueish(str_starts_with(host_part, "[")) {
+		mut bracket_idx := index_of(host_part, "]")
+		if bracket_idx >= 0 {
+			suffix := substring(host_part, bracket_idx + 1, len(host_part))
+			if suffix != "" && is_falseish(valid_port_suffix(suffix)) { return "" }
+			return substring(host_part, 0, bracket_idx + 1)
+		}
+		return ""
+	}
+	
+	# Strip port (colon followed by digits).
+	# For bare IPv6 addresses like ::1, skip stripping since
+	# the colons are part of the address, not port separators.
+	# We detect this by checking if the first colon is at position 0.
+	mut colon_idx := index_of(host_part, ":")
+	if colon_idx > 0 {
+		if is_falseish(valid_port_suffix(substring(host_part, colon_idx, len(host_part)))) { return "" }
+		host_part = substring(host_part, 0, colon_idx)
+	}
+	
+	return host_part
+}
+
+func valid_port_suffix(suffix) {
+	if suffix == ":" { return true }
+	if len(regex_find_all(suffix, "^:[0-9]{1,5}$")) != 1 { return false }
+	return to_int(substring(suffix, 1, len(suffix))) <= 65535
+}
+
+# Check if a URL has a valid http/https scheme.
+export func has_valid_scheme(raw_url) {
+	mut url := str_lower(to_string(raw_url))
+	return is_trueish(str_starts_with(url, "http://")) || is_trueish(str_starts_with(url, "https://"))
+}
+
+# Check if a host is a localhost-equivalent value.
+export func is_localhost_host(host) {
+	mut h := str_lower(to_string(host))
+	return h == "localhost" || h == "127.0.0.1" || h == "::1" || h == "[::1]"
+}
+
+# Check if a URL points to localhost.
+export func is_localhost_url(raw_url) {
+	if is_falseish(has_valid_scheme(raw_url)) {
+		return false
+	}
+	host := extract_host(raw_url)
+	if host == "" {
+		return false
+	}
+	return is_localhost_host(host)
+}
+
+# Validate a URL and return a result dict.
+# Returns:
+#   { valid: bool, error: string } — error is empty when valid.
+export func validate_url(raw_url, allow_external) {
+	mut result := {
+		"valid": true,
+		"error": ""
+	}
+	
+	# Check for empty URL
+	mut url := to_string(raw_url)
+	if is_trueish(str_trim(url) == "") {
+		result["valid"] = false
+		result["error"] = "URL is required."
+		return result
+	}
+	
+	# Check scheme
+	if is_falseish(has_valid_scheme(url)) {
+		result["valid"] = false
+		result["error"] = "URL must start with http:// or https://."
+		return result
+	}
+	
+	# Extract and validate host
+	host := extract_host(url)
+	if host == "" {
+		result["valid"] = false
+		result["error"] = "Could not parse host from URL."
+		return result
+	}
+	
+	# Localhost check
+	if is_trueish(is_localhost_host(host)) {
+		return result
+	}
+	
+	# External URL check
+	if is_falseish(allow_external) {
+		result["valid"] = false
+		result["error"] = "External URLs are blocked by default. Use --allow-external to check public URLs."
+		return result
+	}
+	
+	return result
+}
+
+# Validate a Playwright storage-state file before it crosses the browser
+# boundary. Errors deliberately omit both the path and parser details because
+# either can disclose private workspace or credential context in terminal/CI
+# logs. The parsed state is never returned or persisted.
+export func validate_auth_storage_state(auth_path) {
+	if to_string(auth_path) == "" {
+		return { "valid": true, "error": "" }
+	}
+	if is_falseish(file_exists(auth_path)) {
+		return { "valid": false, "error": "Auth storage-state file was not found." }
+	}
+	if is_falseish(path_is_file(auth_path)) || is_trueish(path_is_symlink_safe(auth_path)) || file_size(auth_path) > 8 * 1024 * 1024 {
+		return { "valid": false, "error": "Auth storage-state must be a regular file no larger than 8 MiB." }
+	}
+
+	raw := read_file(auth_path)
+	if str_trim(raw) == "" {
+		return { "valid": false, "error": "Auth storage-state file is empty." }
+	}
+
+	mut parsed := {}
+	try {
+		parsed = parse_json(raw)
+	} except e {
+		return { "valid": false, "error": "Auth storage-state file is not valid JSON." }
+	}
+
+	if is_falseish(is_dict(parsed)) {
+		return { "valid": false, "error": "Auth storage-state JSON must be an object." }
+	}
+	if is_falseish(has_key(parsed, "cookies")) || is_falseish(is_array(parsed["cookies"])) {
+		return { "valid": false, "error": "Auth storage-state JSON must contain a cookies array." }
+	}
+	if is_falseish(has_key(parsed, "origins")) || is_falseish(is_array(parsed["origins"])) {
+		return { "valid": false, "error": "Auth storage-state JSON must contain an origins array." }
+	}
+
+	return { "valid": true, "error": "" }
+}
+
+# Validate every user-selected write destination before Lens creates or
+# overwrites artifacts. Directory destinations may be created, but cannot be a
+# filesystem root, the current/parent directory, an existing file, or a symlink.
+# Direct file destinations must have an existing real directory parent and may
+# not be an existing directory or symlink. Relative paths may not traverse
+# workspace symlinks; absolute-path ancestors retain host filesystem semantics
+# (notably /tmp on macOS). Final target symlinks are never followed.
+export func validate_config_write_paths(config) {
+	dir_specs := array(
+		array("out_dir", "--out"),
+		array("baseline_dir", "--baseline-dir")
+	)
+	mut di := 0
+	while di < len(dir_specs) {
+		key := to_string(dir_specs[di][0])
+		label := to_string(dir_specs[di][1])
+		if is_trueish(has_key(config, key)) {
+			result := validate_artifact_tree(to_string(config[key]), label)
+			if is_falseish(result["valid"]) { return result }
+		}
+		di = di + 1
+	}
+
+	file_specs := array(
+		array("eval_out", "--eval-out"),
+		array("ledger", "--ledger"),
+		array("howl", "--howl")
+	)
+	mut fi := 0
+	while fi < len(file_specs) {
+		key := to_string(file_specs[fi][0])
+		label := to_string(file_specs[fi][1])
+		if is_trueish(has_key(config, key)) {
+			result := validate_file_write_path(to_string(config[key]), label)
+			if is_falseish(result["valid"]) { return result }
+		}
+		fi = fi + 1
+	}
+
+	# Prevent two output roles from silently overwriting one another. Compare a
+	# stable textual form; canonicalization cannot resolve paths that do not yet
+	# exist and would itself follow symlinks.
+	mut seen := {}
+	mut si := 0
+	while si < len(file_specs) {
+		key := to_string(file_specs[si][0])
+		label := to_string(file_specs[si][1])
+		if is_trueish(has_key(config, key)) {
+			path := normalize_write_path_text(to_string(config[key]))
+			if path != "" {
+				if is_trueish(has_key(seen, path)) {
+					return { "valid": false, "error": label + " must not reuse another Lens output path." }
+				}
+				seen[path] = label
+			}
+		}
+		si = si + 1
+	}
+
+	return { "valid": true, "error": "" }
+}
+
+# Validate an existing artifact tree without following descendant symbolic
+# links. Reusing ordinary output directories remains supported, but artifacts
+# must not escape a selected root through a pre-existing internal link.
+export func validate_artifact_tree(raw_path, label) {
+	root := validate_directory_write_path(raw_path, label)
+	if is_falseish(root["valid"]) { return root }
+	path := str_trim(to_string(raw_path))
+	if path == "" || is_falseish(path_exists(path)) { return root }
+	return validate_artifact_tree_at(path, to_string(label), 0, 0)
+}
+
+func validate_artifact_tree_at(path, label, depth, visited) {
+	if depth > 8 || visited > 10000 {
+		return { "valid": false, "error": label + " contains an artifact tree that is too deep or large to validate safely." }
+	}
+	mut count := visited
+	mut names := array()
+	try { names = list_dir(path) } except e {
+		return { "valid": false, "error": label + " artifact tree could not be inspected safely." }
+	}
+	mut idx := 0
+	while idx < len(names) {
+		child := path + "/" + to_string(names[idx])
+		count = count + 1
+		if count > 10000 {
+			return { "valid": false, "error": label + " contains an artifact tree that is too deep or large to validate safely." }
+		}
+		if is_trueish(path_is_symlink_safe(child)) {
+			return { "valid": false, "error": label + " artifact tree must not contain symbolic links." }
+		}
+		if is_trueish(path_is_dir(child)) {
+			nested := validate_artifact_tree_at(child, label, depth + 1, count)
+			if is_falseish(nested["valid"]) { return nested }
+			count = to_int(to_string(nested["visited"]))
+		}
+		idx = idx + 1
+	}
+	return { "valid": true, "error": "", "visited": count }
+}
+
+export func validate_directory_write_path(raw_path, label) {
+	path := str_trim(to_string(raw_path))
+	if path == "" { return { "valid": true, "error": "" } }
+	if is_trueish(relative_path_has_symlink(path)) {
+		return { "valid": false, "error": to_string(label) + " must not traverse a symbolic link inside the working directory." }
+	}
+	normalized := normalize_write_path_text(path)
+	if normalized == "/" || normalized == "." || normalized == ".." || is_trueish(has_parent_segment(normalized)) {
+		return { "valid": false, "error": to_string(label) + " must name a dedicated output directory, not a filesystem root or working directory." }
+	}
+	if is_trueish(path_is_symlink_safe(path)) {
+		return { "valid": false, "error": to_string(label) + " must not target a symbolic link." }
+	}
+	if is_trueish(path_exists(path)) {
+		if is_trueish(path_is_file(path)) {
+			return { "valid": false, "error": to_string(label) + " must name a directory, not an existing file." }
+		}
+	}
+	return { "valid": true, "error": "" }
+}
+
+export func validate_file_write_path(raw_path, label) {
+	path := str_trim(to_string(raw_path))
+	if path == "" { return { "valid": true, "error": "" } }
+	if is_trueish(relative_path_has_symlink(path)) {
+		return { "valid": false, "error": to_string(label) + " must not traverse a symbolic link inside the working directory." }
+	}
+	normalized := normalize_write_path_text(path)
+	if normalized == "/" || normalized == "." || normalized == ".." || is_trueish(has_parent_segment(normalized)) || is_trueish(ends_with_slash(path)) {
+		return { "valid": false, "error": to_string(label) + " must name a file, not a directory." }
+	}
+	if is_trueish(path_is_symlink_safe(path)) {
+		return { "valid": false, "error": to_string(label) + " must not target a symbolic link." }
+	}
+	if is_trueish(path_exists(path)) {
+		if is_trueish(path_is_dir(path)) {
+			return { "valid": false, "error": to_string(label) + " must name a file, not an existing directory." }
+		}
+	}
+	parent := dirname(path)
+	if parent != "" && is_falseish(path_exists(parent)) {
+		return { "valid": false, "error": to_string(label) + " parent directory does not exist." }
+	}
+	if parent != "" && is_trueish(path_exists(parent)) && is_falseish(path_is_dir(parent)) {
+		return { "valid": false, "error": to_string(label) + " parent must be a directory." }
+	}
+	return { "valid": true, "error": "" }
+}
+
+func normalize_write_path_text(raw_path) {
+	mut path := replace(str_trim(to_string(raw_path)), "\\", "/")
+	while len(path) > 1 && is_trueish(ends_with_slash(path)) {
+		path = substring(path, 0, len(path) - 1)
+	}
+	if path == "./" { return "." }
+	if path == "../" { return ".." }
+	return path
+}
+
+# Absolute-path ancestors keep the documented host semantics (for example
+# macOS /tmp). Relative destinations are workspace-controlled, so reject every
+# existing symlink component, including an implicit `.lens` root.
+func relative_path_has_symlink(path) {
+	normalized := replace(to_string(path), "\\", "/")
+	if str_starts_with(normalized, "/") { return false }
+	parts := split(normalized, "/")
+	mut current := ""
+	mut idx := 0
+	while idx < len(parts) {
+		part := to_string(parts[idx])
+		if part != "" && part != "." {
+			if current == "" { current = part } else { current = current + "/" + part }
+			if is_trueish(path_is_symlink_safe(current)) { return true }
+		}
+		idx = idx + 1
+	}
+	return false
+}
+
+func ends_with_slash(path) {
+	if len(path) == 0 { return false }
+	last := path[len(path) - 1]
+	return last == "/" || last == "\\"
+}
+
+func has_parent_segment(path) {
+	# Surrounding separators make the test component-aware: names such as
+	# "reports..old" remain valid while any actual `..` traversal is refused.
+	normalized := replace(to_string(path), "\\", "/")
+	return is_trueish(str_contains("/" + normalized + "/", "/../"))
+}
+
+func path_is_symlink_safe(path) {
+	mut linked := false
+	try {
+		linked = is_trueish(path_is_symlink(path))
+	} except e {
+		return false
+	}
+	return linked
+}

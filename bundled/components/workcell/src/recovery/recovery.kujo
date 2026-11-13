@@ -1,0 +1,341 @@
+# Durable remote-resource recovery journals and ownership-safe reconciliation.
+
+from src.backend.client import invoke_backend
+from src.backend.registry import backend_executable, load_backend_manifest
+from src.backend.types import backend_contract_id, backend_handle, validate_backend_handle, validate_backend_identity
+from src.util import ensure_dir, env_secret_values, get_or, load_json, path_has_symlink, save_json, valid_run_id
+
+export func recovery_schema_version() {
+    return "workcell-recovery/v1"
+}
+
+export func validate_recovery_journal(value) {
+    if type(value) != "dict"||get_or(value, "schema_version", "") != recovery_schema_version() {
+        return {"ok": false, "error": "recovery journal schema is invalid"}
+    }
+    run_identifier := get_or(value, "run_id", "")
+    if valid_run_id(run_identifier) == false {
+        return {"ok": false, "error": "recovery journal run id is invalid"}
+    }
+    handle := get_or(value, "handle", null)
+    ownership := get_or(value, "ownership", null)
+    if type(ownership) != "dict"||get_or(ownership, "run_id", "") != run_identifier||type(get_or(ownership, "nonce", null)) != "string"||trim(ownership["nonce"]) == "" {
+        return {"ok": false, "error": "recovery journal ownership is invalid"}
+    }
+    if type(get_or(value, "adapter_id", null)) != "string"||trim(value["adapter_id"]) == ""||type(get_or(value, "adapter_version", null)) != "string"||trim(value["adapter_version"]) == ""||type(get_or(value, "provider_id", null)) != "string"||trim(value["provider_id"]) == ""||type(get_or(value, "profile_fingerprint", null)) != "string"||trim(value["profile_fingerprint"]) == "" {
+        return {"ok": false, "error": "recovery journal backend identity is invalid"}
+    }
+    if type(handle) == "dict" {
+        handle_check := validate_backend_handle(handle, run_identifier)
+        if handle_check["ok"] == false {return handle_check}
+        if value["adapter_id"] != handle["backend"]||value["adapter_version"] != handle["adapter_version"]||value["provider_id"] != handle["provider"] {
+            return {"ok": false, "error": "recovery journal adapter does not match handle"}
+        }
+        if value["profile_fingerprint"] != handle["profile_fingerprint"]||to_json(ownership) != to_json(handle["ownership"]) {
+            return {"ok": false, "error": "recovery journal profile or ownership does not match handle"}
+        }
+    } else {
+        phase := get_or(value, "phase", "")
+        if type(handle) != "null"||phase != "provision-intent"&&phase != "provision-unknown"&&phase != "inventory"&&phase != "destroy" {
+            return {"ok": false, "error": "recovery journal without a handle has an invalid recovery phase"}
+        }
+    }
+    if type(get_or(value, "cleanup_plan", null)) != "array"||type(get_or(value, "attempts", null)) != "array" {
+        return {"ok": false, "error": "recovery journal cleanup plan and attempts must be arrays"}
+    }
+    return {"ok": true}
+}
+
+func write_journal_path(root, journal) {
+    checked := validate_recovery_journal(journal)
+    if checked["ok"] == false {return checked}
+    path := root + "/" + journal["run_id"] + ".json"
+    if path_has_symlink(path) {return {"ok": false, "error": "recovery journal path contains a symlink"}}
+    if save_json(path, journal) != true {return {"ok": false, "error": "recovery journal could not be persisted"}}
+    return {"ok": true, "path": path, "journal": journal, "idempotent": false}
+}
+
+export func write_recovery_intent(root, context) {
+    if type(root) != "string"||trim(root) == ""||type(context) != "dict"||path_has_symlink(root) {
+        return {"ok": false, "error": "recovery intent root or context is invalid"}
+    }
+    if ensure_dir(root) == false||path_is_dir(root) == false {return {"ok": false, "error": "recovery intent root could not be prepared"}}
+    run_identifier := get_or(context, "run_id", "")
+    identity := get_or(context, "identity", null)
+    if valid_run_id(run_identifier) == false||validate_backend_identity(identity)["ok"] == false {
+        return {"ok": false, "error": "recovery intent run or backend identity is invalid"}
+    }
+    ownership := get_or(context, "ownership", null)
+    journal := {
+        "schema_version": recovery_schema_version(), "run_id": run_identifier,
+        "adapter_id": identity["adapter"], "adapter_version": identity["adapter_version"], "provider_id": identity["provider"],
+        "profile_id": get_or(context, "profile_id", ""), "profile_fingerprint": get_or(context, "profile_fingerprint", ""),
+        "handle": null, "ownership": ownership, "created_at": now_utc(), "expected_expiration": get_or(context, "expected_expiration", null),
+        "phase": "provision-intent", "status": "active", "receipt_path": get_or(context, "receipt_path", ""),
+        "cleanup_plan": [], "attempts": [{"time": now_utc(), "operation": "provision-intent", "ok": true, "idempotency_key": get_or(context, "idempotency_key", "")}], "last_error": null
+    }
+    path := root + "/" + run_identifier + ".json"
+    if file_exists(path) {return {"ok": false, "error": "recovery intent already exists for run"}}
+    return write_journal_path(root, journal)
+}
+
+export func attach_recovery_handle(path, backend_value) {
+    loaded := load_recovery_journal(path)
+    if loaded["ok"] == false {return loaded}
+    journal := loaded["journal"]
+    checked := validate_backend_handle(backend_value, journal["run_id"])
+    if checked["ok"] == false {return {"ok": false, "error": "recovery attachment handle is invalid: " + checked["error"]}}
+    if journal["adapter_id"] != backend_value["backend"]||to_json(journal["ownership"]) != to_json(backend_value["ownership"]) {
+        return {"ok": false, "error": "provisioned handle does not match recovery intent"}
+    }
+    journal["adapter_version"] = backend_value["adapter_version"]
+    journal["provider_id"] = backend_value["provider"]
+    journal["profile_fingerprint"] = backend_value["profile_fingerprint"]
+    journal["handle"] = backend_value
+    journal["cleanup_plan"] = backend_value["resource_ids"]
+    journal["phase"] = "provisioned"
+    journal["attempts"] = push(journal["attempts"], {"time": now_utc(), "operation": "provision", "ok": true, "resources": backend_value["resource_ids"]})
+    journal_check := validate_recovery_journal(journal)
+    if journal_check["ok"] == false {return {"ok": false, "error": "attached recovery journal is invalid: " + journal_check["error"]}}
+    if save_json(path, journal) != true {return {"ok": false, "error": "provisioned handle could not be attached to recovery intent"}}
+    return {"ok": true, "path": path, "journal": journal}
+}
+
+export func write_recovery_journal(root, context) {
+    if type(root) != "string"||trim(root) == ""||type(context) != "dict"||path_has_symlink(root) {
+        return {"ok": false, "error": "recovery journal root or context is invalid"}
+    }
+    if ensure_dir(root) == false||path_is_dir(root) == false {
+        return {"ok": false, "error": "recovery journal root could not be prepared"}
+    }
+    run_identifier := get_or(context, "run_id", "")
+    handle := get_or(context, "handle", null)
+    handle_check := validate_backend_handle(handle, run_identifier)
+    if handle_check["ok"] == false {return handle_check}
+    journal := {
+        "schema_version": recovery_schema_version(),
+        "run_id": run_identifier,
+        "adapter_id": handle["backend"],
+        "adapter_version": handle["adapter_version"],
+        "provider_id": handle["provider"],
+        "profile_id": get_or(context, "profile_id", ""),
+        "profile_fingerprint": handle["profile_fingerprint"],
+        "handle": handle,
+        "ownership": handle["ownership"],
+        "created_at": now_utc(),
+        "expected_expiration": get_or(context, "expected_expiration", null),
+        "phase": get_or(context, "phase", "provisioned"),
+        "status": "active",
+        "receipt_path": get_or(context, "receipt_path", ""),
+        "cleanup_plan": get_or(context, "cleanup_plan", handle["resource_ids"]),
+        "attempts": [],
+        "last_error": null
+    }
+    checked := validate_recovery_journal(journal)
+    if checked["ok"] == false {return checked}
+    path := root + "/" + run_identifier + ".json"
+    if path_has_symlink(path) {
+        return {"ok": false, "error": "recovery journal path contains a symlink"}
+    }
+    if file_exists(path) {
+        existing := load_json(path)
+        if existing["ok"] == false||validate_recovery_journal(existing["value"])["ok"] == false||to_json(existing["value"]["handle"]) != to_json(handle) {
+            return {"ok": false, "error": "existing recovery journal does not match provisioned handle"}
+        }
+        return {"ok": true, "path": path, "journal": existing["value"], "idempotent": true}
+    }
+    if save_json(path, journal) != true {
+        return {"ok": false, "error": "recovery journal could not be persisted"}
+    }
+    return {"ok": true, "path": path, "journal": journal, "idempotent": false}
+}
+
+export func load_recovery_journal(path) {
+    if type(path) != "string"||trim(path) == ""||file_exists(path) == false||path_has_symlink(path) {
+        return {"ok": false, "error": "recovery journal path is missing or unsafe"}
+    }
+    loaded := load_json(path)
+    if loaded["ok"] == false {return loaded}
+    checked := validate_recovery_journal(loaded["value"])
+    if checked["ok"] == false {return checked}
+    return {"ok": true, "path": path, "journal": loaded["value"]}
+}
+
+export func update_recovery_journal(path, phase_value, status_value, attempt, last_error) {
+    loaded := load_recovery_journal(path)
+    if loaded["ok"] == false {return loaded}
+    if type(phase_value) != "string"||trim(phase_value) == ""||type(status_value) != "string"||trim(status_value) == ""||type(attempt) != "dict" {
+        return {"ok": false, "error": "recovery journal update is invalid"}
+    }
+    journal := loaded["journal"]
+    journal["phase"] := phase_value
+    journal["status"] := status_value
+    journal["attempts"] := push(journal["attempts"], attempt)
+    journal["last_error"] := last_error
+    checked := validate_recovery_journal(journal)
+    if checked["ok"] == false {return checked}
+    if save_json(path, journal) != true {
+        return {"ok": false, "error": "recovery journal update could not be persisted"}
+    }
+    return {"ok": true, "path": path, "journal": journal}
+}
+
+func inventory_resource_by_id(resources, kind, id) {
+    mut i := 0
+    while i < len(resources) {
+        resource := resources[i]
+        if type(resource) == "dict"&&get_or(resource, "kind", "") == kind&&get_or(resource, "id", "") == id {
+            return resource
+        }
+        i = i + 1
+    }
+    return null
+}
+
+export func plan_recovery(journal, resources) {
+    checked := validate_recovery_journal(journal)
+    if checked["ok"] == false {return checked}
+    if type(resources) != "array" {
+        return {"ok": false, "error": "backend inventory resources must be an array"}
+    }
+    ownership := journal["ownership"]
+    mut items := []
+    if type(journal["handle"]) == "null" {
+        mut resource_i := 0
+        while resource_i < len(resources) {
+            actual := resources[resource_i]
+            if type(actual) != "dict"||type(get_or(actual, "kind", null)) != "string"||trim(actual["kind"]) == ""||type(get_or(actual, "id", null)) != "string"||trim(actual["id"]) == "" {
+                return {"ok": false, "error": "backend inventory resource is invalid"}
+            }
+            actual_ownership := get_or(actual, "ownership", {})
+            if get_or(actual_ownership, "run_id", "") != ownership["run_id"]||get_or(actual_ownership, "nonce", "") != ownership["nonce"] {
+                return {"ok": false, "error": "ownership mismatch for recovery resource: " + actual["id"], "code": "OWNERSHIP_MISMATCH"}
+            }
+            items = push(items, {"kind": actual["kind"], "id": actual["id"], "status": "remove", "state": get_or(actual, "state", "unknown")})
+            resource_i = resource_i + 1
+        }
+        return {"ok": true, "items": items, "ownership": ownership, "intent_only": true}
+    }
+    mut i := 0
+    while i < len(journal["handle"]["resource_ids"]) {
+        wanted := journal["handle"]["resource_ids"][i]
+        actual := inventory_resource_by_id(resources, get_or(wanted, "kind", ""), get_or(wanted, "id", ""))
+        if type(actual) != "dict" {
+            items = push(items, {"kind": wanted["kind"], "id": wanted["id"], "status": "absent"})
+        } else {
+            actual_ownership := get_or(actual, "ownership", {})
+            if get_or(actual_ownership, "run_id", "") != ownership["run_id"]||get_or(actual_ownership, "nonce", "") != ownership["nonce"] {
+                return {"ok": false, "error": "ownership mismatch for recovery resource: " + wanted["id"], "code": "OWNERSHIP_MISMATCH"}
+            }
+            items = push(items, {"kind": wanted["kind"], "id": wanted["id"], "status": "remove", "state": get_or(actual, "state", "unknown")})
+        }
+        i = i + 1
+    }
+    mut resource_i := 0
+    while resource_i < len(resources) {
+        actual := resources[resource_i]
+        if type(actual) != "dict"||type(get_or(actual, "kind", null)) != "string"||trim(actual["kind"]) == ""||type(get_or(actual, "id", null)) != "string"||trim(actual["id"]) == "" {
+            return {"ok": false, "error": "backend inventory resource is invalid"}
+        }
+        existing := inventory_resource_by_id(journal["handle"]["resource_ids"], actual["kind"], actual["id"])
+        if type(existing) != "dict" {
+            actual_ownership := get_or(actual, "ownership", {})
+            if get_or(actual_ownership, "run_id", "") != ownership["run_id"]||get_or(actual_ownership, "nonce", "") != ownership["nonce"] {
+                return {"ok": false, "error": "ownership mismatch for recovery resource: " + actual["id"], "code": "OWNERSHIP_MISMATCH"}
+            }
+            items = push(items, {"kind": actual["kind"], "id": actual["id"], "status": "remove", "state": get_or(actual, "state", "unknown")})
+        }
+        resource_i = resource_i + 1
+    }
+    return {"ok": true, "items": items, "ownership": ownership}
+}
+
+func recovery_request(journal, operation, profile, payload) {
+    return {
+        "contract": backend_contract_id(),
+        "request_id": "recovery-" + replace(uuid_v4(), "-", ""),
+        "run_id": journal["run_id"],
+        "operation": operation,
+        "deadline_ms": 30000,
+        "profile": profile,
+        "payload": payload
+    }
+}
+
+export func recover_with_adapter(journal_path, manifest_path, profile, dry_run) {
+    if type(profile) != "dict"||type(dry_run) != "bool" {
+        return {"ok": false, "error": "recovery profile must be an object and dry_run must be boolean"}
+    }
+    loaded := load_recovery_journal(journal_path)
+    if loaded["ok"] == false {return loaded}
+    journal := loaded["journal"]
+    manifest_state := load_backend_manifest(manifest_path)
+    if manifest_state["ok"] == false {return manifest_state}
+    manifest := manifest_state["manifest"]
+    if manifest["id"] != journal["adapter_id"] {
+        return {"ok": false, "error": "recovery adapter manifest does not match journal"}
+    }
+    executable := backend_executable(manifest)
+    if executable["ok"] == false {return executable}
+    credential_ref := get_or(profile, "credential_ref", "")
+    if credential_ref == ""&&len(manifest["credential_refs"]) == 1 {credential_ref = manifest["credential_refs"][0]; profile["credential_ref"] = credential_ref}
+    mut env_allow := []
+    if starts_with(credential_ref, "env:") {env_allow = push(env_allow, substring(credential_ref, 4, len(credential_ref)))}
+    invoke_options := {"timeout_ms": 30000, "max_output_bytes": 4194304, "inherit_env": false, "env_allow": env_allow, "redact_values": env_secret_values(env_allow)}
+    inventory_request := recovery_request(journal, "inventory", profile, {"ownership": journal["ownership"]})
+    inventory_call := invoke_backend(executable["path"], inventory_request, invoke_options)
+    if inventory_call["ok"] == false {
+        update_recovery_journal(journal_path, "inventory", "failed", {"time": now_utc(), "operation": "inventory", "ok": false}, inventory_call["result"]["error"])
+        return {"ok": false, "error": inventory_call["result"]["error"]["message"], "code": inventory_call["result"]["error"]["code"]}
+    }
+    resources := get_or(inventory_call["result"]["data"], "resources", null)
+    if get_or(inventory_call["result"]["data"], "complete", false) != true {
+        update_recovery_journal(journal_path, "inventory", "incomplete", {"time": now_utc(), "operation": "inventory", "ok": false}, {"code": "INVENTORY_INCOMPLETE", "message": "backend inventory was incomplete"})
+        return {"ok": false, "error": "backend inventory was incomplete", "code": "INVENTORY_INCOMPLETE"}
+    }
+    planned := plan_recovery(journal, resources)
+    if planned["ok"] == false {
+        update_recovery_journal(journal_path, "inventory", "ownership-mismatch", {"time": now_utc(), "operation": "inventory", "ok": false}, {"code": get_or(planned, "code", "OWNERSHIP_MISMATCH"), "message": planned["error"]})
+        return planned
+    }
+    if dry_run {
+        update_recovery_journal(journal_path, "inventory", "active", {"time": now_utc(), "operation": "dry-run", "ok": true, "items": planned["items"]}, null)
+        return {"ok": true, "dry_run": true, "journal_path": journal_path, "plan": planned}
+    }
+    mut resource_ids := []
+    mut item_i := 0
+    while item_i < len(planned["items"]) {
+        if planned["items"][item_i]["status"] == "remove" {
+            resource_ids = push(resource_ids, {"kind": planned["items"][item_i]["kind"], "id": planned["items"][item_i]["id"]})
+        }
+        item_i = item_i + 1
+    }
+    if len(resource_ids) == 0 {
+        update := update_recovery_journal(journal_path, "destroy", "cleaned", {"time": now_utc(), "operation": "destroy", "ok": true, "items": planned["items"], "remaining": []}, null)
+        if update["ok"] == false {return update}
+        return {"ok": true, "dry_run": false, "journal_path": journal_path, "items": planned["items"], "remaining": [], "status": "cleaned"}
+    }
+    cleanup_handle := backend_handle(journal["adapter_id"], journal["adapter_version"], journal["provider_id"], journal["profile_fingerprint"], resource_ids, journal["run_id"], journal["ownership"]["nonce"], {"recovered_from": "verified-inventory"})
+    destroy_request := recovery_request(journal, "destroy", profile, {"handle": cleanup_handle, "expected_ownership": journal["ownership"], "idempotency_key": journal["run_id"] + ":recover-destroy"})
+    destroy_call := invoke_backend(executable["path"], destroy_request, invoke_options)
+    if destroy_call["ok"] == false {
+        update_recovery_journal(journal_path, "destroy", "failed", {"time": now_utc(), "operation": "destroy", "ok": false}, destroy_call["result"]["error"])
+        return {"ok": false, "error": destroy_call["result"]["error"]["message"], "code": destroy_call["result"]["error"]["code"]}
+    }
+    items := get_or(destroy_call["result"]["data"], "items", [])
+    post_request := recovery_request(journal, "inventory", profile, {"ownership": journal["ownership"]})
+    post_call := invoke_backend(executable["path"], post_request, invoke_options)
+    mut remaining := resource_ids
+    mut cleanup_ok := false
+    if post_call["ok"]&&get_or(post_call["result"]["data"], "complete", false) == true {
+        remaining = get_or(post_call["result"]["data"], "resources", [])
+        cleanup_ok = len(remaining) == 0
+    }
+    status := "cleaned"
+    if cleanup_ok == false {status = "partial"}
+    mut cleanup_error := null
+    if post_call["ok"] == false||get_or(post_call["result"]["data"], "complete", false) != true {cleanup_error = {"code": "INVENTORY_INCOMPLETE", "message": "post-destroy inventory was incomplete"}}
+    update := update_recovery_journal(journal_path, "destroy", status, {"time": now_utc(), "operation": "destroy", "ok": cleanup_ok, "items": items, "remaining": remaining}, cleanup_error)
+    if update["ok"] == false {return update}
+    return {"ok": cleanup_ok, "dry_run": false, "journal_path": journal_path, "items": items, "remaining": remaining, "status": status}
+}

@@ -1,0 +1,95 @@
+{
+  "schemaVersion": 1,
+  "date": "2026-11-12",
+  "scope": "Remaining opt-in assurance integrations on codex/paperclip-accountability",
+  "runtimeCommit": "3b19a243e44d3d074a59c12f616745c230551d5a",
+  "workerSha256": "88115c10caf927786c7a48318843bf15d5a32de70e9e37b035361c3ded4a4e07",
+  "unit": {
+    "total": 348,
+    "passedAcrossFullAndFocusedRuns": 346,
+    "skipped": 2,
+    "files": 48,
+    "initialRun": {
+      "passed": 340,
+      "failed": 6,
+      "reason": "Loaded-host deadlines; no assertions or product limits changed"
+    },
+    "rerun": {
+      "files": 4,
+      "passed": 31,
+      "failed": 0
+    },
+    "skips": [
+      "Dispatch unsupported-platform guard on supported macOS",
+      "Workflow-storage unsupported-platform guard on supported macOS"
+    ]
+  },
+  "ui": {
+    "total": 60,
+    "passedAcrossFullAndFocusedRuns": 60,
+    "initialPassed": 55,
+    "rerunPassed": 5,
+    "notes": "Three catalog-related baselines visually reviewed; two loaded-host timeout cases passed on rerun. Missing matching browser restored before rerun."
+  },
+  "native": {
+    "status": "passed",
+    "cases": 8,
+    "proof": "../../examples/assurance/evidence/native-proof.json",
+    "expectedNegativeCases": [
+      "Workcell timeout exit 6 with receipt",
+      "KUJO_EXEC_CANCELLED with partial evidence and repeated cleanup"
+    ]
+  },
+  "authenticatedPackagedHost": {
+    "status": "passed",
+    "hostVersion": "2026.1106.0",
+    "proof": "../../examples/assurance/evidence/host-proof.json",
+    "teamProof": "../../examples/assurance/evidence/team-proof.json",
+    "workflowProof": "../../examples/assurance/evidence/workflow-proof.json",
+    "checks": [
+      "previous plugin 0.2.1 evidence survives packaged upgrade, capability admission and full host restart",
+      "Four real process agents: native reportsTo/parentId/checkout/run attribution, PackWrite plan, Workcell implementation proof, Lens interaction, Eval review, child evidence aggregation and human approval",
+      "Real authenticated Paperclip: PackWrite, Muzzle, Workcell, Lens fail/corrected pass, stale acceptance, explicit native human waiver, cancellation, metadata import, delegation and restart persistence"
+    ],
+    "realAgents": 4,
+    "provider": "deterministic local process; no LLM",
+    "stopped": true
+  },
+  "checks": {
+    "repository": "passed",
+    "abilities": "38 definitions, 4 profiles, 22 tools; passed",
+    "verificationContract": "passed",
+    "typecheck": "passed",
+    "components": "19 passed",
+    "supplyChain": "165 locked packages, 68 SBOM components, zero vulnerabilities",
+    "build": "passed; worker hash equals qualified installed archive",
+    "package": "passed"
+  },
+  "upstream": {
+    "workcellCommit": "3a624b01afd0bbfb4f7d8eb45b9fba593265e07e",
+    "targetedTestsPassed": 29,
+    "fullSuite": "Optional remote-adapter audit fails with 6 advisories; these adapters are not bundled or exposed"
+  },
+  "limitations": [
+    "No published release or protected merge",
+    "Official host run tab does not mount; issue extension qualified",
+    "No remote sandbox, Podman, provider-driven planning or authenticated/external browser workflows",
+    "No automatic unapproved execution or native issue status override",
+    "No newly qualified Windows or other CPU architectures",
+    "Private operator artifacts require manual retention/cleanup; evidence history limited to 20 records per entity and 30 days"
+  ],
+  "initialEnvironmentFailures": [
+    "Disk exhaustion; user freed space",
+    "Concurrent workload deadlines; focused reruns passed",
+    "Playwright installation garbage collection removed the other pinned browser; both versions restored with PLAYWRIGHT_SKIP_BROWSER_GC=1"
+  ],
+  "artifactHashes": {
+    "team-proof.json": "2c6fe9f1b2442aafd99e49e12c512e57575f0d299d85a2291ef1f99809ce0255",
+    "verification-center.png": "22d9d1c5629431e83e64e82aea9a1e45131d006f3d22a16606835ba98249995f",
+    "workflow-proof.json": "101bd224832f244dfabd321ec83cfd1458532929275d149ac5e011f29feba062",
+    "corrected-browser.png": "10fabb49d3d492311e69ea0167f4d6d50e280f99b661dbdc64a5e633608459a2",
+    "native-proof.json": "50b9bf72a82a5032989fb041b0afdbe3c965b8f9e54bc2bed5a0294dc41e3b33",
+    "native-lens.png": "3452f35309e24fa1bdd1eba2b0141ce8e883af9eb5d55c300c7ff9a788e10e90",
+    "host-proof.json": "c4434c7eeb40a42268c34a05906b8eb53d7fea1520fe3b4d5c3caa99b67cbcd3"
+  }
+}

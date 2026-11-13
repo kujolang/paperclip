@@ -1,0 +1,190 @@
+# Versioned integrity manifest for immutable run evidence.
+
+from src.util import get_or, has_key_safe, load_json, normalized_relative, path_has_symlink, path_within, save_json
+
+func collect_files(root, relative, depth) {
+    mut queue_paths := [root]
+    mut queue_relative := [relative]
+    mut queue_depths := [depth]
+    mut queue_i := 0
+    mut files := []
+    mut total_bytes := 0
+    while queue_i < len(queue_paths) {
+        path := queue_paths[queue_i]
+        current_relative := queue_relative[queue_i]
+        current_depth := queue_depths[queue_i]
+        if path_has_symlink(path) {
+            return {"ok": false, "error": "manifest source contains a symlink: " + current_relative}
+        }
+        if path_is_dir(path) {
+            if current_depth > 256 {
+                return {"ok": false, "error": "manifest source exceeds maximum depth: " + current_relative}
+            }
+            mut entries := []
+            try {
+                entries = list_dir(path)
+            } except err {
+                return {"ok": false, "error": "manifest source could not list directory " + current_relative + ": " + to_string(err)}
+            }
+            mut entry_i := 0
+            while entry_i < len(entries) {
+                name := to_string(entries[entry_i])
+                child_relative := name
+                if current_relative != "" {child_relative = current_relative + "/" + name}
+                if child_relative != "manifest.json" {
+                    child_path := path + "/" + name
+                    if path_has_symlink(child_path) {
+                        return {"ok": false, "error": "manifest source contains a symlink: " + child_relative}
+                    }
+                    if path_is_dir(child_path) {
+                        queue_paths = push(queue_paths, child_path)
+                        queue_relative = push(queue_relative, child_relative)
+                        queue_depths = push(queue_depths, current_depth + 1)
+                    } else {
+                        if path_within(root, child_path) == false {
+                            return {"ok": false, "error": "manifest source escapes the run directory: " + child_relative}
+                        }
+                        mut digest := ""
+                        try {
+                            digest = sha256_file(child_path)
+                        } except err {
+                            return {"ok": false, "error": "could not hash manifest source " + child_relative + ": " + to_string(err)}
+                        }
+                        mut bytes := 0
+                        try {
+                            bytes = file_size(child_path)
+                        } except err {
+                            return {"ok": false, "error": "could not inspect manifest source " + child_relative + ": " + to_string(err)}
+                        }
+                        files = push(files, {"path": child_relative, "sha256": digest, "bytes": bytes})
+                        total_bytes = total_bytes + bytes
+                        if len(files) > 100000 {return {"ok": false, "error": "manifest exceeds 100000 files"}}
+                    }
+                }
+                entry_i = entry_i + 1
+            }
+        }
+        queue_i = queue_i + 1
+    }
+    return {"ok": true, "files": files, "bytes": total_bytes}
+}
+
+export func write_manifest(output_dir, run_identifier) {
+    if type(output_dir) != "string"||output_dir == ""||type(run_identifier) != "string"||run_identifier == "" {
+        return {"ok": false, "error": "manifest output directory and run identifier must be non-empty strings"}
+    }
+    if path_is_dir(output_dir) == false||path_has_symlink(output_dir) {
+        return {"ok": false, "error": "manifest output directory must be an existing non-symlink directory"}
+    }
+    manifest := collect_files(output_dir, "", 0)
+    if manifest["ok"] == false {return manifest}
+    value := {
+        "schema_version": "workcell-manifest/v1",
+        "run_id": run_identifier,
+        "scope": "immutable run evidence; manifest.json is excluded because it contains this manifest",
+        "files": manifest["files"],
+        "total_files": len(manifest["files"]),
+        "total_bytes": manifest["bytes"],
+        "manifest_path": "manifest.json",
+        "excluded_paths": ["manifest.json"]
+    }
+    path := output_dir + "/manifest.json"
+    try {
+        persisted := save_json(path, value)
+        if persisted != true {
+            return {"ok": false, "error": "could not write integrity manifest: atomic write returned false"}
+        }
+    } except err {
+        return {"ok": false, "error": "could not write integrity manifest: " + to_string(err)}
+    }
+    return {"ok": true, "path": path, "relative_path": "manifest.json", "files": len(manifest["files"]), "bytes": manifest["bytes"]}
+}
+
+export func verify_manifest(output_dir) {
+    if type(output_dir) != "string"||output_dir == "" {
+        return {"ok": false, "error": "manifest output directory must be a non-empty string"}
+    }
+    if path_is_dir(output_dir) == false||path_has_symlink(output_dir) {
+        return {"ok": false, "error": "manifest output directory must be an existing non-symlink directory"}
+    }
+    manifest_path := output_dir + "/manifest.json"
+    if path_has_symlink(manifest_path) {
+        return {"ok": false, "error": "integrity manifest path contains a symlink"}
+    }
+    loaded := load_json(manifest_path)
+    if loaded["ok"] == false {return loaded}
+    value := loaded["value"]
+    if type(value) != "dict"||get_or(value, "schema_version", "") != "workcell-manifest/v1" {
+        return {"ok": false, "error": "unsupported or invalid integrity manifest schema"}
+    }
+    files := get_or(value, "files", [])
+    if type(files) != "array"||len(files) > 100000 {
+        return {"ok": false, "error": "integrity manifest file list is invalid or exceeds 100000 entries"}
+    }
+    mut total_bytes := 0
+    mut seen_paths := {}
+    mut i := 0
+    while i < len(files) {
+        entry := files[i]
+        if type(entry) != "dict" {
+            return {"ok": false, "error": "integrity manifest contains an invalid file entry"}
+        }
+        relative_check := normalized_relative(get_or(entry, "path", ""))
+        if relative_check["ok"] == false||relative_check["path"] == "manifest.json" {
+            return {"ok": false, "error": "integrity manifest contains an invalid excluded or relative path"}
+        }
+        if relative_check["path"] != get_or(entry, "path", "") {
+            return {"ok": false, "error": "integrity manifest contains a non-normalized path"}
+        }
+        relative := relative_check["path"]
+        if has_key_safe(seen_paths, relative) {
+            return {"ok": false, "error": "integrity manifest contains duplicate file entry: " + relative}
+        }
+        seen_paths[relative] := true
+        path := output_dir + "/" + relative
+        if path_within(output_dir, path) == false||path_has_symlink(path)||file_exists(path) == false {
+            return {"ok": false, "error": "integrity manifest file is missing or unsafe: " + relative}
+        }
+        expected_bytes := get_or(entry, "bytes", - 1)
+        mut actual_bytes :=  - 1
+        try {
+            actual_bytes = file_size(path)
+        } except err {
+            return {"ok": false, "error": "could not inspect integrity manifest file: " + relative + ": " + to_string(err)}
+        }
+        if type(expected_bytes) != "int"||actual_bytes != expected_bytes {
+            return {"ok": false, "error": "integrity manifest byte count mismatch: " + relative}
+        }
+        expected_digest := get_or(entry, "sha256", "")
+        mut actual_digest := ""
+        try {
+            actual_digest = sha256_file(path)
+        } except err {
+            return {"ok": false, "error": "could not hash integrity manifest file: " + relative + ": " + to_string(err)}
+        }
+        if expected_digest == ""||actual_digest != expected_digest {
+            return {"ok": false, "error": "integrity manifest digest mismatch: " + relative}
+        }
+        total_bytes = total_bytes + expected_bytes
+        i = i + 1
+    }
+    if get_or(value, "total_files", - 1) != len(files)||get_or(value, "total_bytes", - 1) != total_bytes {
+        return {"ok": false, "error": "integrity manifest totals do not match its file entries"}
+    }
+    actual := collect_files(output_dir, "", 0)
+    if actual["ok"] == false {
+        return {"ok": false, "error": "could not enumerate files for integrity manifest coverage: " + actual["error"]}
+    }
+    if len(actual["files"]) != len(files)||actual["bytes"] != total_bytes {
+        return {"ok": false, "error": "integrity manifest does not cover the complete run directory"}
+    }
+    mut actual_i := 0
+    while actual_i < len(actual["files"]) {
+        actual_path := actual["files"][actual_i]["path"]
+        if has_key_safe(seen_paths, actual_path) == false {
+            return {"ok": false, "error": "integrity manifest does not cover file: " + actual_path}
+        }
+        actual_i = actual_i + 1
+    }
+    return {"ok": true, "schema_version": value["schema_version"], "files": len(files), "bytes": total_bytes}
+}

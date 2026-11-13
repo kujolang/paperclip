@@ -6,6 +6,10 @@ export type PluginDetailTabProps = {
 
 declare global {
   interface Window {
+    __KUJO_DELEGATION_PAGES__?: Array<Record<string, any>>;
+    __KUJO_ASSURANCE_REQUESTS__?: Array<Record<string, unknown>>;
+    __KUJO_DELAY_ASSURANCE__?: boolean;
+    __KUJO_RESOLVE_ASSURANCE__?: () => void;
     __KUJO_DELAY_REFRESH__?: boolean;
     __KUJO_RESOLVE_REFRESH__?: () => void;
     __KUJO_KNOWLEDGE__?: any;
@@ -72,6 +76,19 @@ export function usePluginAction(action: string) {
   return async (input: unknown) => {
     window.__KUJO_ACTIONS__ ??= [];
     window.__KUJO_ACTIONS__.push({ action, input });
+    if (action === "kujo-delegation") {
+      if(window.__KUJO_DELAY_ASSURANCE__)await new Promise<void>(resolve=>{window.__KUJO_RESOLVE_ASSURANCE__=resolve;});
+      const params=input as {cursor?:{offset:number}};
+      const found=window.__KUJO_DELEGATION_PAGES__?.find(p=>p.page.offset===(params.cursor?.offset??0));
+      if(found?.error)throw new Error(found.error);
+      return found??{issues:[],runs:[],page:{offset:0,total:0},nextCursor:null};
+    }
+    if (action === "manage-kujo-assurance") {
+      if(window.__KUJO_DELAY_ASSURANCE__)await new Promise<void>(resolve=>{window.__KUJO_RESOLVE_ASSURANCE__=resolve;});
+      const params=input as {operation:string;id?:string};
+      if(params.operation==="list")return {requests:window.__KUJO_ASSURANCE_REQUESTS__??[]};
+      return window.__KUJO_ASSURANCE_REQUESTS__?.find(r=>r.id===params.id)??{};
+    }
     if (action === "manage-project-knowledge") {
       if (window.__KUJO_DELAY_KNOWLEDGE__) { await new Promise<void>(resolve => { window.__KUJO_RESOLVE_KNOWLEDGE__ = resolve; }); throw new Error("private delayed knowledge result"); }
       const params = input as { operation: string };
@@ -159,6 +176,7 @@ export function usePluginAction(action: string) {
     if (action === "attach-evidence") return { status: "attached", documentId: "document" };
     if (action === "import-verification") {
       if (window.__KUJO_DELAY_IMPORT__) await new Promise<void>((resolve) => { window.__KUJO_RESOLVE_IMPORT__ = resolve; });
+      if ((input as { format?: string }).format === "runledger") return { classification: "unverified", record: { id: "fixture-attempt", model: "fixture", status: "pass", start_commit: null, end_commit: null, tests: [], usage: { input_tokens: null }, cost: null, correlation: null }, host: { agentId: null, runId: null, parentIssueId: null }, notice: "Imported claim; producer not authenticated." };
       return { classification: "partial", result: { evaluator: { name: "eval", version: "2.0.0" }, checks: { passed: 3, failed: 0, warned: 0, skipped: 1 }, verdict: "pass", subject: { run_id: "supplied-run" }, finished_at: "2026-10-12T00:00:00Z" }, generatedAt: "2026-10-12T01:00:00Z", referenceCount: 2 };
     }
     if (action === "inspect-release-readiness") {

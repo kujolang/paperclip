@@ -1,0 +1,147 @@
+# Portable execution outcome and bounded re-execution metadata.
+
+from src.util import get_or, project_version, save_json
+
+func receipt_run_id(receipt) {
+    if get_or(receipt, "schema_version", "") == "workcell-receipt/v1" {return get_or(receipt, "run_id", "")}
+    return get_or(get_or(receipt, "run", {}), "id", "")
+}
+
+func receipt_start(receipt) {
+    if get_or(receipt, "schema_version", "") == "workcell-receipt/v1" {return get_or(receipt, "start_time", now_utc())}
+    return get_or(get_or(receipt, "run", {}), "start_time", now_utc())
+}
+
+func receipt_end(receipt) {
+    if get_or(receipt, "schema_version", "") == "workcell-receipt/v1" {return get_or(receipt, "end_time", now_utc())}
+    return get_or(get_or(receipt, "run", {}), "end_time", now_utc())
+}
+
+func receipt_source(receipt) {
+    if get_or(receipt, "schema_version", "") == "workcell-receipt/v1" {
+        return {"repository": get_or(receipt, "source_repository", "unknown"), "commit": get_or(receipt, "source_commit", "unknown")}
+    }
+    source := get_or(receipt, "source", {})
+    return {"repository": get_or(source, "repository", "portable-source"), "commit": get_or(source, "commit", "unknown")}
+}
+
+func receipt_image(receipt, definition) {
+    if get_or(receipt, "schema_version", "") == "workcell-receipt/v1" {
+        return {"name": get_or(receipt, "container_image", get_or(get_or(definition, "runtime", {}), "image", "unknown")), "digest": get_or(receipt, "container_image_digest", "")}
+    }
+    backend := get_or(receipt, "backend", {})
+    return {"name": get_or(backend, "provider_id", "unknown"), "digest": ""}
+}
+
+func evidence_refs(output_dir) {
+    mut refs := []
+    for name in ["receipt.json", "stdout.log", "stderr.log", "changes.patch", "changes.json", "preservation.json", "handoff-bundle.json"] {
+        if file_exists(output_dir + "/" + name) {refs = push(refs, {"$ref": name})}
+    }
+    integration_dir := output_dir + "/integrations"
+    if path_is_dir(integration_dir) {
+        for name in list_dir(integration_dir) {
+            relative := "integrations/" + to_string(name)
+            if file_exists(output_dir + "/" + relative) {refs = push(refs, {"$ref": relative})}
+        }
+    }
+    return refs
+}
+
+func result_status(final_status) {
+    if final_status == "completed" {return {"status": "success", "classification": ""}}
+    if final_status == "timeout" {return {"status": "timeout", "classification": "execution_failure"}}
+    if final_status == "cancelled" {return {"status": "cancelled", "classification": ""}}
+    if final_status == "verification-failed" {return {"status": "failure", "classification": "verification_failure"}}
+    if final_status == "artifact-failed" {return {"status": "failure", "classification": "artifact_failure"}}
+    if final_status == "cleanup-failed" {return {"status": "failure", "classification": "infrastructure_failure"}}
+    if final_status == "dry-run" {return {"status": "success", "classification": ""}}
+    return {"status": "failure", "classification": "execution_failure"}
+}
+
+func network_mode(definition, receipt) {
+    configured := get_or(get_or(definition, "network", {}), "mode", "")
+    if configured != "" {return configured}
+    return get_or(receipt, "network_mode", "unknown")
+}
+
+func secret_references(definition, receipt) {
+    names := get_or(definition, "secrets", get_or(get_or(receipt, "execution", {}), "secret_names", []))
+    mut refs := []
+    for name in names {refs = push(refs, "secret://environment/" + to_string(name))}
+    return refs
+}
+
+export func build_reexecution_descriptor(definition, receipt, output_dir) {
+    source := receipt_source(receipt)
+    definition_hash := sha256(to_json(definition))
+    definition_name := get_or(definition, "name", get_or(get_or(receipt, "definition", {}), "name", "workcell"))
+    definition_version := to_string(get_or(definition, "version", get_or(get_or(receipt, "definition", {}), "schema", "1")))
+    image := receipt_image(receipt, definition)
+    net_mode := network_mode(definition, receipt)
+    retry_allowed := net_mode == "none"
+    dependency_mode := "live"
+    if net_mode == "none" {dependency_mode = "none"}
+    descriptor := {
+        "schema": "kujo.reexecution-descriptor/v1",
+        "capability": "re_executable", "mode": "clean_workspace", "source_attempt_id": "attempt-1",
+        "source": source,
+        "workflow": {"id": definition_name, "version": definition_version, "sha256": definition_hash},
+        "tool": {"name": "workcell", "version": project_version()},
+        "inputs": [{"name": "workcell_definition", "evidence_ref": "reexecution-input.json"}],
+        "secret_refs": secret_references(definition, receipt),
+        "external_dependencies": [{"name": "network", "mode": dependency_mode, "replayable": net_mode == "none"}],
+        "effects": {"automatic_retry_allowed": retry_allowed},
+        "limitations": ["Re-execution creates a new attempt; it does not replay process memory, clock, randomness, model responses, or arbitrary external APIs."]
+    }
+    if image["digest"] != "" {
+        tool := descriptor["tool"]
+        tool["image_digest"] := image["digest"]
+        descriptor["tool"] := tool
+    }
+    if file_exists(output_dir + "/changes.patch") {
+        descriptor_source := descriptor["source"]
+        descriptor_source["dirty_patch_ref"] := "changes.patch"
+        descriptor["source"] := descriptor_source
+    }
+    return descriptor
+}
+
+export func write_execution_evidence(definition, receipt, output_dir) {
+    run_identifier := receipt_run_id(receipt)
+    if type(definition) != "dict"||run_identifier == ""||output_dir == "" {return {"ok": false, "error": "execution evidence requires definition, run id, and output directory"}}
+    if save_json(output_dir + "/reexecution-input.json", {"schema": "workcell-reexecution-input/v1", "definition": definition}) != true {return {"ok": false, "error": "re-execution input could not be persisted"}}
+    descriptor := build_reexecution_descriptor(definition, receipt, output_dir)
+    if save_json(output_dir + "/reexecution.json", descriptor) != true {return {"ok": false, "error": "re-execution descriptor could not be persisted"}}
+    final_status := get_or(receipt, "final_status", get_or(get_or(receipt, "run", {}), "status", "unknown"))
+    mapped := result_status(final_status)
+    net_mode := network_mode(definition, receipt)
+    effect_class := "local_reversible"
+    effect_state := "committed"
+    retry_disposition := "automatic"
+    retry_reason := "Execution was restricted to the disposable local workspace."
+    if net_mode != "none" {
+        effect_class = "external_non_idempotent"
+        effect_state = "unknown"
+        retry_disposition = "operator_required"
+        retry_reason = "Network access means external effects cannot be inferred or rolled back from the Workcell receipt."
+    }
+    result := {
+        "schema": "kujo.execution-result/v1",
+        "result_id": "xr_" + substring(sha256(to_json({"run_id": run_identifier, "status": final_status, "end": receipt_end(receipt)})), 0, 24),
+        "subject": {"run_id": run_identifier, "step_id": "workflow", "attempt_id": "attempt-1"},
+        "producer": {"name": "workcell", "version": project_version()},
+        "status": mapped["status"],
+        "started_at": receipt_start(receipt),
+        "finished_at": receipt_end(receipt),
+        "attempt": 1,
+        "retry": {"disposition": retry_disposition, "reason": retry_reason},
+        "effects": [{"effect_id": "effect_" + substring(sha256(run_identifier), 0, 24), "class": effect_class, "state": effect_state, "idempotency_key": null, "enforced_by": null}],
+        "evidence": evidence_refs(output_dir),
+        "reexecution_descriptor_ref": "reexecution.json",
+        "warnings": ["Workcell controls execution admission and evidence; it does not roll back external effects."]
+    }
+    if mapped["classification"] != "" {result["classification"] := mapped["classification"]}
+    if save_json(output_dir + "/execution-result.json", result) != true {return {"ok": false, "error": "execution result could not be persisted"}}
+    return {"ok": true, "result": result, "descriptor": descriptor}
+}

@@ -13,6 +13,7 @@ import { build } from "esbuild";
 import { buildRuntimeSupervisor } from "../build-runtime-supervisor.mjs";
 
 const production = process.env.KUJO_ACCEPTANCE_PRODUCTION === "1";
+const serveAssuranceUi = process.env.KUJO_ACCEPTANCE_PACK === "assurance";
 const browserQualification = process.env.KUJO_ACCEPTANCE_PACK === "ui";
 if (browserQualification && !production) throw new Error("Browser qualification requires production mode");
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
@@ -52,7 +53,7 @@ let cookie = "";
 const evidence = { schemaVersion: 1, fixture: production ? "production Kujo workflows" : "isolated authenticated execution and host admission", startedAt: new Date().toISOString(),
   ...(npmHostPackage ? { hostPackage: { name: npmHostPackage.name, version: npmHostPackage.version, entrySha256: createHash("sha256").update(await readFile(hostEntry)).digest("hex") } } : { hostCommit: execFileSync("git", ["-C", host, "rev-parse", "HEAD"], { encoding: "utf8" }).trim() }),
   pluginCommit: execFileSync("git", ["-C", repo, "rev-parse", "HEAD"], { encoding: "utf8" }).trim(), checks };
-if (browserQualification) {
+if (browserQualification || serveAssuranceUi) {
   // The server package version alone cannot identify a locally rebuilt UI.
   // Record the actual static entry bytes used by this isolated host.
   const uiIndex = npmHostArg ? join(dirname(hostEntry), "../ui-dist/index.html") : join(host, "ui/dist/index.html");
@@ -85,7 +86,7 @@ const env = Object.fromEntries(["PATH", "HOME", "USER", "LOGNAME", "TMPDIR", "TE
 Object.assign(env, { HOME: join(root, "home"), PAPERCLIP_CONFIG: join(root, "config.json"), PAPERCLIP_HOME: join(root, "home"), PAPERCLIP_INSTANCE_ID: "acceptance",
   PAPERCLIP_DEPLOYMENT_MODE: "authenticated", PAPERCLIP_DEPLOYMENT_EXPOSURE: "private", PAPERCLIP_AUTH_BASE_URL_MODE: "explicit", PAPERCLIP_AUTH_PUBLIC_BASE_URL: base,
   PAPERCLIP_MIGRATION_AUTO_APPLY: "true", PAPERCLIP_MIGRATION_PROMPT: "never", PAPERCLIP_TELEMETRY_DISABLED: "1", HEARTBEAT_SCHEDULER_ENABLED: "false",
-  PAPERCLIP_ANNOUNCEMENTS_ENABLED: "false", HOST: "127.0.0.1", PORT: String(httpPort), SERVE_UI: String(browserQualification),
+  PAPERCLIP_ANNOUNCEMENTS_ENABLED: "false", HOST: "127.0.0.1", PORT: String(httpPort), SERVE_UI: String(browserQualification || serveAssuranceUi),
   BETTER_AUTH_SECRET: randomBytes(32).toString("hex"), PAPERCLIP_AGENT_JWT_SECRET: randomBytes(32).toString("hex") });
 function stop() {
   stopping ??= stopOwned().finally(() => { stopping = undefined; });
@@ -179,7 +180,7 @@ try {
   }
   await json("config.json", { $meta: { version: 1, updatedAt: new Date().toISOString(), source: "doctor" },
     database: { mode: "embedded-postgres", embeddedPostgresDataDir: join(root, "db"), embeddedPostgresPort: dbPort, backup: { enabled: false, dir: join(root, "backups") } },
-    logging: { mode: "file", logDir: join(root, "logs") }, server: { deploymentMode: "authenticated", exposure: "private", bind: "loopback", host: "127.0.0.1", port: httpPort, serveUi: browserQualification },
+    logging: { mode: "file", logDir: join(root, "logs") }, server: { deploymentMode: "authenticated", exposure: "private", bind: "loopback", host: "127.0.0.1", port: httpPort, serveUi: browserQualification || serveAssuranceUi },
     auth: { baseUrlMode: "explicit", publicBaseUrl: base, disableSignUp: false }, storage: { provider: "local_disk", localDisk: { baseDir: join(root, "storage") } },
     secrets: { provider: "local_encrypted", strictMode: false, localEncrypted: { keyFilePath: join(root, "secrets/master.key") } }, telemetry: { enabled: false }, updates: { checkEnabled: false } });
   console.log(`Isolated acceptance evidence: ${root}`);
@@ -251,6 +252,14 @@ try {
     checks.push("official host upgrade preserves company/project/issue identity, login session and plugin evidence through migrations and another restart");
   }
   if (production) {
+    if (process.env.KUJO_ACCEPTANCE_PACK === "assurance") {
+      const { qualifyAssurance } = await import("./production-assurance.mjs");
+      await qualifyAssurance({ call, companyId, projectId, issueId, root, node, base, cookie, checks, json, stop, start, waitUntil });
+    }
+    if (process.env.KUJO_ACCEPTANCE_PACK === "accountability") {
+      const { qualifyAccountability } = await import("./production-accountability.mjs");
+      await qualifyAccountability({ call, companyId, projectId, issueId, root, node, checks, json, stop, start, waitUntil });
+    }
     if (process.env.KUJO_ACCEPTANCE_PACK === "install") {
       const { qualifyProductionInstall } = await import("./production-install.mjs");
       await qualifyProductionInstall({ call, companyId, root, host, node, base, checks, json });
@@ -263,7 +272,7 @@ try {
       const { qualifyProductionCore } = await import("./production-core.mjs");
       await qualifyProductionCore({ call, companyId, projectId, issueId, root, node, checks, json, stop, start, waitUntil });
     }
-    if (!["core", "ui", "install"].includes(process.env.KUJO_ACCEPTANCE_PACK)) {
+    if (!["core", "ui", "install", "accountability", "assurance"].includes(process.env.KUJO_ACCEPTANCE_PACK)) {
     if (!["workflows", "knowledge"].includes(process.env.KUJO_ACCEPTANCE_PACK)) {
     const { qualifyProductionEvaluation } = await import("./production-eval.mjs");
     await qualifyProductionEvaluation({ call, companyId, projectId, issueId, userId, root, node, checks, json, stop, start, waitUntil });

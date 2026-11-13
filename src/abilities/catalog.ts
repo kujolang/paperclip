@@ -12,7 +12,7 @@ type Projection = {
 const entries: readonly Projection[] = projections;
 export function projectionSelected(projection: Projection, profile: PluginConfig["capabilityProfile"]): boolean {
   if (projection.alwaysAvailable || profile === "installed" || profile === "full") return true;
-  if (profile === "build") return ["knowledge", "language", "context", "understand", "sourceExecution", "projectCreation", "workflows"].includes(projection.feature ?? "");
+  if (profile === "build") return ["knowledge", "language", "context", "understand", "sourceExecution", "projectCreation", "workflows", "assurance"].includes(projection.feature ?? "");
   if (projection.profiles) return projection.profiles.includes(profile);
   const selected = canonicalProfiles.find((item) => item.id === `kujo.profile.${profile}`);
   const ids: readonly string[] = selected?.resolvedAbilityIds ?? [];
@@ -43,7 +43,7 @@ export function capabilityCatalog(config: PluginConfig, report: DoctorReport, in
     const selectedByProfile = projectionSelected(entry, config.capabilityProfile);
     const enabled = selectedByProfile && (!entry.feature || config.features[entry.feature]);
     const requiresRuntime = entry.requiresRuntime ?? entry.feature !== null;
-    const supported = (!requiresRuntime || supportedRuntime) && (entry.feature !== "workflows" || report.runtime.platform === "darwin" || report.runtime.platform === "linux");
+    const supported = (!requiresRuntime || supportedRuntime) && (!["workflows", "assurance"].includes(entry.feature ?? "") || report.runtime.platform === "darwin" || report.runtime.platform === "linux");
     const componentsReady = entry.components.every((id) => report.components.some((component) => component.id === id && component.integrity === "ok"));
     const prerequisitesReady = entry.feature !== "workflows" || workflowStorageReady;
     const ready = supported && enabled && prerequisitesReady && componentsReady && (!requiresRuntime || report.runtime.status === "ok");

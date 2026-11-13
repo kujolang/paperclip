@@ -1,0 +1,326 @@
+# Copy only declared workspace outputs into a run-owned host directory.
+
+from src.util import ensure_dir, env_secret_values, get_or, has_key_safe, normalized_relative, path_has_symlink, path_within, process_error, process_ok, redact, read_text, run_argv
+
+func artifact_policy_check(policy) {
+    if type(policy) != "dict" {
+        return {"ok": false, "error": "artifact policy must be a dict"}
+    }
+    declared := get_or(policy, "export", [])
+    if type(declared) != "array" {
+        return {"ok": false, "error": "artifact policy export must be an array"}
+    }
+    mut i := 0
+    while i < len(declared) {
+        if type(declared[i]) != "string"||declared[i] == "" {
+            return {"ok": false, "error": "artifact policy export entries must be non-empty strings"}
+        }
+        i = i + 1
+    }
+    limits := get_or(policy, "limits", {})
+    if type(limits) != "dict" {
+        return {"ok": false, "error": "artifact policy limits must be a dict"}
+    }
+    for field in ["max_bytes", "max_files", "max_depth"] {
+        if has_key(policy, field)&&(type(policy[field]) != "int"||policy[field] < 0) {
+            return {"ok": false, "error": "artifact policy limit values must be non-negative integers"}
+        }
+    }
+    names := keys(limits)
+    i = 0
+    while i < len(names) {
+        limit := limits[names[i]]
+        if type(limit) != "dict" {
+            return {"ok": false, "error": "artifact policy limits entries must be dicts"}
+        }
+        for field in ["max_bytes", "max_files", "max_depth"] {
+            if has_key(limit, field)&&(type(limit[field]) != "int"||limit[field] < 0) {
+                return {"ok": false, "error": "artifact policy limit values must be non-negative integers"}
+            }
+        }
+        i = i + 1
+    }
+    allowed := get_or(policy, "allowed_extensions", [])
+    if type(allowed) != "array" {
+        return {"ok": false, "error": "artifact policy allowed extensions must be an array"}
+    }
+    i = 0
+    while i < len(allowed) {
+        if type(allowed[i]) != "string"||allowed[i] == "" {
+            return {"ok": false, "error": "artifact policy allowed extensions must contain non-empty strings"}
+        }
+        i = i + 1
+    }
+    secret_action := get_or(policy, "secret_action", "allow")
+    if type(secret_action) != "string"||(secret_action != "allow"&&secret_action != "reject"&&secret_action != "redact") {
+        return {"ok": false, "error": "artifact policy secret action is invalid"}
+    }
+    return {"ok": true}
+}
+
+export func export_declared(workspace_path, output_dir, declared) {
+    if type(workspace_path) != "string"||type(output_dir) != "string"||type(declared) != "array" {
+        return {"ok": false, "error": "workspace path, output directory, and declared artifacts must have valid types"}
+    }
+    return export_declared_with_policy(workspace_path, output_dir, {"export": declared, "limits": {}, "max_bytes": 0, "max_files": 0, "max_depth": 32, "allowed_extensions": [], "secret_action": "allow"}, [])
+}
+
+func extension_allowed(path, allowed) {
+    if len(allowed) == 0 {
+        return true
+    }
+    lower := to_lower(path)
+    mut i := 0
+    while i < len(allowed) {
+        if ends_with(lower, to_lower(allowed[i])) {
+            return true
+        }
+        i = i + 1
+    }
+    return false
+}
+
+func artifact_limit(policy, relative) {
+    limits := get_or(policy, "limits", {})
+    if type(limits) == "dict"&&has_key(limits, relative) == 1 {
+        return limits[relative]
+    }
+    if type(limits) == "dict" {
+        names := keys(limits)
+        mut i := 0
+        while i < len(names) {
+            checked := normalized_relative(names[i])
+            if checked["ok"]&&checked["path"] == relative {
+                return limits[names[i]]
+            }
+            i = i + 1
+        }
+    }
+    return {}
+}
+
+func scan_artifact(path, relative, depth, policy, limit, secrets) {
+    max_depth := get_or(limit, "max_depth", get_or(policy, "max_depth", 32))
+    if depth > max_depth {
+        return {"ok": false, "error": "artifact exceeds max depth " + to_string(max_depth) + ": " + relative}
+    }
+    if path_is_dir(path) {
+        mut entries := []
+        try {
+            entries = list_dir(path)
+        } except err {
+            return {"ok": false, "error": "artifact could not list directory " + relative + ": " + to_string(err)}
+        }
+        mut total_bytes := 0
+        mut total_files := 0
+        mut i := 0
+        while i < len(entries) {
+            name := to_string(entries[i])
+            child := path + "/" + name
+            child_relative := relative + "/" + name
+            if path_is_symlink(child) {
+                return {"ok": false, "error": "artifact source contains a symlink: " + child_relative}
+            }
+            child_stats := scan_artifact(child, child_relative, depth + 1, policy, limit, secrets)
+            if child_stats["ok"] == false {
+                return child_stats
+            }
+            total_bytes = total_bytes + child_stats["bytes"]
+            total_files = total_files + child_stats["files"]
+            i = i + 1
+        }
+        return enforce_artifact_limits(relative, total_bytes, total_files, policy, limit)
+    }
+    if extension_allowed(relative, get_or(policy, "allowed_extensions", [])) == false {
+        return {"ok": false, "error": "artifact content type is not allowed: " + relative}
+    }
+    mut bytes := 0
+    try {
+        bytes = file_size(path)
+    } except err {
+        return {"ok": false, "error": "artifact could not inspect file " + relative + ": " + to_string(err)}
+    }
+    bounded := enforce_artifact_limits(relative, bytes, 1, policy, limit)
+    if bounded["ok"] == false {return bounded}
+    secret_action := get_or(policy, "secret_action", "allow")
+    if secret_action != "allow"&&len(secrets) > 0 {
+        text_result := read_text(path)
+        if text_result["ok"] == false {
+            return {"ok": false, "error": "artifact could not be inspected for declared secrets: " + relative}
+        }
+        redacted := redact(text_result["text"], secrets)
+        if secret_action == "reject"&&redacted != text_result["text"] {
+            return {"ok": false, "error": "artifact contains a declared secret: " + relative}
+        }
+    }
+    return bounded
+}
+
+func enforce_artifact_limits(relative, bytes, files, policy, limit) {
+    max_bytes := get_or(limit, "max_bytes", get_or(policy, "max_bytes", 0))
+    max_files := get_or(limit, "max_files", get_or(policy, "max_files", 0))
+    if max_bytes > 0&&bytes > max_bytes {
+        return {"ok": false, "error": "artifact exceeds max bytes " + to_string(max_bytes) + ": " + relative}
+    }
+    if max_files > 0&&files > max_files {
+        return {"ok": false, "error": "artifact exceeds max files " + to_string(max_files) + ": " + relative}
+    }
+    return {"ok": true, "bytes": bytes, "files": files}
+}
+
+func redact_tree(path, secrets, relative) {
+    if path_is_dir(path) {
+        mut entries := []
+        try {
+            entries = list_dir(path)
+        } except err {
+            return {"ok": false, "error": "artifact could not list redaction directory " + relative + ": " + to_string(err)}
+        }
+        mut i := 0
+        while i < len(entries) {
+            child_relative := relative + "/" + to_string(entries[i])
+            result := redact_tree(path + "/" + to_string(entries[i]), secrets, child_relative)
+            if result["ok"] == false {return result}
+            i = i + 1
+        }
+        return {"ok": true}
+    }
+    text_result := read_text(path)
+    if text_result["ok"] == false {
+        return {"ok": false, "error": "artifact could not be redacted safely"}
+    }
+    mut written := false
+    try {
+        written = write_file_atomic(path, redact(text_result["text"], secrets), true)
+    } except err {
+        return {"ok": false, "error": "artifact redaction write failed for " + relative + ": " + to_string(err)}
+    }
+    if written != true {
+        return {"ok": false, "error": "could not write redacted artifact: " + relative}
+    }
+    return {"ok": true}
+}
+
+export func export_declared_with_policy(workspace_path, output_dir, policy, secrets) {
+    if type(workspace_path) != "string"||type(output_dir) != "string"||workspace_path == ""||output_dir == "" {
+        return {"ok": false, "error": "workspace path and output directory must be non-empty strings"}
+    }
+    if type(policy) != "dict"||type(secrets) != "array" {
+        return {"ok": false, "error": "artifact policy must be a dict and secrets must be an array"}
+    }
+    policy_check := artifact_policy_check(policy)
+    if policy_check["ok"] == false {return policy_check}
+    if path_has_symlink(output_dir) {
+        return {"ok": false, "error": "artifact output path contains a symlink: " + output_dir}
+    }
+    if ensure_dir(output_dir) == false||path_is_dir(output_dir) == false {
+        return {"ok": false, "error": "artifact output directory could not be prepared: " + output_dir}
+    }
+    mut exported := []
+    mut total_bytes := 0
+    mut total_files := 0
+    secret_values := env_secret_values(secrets)
+    declared := get_or(policy, "export", [])
+    mut seen_declarations := {}
+    mut i := 0
+    while i < len(declared) {
+        checked := normalized_relative(declared[i])
+        if checked["ok"] == false {
+            return {"ok": false, "error": checked["error"]}
+        }
+        relative := checked["path"]
+        if has_key_safe(seen_declarations, relative) {
+            return {"ok": false, "error": "artifact export contains duplicate declaration: " + relative}
+        }
+        previous_declarations := keys(seen_declarations)
+        mut previous_i := 0
+        while previous_i < len(previous_declarations) {
+            previous := previous_declarations[previous_i]
+            if starts_with(relative, previous + "/")||starts_with(previous, relative + "/") {
+                return {"ok": false, "error": "artifact export contains overlapping declarations: " + previous + " and " + relative}
+            }
+            previous_i = previous_i + 1
+        }
+        seen_declarations[relative] := true
+        source := workspace_path + "/" + relative
+        destination := output_dir + "/" + relative
+        if file_exists(source) == false&&path_is_dir(source) == false {
+            return {"ok": false, "error": "declared artifact does not exist: " + relative}
+        }
+        if path_has_symlink(source) {
+            return {"ok": false, "error": "declared artifact source contains a symlink: " + relative}
+        }
+        if path_within(workspace_path, source) == false||path_within(output_dir, destination) == false {
+            return {"ok": false, "error": "artifact escapes its allowed boundary: " + relative}
+        }
+        limit := artifact_limit(policy, relative)
+        source_stats := scan_artifact(source, relative, 0, policy, limit, secret_values)
+        if source_stats["ok"] == false {
+            return source_stats
+        }
+        parent := destination
+        mut slash := len(parent) - 1
+        while slash >= 0 {
+            if substring(parent, slash, slash + 1) == "/" {
+                parent = substring(parent, 0, slash)
+                break
+            }
+            slash = slash - 1
+        }
+        if path_has_symlink(parent) {
+            return {"ok": false, "error": "artifact destination contains a symlink: " + destination}
+        }
+        if ensure_dir(parent) == false||path_is_dir(parent) == false {
+            return {"ok": false, "error": "artifact destination directory could not be prepared: " + destination}
+        }
+        if file_exists(destination)||path_is_dir(destination) {
+            run_argv(["rm", "-rf", destination], 30000)
+        }
+        result := run_argv(["cp", "-R", source, destination], 60000)
+        if process_ok(result) == false {
+            return {"ok": false, "error": process_error(result, "export artifact " + relative)}
+        }
+        if get_or(policy, "secret_action", "allow") == "redact"&&len(secret_values) > 0 {
+            redaction := redact_tree(destination, secret_values, relative)
+            if redaction["ok"] == false {
+                return {"ok": false, "error": "could not redact exported artifact: " + relative}
+            }
+        }
+        stats := scan_artifact(destination, relative, 0, policy, limit, [])
+        if stats["ok"] == false {
+            return stats
+        }
+        total_bytes = total_bytes + stats["bytes"]
+        total_files = total_files + stats["files"]
+        global_max_bytes := get_or(policy, "max_bytes", 0)
+        global_max_files := get_or(policy, "max_files", 0)
+        if global_max_bytes > 0&&total_bytes > global_max_bytes {
+            return {"ok": false, "error": "exported artifacts exceed max bytes " + to_string(global_max_bytes)}
+        }
+        if global_max_files > 0&&total_files > global_max_files {
+            return {"ok": false, "error": "exported artifacts exceed max files " + to_string(global_max_files)}
+        }
+        exported = push(exported, relative)
+        i = i + 1
+    }
+    return {"ok": true, "artifacts": exported, "output_dir": output_dir, "bytes": total_bytes, "files": total_files}
+}
+
+export func write_execution_logs(output_dir, stdout_text, stderr_text, secrets) {
+    if type(output_dir) != "string"||output_dir == ""||type(stdout_text) != "string"||type(stderr_text) != "string"||type(secrets) != "array" {
+        return {"ok": false, "error": "log output path, streams, and secrets must have valid types"}
+    }
+    secret_values := env_secret_values(secrets)
+    redacted_stdout := redact(stdout_text, secret_values)
+    redacted_stderr := redact(stderr_text, secret_values)
+    try {
+        stdout_written := write_file_atomic(output_dir + "/stdout.log", redacted_stdout, true)
+        stderr_written := write_file_atomic(output_dir + "/stderr.log", redacted_stderr, true)
+        if stdout_written != true||stderr_written != true {
+            return {"ok": false, "error": "could not write execution logs: atomic write returned false"}
+        }
+        return {"ok": true, "stdout_path": output_dir + "/stdout.log", "stderr_path": output_dir + "/stderr.log"}
+    } except err {
+        return {"ok": false, "error": "could not write execution logs: " + to_string(err)}
+    }
+}

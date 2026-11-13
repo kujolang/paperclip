@@ -3418,7 +3418,7 @@ export const projections = [
     "tool": {
       "name": "import-verification",
       "displayName": "Import Verification Evidence",
-      "description": "Retain a redacted summary of supplied canonical evaluation-result JSON in the current project. Classifies skipped, partial, blocked and failed claims explicitly. Does not execute checks, authenticate the producer, or verify referenced evidence.",
+      "description": "Import a bounded evaluation result or RunLedger receipt into the current project or assigned issue. Retains supplied claims with host importer attribution; does not execute checks, authenticate producers, or grant verified completion.",
       "parametersSchema": {
         "type": "object",
         "additionalProperties": false,
@@ -3431,6 +3431,22 @@ export const projections = [
             "minLength": 1,
             "maxLength": 65536,
             "description": "Supplied kujo.evaluation-result/v1 JSON, at most 64 KiB. References are not opened."
+          },
+          "format": {
+            "type": "string",
+            "enum": [
+              "evaluation",
+              "runledger",
+              "watchdog"
+            ],
+            "default": "evaluation",
+            "description": "Input format; existing evaluation imports remain the default."
+          },
+          "issueId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200,
+            "description": "Optional assigned issue; host assignment and current agent run are checked."
           }
         }
       }
@@ -3438,9 +3454,9 @@ export const projections = [
     "definition": {
       "schema": "kujo.ability/v1",
       "id": "kujo.paperclip.verification.import",
-      "version": "1.0.0",
+      "version": "1.1.0",
       "title": "Import Verification Evidence",
-      "description": "Retain a redacted summary of supplied canonical evaluation-result JSON in the current project. Classifies skipped, partial, blocked and failed claims explicitly. Does not execute checks, authenticate the producer, or verify referenced evidence.",
+      "description": "Import a bounded evaluation result or RunLedger receipt into the current project or assigned issue. Retains supplied claims with host importer attribution; does not execute checks, authenticate producers, or grant verified completion.",
       "input_schema": {
         "type": "object",
         "additionalProperties": false,
@@ -3453,6 +3469,22 @@ export const projections = [
             "minLength": 1,
             "maxLength": 65536,
             "description": "Supplied kujo.evaluation-result/v1 JSON, at most 64 KiB. References are not opened."
+          },
+          "format": {
+            "type": "string",
+            "enum": [
+              "evaluation",
+              "runledger",
+              "watchdog"
+            ],
+            "default": "evaluation",
+            "description": "Input format; existing evaluation imports remain the default."
+          },
+          "issueId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200,
+            "description": "Optional assigned issue; host assignment and current agent run are checked."
           }
         }
       },
@@ -3487,7 +3519,7 @@ export const projections = [
         "executes_code": false
       }
     },
-    "definitionDigest": "ecbcf0b7ad700f0ec6aee8fedbcc9750f56142cfcd162c1e5bbf7760012bb82a",
+    "definitionDigest": "74536cde31ae42f8addebdbf1cc6eb3087eebc35641385f5faf3386d80de088a",
     "canonicalDefinitions": []
   },
   {
@@ -6013,6 +6045,487 @@ export const projections = [
         "source": "rag"
       }
     ]
+  },
+  {
+    "exportName": "assuranceTool",
+    "id": "kujo.paperclip.assurance.manage",
+    "feature": "assurance",
+    "canonicalIds": [],
+    "components": [
+      "lens",
+      "muzzle",
+      "workcell",
+      "packwrite"
+    ],
+    "tool": {
+      "name": "manage-kujo-assurance",
+      "displayName": "Verification Center",
+      "description": "Review and request human approval for native Lens browser checks, named Muzzle workflows, Workcell container runs and PackWrite validation. Explicitly queue approved work, inspect evidence or cancel. Optional integrations require company configuration.",
+      "parametersSchema": {
+        "oneOf": [
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "issueId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "operation": {
+                "const": "inspect"
+              },
+              "selection": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "kind",
+                  "path"
+                ],
+                "properties": {
+                  "kind": {
+                    "enum": [
+                      "lens",
+                      "muzzle",
+                      "workcell",
+                      "packwrite"
+                    ]
+                  },
+                  "path": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 500
+                  },
+                  "target": {
+                    "type": "string",
+                    "maxLength": 2000
+                  }
+                }
+              }
+            },
+            "required": [
+              "issueId",
+              "operation",
+              "selection"
+            ]
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "issueId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "operation": {
+                "const": "prepare"
+              },
+              "submissionId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "selection": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "kind",
+                  "path"
+                ],
+                "properties": {
+                  "kind": {
+                    "enum": [
+                      "lens",
+                      "muzzle",
+                      "workcell",
+                      "packwrite"
+                    ]
+                  },
+                  "path": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 500
+                  },
+                  "target": {
+                    "type": "string",
+                    "maxLength": 2000
+                  }
+                }
+              }
+            },
+            "required": [
+              "issueId",
+              "operation",
+              "submissionId",
+              "selection"
+            ]
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "issueId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "operation": {
+                "const": "start"
+              },
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              }
+            },
+            "required": [
+              "issueId",
+              "operation",
+              "id"
+            ]
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "issueId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "operation": {
+                "const": "status"
+              },
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              }
+            },
+            "required": [
+              "issueId",
+              "operation",
+              "id"
+            ]
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "issueId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "operation": {
+                "const": "list"
+              }
+            },
+            "required": [
+              "issueId",
+              "operation"
+            ]
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "issueId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "operation": {
+                "const": "cancel"
+              },
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              }
+            },
+            "required": [
+              "issueId",
+              "operation",
+              "id"
+            ]
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "issueId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "operation": {
+                "const": "discover"
+              }
+            },
+            "required": [
+              "issueId",
+              "operation"
+            ]
+          }
+        ]
+      }
+    },
+    "definition": {
+      "schema": "kujo.ability/v1",
+      "id": "kujo.paperclip.assurance.manage",
+      "version": "1.0.0",
+      "title": "Verification Center",
+      "description": "Review and request human approval for native Lens browser checks, named Muzzle workflows, Workcell container runs and PackWrite validation. Explicitly queue approved work, inspect evidence or cancel. Optional integrations require company configuration.",
+      "input_schema": {
+        "oneOf": [
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "issueId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "operation": {
+                "const": "inspect"
+              },
+              "selection": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "kind",
+                  "path"
+                ],
+                "properties": {
+                  "kind": {
+                    "enum": [
+                      "lens",
+                      "muzzle",
+                      "workcell",
+                      "packwrite"
+                    ]
+                  },
+                  "path": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 500
+                  },
+                  "target": {
+                    "type": "string",
+                    "maxLength": 2000
+                  }
+                }
+              }
+            },
+            "required": [
+              "issueId",
+              "operation",
+              "selection"
+            ]
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "issueId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "operation": {
+                "const": "prepare"
+              },
+              "submissionId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "selection": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "kind",
+                  "path"
+                ],
+                "properties": {
+                  "kind": {
+                    "enum": [
+                      "lens",
+                      "muzzle",
+                      "workcell",
+                      "packwrite"
+                    ]
+                  },
+                  "path": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 500
+                  },
+                  "target": {
+                    "type": "string",
+                    "maxLength": 2000
+                  }
+                }
+              }
+            },
+            "required": [
+              "issueId",
+              "operation",
+              "submissionId",
+              "selection"
+            ]
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "issueId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "operation": {
+                "const": "start"
+              },
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              }
+            },
+            "required": [
+              "issueId",
+              "operation",
+              "id"
+            ]
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "issueId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "operation": {
+                "const": "status"
+              },
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              }
+            },
+            "required": [
+              "issueId",
+              "operation",
+              "id"
+            ]
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "issueId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "operation": {
+                "const": "list"
+              }
+            },
+            "required": [
+              "issueId",
+              "operation"
+            ]
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "issueId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "operation": {
+                "const": "cancel"
+              },
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              }
+            },
+            "required": [
+              "issueId",
+              "operation",
+              "id"
+            ]
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "issueId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "operation": {
+                "const": "discover"
+              }
+            },
+            "required": [
+              "issueId",
+              "operation"
+            ]
+          }
+        ]
+      },
+      "output_schema": {
+        "type": "object",
+        "additionalProperties": true
+      },
+      "effects": [
+        {
+          "kind": "read",
+          "resource": "kujo.paperclip.workspace"
+        },
+        {
+          "kind": "write",
+          "resource": "kujo.paperclip.evidence"
+        },
+        {
+          "kind": "write",
+          "resource": "kujo.host.files"
+        },
+        {
+          "kind": "external",
+          "resource": "kujo.host.execution-and-network"
+        }
+      ],
+      "idempotency": {
+        "mode": "keyed"
+      },
+      "semantics": {
+        "open_world": true,
+        "destructive": true,
+        "executes_code": true
+      }
+    },
+    "profiles": [
+      "installed",
+      "build",
+      "full"
+    ],
+    "definitionDigest": "e2e74272b6cbacb758bb5e2513c66c5f63341ebb71a294bef3a1bf38b8af51a8",
+    "canonicalDefinitions": []
   }
 ] as const;
 export const catalogTool = projections[0].tool;
@@ -6036,4 +6549,5 @@ export const sourceExecutionTool = projections[17].tool;
 export const starterCreationTool = projections[18].tool;
 export const workflowTool = projections[19].tool;
 export const knowledgeTool = projections[20].tool;
+export const assuranceTool = projections[21].tool;
 export const projectedTools = projections.map((entry) => entry.tool);

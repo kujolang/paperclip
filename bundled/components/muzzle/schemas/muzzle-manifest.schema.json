@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://kujolang.dev/muzzle/schemas/muzzle-manifest-v1.json",
+  "title": "Muzzle workflow manifest",
+  "type": "object",
+  "required": ["name", "script"],
+  "properties": {
+    "schema_version": {"const": "muzzle.manifest/v1"},
+    "name": {"type": "string", "minLength": 1, "maxLength": 128},
+    "summary": {"type": "string"},
+    "runner": {"enum": ["kujo", "bash", "python", "node"]},
+    "script": {"type": "string", "minLength": 1},
+    "script_sha256": {"type": "string", "pattern": "^[A-Fa-f0-9]{64}$"},
+    "quiet_by_default": {"type": "boolean"},
+    "allow_extra_args": {"type": "boolean"},
+    "args": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name"],
+        "properties": {
+          "name": {"type": "string", "minLength": 1},
+          "required": {"type": "boolean"},
+          "description": {"type": "string"},
+          "allowed_values": {"type": "array", "items": {"type": "string"}},
+          "sensitive": {"type": "boolean"}
+        },
+        "additionalProperties": false
+      }
+    },
+    "safety": {
+      "type": "object",
+      "properties": {
+        "require_git_repo": {"type": "boolean"},
+        "allow_dirty_tree": {"type": "boolean"},
+        "requires_network": {"type": "boolean"},
+        "human_approval_recommended": {"type": "boolean"}
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

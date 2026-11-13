@@ -1,0 +1,71 @@
+# Muzzle-local command-first CLI compatibility helpers.
+
+export func parse_command_args(argv) {
+	if type(argv) != "array" || len(argv) == 0 {
+		return {"positionals": array(), "flags": dict(), "missing": dict()}
+	}
+	mut positionals := array()
+	mut flags := dict()
+	mut missing := dict()
+	mut idx := 1
+	while idx < len(argv) {
+		token := to_string(argv[idx])
+		if token == "--json" || (to_string(argv[0]) == "clean" && (token == "-n" || token == "--dry-run")) {
+			flags[token] = true
+			idx = idx + 1
+			continue
+		}
+		if to_string(argv[0]) == "clean" && (token == "--workflow" || token == "--keep" || token == "--older-than") {
+			if idx + 1 >= len(argv) || starts_with(to_string(argv[idx + 1]), "--") || to_string(argv[idx + 1]) == "-n" {
+				missing[token] = true
+				idx = idx + 1
+			} else {
+				flags[token] = argv[idx + 1]
+				idx = idx + 2
+			}
+			continue
+		}
+		if starts_with(token, "--") {
+			equals_at := index_of(token, "=")
+			if equals_at >= 0 {
+				flags[substring(token, 0, equals_at)] = substring(token, equals_at + 1, len(token))
+				idx = idx + 1
+				continue
+			}
+			if idx + 1 < len(argv) && starts_with(to_string(argv[idx + 1]), "--") == false {
+				flags[token] = argv[idx + 1]
+				idx = idx + 2
+				continue
+			}
+			flags[token] = true
+			idx = idx + 1
+			continue
+		}
+		positionals = push(positionals, token)
+		idx = idx + 1
+	}
+	return {"positionals": positionals, "flags": flags, "missing": missing}
+}
+
+export func parse_subcommand(argv) {
+	if type(argv) != "array" || len(argv) == 0 || starts_with(to_string(argv[0]), "-") {
+		return ""
+	}
+	return to_string(argv[0])
+}
+
+export func has_flag(argv, flag_name) {
+	return has_key(parse_command_args(argv)["flags"], flag_name)
+}
+
+export func flag_value(argv, flag_name, fallback) {
+	parsed := parse_command_args(argv)
+	if has_key(parsed["flags"], flag_name) {
+		return parsed["flags"][flag_name]
+	}
+	return fallback
+}
+
+export func positional_args(argv) {
+	return parse_command_args(argv)["positionals"]
+}

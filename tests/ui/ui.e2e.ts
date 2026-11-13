@@ -757,3 +757,74 @@ test("knowledge navigation discards delayed private results", async ({ page }) =
   await expect(page.getByText("private delayed knowledge result", { exact: true })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Choose knowledge files", exact: true })).toBeEnabled();
 });
+
+
+test("RunLedger imports remain unverified and cannot cross company navigation", async ({ page }) => {
+  await page.goto("/?surface=task&entity=issue&verification=1");
+  const section = page.getByRole("region", { name: "RunLedger accountability" });
+  await expect(section.getByText("No RunLedger evidence retained. Verification is incomplete.")).toBeVisible();
+  await section.getByLabel("RunLedger record JSON").fill('{"id":"fixture"}');
+  await section.getByRole("button", { name: "Import RunLedger receipt" }).click();
+  await expect(section.getByText("Verification: unverified", { exact: true })).toBeVisible();
+  await expect.poll(() => page.evaluate(() => window.__KUJO_ACTIONS__?.at(-1))).toMatchObject({ action: "import-verification", input: { format: "runledger", entityType: "issue" } });
+  await page.evaluate(() => { window.__KUJO_DELAY_IMPORT__ = true; });
+  await section.getByLabel("RunLedger record JSON").fill('{"id":"private"}');
+  await section.getByRole("button", { name: "Import RunLedger receipt" }).click();
+  await expect.poll(() => page.evaluate(() => Boolean(window.__KUJO_RESOLVE_IMPORT__))).toBe(true);
+  await page.evaluate(() => window.__KUJO_NAVIGATE__?.("other-company"));
+  await page.evaluate(() => window.__KUJO_RESOLVE_IMPORT__?.());
+  await expect(section.getByLabel("RunLedger record JSON")).toHaveValue("");
+  await expect(section.getByText("Verification: unverified", { exact: true })).toHaveCount(0);
+});
+
+test("assurance attempts show chronological attribution and honest missing observations", async ({page})=>{
+ await page.setViewportSize({width:390,height:1200});
+ await page.goto('/?surface=task&entity=issue&assurance=1');
+ const panel=page.getByRole('region',{name:'Verification Center',exact:true});
+ await expect(panel.getByText('No attempts loaded. Refresh verification to inspect retained requests.')).toBeVisible();
+ await page.evaluate(()=>{window.__KUJO_ASSURANCE_REQUESTS__=[
+  {id:'execution-second',path:'muzzle:check',state:'pending',requester:{kind:'agent',id:'tester',runId:'run-two'},approvedBy:null,createdAt:'2026-11-12T12:01:00Z',startRequestedAt:null,finishedAt:null,classification:null},
+  {id:'execution-first',path:'muzzle:check',state:'failed',plan:{assurance:{kind:'muzzle',path:'check'}},requester:{kind:'agent',id:'builder',runId:'run-one'},approvedBy:'reviewer',createdAt:'2026-11-12T12:00:00Z',startRequestedAt:'2026-11-12T12:00:01Z',finishedAt:'2026-11-12T12:00:03Z',classification:'failed'}];});
+ await panel.getByRole('button',{name:'Refresh verification',exact:true}).click();
+ const attempts=panel.getByRole('region',{name:'Verification attempts'}).getByRole('listitem');
+ await expect(attempts).toHaveCount(2);await expect(attempts.nth(0)).toContainText('Run run-one');
+ await expect(attempts.nth(0)).toContainText('Human approval: reviewer');
+ await expect(attempts.nth(1)).toContainText('Outcome: unavailable');
+ await expect(attempts.nth(1)).toContainText('Human approval: not recorded');
+ await expect.poll(()=>page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth)).toBe(true);
+ await attempts.nth(0).getByRole('button').click();
+ await expect.poll(()=>page.evaluate(()=>window.__KUJO_ACTIONS__?.some(a=>a.action==='manage-kujo-assurance'&&(a.input as any).operation==='status'&&(a.input as any).id==='execution-first'))).toBe(true);
+ await expect(panel.getByRole('button',{name:'Recover owned resources'})).toHaveCount(0);
+});
+
+test("late assurance attempts cannot appear after company navigation",async({page})=>{
+ await page.goto('/?surface=task&entity=issue&assurance=1');
+ await page.evaluate(()=>{window.__KUJO_DELAY_ASSURANCE__=true;window.__KUJO_ASSURANCE_REQUESTS__=[{id:'private-attempt',path:'private-workflow',state:'failed',createdAt:'2026-11-12',requester:{kind:'human',id:'private-owner'},approvedBy:null}];});
+ await page.getByRole('button',{name:'Refresh verification',exact:true}).click();
+ await expect.poll(()=>page.evaluate(()=>Boolean(window.__KUJO_RESOLVE_ASSURANCE__))).toBe(true);
+ await page.evaluate(()=>window.__KUJO_NAVIGATE__?.('different-company'));
+ await page.evaluate(()=>window.__KUJO_RESOLVE_ASSURANCE__?.());
+ await expect(page.getByText('private-workflow',{exact:false})).toHaveCount(0);
+});
+
+test('delegation pages remain bounded and can restart after a stale cursor',async({page})=>{
+ await page.goto('/?surface=task&entity=issue&assurance=1');
+ await page.evaluate(()=>{window.__KUJO_DELEGATION_PAGES__=[
+  {page:{offset:0,total:51},issues:[{id:'root',title:'First assignment',status:'backlog',evidence:[]}],runs:[],nextCursor:{offset:50,digest:'a'.repeat(64)}},
+  {page:{offset:50,total:51},issues:[{id:'last',title:'Last assignment',status:'backlog',evidence:[]}],runs:[],nextCursor:null}];});
+ await page.getByRole('button',{name:'Inspect delegated evidence',exact:true}).click();
+ const panel=page.getByLabel('Native delegated evidence');await expect(panel).toContainText('First assignment');
+ await panel.getByRole('button',{name:'Next assignments'}).click();await expect(panel).toContainText('Assignments 51–51 of 51');
+ await expect(panel.getByText('First assignment',{exact:true})).toHaveCount(0);await expect(panel.getByRole('button',{name:'Next assignments'})).toHaveCount(0);
+ await panel.getByRole('button',{name:'First assignments'}).click();
+ await page.evaluate(()=>{window.__KUJO_DELEGATION_PAGES__![1]!.error='Delegated assignments changed; inspect delegated evidence again from the first page';});
+ await panel.getByRole('button',{name:'Next assignments'}).click();await expect(page.getByRole('alert')).toContainText('assignments changed');await expect(panel).toContainText('First assignment');
+});
+test('late delegation page cannot cross company navigation',async({page})=>{
+ await page.goto('/?surface=task&entity=issue&assurance=1');
+ await page.evaluate(()=>{window.__KUJO_DELAY_ASSURANCE__=true;window.__KUJO_DELEGATION_PAGES__=[{page:{offset:0,total:1},issues:[{id:'private',title:'Private delegated task',status:'backlog',evidence:[]}],runs:[],nextCursor:null}];});
+ await page.getByRole('button',{name:'Inspect delegated evidence',exact:true}).click();
+ await expect.poll(()=>page.evaluate(()=>!!window.__KUJO_RESOLVE_ASSURANCE__)).toBe(true);
+ await page.evaluate(()=>window.__KUJO_NAVIGATE__?.('different-company'));await page.evaluate(()=>window.__KUJO_RESOLVE_ASSURANCE__?.());
+ await expect(page.getByText('Private delegated task',{exact:true})).toHaveCount(0);
+});

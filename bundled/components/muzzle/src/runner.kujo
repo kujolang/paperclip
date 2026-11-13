@@ -1,0 +1,131 @@
+# Muzzle runner dispatch.
+# Supports multiple workflow runners: kujo (default), bash, python, node.
+# Runner is determined by:
+#   1. Manifest `runner` field (if manifest exists)
+#   2. File extension (.kujo -> kujo, .sh -> bash, .py -> python, .js -> node)
+#   3. --runner flag override
+
+from src.common import str_ends_with, is_trueish, is_falseish, dict_has_key
+from src.redact import log_redaction_patterns
+
+# Default runner when nothing else is specified.
+DEFAULT_RUNNER := "kujo"
+
+export func runner_catalog() {
+	return {
+		"kujo": {"extension": ".kujo", "executable": env_or("KUJO_BIN", "kujo"), "label": "kujo"},
+		"bash": {"extension": ".sh", "executable": "bash", "label": "bash"},
+		"python": {"extension": ".py", "executable": "python3", "label": "python"},
+		"node": {"extension": ".js", "executable": "node", "label": "node"}
+	}
+}
+
+# Return true when the runner is supported.
+export func valid_runner(runner) {
+	lower := to_lower(to_string(runner))
+	return dict_has_key(runner_catalog(), lower)
+}
+
+# Resolve the runner for a workflow.
+# manifest: parsed manifest dict (or null)
+# script_path: path to the workflow script
+# flag_override: --runner flag value (or "")
+export func resolve_runner(manifest, script_path, flag_override) {
+	# 1. CLI flag override takes highest priority
+	if flag_override != "" {
+		lower := to_lower(flag_override)
+		if valid_runner(lower) {
+			return lower
+		}
+	}
+
+	# 2. Manifest runner field
+	if manifest != null && dict_has_key(manifest, "runner") {
+		runner := to_string(manifest["runner"])
+		lower := to_lower(runner)
+		if valid_runner(lower) {
+			return lower
+		}
+	}
+
+	# 3. File extension detection
+	if is_trueish(str_ends_with(script_path, ".kujo")) {
+		return "kujo"
+	}
+	if is_trueish(str_ends_with(script_path, ".sh")) {
+		return "bash"
+	}
+	if is_trueish(str_ends_with(script_path, ".py")) {
+		return "python"
+	}
+	if is_trueish(str_ends_with(script_path, ".js")) {
+		return "node"
+	}
+
+	# 4. Default
+	return DEFAULT_RUNNER
+}
+
+# Execute through the repository helper so workflow output is spooled directly
+# to the full log instead of accumulating in the Kujo process. The runtime's
+# structured process API supplies timeout/cancellation and Unix process-group
+# termination for the helper and all of its descendants.
+export func run_workflow(runner, script_path, expected_sha256, args_arr, log_path, verbose, timeout_ms, cancel_file) {
+	muzzle_root := env_or("MUZZLE_ROOT", path_absolute("."))
+	helper_path := to_string(muzzle_root) + "/src/muzzle_exec.sh"
+	kujo_bin := env_or("KUJO_BIN", "kujo")
+	execution_root := ".muzzle/state/executions/" + replace(uuid_v4(), "-", "")
+	mut argv := array("bash", helper_path, runner, script_path, expected_sha256, execution_root, log_path, to_string(verbose), kujo_bin, "--")
+	mut idx := 0
+	while idx < len(args_arr) {
+		argv = push(argv, to_string(args_arr[idx]))
+		idx = idx + 1
+	}
+	max_capture := 65536
+	if verbose {
+		max_capture = 16777216
+	}
+	mut options := {"timeout_ms": timeout_ms, "max_output_bytes": max_capture}
+	if cancel_file != "" {
+		options["cancel_file"] = cancel_file
+	}
+	result := spawn_process(argv, options)
+	# The helper normally removes its private snapshot via an EXIT trap. Repeat
+	# the narrowly validated cleanup after timeout/cancellation for defense in
+	# depth if the runtime had to terminate the helper abruptly.
+	spawn_process(array("bash", helper_path, "--cleanup", execution_root), {"timeout_ms": 5000, "max_output_bytes": 4096})
+	return result
+}
+
+# Scan before selecting the tail: a block's opening marker may be arbitrarily
+# far from EOF. The scanner keeps a bounded excerpt, not the complete log.
+export func read_log_tail(log_path, max_lines) {
+	if is_falseish(file_exists(log_path)) {
+		return ""
+	}
+	patterns := log_redaction_patterns()
+	scanner := to_string(env_or("MUZZLE_ROOT", path_absolute("."))) + "/src/redact_log.awk"
+	result := spawn_process(array("awk", "-v", "limit=" + to_string(max_lines), "-v", "singles=" + patterns["single"], "-v", "starts=" + patterns["starts"], "-v", "ends=" + patterns["ends"], "-v", "marker=" + patterns["marker"], "-f", scanner, log_path), {"timeout_ms": 5000, "max_output_bytes": 65536})
+	if result.exitcode != 0 || is_trueish(result.stdout_truncated) {
+		return "[Error excerpt unavailable; inspect the full log.]"
+	}
+	return trim_end(result.stdout)
+}
+
+# Get the file extension for a runner (for script discovery).
+export func runner_extension(runner) {
+	catalog := runner_catalog()
+	if dict_has_key(catalog, runner) {
+		return to_string(catalog[runner]["extension"])
+	}
+	return ""
+}
+
+# Get a human-readable label for a runner.
+export func runner_label(runner) {
+	catalog := runner_catalog()
+	if dict_has_key(catalog, runner) {
+		return to_string(catalog[runner]["label"])
+	}
+	return runner
+}

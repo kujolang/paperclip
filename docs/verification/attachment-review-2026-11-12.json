@@ -1,0 +1,85 @@
+{
+  "schemaVersion": 1,
+  "scope": "Original Paperclip accountability assignment review",
+  "baseCommit": "08cb8d2d2fb82076dff098e4939151867c717b13",
+  "bundleVersion": "0.13.1",
+  "gapsClosed": [
+    "Expose retained execution chronology, requester/run attribution, recorded human approval and classification without inventing missing observations",
+    "Reject resource recovery for operations that never use Workcell and hide that UI action",
+    "Demonstrate retained failed Muzzle output and cancellation after an observed running-output marker",
+    "Map original assignment requirements to source, observed evidence and explicit host/environment limits"
+  ],
+  "unit": {
+    "filesPassed": 48,
+    "passed": 347,
+    "platformSkipped": 2,
+    "failed": 0
+  },
+  "ui": {
+    "passed": 62,
+    "failed": 0,
+    "finalChangedSurfaceRerunPassed": 2
+  },
+  "native": {
+    "passed": 11,
+    "failed": 0,
+    "includes": [
+      "local Docker",
+      "contained Muzzle",
+      "timeout",
+      "cancellation",
+      "scoped cleanup",
+      "Lens exact selector exits 0/1/2"
+    ]
+  },
+  "supplyChain": {
+    "lockedPackages": 165,
+    "sbomComponents": 68,
+    "vulnerabilities": 0
+  },
+  "checks": [
+    "npm run verify",
+    "npm run test:ui -- --workers=2",
+    "targeted SDK/PGlite Muzzle failure and running cancellation",
+    "native assurance acceptance",
+    "packaged authenticated official-host upgrade and four-agent acceptance"
+  ],
+  "qualifiedWorkerSha256": "ee6d13525a3c47ee89c1ad0f9b7f0b20c5bb5240eee6db5813de406c5eda900f",
+  "earlierAttempts": [
+    "A superseded full-suite run was stopped after the recovery guard changed during execution; the final stable-source full suite passed.",
+    "An archive built before the recovery fix returned HTTP 200 to the new expected-rejection test. The final archive passed the rejection test.",
+    "A passing host run produced a viewport-clipped full-panel image. Capture was split into overview and attempts after waiting for refresh completion."
+  ],
+  "limitations": [
+    "Local macOS and Docker qualification only; no Podman executable or live remote-provider qualification.",
+    "Official host run-tab mounting limitation remains; issue extension is exercised.",
+    "Watchdog-compatible metadata measures observed request lifecycle; no live provider tokens/cost or proxy routing claimed.",
+    "No production deployment, protected merge or release performed."
+  ],
+  "packagedHost": {
+    "status": "passed",
+    "hostStopped": true,
+    "checks": [
+      "previous plugin 0.2.1 evidence survives packaged upgrade, capability admission and full host restart",
+      "Four real process agents: native reportsTo/parentId/checkout/run attribution, PackWrite plan, Workcell implementation proof, Lens interaction, Eval review, child evidence aggregation and human approval",
+      "Real authenticated Paperclip: PackWrite, Muzzle, Workcell, Lens fail/corrected pass, stale acceptance, explicit native human waiver, cancellation, metadata import, delegation and restart persistence"
+    ],
+    "hostPackage": {
+      "name": "@paperclipai/server",
+      "version": "2026.1106.0",
+      "entrySha256": "cde8cd927214edb31edf173aec7667dd86b174799a58c822f6abf41089786480"
+    },
+    "package": {
+      "mode": "npm-installed local archive with separately installed dependencies",
+      "version": "0.2.1",
+      "workerSha256": "ee6d13525a3c47ee89c1ad0f9b7f0b20c5bb5240eee6db5813de406c5eda900f",
+      "manifestSha256": "036bf911aa6fc826978e5dc9de72584835d00fdea0067eb969457102c6c60fc5"
+    }
+  },
+  "screenshot": {
+    "path": "attachment-review-attempts.png",
+    "sha256": "164b44ba9df0908b3918c6b889b57b982a19c415347043b22c8cdf39ff694570",
+    "source": "Actual authenticated isolated host; synthetic test identities; visually inspected"
+  },
+  "distributionNote": "Final documentation and review evidence were finalized after qualifying the archive; runtime worker matches qualified SHA-256."
+}

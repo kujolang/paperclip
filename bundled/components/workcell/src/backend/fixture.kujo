@@ -1,0 +1,204 @@
+# Deterministic offline backend used only by tests and conformance development.
+
+from src.backend.resolution import resolve_capabilities
+from src.backend.types import backend_contract_id, backend_error, backend_handle, backend_identity, protocol_result, terminal_result, validate_backend_handle, validate_protocol_request
+from src.util import get_or
+
+func fixture_capabilities(profile) {
+    configured := get_or(profile, "capabilities", null)
+    if type(configured) == "dict" {
+        return configured
+    }
+    enforcement := {"status": "workcell-enforced", "authority": "fixture", "evidence": "deterministic fixture contract"}
+    observation := {"status": "observed", "method": "fixture", "result": "configured"}
+    mut capabilities := {}
+    ids := [
+    "lifecycle.provision",
+    "lifecycle.terminate",
+    "lifecycle.destroy",
+    "lifecycle.inventory",
+    "workspace.stage",
+    "workspace.collect_delta",
+    "process.argv",
+    "process.exit_status",
+    "execution.timeout",
+    "logs.bounded",
+    "artifact.selective_export",
+    "environment.explicit",
+    "credentials.redacted_transport",
+    "evidence.provider_identity",
+    "ownership.markers",
+    "compute.cpu_limit",
+    "compute.memory_limit",
+    "compute.pid_limit",
+    "network.none",
+    "filesystem.read_only_root",
+    "filesystem.tmpfs",
+    "image.oci",
+    "logs.streaming",
+    "logs.stdout_stderr_separate"
+    ]
+    mut i := 0
+    while i < len(ids) {
+        capabilities[ids[i]] := {
+            "support": "supported",
+            "resolved": true,
+            "enforcement": enforcement,
+            "observation": observation,
+            "limitations": []
+        }
+        i = i + 1
+    }
+    return capabilities
+}
+
+func fixture_describe(request) {
+    data := {
+        "adapter": {"id": "fixture", "version": "1.0.0", "build": "offline"},
+        "contract_versions": [backend_contract_id()],
+        "profile_schema": "workcell-fixture-profile/v1",
+        "credential_refs": [],
+        "static_capability_hints": keys(fixture_capabilities(request["profile"]))
+    }
+    return protocol_result(request, true, "ok", false, data, {})
+}
+
+func fixture_resolve(request) {
+    requirements := get_or(request["payload"], "requirements", [])
+    resolution := resolve_capabilities(requirements, fixture_capabilities(request["profile"]))
+    if resolution["ok"] == false {
+        error := backend_error("CAPABILITY_UNSUPPORTED", "fixture profile rejected required capabilities: " + join(get_or(resolution, "rejected", []), ", "), false, "")
+        return protocol_result(request, false, "unsupported", false, {"resolution": resolution}, error)
+    }
+    data := {
+        "identity": backend_identity("fixture", "1.0.0", "workcell-fixture", "fixture/v1", "process"),
+        "capabilities": resolution["states"],
+        "resolved_plan": get_or(request["payload"], "intent", {}),
+        "volatile_fields": []
+    }
+    return protocol_result(request, true, "ok", false, data, {})
+}
+
+func fixture_provision(request) {
+    ownership := get_or(request["payload"], "ownership", {})
+    nonce := get_or(ownership, "nonce", "")
+    if type(nonce) != "string"||trim(nonce) == "" {
+        return protocol_result(request, false, "failed", false, {}, backend_error("PROFILE_INVALID", "fixture ownership nonce is required", false, ""))
+    }
+    resource_id := "fixture-" + request["run_id"]
+    handle := backend_handle("fixture", "1.0.0", "workcell-fixture", "sha256:fixture", [{"kind": "fixture", "id": resource_id}], request["run_id"], nonce, {"state": "provisioned"})
+    data := {
+        "handle": handle,
+        "resource_inventory": [{"kind": "fixture", "id": resource_id, "run_id": request["run_id"], "state": "provisioned"}],
+        "actual_resolution": get_or(request["payload"], "resolved_plan", {})
+    }
+    return protocol_result(request, true, "ok", false, data, {})
+}
+
+func checked_handle(request) {
+    handle := get_or(request["payload"], "handle", null)
+    check := validate_backend_handle(handle, request["run_id"])
+    if check["ok"] == false {
+        return {"ok": false, "result": protocol_result(request, false, "failed", false, {}, backend_error("OWNERSHIP_MISMATCH", check["error"], false, ""))}
+    }
+    return {"ok": true, "handle": handle}
+}
+
+func fixture_prepare(request) {
+    checked := checked_handle(request)
+    if checked["ok"] == false {return checked["result"]}
+    package := get_or(request["payload"], "workspace_package", {})
+    digest := get_or(package, "sha256", "")
+    if type(digest) != "string"||trim(digest) == "" {
+        return protocol_result(request, false, "failed", false, {}, backend_error("PREPARE_FAILED", "workspace package digest is required", false, ""))
+    }
+    return protocol_result(request, true, "ok", false, {"handle": checked["handle"], "workspace_root": "/workspace", "observed_package_digest": digest}, {})
+}
+
+func fixture_execute(request) {
+    checked := checked_handle(request)
+    if checked["ok"] == false {return checked["result"]}
+    config := get_or(request["profile"], "execution", {})
+    exit_code := get_or(config, "exit_code", 0)
+    timed_out := get_or(config, "timed_out", false)
+    cancelled := get_or(config, "cancelled", false)
+    status := "exited"
+    reason := "fixture-exit"
+    if timed_out {
+        status = "timed-out"
+        reason = "fixture-timeout"
+        exit_code = null
+    } else if cancelled {
+        status = "cancelled"
+        reason = "fixture-cancelled"
+        exit_code = null
+    }
+    terminal := terminal_result(status, exit_code, null, reason, timed_out, cancelled, "terminal")
+    logs := {
+        "stdout": get_or(config, "stdout", ""),
+        "stderr": get_or(config, "stderr", ""),
+        "ordering": "per-stream",
+        "complete": true,
+        "truncated": false
+    }
+    return protocol_result(request, true, "ok", false, {"handle": checked["handle"], "command_id": "fixture-command", "terminal": terminal, "logs": logs}, {})
+}
+
+func fixture_collect(request) {
+    checked := checked_handle(request)
+    if checked["ok"] == false {return checked["result"]}
+    config := get_or(request["profile"], "execution", {})
+    data := {
+        "terminal": terminal_result("exited", get_or(config, "exit_code", 0), null, "fixture-collect", false, false, "terminal"),
+        "logs": {"stdout": get_or(config, "stdout", ""), "stderr": get_or(config, "stderr", ""), "complete": true},
+        "workspace_delta": get_or(request["profile"], "workspace_delta", {"files": [], "complete": true}),
+        "metrics": get_or(request["profile"], "metrics", {}),
+        "attempt_inventory": []
+    }
+    return protocol_result(request, true, "ok", false, data, {})
+}
+
+func fixture_export(request) {
+    checked := checked_handle(request)
+    if checked["ok"] == false {return checked["result"]}
+    declarations := get_or(request["payload"], "declarations", [])
+    data := {
+        "archive": get_or(request["profile"], "artifact_archive", {"path": "artifacts.tar", "sha256": "sha256:fixture", "bytes": 0}),
+        "manifest": {"declared": declarations, "files": []},
+        "failures": [],
+        "cleanup_resources": []
+    }
+    return protocol_result(request, true, "ok", false, data, {})
+}
+
+func fixture_destroy(request) {
+    checked := checked_handle(request)
+    if checked["ok"] == false {return checked["result"]}
+    resource := checked["handle"]["resource_ids"][0]
+    data := {"items": [{"kind": resource["kind"], "id": resource["id"], "status": "removed"}], "remaining": []}
+    return protocol_result(request, true, "ok", false, data, {})
+}
+
+func fixture_inventory(request) {
+    resources := get_or(request["profile"], "inventory", [])
+    return protocol_result(request, true, "ok", false, {"resources": resources, "complete": true}, {})
+}
+
+export func fixture_dispatch(request) {
+    check := validate_protocol_request(request)
+    if check["ok"] == false {
+        fallback := {"request_id": get_or(request, "request_id", ""), "run_id": get_or(request, "run_id", ""), "operation": get_or(request, "operation", ""), "profile": {}, "payload": {}}
+        return protocol_result(fallback, false, "failed", false, {}, backend_error("PROTOCOL_VIOLATION", check["error"], false, ""))
+    }
+    operation := request["operation"]
+    if operation == "describe" {return fixture_describe(request)}
+    if operation == "resolve" {return fixture_resolve(request)}
+    if operation == "provision" {return fixture_provision(request)}
+    if operation == "prepare" {return fixture_prepare(request)}
+    if operation == "execute" {return fixture_execute(request)}
+    if operation == "collect" {return fixture_collect(request)}
+    if operation == "export" {return fixture_export(request)}
+    if operation == "destroy" {return fixture_destroy(request)}
+    if operation == "inventory" {return fixture_inventory(request)}
+    return protocol_result(request, false, "unsupported", false, {}, backend_error("CAPABILITY_UNSUPPORTED", "fixture operation is not supported: " + operation, false, ""))
+}

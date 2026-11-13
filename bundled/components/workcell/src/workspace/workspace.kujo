@@ -1,0 +1,698 @@
+# Disposable Git workspace management.
+
+from src.util import base_of, ensure_dir, env_secret_values, get_or, has_key_safe, lines_of, path_has_symlink, process_error, process_ok, read_text, redact, resolve_run_as, run_argv, save_json, valid_run_id
+
+export func temp_root() {
+    candidate := env("TMPDIR")
+    if type(candidate) != "string"||trim(candidate) == "" {
+        return "/tmp"
+    }
+    mut normalized := replace(candidate, "\\", "/")
+    while len(normalized) > 1&&ends_with(normalized, "/") {
+        normalized = substring(normalized, 0, len(normalized) - 1)
+    }
+    if starts_with(normalized, "/") == false||normalized == "/"||contains(normalized, "..") == 1||path_has_symlink(normalized) {
+        return "/tmp"
+    }
+    return normalized
+}
+
+func git_result(args, timeout_ms) {
+    return run_argv(args, timeout_ms)
+}
+
+func nul_separator() {
+    try {
+        return parse_json("\"\\u0000\"")
+    } except err {
+        return ""
+    }
+}
+
+export func inspect_repository(repo_path) {
+    if type(repo_path) != "string"||repo_path == "" {
+        return {"ok": false, "error": "repository path must be a non-empty string"}
+    }
+    root_result := git_result(["git", "-C", repo_path, "rev-parse", "--show-toplevel"], 10000)
+    if process_ok(root_result) == false {
+        return {"ok": false, "error": "not a Git repository: " + repo_path}
+    }
+    root := trim(root_result.stdout)
+    commit_result := git_result(["git", "-C", root, "rev-parse", "HEAD"], 10000)
+    if process_ok(commit_result) == false {
+        return {"ok": false, "error": process_error(commit_result, "resolve source commit")}
+    }
+    status_result := git_result(["git", "-C", root, "status", "--porcelain", "--untracked-files=all"], 10000)
+    if process_ok(status_result) == false {
+        return {"ok": false, "error": process_error(status_result, "inspect repository status")}
+    }
+    return {
+        "ok": true,
+        "root": root,
+        "commit": trim(commit_result.stdout),
+        "status": trim(status_result.stdout),
+        "clean": trim(status_result.stdout) == ""
+    }
+}
+
+export func find_symlink(root) {
+    return find_symlink_with_limits(root, {"max_files": 100000, "max_bytes": 1000000000, "max_depth": 128})
+}
+
+export func find_symlink_with_limits(root, limits) {
+    if type(root) != "string"||root == "" {
+        return {"ok": false, "error": "workspace root must be a non-empty string"}
+    }
+    if type(limits) != "dict" {
+        return {"ok": false, "error": "workspace scan limits must be an object"}
+    }
+    max_files := get_or(limits, "max_files", 0)
+    max_bytes := get_or(limits, "max_bytes", 0)
+    max_depth := get_or(limits, "max_depth", 0)
+    if type(max_files) != "int"||max_files <= 0||type(max_bytes) != "int"||max_bytes <= 0||type(max_depth) != "int"||max_depth <= 0 {
+        return {"ok": false, "error": "workspace scan limits must define positive max_files, max_bytes, and max_depth"}
+    }
+    mut queue := [root]
+    mut depths := [0]
+    mut queue_i := 0
+    mut scanned_files := 0
+    mut scanned_bytes := 0
+    mut observed_depth := 0
+    while queue_i < len(queue) {
+        current := queue[queue_i]
+        depth := depths[queue_i]
+        if depth > max_depth {
+            return {"ok": false, "error": "workspace scan exceeded max depth " + to_string(max_depth) + ": " + current}
+        }
+        if depth > observed_depth {
+            observed_depth = depth
+        }
+        if path_is_dir(current) == false {
+            return {"ok": false, "error": "workspace disappeared during scan: " + current}
+        }
+        mut entries := []
+        try {
+            entries = list_dir(current)
+        } except err {
+            return {"ok": false, "error": "workspace scan could not list directory " + current + ": " + to_string(err)}
+        }
+        mut entry_i := 0
+        while entry_i < len(entries) {
+            name := to_string(entries[entry_i])
+            candidate := current + "/" + name
+            candidate_depth := depth + 1
+            if candidate_depth > max_depth {
+                return {"ok": false, "error": "workspace scan exceeded max depth " + to_string(max_depth) + ": " + candidate}
+            }
+            if candidate_depth > observed_depth {
+                observed_depth = candidate_depth
+            }
+            mut is_link := false
+            try {
+                is_link = path_is_symlink(candidate)
+            } except err {
+                is_link = false
+            }
+            if is_link {
+                return {"ok": false, "path": candidate, "error": "symlink is not allowed in a Workcell workspace: " + candidate}
+            }
+            if path_is_dir(candidate) {
+                queue = push(queue, candidate)
+                depths = push(depths, candidate_depth)
+            } else {
+                scanned_files = scanned_files + 1
+                mut candidate_bytes := 0
+                try {
+                    candidate_bytes = file_size(candidate)
+                } except err {
+                    return {"ok": false, "error": "workspace scan could not inspect file " + candidate + ": " + to_string(err)}
+                }
+                scanned_bytes = scanned_bytes + candidate_bytes
+                if scanned_files > max_files {
+                    return {"ok": false, "error": "workspace scan exceeded max files " + to_string(max_files)}
+                }
+                if scanned_bytes > max_bytes {
+                    return {"ok": false, "error": "workspace scan exceeded max bytes " + to_string(max_bytes)}
+                }
+            }
+            entry_i = entry_i + 1
+        }
+        queue_i = queue_i + 1
+    }
+    return {"ok": true, "files": scanned_files, "bytes": scanned_bytes, "depth": observed_depth}
+}
+
+export func create_workspace(repo_path, strategy, run_identifier) {
+    return create_workspace_for_user(repo_path, strategy, run_identifier, "host")
+}
+
+export func create_workspace_for_user(repo_path, strategy, run_identifier, run_as) {
+    if type(repo_path) != "string"||type(strategy) != "string"||type(run_identifier) != "string"||type(run_as) != "string"||repo_path == ""||strategy == ""||run_identifier == ""||run_as == "" {
+        return {"ok": false, "stage": "preparing", "error": "repository path, strategy, run identifier, and run-as identity must be non-empty strings"}
+    }
+    if strategy != "git-worktree"&&strategy != "isolated-clone" {
+        return {"ok": false, "stage": "preparing", "error": "workspace strategy must be git-worktree or isolated-clone"}
+    }
+    if valid_run_id(run_identifier) == false {
+        return {"ok": false, "stage": "preparing", "error": "workspace run identifier must match the Workcell run ID format"}
+    }
+    inspected := inspect_repository(repo_path)
+    if inspected["ok"] == false {
+        return inspected
+    }
+    if inspected["clean"] == false {
+        return {"ok": false, "stage": "preparing", "error": "source repository is dirty; Workcell rejects dirty repositories by default to avoid omitting user changes", "status": inspected["status"]}
+    }
+    root := inspected["root"]
+    path := temp_root() + "/kujo-workcell-" + run_identifier
+    if path_is_dir(path)||file_exists(path) {
+        return {"ok": false, "stage": "preparing", "error": "temporary workspace already exists: " + path}
+    }
+    parent := path
+    mut slash := len(parent) - 1
+    while slash >= 0 {
+        if substring(parent, slash, slash + 1) == "/" {
+            parent = substring(parent, 0, slash)
+            break
+        }
+        slash = slash - 1
+    }
+    ensure_dir(parent)
+    mut result := null
+    if strategy == "git-worktree" {
+        result = git_result(["git", "-C", root, "worktree", "add", "--detach", path, inspected["commit"]], 60000)
+    } else {
+        result = git_result(["git", "clone", "--no-local", root, path], 120000)
+    }
+    if process_ok(result) == false {
+        return {"ok": false, "stage": "preparing", "error": process_error(result, "create disposable " + strategy), "stdout": get_or(result, "stdout", ""), "stderr": get_or(result, "stderr", "")}
+    }
+    owner_written := write_file_atomic(path + ".owner", "workcell-run-id=" + run_identifier + "\n", true)
+    if owner_written != true {
+        cleanup_workspace({"workspace_path": path, "source_root": root, "strategy": strategy}, false)
+        return {"ok": false, "stage": "preparing", "error": "could not write disposable workspace ownership marker"}
+    }
+    symlinks := find_symlink(path)
+    if symlinks["ok"] == false {
+        cleanup_workspace({"workspace_path": path, "source_root": root, "strategy": strategy}, false)
+        return {"ok": false, "stage": "preparing", "error": symlinks["error"]}
+    }
+    identity := resolve_run_as(run_as)
+    if identity["ok"] == false {
+        cleanup_workspace({"workspace_path": path, "source_root": root, "strategy": strategy}, false)
+        return {"ok": false, "stage": "preparing", "error": identity["error"]}
+    }
+    if identity["source"] == "fixed" {
+        ownership := run_argv(["chown", "-R", identity["value"], path], 60000)
+        if process_ok(ownership) == false {
+            cleanup_workspace({"workspace_path": path, "source_root": root, "strategy": strategy}, false)
+            return {"ok": false, "stage": "preparing", "error": process_error(ownership, "assign workspace uid/gid")}
+        }
+    }
+    permissions := run_argv(["chmod", "-R", "u+rwX", path], 60000)
+    if process_ok(permissions) == false {
+        cleanup_workspace({"workspace_path": path, "source_root": root, "strategy": strategy}, false)
+        return {"ok": false, "stage": "preparing", "error": process_error(permissions, "make disposable workspace writable")}
+    }
+    return {
+        "ok": true,
+        "source_root": root,
+        "source_commit": inspected["commit"],
+        "workspace_path": path,
+        "strategy": strategy,
+        "source_clean": true
+    }
+}
+
+func status_name(letter) {
+    if letter == "A" {
+        return "added"
+    }
+    if letter == "D" {
+        return "deleted"
+    }
+    if letter == "R" {
+        return "renamed"
+    }
+    if letter == "C" {
+        return "copied"
+    }
+    return "modified"
+}
+
+func binary_paths_for_batch(workspace_path, paths) {
+    mut binary_paths := {}
+    mut offset := 0
+    while offset < len(paths) {
+        end := offset + 256
+        if end > len(paths) {
+            end = len(paths)
+        }
+        batch := slice(paths, offset, end)
+        mut args := ["file", "--brief", "--mime-type"]
+        mut i := 0
+        while i < len(batch) {
+            args = push(args, workspace_path + "/" + batch[i])
+            i = i + 1
+        }
+        result := run_argv(args, 60000)
+        if process_ok(result) {
+            mime_lines := lines_of(trim(result.stdout))
+            mut mime_i := 0
+            while mime_i < len(batch)&&mime_i < len(mime_lines) {
+                mime := to_lower(trim(mime_lines[mime_i]))
+                if starts_with(mime, "text/") == false&&contains(mime, "json") == 0&&contains(mime, "xml") == 0&&contains(mime, "javascript") == 0&&contains(mime, "empty") == 0 {
+                    binary_paths[batch[mime_i]] := true
+                }
+                mime_i = mime_i + 1
+            }
+        }
+        offset = end
+    }
+    return binary_paths
+}
+
+func change_summary(files) {
+    mut summary := {"total_files": len(files), "added": 0, "modified": 0, "deleted": 0, "renamed": 0, "copied": 0, "binary_files": 0}
+    mut i := 0
+    while i < len(files) {
+        status := files[i]["status"]
+        if status == "added" {
+            summary["added"] = summary["added"] + 1
+        } else if status == "modified" {
+            summary["modified"] = summary["modified"] + 1
+        } else if status == "deleted" {
+            summary["deleted"] = summary["deleted"] + 1
+        } else if status == "renamed" {
+            summary["renamed"] = summary["renamed"] + 1
+        } else if status == "copied" {
+            summary["copied"] = summary["copied"] + 1
+        }
+        if get_or(files[i], "binary", false) == true {
+            summary["binary_files"] = summary["binary_files"] + 1
+        }
+        i = i + 1
+    }
+    return summary
+}
+
+func workspace_input_check(workspace, require_commit) {
+    if type(workspace) != "dict"||get_or(workspace, "workspace_path", "") == "" {
+        return {"ok": false, "error": "workspace input is missing workspace_path"}
+    }
+    if require_commit&&get_or(workspace, "source_commit", "") == "" {
+        return {"ok": false, "error": "workspace input is missing source_commit"}
+    }
+    return {"ok": true}
+}
+
+func change_details_check(details) {
+    if type(details) != "dict"||get_or(details, "ok", false) != true {
+        return {"ok": false, "error": "change details input is incomplete"}
+    }
+    if type(get_or(details, "files", null)) != "array"||type(get_or(details, "summary", null)) != "dict" {
+        return {"ok": false, "error": "change details input is incomplete"}
+    }
+    mut i := 0
+    while i < len(details["files"]) {
+        entry := details["files"][i]
+        if type(entry) != "dict"||type(get_or(entry, "path", "")) != "string"||get_or(entry, "path", "") == "" {
+            return {"ok": false, "error": "change details contains an invalid file entry"}
+        }
+        i = i + 1
+    }
+    return {"ok": true}
+}
+
+export func change_details(workspace) {
+    workspace_check := workspace_input_check(workspace, true)
+    if workspace_check["ok"] == false {
+        return workspace_check
+    }
+    status_result := git_result(["git", "-C", workspace["workspace_path"], "diff", "--name-status", "-z", workspace["source_commit"]], 30000)
+    if process_ok(status_result) == false {
+        return {"ok": false, "error": process_error(status_result, "collect changed files")}
+    }
+    nul := nul_separator()
+    records := split(status_result.stdout, nul)
+    mut files := []
+    mut known_paths := {}
+    mut i := 0
+    while i < len(records) {
+        status := records[i]
+        if status != ""&&i + 1 < len(records) {
+            letter := substring(status, 0, 1)
+            path := records[i + 1]
+            i = i + 2
+            if (letter == "R"||letter == "C")&&i < len(records) {
+                path = records[i]
+                i = i + 1
+            }
+            files = push(files, {"path": path, "status": status_name(letter), "binary": false})
+            known_paths[path] := true
+        } else {
+            i = i + 1
+        }
+    }
+    untracked_result := git_result(["git", "-C", workspace["workspace_path"], "ls-files", "--others", "--exclude-standard", "-z"], 30000)
+    if process_ok(untracked_result) {
+        untracked := split(untracked_result.stdout, nul)
+        mut untracked_paths := []
+        mut j := 0
+        while j < len(untracked) {
+            item := untracked[j]
+            if item != "" {
+                if has_key_safe(known_paths, item) == false {
+                    untracked_paths = push(untracked_paths, item)
+                    files = push(files, {"path": item, "status": "added", "binary": false})
+                    known_paths[item] := true
+                }
+            }
+            j = j + 1
+        }
+        binary_paths := binary_paths_for_batch(workspace["workspace_path"], untracked_paths)
+        mut untracked_file_i := 0
+        while untracked_file_i < len(files) {
+            if files[untracked_file_i]["status"] == "added"&&has_key_safe(binary_paths, files[untracked_file_i]["path"]) {
+                mut updated_file := files[untracked_file_i]
+                updated_file["binary"] := true
+                files[untracked_file_i] := updated_file
+            }
+            untracked_file_i = untracked_file_i + 1
+        }
+    }
+    numstat_result := git_result(["git", "-C", workspace["workspace_path"], "diff", "--numstat", "-z", workspace["source_commit"]], 30000)
+    if process_ok(numstat_result) {
+        numstat_records := split(numstat_result.stdout, nul)
+        binary_paths := {}
+        mut numstat_i := 0
+        while numstat_i < len(numstat_records) {
+            numstat_columns := split(numstat_records[numstat_i], "\t")
+            if len(numstat_columns) >= 3 {
+                mut numstat_path := numstat_columns[2]
+                mut column_i := 3
+                while column_i < len(numstat_columns) {
+                    numstat_path = numstat_path + "\t" + numstat_columns[column_i]
+                    column_i = column_i + 1
+                }
+                if numstat_path == ""&&numstat_i + 2 < len(numstat_records) {
+                    numstat_path = numstat_records[numstat_i + 2]
+                    numstat_i = numstat_i + 2
+                }
+                if numstat_columns[0] == "-"&&numstat_columns[1] == "-" {
+                    binary_paths[numstat_path] := true
+                }
+            }
+            numstat_i = numstat_i + 1
+        }
+        mut file_i := 0
+        while file_i < len(files) {
+            if has_key_safe(binary_paths, files[file_i]["path"]) {
+                mut updated_file := files[file_i]
+                updated_file["binary"] := true
+                files[file_i] := updated_file
+            }
+            file_i = file_i + 1
+        }
+    }
+    return {"ok": true, "files": files, "summary": change_summary(files)}
+}
+
+export func changed_files(workspace) {
+    details := change_details(workspace)
+    if details["ok"] == false {
+        return details
+    }
+    return changed_files_from_details(details)
+}
+
+export func changed_files_from_details(details) {
+    details_check := change_details_check(details)
+    if details_check["ok"] == false {
+        return details_check
+    }
+    mut paths := []
+    mut i := 0
+    while i < len(details["files"]) {
+        paths = push(paths, details["files"][i]["path"])
+        i = i + 1
+    }
+    return {"ok": true, "files": paths}
+}
+
+export func write_change_report(workspace, output_path, patch_bytes) {
+    details := change_details(workspace)
+    return write_change_report_from_details(workspace, output_path, patch_bytes, details)
+}
+
+export func write_change_report_from_details(workspace, output_path, patch_bytes, details) {
+    workspace_check := workspace_input_check(workspace, true)
+    if workspace_check["ok"] == false {
+        return workspace_check
+    }
+    if type(output_path) != "string"||output_path == ""||type(patch_bytes) != "int"||patch_bytes < 0 {
+        return {"ok": false, "error": "change report output path and patch bytes are invalid"}
+    }
+    details_check := change_details_check(details)
+    if details_check["ok"] == false {
+        return details_check
+    }
+    try {
+        written := save_json(output_path, {"source_commit": workspace["source_commit"], "patch_bytes": patch_bytes, "summary": details["summary"], "files": details["files"]})
+        if written != true {
+            return {"ok": false, "error": "could not write change report: atomic write returned false"}
+        }
+    } except err {
+        return {"ok": false, "error": "could not write change report: " + to_string(err)}
+    }
+    return {"ok": true, "path": output_path, "files": details["files"]}
+}
+
+export func make_patch(workspace, patch_path, secrets, secret_action) {
+    workspace_check := workspace_input_check(workspace, true)
+    if workspace_check["ok"] == false {
+        return workspace_check
+    }
+    if type(patch_path) != "string"||patch_path == "" {
+        return {"ok": false, "error": "patch output path must be a non-empty string"}
+    }
+    if type(secrets) != "array" {
+        return {"ok": false, "error": "patch secret names must be an array"}
+    }
+    if type(secret_action) != "string"||(secret_action != "allow"&&secret_action != "reject"&&secret_action != "redact") {
+        return {"ok": false, "error": "patch secret action is invalid"}
+    }
+    result := git_result(["git", "-C", workspace["workspace_path"], "diff", "--no-ext-diff", "--no-textconv", "--binary", workspace["source_commit"]], 60000)
+    if process_ok(result) == false {
+        return {"ok": false, "error": process_error(result, "generate Git patch")}
+    }
+    mut patch_text := result.stdout
+    untracked_result := git_result(["git", "-C", workspace["workspace_path"], "ls-files", "--others", "--exclude-standard", "-z"], 30000)
+    if process_ok(untracked_result) == false {
+        return {"ok": false, "error": process_error(untracked_result, "collect untracked files for Git patch")}
+    }
+    nul := nul_separator()
+    untracked := split(untracked_result.stdout, nul)
+    mut untracked_paths := []
+    mut i := 0
+    while i < len(untracked) {
+        relative := untracked[i]
+        if relative != "" {
+            untracked_paths = push(untracked_paths, relative)
+        }
+        i = i + 1
+    }
+    if len(untracked_paths) > 0 {
+        mut add_args := ["git", "-C", workspace["workspace_path"], "add", "--intent-to-add", "--"]
+        i = 0
+        while i < len(untracked_paths) {
+            add_args = push(add_args, untracked_paths[i])
+            i = i + 1
+        }
+        intent_result := git_result(add_args, 60000)
+        if process_ok(intent_result) == false {
+            return {"ok": false, "error": process_error(intent_result, "stage untracked files for patch metadata")}
+        }
+        patch_result := git_result(["git", "-C", workspace["workspace_path"], "diff", "--no-ext-diff", "--no-textconv", "--binary", workspace["source_commit"]], 60000)
+        if process_ok(patch_result) == false {
+            return {"ok": false, "error": process_error(patch_result, "generate Git patch including untracked files")}
+        }
+        patch_text = patch_result.stdout
+    }
+    patch_secret_values := env_secret_values(secrets)
+    patch_redacted := redact(patch_text, patch_secret_values)
+    patch_holds_secret := patch_redacted != patch_text
+    patch_text = patch_redacted
+    if file_exists(patch_path) {
+        delete_file(patch_path)
+    }
+    if patch_holds_secret&&secret_action == "reject" {
+        return {"ok": false, "error": "Git patch contains a declared secret", "redacted": true}
+    }
+    try {
+        write_file(patch_path, patch_text)
+    } except err {
+        return {"ok": false, "error": "could not write Git patch: " + to_string(err)}
+    }
+    return {"ok": true, "path": patch_path, "bytes": len(patch_text), "redacted": patch_holds_secret}
+}
+
+export func cleanup_workspace(workspace, preserve) {
+    workspace_check := workspace_input_check(workspace, false)
+    if workspace_check["ok"] == false {
+        return workspace_check
+    }
+    strategy := get_or(workspace, "strategy", "")
+    if strategy != "git-worktree"&&strategy != "isolated-clone" {
+        return {"ok": false, "error": "workspace strategy must be git-worktree or isolated-clone"}
+    }
+    if preserve {
+        return {"ok": true, "preserved": true, "path": workspace["workspace_path"], "message": "failed workspace preserved by policy"}
+    }
+    path := workspace["workspace_path"]
+    if starts_with(path, temp_root() + "/kujo-workcell-") == false {
+        return {"ok": false, "error": "refusing to remove workspace outside Workcell temporary root: " + path}
+    }
+    owner_path := path + ".owner"
+    run_name := base_of(path)
+    run_prefix := "kujo-workcell-"
+    if starts_with(run_name, run_prefix) == false||valid_run_id(substring(run_name, len(run_prefix), len(run_name))) == false {
+        return {"ok": false, "error": "refusing to remove a workspace with an invalid Workcell run ID: " + path}
+    }
+    if path_has_symlink(owner_path) {
+        return {"ok": false, "error": "refusing to remove a workspace with a symlinked ownership marker: " + owner_path}
+    }
+    owner := read_text(owner_path)
+    expected_owner := "workcell-run-id=" + substring(run_name, len(run_prefix), len(run_name)) + "\n"
+    if owner["ok"] == false||owner["text"] != expected_owner {
+        return {"ok": false, "error": "refusing to remove an unowned Workcell temporary path: " + path}
+    }
+    mut result := null
+    if workspace["strategy"] == "git-worktree" {
+        result = git_result(["git", "-C", workspace["source_root"], "worktree", "remove", "--force", path], 60000)
+    } else {
+        result = run_argv(["rm", "-rf", path], 60000)
+    }
+    if process_ok(result) == false&&(path_is_dir(path)||file_exists(path)) {
+        return {"ok": false, "error": process_error(result, "clean disposable workspace")}
+    }
+    owner_result := run_argv(["rm", "-f", owner_path], 30000)
+    if process_ok(owner_result) == false {
+        return {"ok": false, "error": process_error(owner_result, "remove Workcell ownership marker")}
+    }
+    return {"ok": true, "preserved": false, "path": path}
+}
+
+export func clean_stale_workspaces(active_run_ids) {
+    root := temp_root()
+    if path_is_dir(root) == false {
+        return {"ok": true, "removed": [], "skipped": []}
+    }
+    mut entries := []
+    try {
+        entries = list_dir(root)
+    } except err {
+        return {"ok": false, "removed": [], "skipped": [root + ": could not list temporary workspace root: " + to_string(err)]}
+    }
+    mut removed := []
+    mut skipped := []
+    mut i := 0
+    while i < len(entries) {
+        name := to_string(entries[i])
+        if starts_with(name, "kujo-workcell-")&&ends_with(name, ".owner") == false {
+            path := root + "/" + name
+            owner_path := path + ".owner"
+            run_prefix := "kujo-workcell-"
+            run_value := substring(name, len(run_prefix), len(name))
+            if valid_run_id(run_value) == false {
+                skipped = push(skipped, path + ": invalid Workcell run ID")
+            } else if contains(to_json(active_run_ids), run_value) == 1 {
+                skipped = push(skipped, path + ": active Workcell run is still running")
+            } else if file_exists(owner_path)&&path_is_symlink(path) == false&&path_has_symlink(owner_path) == false&&path_is_dir(path) {
+                owner := read_text(owner_path)
+                expected_owner := "workcell-run-id=" + run_value + "\n"
+                if owner["ok"] == false||owner["text"] != expected_owner {
+                    skipped = push(skipped, path + ": ownership marker does not match run ID")
+                } else {
+                    result := run_argv(["rm", "-rf", path], 60000)
+                    if process_ok(result) {
+                        run_argv(["rm", "-f", owner_path], 30000)
+                        removed = push(removed, path)
+                    } else {
+                        skipped = push(skipped, path + ": " + trim(result.stderr))
+                    }
+                }
+            } else if starts_with(name, "kujo-workcell-")&&path_is_dir(path) {
+                mut entries_in_orphan := []
+                try {
+                    entries_in_orphan = list_dir(path)
+                } except err {
+                    skipped = push(skipped, path + ": could not inspect orphan workspace: " + to_string(err))
+                    i = i + 1
+                    continue
+                }
+                if len(entries_in_orphan) == 0&&path_is_symlink(path) == false&&path_has_symlink(owner_path) == false {
+                    orphan_result := run_argv(["rmdir", path], 30000)
+                    if process_ok(orphan_result) {
+                        removed = push(removed, path + " (empty orphan recovered)")
+                    } else {
+                        skipped = push(skipped, path + ": empty orphan could not be removed")
+                    }
+                } else {
+                    skipped = push(skipped, path + ": ownership marker missing or path/marker is a symlink")
+                }
+            }
+        }
+        i = i + 1
+    }
+    return {"ok": len(skipped) == 0, "removed": removed, "skipped": skipped}
+}
+
+export func workspace_inventory() {
+    root := temp_root()
+    if path_is_dir(root) == false {
+        return {"ok": true, "workspaces": []}
+    }
+    mut entries := []
+    try {
+        entries = list_dir(root)
+    } except err {
+        return {"ok": false, "workspaces": [], "error": root + ": could not list temporary workspace root: " + to_string(err)}
+    }
+    mut workspaces := []
+    mut i := 0
+    while i < len(entries) {
+        name := to_string(entries[i])
+        if starts_with(name, "kujo-workcell-")&&ends_with(name, ".owner") == false {
+            path := root + "/" + name
+            owner_path := path + ".owner"
+            run_prefix := "kujo-workcell-"
+            run_value := substring(name, len(run_prefix), len(name))
+            mut status := "unowned"
+            if valid_run_id(run_value) == false {
+                status = "invalid-run-id"
+            } else if path_is_symlink(path) {
+                status = "symlink"
+            } else if path_has_symlink(owner_path) {
+                status = "marker-symlink"
+            } else if path_is_dir(path) == false {
+                status = "not-directory"
+            } else {
+                owner := read_text(owner_path)
+                expected_owner := "workcell-run-id=" + run_value + "\n"
+                if owner["ok"]&&owner["text"] == expected_owner {
+                    status = "owned"
+                } else {
+                    status = "marker-mismatch"
+                }
+            }
+            mut cleanup_action := "preserve"
+            if status == "owned" {
+                cleanup_action = "eligible"
+            }
+            workspaces = push(workspaces, {"path": path, "owner_path": owner_path, "run_id": run_value, "status": status, "cleanup": cleanup_action})
+        }
+        i = i + 1
+    }
+    return {"ok": true, "workspaces": workspaces}
+}

@@ -1,0 +1,305 @@
+# Declared-only artifact archive creation and safe local materialization.
+
+from src.artifacts.exporter import export_declared_with_policy
+from src.util import base_of, ensure_dir, get_or, normalized_relative, parent_of, path_has_symlink, path_within, process_error, process_ok, run_argv, save_json
+
+export func artifact_archive_schema_version() {
+    return "workcell-artifacts/v1"
+}
+
+func artifact_bounds(policy) {
+    return {
+        "max_files": get_or(policy, "max_files", 0),
+        "max_bytes": get_or(policy, "max_bytes", 0),
+        "max_depth": get_or(policy, "max_depth", 32)
+    }
+}
+
+func declared_path_allowed(path, declarations) {
+    mut i := 0
+    while i < len(declarations) {
+        declared := declarations[i]
+        if path == declared||starts_with(path, declared + "/") {
+            return true
+        }
+        i = i + 1
+    }
+    return false
+}
+
+func collect_artifact_files(root, relative, policy, declarations) {
+    bounds := artifact_bounds(policy)
+    mut queue_paths := [root]
+    mut queue_relative := [relative]
+    mut queue_depths := [0]
+    mut queue_i := 0
+    mut files := []
+    mut total_bytes := 0
+    while queue_i < len(queue_paths) {
+        path := queue_paths[queue_i]
+        current_relative := queue_relative[queue_i]
+        depth := queue_depths[queue_i]
+        if depth > bounds["max_depth"] {
+            return {"ok": false, "error": "artifact archive exceeds maximum depth: " + current_relative}
+        }
+        if path_has_symlink(path) {
+            return {"ok": false, "error": "artifact archive contains a symlink: " + current_relative}
+        }
+        mut entries := []
+        try {
+            entries = list_dir(path)
+        } except err {
+            return {"ok": false, "error": "artifact archive cannot list " + current_relative}
+        }
+        mut entry_i := 0
+        while entry_i < len(entries) {
+            name := to_string(entries[entry_i])
+            child_relative := name
+            if current_relative != "" {child_relative = current_relative + "/" + name}
+            checked := normalized_relative(child_relative)
+            if checked["ok"] == false||checked["path"] != child_relative||declared_path_allowed(child_relative, declarations) == false {
+                return {"ok": false, "error": "artifact archive contains an undeclared or unsafe path: " + child_relative}
+            }
+            child := path + "/" + name
+            if path_within(root, child) == false||path_has_symlink(child) {
+                return {"ok": false, "error": "artifact archive path escapes or contains a symlink: " + child_relative}
+            }
+            if path_is_dir(child) {
+                queue_paths = push(queue_paths, child)
+                queue_relative = push(queue_relative, child_relative)
+                queue_depths = push(queue_depths, depth + 1)
+            } else {
+                mut bytes := 0
+                mut digest := ""
+                try {
+                    bytes = file_size(child)
+                    digest = sha256_file(child)
+                } except err {
+                    return {"ok": false, "error": "artifact archive cannot inspect " + child_relative}
+                }
+                files = push(files, {"path": child_relative, "bytes": bytes, "sha256": digest})
+                total_bytes = total_bytes + bytes
+                if bounds["max_files"] > 0&&len(files) > bounds["max_files"] {
+                    return {"ok": false, "error": "artifact archive exceeds maximum file count"}
+                }
+                if bounds["max_bytes"] > 0&&total_bytes > bounds["max_bytes"] {
+                    return {"ok": false, "error": "artifact archive exceeds maximum expanded bytes"}
+                }
+            }
+            entry_i = entry_i + 1
+        }
+        queue_i = queue_i + 1
+    }
+    return {"ok": true, "files": files, "total_files": len(files), "total_bytes": total_bytes}
+}
+
+func remove_staging(path, output_dir) {
+    if type(path) != "string"||type(output_dir) != "string"||path_within(output_dir, path) == false||starts_with(base_of(path), "workcell-artifacts-") == false {
+        return false
+    }
+    result := run_argv(["rm", "-rf", path], 30000)
+    return process_ok(result)
+}
+
+export func create_artifact_archive(workspace_path, output_dir, policy, secret_names) {
+    if type(workspace_path) != "string"||trim(workspace_path) == ""||type(output_dir) != "string"||trim(output_dir) == ""||type(policy) != "dict"||type(secret_names) != "array" {
+        return {"ok": false, "error": "artifact archive inputs are invalid"}
+    }
+    declarations := get_or(policy, "export", null)
+    if type(declarations) != "array" {
+        return {"ok": false, "error": "artifact archive declarations must be an array"}
+    }
+    if path_has_symlink(output_dir)||ensure_dir(output_dir) == false||path_is_dir(output_dir) == false {
+        return {"ok": false, "error": "artifact archive output directory is unsafe"}
+    }
+    staging := output_dir + "/workcell-artifacts-" + replace(uuid_v4(), "-", "")
+    archive_path := output_dir + "/artifacts.tar"
+    manifest_path := output_dir + "/artifact-manifest.json"
+    if file_exists(archive_path)||file_exists(manifest_path)||file_exists(staging)||path_is_dir(staging) {
+        return {"ok": false, "error": "artifact archive output already exists"}
+    }
+    exported := export_declared_with_policy(workspace_path, staging, policy, secret_names)
+    if exported["ok"] == false {
+        remove_staging(staging, output_dir)
+        return exported
+    }
+    files := collect_artifact_files(staging, "", policy, declarations)
+    if files["ok"] == false {
+        remove_staging(staging, output_dir)
+        return files
+    }
+    manifest := {
+        "schema_version": artifact_archive_schema_version(),
+        "root_name": base_of(staging),
+        "declared": declarations,
+        "files": files["files"],
+        "total_files": files["total_files"],
+        "total_bytes": files["total_bytes"],
+        "archive": "artifacts.tar",
+        "secret_action": get_or(policy, "secret_action", "allow")
+    }
+    saved := save_json(manifest_path, manifest)
+    archived := run_argv(["tar", "-cf", archive_path, "-C", parent_of(staging), base_of(staging)], 120000)
+    removed := remove_staging(staging, output_dir)
+    if saved != true||process_ok(archived) == false||removed == false {
+        return {"ok": false, "error": "artifact archive creation or staging cleanup failed"}
+    }
+    mut digest := ""
+    mut bytes := 0
+    try {
+        digest = sha256_file(archive_path)
+        bytes = file_size(archive_path)
+    } except err {
+        return {"ok": false, "error": "artifact archive could not be inspected"}
+    }
+    return {"ok": true, "schema_version": artifact_archive_schema_version(), "archive_path": archive_path, "manifest_path": manifest_path, "sha256": digest, "archive_bytes": bytes, "expanded_bytes": files["total_bytes"], "files": files["total_files"], "manifest": manifest}
+}
+
+func inspect_artifact_tar(archive_path, max_entries) {
+    names_result := run_argv(["tar", "-tf", archive_path], 60000)
+    types_result := run_argv(["tar", "-tvf", archive_path], 60000)
+    if process_ok(names_result) == false||process_ok(types_result) == false {
+        return {"ok": false, "error": "artifact archive could not be listed safely"}
+    }
+    names := split(trim(names_result.stdout), "\n")
+    types := split(trim(types_result.stdout), "\n")
+    if len(names) != len(types)||len(names) > max_entries + 256 {
+        return {"ok": false, "error": "artifact archive listing is inconsistent or exceeds bounds"}
+    }
+    mut i := 0
+    while i < len(names) {
+        name := trim(names[i])
+        while ends_with(name, "/")&&len(name) > 1 {
+            name = substring(name, 0, len(name) - 1)
+        }
+        checked := normalized_relative(name)
+        if checked["ok"] == false||checked["path"] != name {
+            return {"ok": false, "error": "artifact archive contains unsafe path: " + name}
+        }
+        detail := types[i]
+        if detail == "" {
+            return {"ok": false, "error": "artifact archive entry type is missing"}
+        }
+        kind := substring(detail, 0, 1)
+        if kind != "-"&&kind != "d" {
+            return {"ok": false, "error": "artifact archive contains unsupported entry type: " + name}
+        }
+        i = i + 1
+    }
+    return {"ok": true, "entries": len(names)}
+}
+
+func verify_artifact_manifest(root, manifest, policy) {
+    if type(manifest) != "dict"||get_or(manifest, "schema_version", "") != artifact_archive_schema_version()||type(get_or(manifest, "declared", null)) != "array"||type(get_or(manifest, "files", null)) != "array" {
+        return {"ok": false, "error": "artifact archive manifest is invalid"}
+    }
+    if to_json(manifest["declared"]) != to_json(get_or(policy, "export", [])) {
+        return {"ok": false, "error": "artifact archive declarations do not match Workcell policy"}
+    }
+    actual := collect_artifact_files(root, "", policy, manifest["declared"])
+    if actual["ok"] == false {return actual}
+    if actual["total_files"] != get_or(manifest, "total_files", - 1)||actual["total_bytes"] != get_or(manifest, "total_bytes", - 1)||len(actual["files"]) != len(manifest["files"]) {
+        return {"ok": false, "error": "artifact archive manifest totals do not match materialized files"}
+    }
+    mut expected := {}
+    mut i := 0
+    while i < len(manifest["files"]) {
+        entry := manifest["files"][i]
+        if type(entry) != "dict"||type(get_or(entry, "path", null)) != "string"||has_key(expected, entry["path"]) == 1 {
+            return {"ok": false, "error": "artifact archive manifest file entry is invalid"}
+        }
+        expected[entry["path"]] := entry
+        i = i + 1
+    }
+    i = 0
+    while i < len(actual["files"]) {
+        entry = actual["files"][i]
+        wanted := get_or(expected, entry["path"], null)
+        if type(wanted) != "dict"||get_or(wanted, "sha256", "") != entry["sha256"]||get_or(wanted, "bytes", - 1) != entry["bytes"] {
+            return {"ok": false, "error": "artifact archive manifest mismatch: " + entry["path"]}
+        }
+        i = i + 1
+    }
+    return {"ok": true, "files": actual["total_files"], "bytes": actual["total_bytes"]}
+}
+
+export func materialize_artifact_archive(package, target_dir, policy) {
+    if type(package) != "dict"||type(target_dir) != "string"||trim(target_dir) == ""||type(policy) != "dict" {
+        return {"ok": false, "error": "artifact package, target, and policy are invalid"}
+    }
+    archive_path := get_or(package, "archive_path", "")
+    manifest := get_or(package, "manifest", null)
+    expected_digest := get_or(package, "sha256", "")
+    if file_exists(archive_path) == false||path_has_symlink(archive_path)||type(manifest) != "dict"||expected_digest == "" {
+        return {"ok": false, "error": "artifact package archive, digest, or manifest is missing"}
+    }
+
+    mut digest := ""
+    try {
+        digest = sha256_file(archive_path)
+    } except err {
+        return {"ok": false, "error": "artifact package archive could not be hashed"}
+    }
+    if digest != expected_digest {
+        return {"ok": false, "error": "artifact package archive digest mismatch"}
+    }
+    bounds := artifact_bounds(policy)
+    max_entries := bounds["max_files"]
+    if max_entries <= 0 {max_entries = 100000}
+    inspected := inspect_artifact_tar(archive_path, max_entries)
+    if inspected["ok"] == false {return inspected}
+    if path_has_symlink(target_dir)||ensure_dir(target_dir) == false||path_is_dir(target_dir) == false {
+        return {"ok": false, "error": "artifact package target is unsafe"}
+    }
+    mut existing := []
+    try {
+        existing = list_dir(target_dir)
+    } except err {
+        return {"ok": false, "error": "artifact package target cannot be listed"}
+    }
+    if len(existing) != 0 {
+        return {"ok": false, "error": "artifact package target must be empty"}
+    }
+    extracted := run_argv(["tar", "-xf", archive_path, "-C", target_dir], 120000)
+    if process_ok(extracted) == false {
+        return {"ok": false, "error": process_error(extracted, "extract artifact package")}
+    }
+    root_name := get_or(manifest, "root_name", "")
+    root_check := normalized_relative(root_name)
+    if root_check["ok"] == false||root_check["path"] != root_name {
+        return {"ok": false, "error": "artifact package root name is invalid"}
+    }
+    root := target_dir + "/" + root_name
+    if path_is_dir(root) == false||path_within(target_dir, root) == false||path_has_symlink(root) {
+        return {"ok": false, "error": "artifact package root is missing or unsafe"}
+    }
+    verified := verify_artifact_manifest(root, manifest, policy)
+    if verified["ok"] == false {return verified}
+    return {"ok": true, "artifact_root": root, "observed_archive_digest": digest, "artifacts": manifest["declared"], "files": verified["files"], "bytes": verified["bytes"]}
+}
+
+# Accept an untrusted provider-downloaded tar by re-exporting only declarations
+# through Workcell's local policy before it becomes run evidence.
+export func accept_remote_artifact_archive(archive_path, target_dir, policy, secret_names) {
+    if type(archive_path) != "string"||trim(archive_path) == ""||file_exists(archive_path) == false||path_has_symlink(archive_path)||type(target_dir) != "string"||trim(target_dir) == ""||type(policy) != "dict"||type(secret_names) != "array" {
+        return {"ok": false, "error": "remote artifact archive inputs are invalid"}
+    }
+    bounds := artifact_bounds(policy)
+    max_entries := bounds["max_files"]
+    if max_entries <= 0 {max_entries = 100000}
+    inspected := inspect_artifact_tar(archive_path, max_entries)
+    if inspected["ok"] == false {return inspected}
+    parent := parent_of(target_dir)
+    if path_has_symlink(parent)||ensure_dir(parent) == false {return {"ok": false, "error": "remote artifact target parent is unsafe"}}
+    staging := parent + "/workcell-artifacts-remote-" + replace(uuid_v4(), "-", "")
+    if path_has_symlink(staging)||ensure_dir(staging) == false {return {"ok": false, "error": "remote artifact staging is unsafe"}}
+    extracted := run_argv(["tar", "-xf", archive_path, "-C", staging], 120000)
+    if process_ok(extracted) == false {
+        remove_staging(staging, parent)
+        return {"ok": false, "error": process_error(extracted, "extract remote artifact archive")}
+    }
+    accepted := create_artifact_archive(staging, target_dir, policy, secret_names)
+    removed := remove_staging(staging, parent)
+    if removed == false {return {"ok": false, "error": "remote artifact staging cleanup failed"}}
+    return accepted
+}

@@ -6,3 +6,6 @@ playwright-report/
 test-results/
 .ui-test-dist/
 .DS_Store
+
+# Generated local native acceptance probe (never packaged).
+scripts/acceptance/.native-probe.mjs
