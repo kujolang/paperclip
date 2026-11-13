@@ -12,7 +12,7 @@ permissions:
 jobs:
   publish:
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 35
     environment: npm
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -51,11 +51,13 @@ jobs:
       - name: Verify public registry install
         run: |
           package_version="$(node -p "require('./package.json').version")"
-          for attempt in $(seq 1 30); do
+          # npm can accept a provenance-backed publish before processing exposes it.
+          # Leave time for up to 20 minutes of registry processing after verification.
+          for attempt in $(seq 1 120); do
             if test "$(npm view "@kujolang/paperclip@$package_version" version 2>/dev/null || true)" = "$package_version"; then
               break
             fi
-            if test "$attempt" = 30; then
+            if test "$attempt" = 120; then
               echo "Published package did not become visible in the registry" >&2
               exit 1
             fi
