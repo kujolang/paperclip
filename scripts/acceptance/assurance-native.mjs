@@ -5,8 +5,8 @@ import { execFileSync } from 'node:child_process';
 import { createServer } from 'node:http';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
-await build({ stdin: { contents: 'export {nativeAssurance, cleanupWorkcell} from "./src/features/assurance/native.ts"; export {resolveKujo} from "./src/runtime/resolve-kujo.ts"; export {executeKujo} from "./src/runtime/execute-kujo.ts"; export {parsePluginConfig} from "./src/config/schema.ts";', resolveDir: process.cwd(), loader:'ts' }, bundle:true, platform:'node', format:'esm', packages:'external', outfile:'scripts/acceptance/.native-probe.mjs' });
-const { nativeAssurance, resolveKujo, executeKujo, parsePluginConfig } = await import('./.native-probe.mjs');
+await build({ stdin: { contents: 'export {nativeVerdict} from "./src/features/assurance/verdict.ts"; export {nativeAssurance, cleanupWorkcell} from "./src/features/assurance/native.ts"; export {resolveKujo} from "./src/runtime/resolve-kujo.ts"; export {executeKujo} from "./src/runtime/execute-kujo.ts"; export {parsePluginConfig} from "./src/config/schema.ts";', resolveDir: process.cwd(), loader:'ts' }, bundle:true, platform:'node', format:'esm', packages:'external', outfile:'scripts/acceptance/.native-probe.mjs' });
+const { nativeVerdict, nativeAssurance, resolveKujo, executeKujo, parsePluginConfig } = await import('./.native-probe.mjs');
 const base = join(homedir(), '.cache', 'paperclip-native-acceptance'); await mkdir(base, { recursive: true, mode: 0o700 });
 const root = await realpath(await mkdtemp(join(base, 'run-')));
 const runtime = await resolveKujo(parsePluginConfig({}),root);
@@ -30,6 +30,23 @@ for (const kind of kinds) {
  const artifacts=await native.collect();
  results.push({kind,...output,artifacts});
  console.log(JSON.stringify({kind,exitCode:output.exitCode,stdout:output.stdout.slice(0,1600),stderr:output.stderr.slice(0,1600),artifacts:artifacts.map(x=>x.path)}));
+}
+
+if (kinds.includes('lens')) {
+ for (const [scenario, selectors, expected, exitCode] of [
+  ['lens-selector-present', {exists:['main','body']}, 'passed', 0],
+  ['lens-selector-negative', {not_exists:['main']}, 'failed', 1],
+  ['lens-selector-unsupported', {exists:['input[type=search]']}, 'failed', 2],
+ ]) {
+  const directory=join(root,scenario);await mkdir(directory);const workspace=join(directory,'workspace');await mkdir(workspace);
+  await writeFile(join(workspace,'browser.json'),JSON.stringify({selectors}));
+  const native=await nativeAssurance({selection:{kind:'lens',path:'browser.json',target:`http://127.0.0.1:${server.address().port}`},directory,workspace,runtime,dockerHost});
+  let output;try { output=await executeKujo({...native.invocation,timeoutMs:27000,maxStdoutBytes:500000,maxStderrBytes:64000}); } finally { await native.cleanup(); }
+  const artifacts=await native.collect();const verdict=nativeVerdict('lens',output.exitCode,output.stdout,artifacts);
+  assert.equal(verdict,expected,JSON.stringify(output));assert.equal(output.exitCode,exitCode);
+  if(scenario==='lens-selector-unsupported')assert.match(output.stdout,/Page Spec supports only main and body selectors/);
+  results.push({scenario,expectedFailure:expected==='failed',verdict,...output,artifacts});console.log(JSON.stringify({scenario,verdict,exitCode:output.exitCode}));
+ }
 }
 
 if (!process.env.KUJO_TEST_KINDS) {

@@ -1,0 +1,150 @@
+{
+  "schemaVersion": 1,
+  "scope": "Paperclip upstream Workcell and Lens refresh",
+  "bundleVersion": "0.13.1",
+  "workcell": "6f5445b6ca99eafad31ab3e5d3f3f2c84e9eb9c8",
+  "lens": "7f3ee8be8be36817e958460621e3669cf99eaa1e",
+  "verification": "passed",
+  "workcellBundledFilesChanged": false,
+  "workcellRemoteAdaptersBundled": false,
+  "lensBundledFilesChanged": [
+    "src/checks.kujo",
+    "src/config.kujo",
+    "src/spec.kujo"
+  ],
+  "componentLockSha256": "3f823e4c2d4d5f35229bf6f4deef607f6c01a3a332b8ea5c93744faceab5c668",
+  "ui": {
+    "passed": 60,
+    "failed": 0
+  },
+  "native": {
+    "passed": 11,
+    "scenarios": [
+      {
+        "name": "packwrite",
+        "exitCode": 0,
+        "expectedFailure": false
+      },
+      {
+        "name": "muzzle",
+        "exitCode": 0,
+        "expectedFailure": false
+      },
+      {
+        "name": "workcell",
+        "exitCode": 0,
+        "expectedFailure": false
+      },
+      {
+        "name": "lens",
+        "exitCode": 0,
+        "expectedFailure": false
+      },
+      {
+        "name": "lens-selector-present",
+        "exitCode": 0,
+        "expectedFailure": false,
+        "verdict": "passed"
+      },
+      {
+        "name": "lens-selector-negative",
+        "exitCode": 1,
+        "expectedFailure": true,
+        "verdict": "failed"
+      },
+      {
+        "name": "lens-selector-unsupported",
+        "exitCode": 2,
+        "expectedFailure": true,
+        "verdict": "failed"
+      },
+      {
+        "name": "pack-generation",
+        "exitCode": 0,
+        "expectedFailure": false
+      },
+      {
+        "name": "muzzle-contained",
+        "exitCode": 0,
+        "expectedFailure": false
+      },
+      {
+        "name": "workcell-timeout",
+        "exitCode": 6,
+        "expectedFailure": true
+      },
+      {
+        "name": "workcell-cancel",
+        "exitCode": null,
+        "expectedFailure": true
+      }
+    ],
+    "selectorExitCodesVerified": [
+      0,
+      1,
+      2
+    ]
+  },
+  "limitations": [
+    "Remote Workcell adapters are not bundled or exposed by Paperclip; no live provider qualification.",
+    "Existing host run-tab limitation remains; issue extension is exercised.",
+    "Historical assurance receipts remain immutable and describe earlier pins."
+  ],
+  "upstreamEvidence": {
+    "workcell": {
+      "adapterTestsPassed": 47,
+      "cleanInstalledTestsPassed": 24,
+      "releaseAssertionsPassed": 250,
+      "auditVulnerabilities": 0,
+      "source": "Prior upstream verification at exact commit 6f5445b; full tests/run.sh passed with Kujo 1.9.0."
+    },
+    "lens": {
+      "source": "Exact clean pushed commit 7f3ee8b; bundled source checksum verification and current native page/flow tests."
+    }
+  },
+  "units": {
+    "filesPassed": 48,
+    "passed": 346,
+    "platformSkipped": 2,
+    "failed": 0
+  },
+  "checks": [
+    "npm run verify",
+    "npm run test:ui -- --workers=2",
+    "native assurance including selector regression and owned cleanup",
+    "authenticated official-host packaged upgrade, four-agent workflow, and restart"
+  ],
+  "supplyChain": {
+    "lockedPackages": 165,
+    "sbomComponents": 68,
+    "vulnerabilities": 0
+  },
+  "packagedHost": {
+    "status": "passed",
+    "hostStopped": true,
+    "checks": [
+      "previous plugin 0.2.1 evidence survives packaged upgrade, capability admission and full host restart",
+      "Four real process agents: native reportsTo/parentId/checkout/run attribution, PackWrite plan, Workcell implementation proof, Lens interaction, Eval review, child evidence aggregation and human approval",
+      "Real authenticated Paperclip: PackWrite, Muzzle, Workcell, Lens fail/corrected pass, stale acceptance, explicit native human waiver, cancellation, metadata import, delegation and restart persistence"
+    ],
+    "hostPackage": {
+      "name": "@paperclipai/server",
+      "version": "2026.1106.0",
+      "entrySha256": "cde8cd927214edb31edf173aec7667dd86b174799a58c822f6abf41089786480"
+    },
+    "package": {
+      "mode": "npm-installed local archive with separately installed dependencies",
+      "version": "0.2.1",
+      "workerSha256": "88115c10caf927786c7a48318843bf15d5a32de70e9e37b035361c3ded4a4e07",
+      "manifestSha256": "036bf911aa6fc826978e5dc9de72584835d00fdea0067eb969457102c6c60fc5"
+    },
+    "screenshotVisuallyInspected": true,
+    "firstAttempt": {
+      "status": "failed",
+      "stage": "Acceptance result rendering wait exceeded 5 seconds after acceptance API returned 200",
+      "rerun": "fresh isolated host passed without relaxing assertions or product deadlines"
+    },
+    "qualifiedComponentLockSha256": "3f823e4c2d4d5f35229bf6f4deef607f6c01a3a332b8ea5c93744faceab5c668",
+    "archiveNote": "Host qualified archive contains the same component lock, source and worker as the final build; only documentation evidence was finalized afterward."
+  }
+}

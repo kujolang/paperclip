@@ -83,7 +83,9 @@ Exact component provenance is in [the checksum lock](../bundled/kujo-components.
 The original 15 components remain; four optional producer snapshots are added.
 Workcell's scoped upstream patch `3a624b0` disables external Git diff/textconv
 callbacks when collecting a binary patch. The plugin bundles that committed
-source, not a private fork. Remote Workcell adapters are not bundled or invoked.
+source, not a private fork. The current upstream pin is `6f5445b`, including the
+remote dependency audit and bounded E2B inventory fixes. Remote Workcell adapters
+are not bundled or invoked. Lens is pinned to `7f3ee8b`.
 
 ## Evidence architecture and trust
 
@@ -161,8 +163,9 @@ silent host fallback. Manifest name/script must select the exact displayed scrip
 
 Lens accepts HTTP loopback targets without credentials, query or fragment. Page
 mode uses native quick checks, accessibility and bounded link checks. Native page
-spec selectors other than main/body are not executed by the pinned producer; any
-skipped assertion makes the plugin verdict incomplete. Use an executed flow for
+specs accept only main/body selectors and require explicit DOM evidence. Other
+selectors are rejected before browser execution; the plugin also retains its
+defense against skipped assertions by classifying them as incomplete. Use an executed flow for
 CSS assertions and interactions. Flows must start with the reviewed URL, contain
 an assertion, stay on the reviewed origin, and disable external/destructive options.
 At most 12 steps, a 5-second per-step budget and one desktop viewport are admitted.

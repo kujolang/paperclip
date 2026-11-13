@@ -76,7 +76,7 @@ Kujo retains up to 20 results per company/entity for 30 days in its Paperclip da
 | **Failure Evidence** | Turns supplied command details and logs into a bounded, redacted record. | CaseFile |
 
 The nineteen component snapshots are pinned, checksummed, and shipped with the plugin. The
-plugin does not download component code while installing or running. The Eval snapshot
+plugin does not download component code while installing or running. Bundle 0.13.1 pins Workcell `6f5445b` and Lens `7f3ee8b`. Lens page specs accept only `main` and `body` selectors; use executed flows for other CSS assertions. The Eval snapshot
 provides human-approved execution on issue workspaces. The separately enabled
 Dispatch workflow panel runs shipped offline examples through durable host jobs,
 with exact human checkpoint decisions and retained state. The RAG snapshot powers **Ask your project**: explicitly index selected local

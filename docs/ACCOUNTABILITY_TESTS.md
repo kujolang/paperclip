@@ -2,7 +2,7 @@
 
 The original RunLedger increment is preserved in
 [its historical receipt](verification/accountability-2026-11-12.json).
-This report covers the subsequent opt-in assurance integration. Native execution,
+This report preserves the initial opt-in assurance qualification. The subsequent upstream refresh is recorded in [the repin report](verification/upstream-repin-2026-11-12.json). Native execution,
 mocked-host unit tests, browser fixtures and authenticated host qualification are
 separate evidence classes. No release or protected-branch merge was performed.
 
@@ -16,9 +16,9 @@ separate evidence classes. No release or protected-branch merge was performed.
 | PackWrite updated demo pack | Native validation against final pack | PASS: six phases, no errors or warnings | Final native receipt run-mCMguQ; checked-in agent/ fixture |
 | Packaged host and native agent team | Published-prior reinstall, actual archive, four process agents, UI and restart | PASS | [Host](../examples/assurance/evidence/host-proof.json), [team](../examples/assurance/evidence/team-proof.json), [workflow](../examples/assurance/evidence/workflow-proof.json) |
 | Plugin dependency audit | `npm run supply-chain:verify` | PASS: 0 vulnerabilities, 165 locked packages, 68 SBOM components | Pinned lockfile and package verifier |
-| Bundled sources | `npm run components:verify` | PASS: 19 checksum-verified components | Component lock includes upstream Workcell patch 3a624b0 |
+| Bundled sources | `npm run components:verify` | PASS: 19 checksum-verified components | Historical bundle included Workcell patch 3a624b0; current pins are in the repin report |
 | Upstream Workcell patch | Native workspace tests with external diff disabled/poisoned | PASS: 29 targeted assertions | Upstream commit 3a624b0 on codex/paperclip-patch-collection |
-| Upstream remote adapter suite | Workcell full tests / npm audit | NOT PASS: optional remote-adapter audit reports 6 advisories | These adapters are not bundled or exposed by Paperclip; tracked separately for human review |
+| Upstream remote adapter suite | Workcell full tests / npm audit | Historical failure: 6 advisories; fixed upstream at 15b3521, included in current pin 6f5445b | These adapters are not bundled or exposed by Paperclip; upstream pagination fix and passing audit evidence are recorded in the repin report |
 
 ## Final qualification
 
@@ -60,3 +60,17 @@ external server state and ignored dependencies are not frozen. Native ShipCheck 
 metadata readiness, and imported RunLedger/Watchdog claims do not satisfy policy.
 The official host's run-tab mounting limitation remains documented separately;
 the real issue extension is the supported verification surface.
+
+## Upstream refresh verification
+
+Bundle 0.13.1 pins Workcell `6f5445b` and Lens `7f3ee8b`. All 346 unit tests
+passed (two existing platform skips), all 60 UI tests passed, and all 11 native
+scenarios passed. New selector cases verify exact exits 0/1/2 for supported,
+failed, and unsupported assertions. The full `npm run verify` pipeline passed,
+including 19 component checksums, the zero-vulnerability dependency audit, and
+archive checks. The packaged official-host upgrade and four-agent workflow
+passed with restart persistence and a visually inspected Verification Center.
+The first host UI wait timed out; a fresh run passed unchanged assertions.
+Historical receipts above remain intact; see the [refresh evidence](verification/upstream-repin-2026-11-12.json)
+for pins, hashes, checks, and scope limits. Remote Workcell adapters remain outside
+the plugin bundle; their upstream audit/pagination tests are distinct evidence.

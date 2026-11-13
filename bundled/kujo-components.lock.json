@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "bundleVersion": "0.13.0",
+  "bundleVersion": "0.13.1",
   "runtime": {
     "minimumVersion": "1.8.1"
   },
@@ -916,7 +916,7 @@
     {
       "id": "lens",
       "repository": "https://github.com/kujolang/lens",
-      "gitCommit": "91049646d70c11bf0c6071f39cf7dfac6b1ba70b",
+      "gitCommit": "7f3ee8be8be36817e958460621e3669cf99eaa1e",
       "version": "1.1.1",
       "license": "MIT",
       "entrypoint": "lens.kujo",
@@ -974,9 +974,9 @@
         "kujo.toml": "addfaa2bf462d64d3d5453f5219085893673ca0d912bafff95ee847e821cabe6",
         "lens.kujo": "316cbc8ad559605576f61c449036fd062e59b73dded2bb2a924c2409f0ec4f69",
         "src/accessibility.kujo": "6f5102e05c532dab96b6959be3bf6c4c0dbc33bb5c61877eebb591b02eb18230",
-        "src/checks.kujo": "20425523b10ba240b6c0e29cc66de485eabd04e9c807bde7c3f081fa3d48b192",
+        "src/checks.kujo": "ecaa16656f637b68c96652503f8ef293f5f4d74e1db4266c16200e6f39225ec7",
         "src/common.kujo": "f8ef556bea3e5438e8ce6a9d176e871e3a675b2503496ad4a130893f980895e6",
-        "src/config.kujo": "539edc5d42bc25925963d653299b8ab6a9c1aa67b5b75af8ca0fb3f9dfd9d3c6",
+        "src/config.kujo": "24e84a2842a1ed907c489ae8a70b04dde1b826614e29206209748dc8a2c5dbbd",
         "src/config_file.kujo": "6dc37693093ac15e7c6a4057ef3e9379fa92ae40302fdee3b7191573fe96b92c",
         "src/crawl.kujo": "78837cd564b1c54fc0b226dc70b289506e73739e3b3f7c29a855a233a75a344a",
         "src/eval.kujo": "cd1c89f0579223fd84fe68a1952206bfc57583022a93ca10cc4a9d1095892ee3",
@@ -988,7 +988,7 @@
         "src/report.kujo": "5a53dfec87e4e7155ced996dc6ddf91916f78116c6be263ec29155998b163284",
         "src/report_html.kujo": "4feb93c9ea8e35d4664b74642001a7e384fdc5ab8f181e6679b92bde01ba6348",
         "src/runner.kujo": "1567edaa8cf44d71a79f77b0f4ba28ff85dda04da0160392cf0b79a960292dd1",
-        "src/spec.kujo": "c924f40604981a61538f1e873c2a9d6deef1cefe7e5cef5d066ff5be7f19da20",
+        "src/spec.kujo": "96f079cbb73e954f63ccfefd7db2dc062f65155108d239c8ed37f6d8a4d18b53",
         "src/validate.kujo": "bb41dec80945f99c054eb0cdbe43585c458aea494ef8ed6dc1db4bf88f08423d",
         "src/visual.kujo": "4d0bb3415d969e1b26d0ddcc5012a21f611923d1bea0bb536f00d193641a60ce"
       },
@@ -997,7 +997,7 @@
     {
       "id": "workcell",
       "repository": "https://github.com/kujolang/workcell",
-      "gitCommit": "3a624b01afd0bbfb4f7d8eb45b9fba593265e07e",
+      "gitCommit": "6f5445b6ca99eafad31ab3e5d3f3f2c84e9eb9c8",
       "version": "1.3.0",
       "license": "MIT",
       "entrypoint": "main.kujo",

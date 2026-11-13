@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Refresh bundle 0.13.1 to Workcell 6f5445b (dependency audit and bounded E2B pagination fixes) and Lens 7f3ee8b (explicit page-selector evidence and unsupported-selector rejection). Remote Workcell adapters remain unbundled. Add native selector admission and failure regressions.
+
 - Add opt-in approved native Workcell, Lens, Muzzle and PackWrite workflows through the existing execution coordinator, host jobs and immutable evidence store. Preserve all 21 prior tools; add `manage-kujo-assurance`.
 - Add current-source advisory/required/human-review acceptance metadata, explicit human waivers and native descendant issue evidence. Observe handoff events without granting execution authority or overriding native issue status.
 - Add metadata-only Watchdog imports, real browser artifacts and a Verification Center. Bundle four checksum-pinned producers; keep browser dependencies optional.
