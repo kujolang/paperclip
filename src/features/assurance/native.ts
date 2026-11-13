@@ -186,7 +186,7 @@ export function validateLensFlow(value: unknown, target: string) {
 }
 
 async function prepareContainedMuzzle({input,manifest,script}:{input:{selection:Selection;directory:string;workspace:string;runtime:ResolvedRuntime;dockerHost:string|null};manifest:Record<string,unknown>;script:string}) {
-  if (manifest.runner !== "bash") throw new Error("Contained Muzzle currently supports reviewed bash workflows only");
+  if (manifest.runner !== "bash" || !Array.isArray(manifest.args) || manifest.args.length) throw new Error("Contained Muzzle requires a reviewed bash workflow with no arguments");
   const definitionPath = path.parse(input.selection.target);
   const definition = JSON.parse(await readFile(join(input.workspace, definitionPath), "utf8"));
   const command = ["sh", `/workspace/.muzzle/workflows/${script}`];

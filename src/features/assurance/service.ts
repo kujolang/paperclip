@@ -24,6 +24,7 @@ import { assuranceSelection, nativeAssurance, type Selection } from "./native.js
 export function createAssuranceService(ctx: PluginContext) {
   let captures = 0;
   async function admission(scope: ExecutionScope, kind: Selection["kind"]) {
+    if (!["darwin", "linux"].includes(process.platform)) throw new Error("Assurance execution currently requires macOS or Linux");
     const config = parsePluginConfig(await ctx.config.get(scope.companyId));
     if (!toolEnabled(config, assuranceTool) || !config.assurance[kind]) throw new Error(`${kind} is disabled in company assurance settings`);
     const issue = await ctx.issues.get(scope.issueId, scope.companyId);
