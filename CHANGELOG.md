@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.0 — 2026-11-12
 
 - Remove the first-50-only delegated evidence limitation with bounded pages, scope/membership-bound cursors, per-page access checks and UI restart controls. Verify complete multi-page coverage and reject stale or cross-scope cursors.
 

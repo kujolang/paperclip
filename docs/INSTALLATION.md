@@ -15,14 +15,14 @@ npx paperclipai plugin install @kujolang/paperclip
 For a pinned plugin version, Paperclip 2026.1106.0 supports the separate option:
 
 ```bash
-npx paperclipai@2026.1106.0 plugin install @kujolang/paperclip --version 0.2.1
+npx paperclipai@2026.1106.0 plugin install @kujolang/paperclip --version 0.3.0
 ```
 
 That exact CLI path was verified against a disposable host. Combined scoped
-references such as `@kujolang/paperclip@0.2.1` still fail package-path resolution;
+references such as `@kujolang/paperclip@0.3.0` still fail package-path resolution;
 [upstream PR #12745](https://github.com/paperclipai/paperclip/pull/12745) remains open.
-The pinned example installs the published 0.2.1 archive, not this sweep's unreleased
-working-tree changes. Use the established release process to publish those changes.
+The pinned example selects the 0.3.0 release. Review the [release notes](RELEASE_0_3_0.md)
+for the new opt-in assurance workflows and upgrade boundaries.
 
 Restart Paperclip if it is running. Open an issue and confirm that the Kujo workspace appears in the current task view. On project pages, open the **Kujo** tab. No Classic Task Interface setting is required. Paperclip `2026.1106.0` does not mount plugin tabs on run pages: the Kujo run panel is unavailable in that host UI, although retained run evidence remains accessible through the agent tools. This is an observed host limitation, not removal of the plugin's read-only run component.
 

@@ -1,6 +1,6 @@
 # Kujo for Paperclip
 
-[![Version](https://img.shields.io/badge/version-0.2.1-black)](https://github.com/kujolang/paperclip/releases/tag/v0.2.1)
+[![Version](https://img.shields.io/badge/version-0.3.0-black)](https://github.com/kujolang/paperclip/releases/tag/v0.3.0)
 [![npm](https://img.shields.io/npm/v/%40kujolang%2Fpaperclip?label=npm&color=black)](https://www.npmjs.com/package/@kujolang/paperclip)
 [![CI](https://img.shields.io/github/actions/workflow/status/kujolang/paperclip/ci.yml?branch=main&label=CI&color=black)](https://github.com/kujolang/paperclip/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-MIT-lightgrey)](LICENSE)
@@ -213,10 +213,11 @@ The plugin ships pinned, checksummed Ability contracts/catalogs and generates it
 
 ## Agent tools
 
-Paperclip agents can call twenty-one tools:
+Paperclip agents can call twenty-two tools:
 
 | Tool | Use |
 | --- | --- |
+| `kujolang.paperclip:manage-kujo-assurance` | Prepare, start and inspect approved Workcell, Lens, Muzzle and PackWrite operations; review acceptance and delegated evidence. Human approval and feature-specific prerequisites apply. |
 | `kujolang.paperclip:manage-project-knowledge` | Explicitly index selected project text, query cited snapshots, inspect content freshness and delete private indexes. Offline, with no project execution or external provider. |
 | `kujolang.paperclip:manage-kujo-workflow` | Preview and queue approved offline Dispatch examples, inspect retained state, and cancel owned operations. Human checkpoint decisions use the issue panel. macOS/Linux and operator storage required. |
 | `kujolang.paperclip:manage-kujo-starter` | Preview and create approved canonical starter files in a new issue-workspace directory. No overwrite, dependency installation or generated-program execution. |

@@ -347,8 +347,7 @@ requires its own source/workspace admission and is not invoked by this preview.
 
 ## Run a Kujo workflow
 
-This development feature is not yet in the published npm package. It requires a
-Paperclip host with company local folders and scheduled plugin jobs, on macOS or
+This optional workflow requires a Paperclip host with company local folders and scheduled plugin jobs, on macOS or
 Linux. Existing Windows features remain available.
 
 1. In company plugin settings, enable **Human-approved Dispatch workflows** and
