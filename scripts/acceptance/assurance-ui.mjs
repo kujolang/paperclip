@@ -10,5 +10,10 @@ export async function captureAssuranceUi({base,cookie,issueId,root}){
  await panel.getByRole('button',{name:'Check acceptance',exact:true}).click();await expect(panel.getByLabel('Acceptance result')).toContainText('passed');
  await panel.getByRole('button',{name:'Inspect delegated evidence',exact:true}).click();await expect(panel.getByLabel('Native delegated evidence')).toContainText('Search task list');
  await panel.screenshot({path:join(root,'verification-center.png')});
+ await panel.getByRole('button',{name:'Refresh verification',exact:true}).click();
+ await expect(panel.getByRole('region',{name:'Verification attempts'}).getByRole('listitem').first()).toContainText('Requested by');
+ await expect(panel.getByRole('button',{name:'Refresh verification',exact:true})).toBeEnabled();
+ await expect(panel.getByLabel('Acceptance result')).toContainText('passed');
+ await panel.getByRole('region',{name:'Verification attempts'}).screenshot({path:join(root,'verification-attempts.png')});
  }catch(error){await page?.screenshot({path:join(root,'verification-center-failure.png'),fullPage:true}).catch(()=>{});throw error;}finally{await browser.close();}
 }

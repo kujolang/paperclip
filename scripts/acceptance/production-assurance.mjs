@@ -36,7 +36,12 @@ export async function qualifyAssurance({call,companyId,projectId,issueId,root,no
   let result;await waitUntil(async()=>{result=await action('manage-kujo-assurance',{operation:'status',id:prepared.id});return !['preparing','pending','running','cancel_requested'].includes(result.state);},120000);
   assert.equal(result.result?.classification,expected,JSON.stringify({state:result.state,result:result.result?.stdout,stderr:result.result?.stderr,diagnostic:result.diagnostic}));assert.equal(result.history.status,'retained');records.push({kind,label,result});return result;
  };
- await run('packwrite','agent','plan','plan-valid');await run('muzzle','check','workflow');const contained=await run('workcell','workcell.json','contained-check');
+ await run('packwrite','agent','plan','plan-valid');await run('muzzle','check','workflow');
+ await writeFile(join(workspace,'.muzzle/workflows/check.sh'),'#!/bin/sh\nprintf "retained failed workflow\\n"\nexit 7\n');
+ const failedWorkflow=await run('muzzle','check','failed-workflow','failed');assert.ok(failedWorkflow.result.artifacts.some(a=>a.content?.includes('retained failed workflow')));
+ await action('manage-kujo-assurance',{operation:'recover',id:failedWorkflow.id},{status:502});
+ await writeFile(join(workspace,'.muzzle/workflows/check.sh'),'#!/bin/sh\nprintf "observed workflow check\\n"\n');
+ const contained=await run('workcell','workcell.json','contained-check');
  for(let attempt=0;attempt<2;attempt++){const recovery=await action('manage-kujo-assurance',{operation:'recover',id:contained.id});assert.equal(recovery.cleanup,'owned-containers-removed');assert.deepEqual((await action('manage-kujo-assurance',{operation:'status',id:contained.id})).result,contained.result);}
  await run('lens','browser.json','intentional-browser-failure','failed');assert.equal((await action('kujo-acceptance',{operation:'status'})).status,'failed');
  broken=false;await run('lens','browser.json','corrected-browser');assert.equal((await action('kujo-acceptance',{operation:'status'})).status,'passed');

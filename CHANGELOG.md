@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Review original accountability requirements; expose chronological verification attempts with native attribution, recorded approval and honest missing observations. Verify retained Muzzle failure logs and cancellation during execution, plus cross-company UI isolation. Reject misleading resource recovery for operations without Workcell resources.
+
 - Refresh bundle 0.13.1 to Workcell 6f5445b (dependency audit and bounded E2B pagination fixes) and Lens 7f3ee8b (explicit page-selector evidence and unsupported-selector rejection). Remote Workcell adapters remain unbundled. Add native selector admission and failure regressions.
 
 - Add opt-in approved native Workcell, Lens, Muzzle and PackWrite workflows through the existing execution coordinator, host jobs and immutable evidence store. Preserve all 21 prior tools; add `manage-kujo-assurance`.

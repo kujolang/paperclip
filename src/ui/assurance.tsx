@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { usePluginAction } from "@paperclipai/plugin-sdk/ui";
 import type { Artifact, Selection } from "../features/assurance/native.js";
 import type { ExecutionRecord, ExecutionPlan } from "../execution/contracts.js";
+type Attempt = Pick<ExecutionRecord, "id" | "state" | "createdAt" | "finishedAt" | "startRequestedAt" | "approvedBy"> & {path:string; requester:ExecutionRecord["request"]["requester"]; classification:string|null};
 const pre = { whiteSpace: "pre-wrap" as const, overflowWrap: "anywhere" as const, maxHeight: 360, overflow: "auto", fontSize: 12 };
 export function AssurancePanel({ issueId, refreshEvidence }: { issueId: string; refreshEvidence: () => unknown }) {
   const alive=useRef(true);useEffect(()=>{alive.current=true;return()=>{alive.current=false;};},[]);
@@ -13,7 +14,7 @@ export function AssurancePanel({ issueId, refreshEvidence }: { issueId: string; 
   const [kind,setKind] = useState<Selection["kind"]>("lens"), [path,setPath] = useState("browser.json"), [target,setTarget] = useState("http://127.0.0.1:3000");
   const [discovered,setDiscovered] = useState<unknown>(null);
   const [selected,setSelected] = useState<{ id?: string; state?: string; plan?: ExecutionPlan; result?: Record<string,unknown>; diagnostic?: string } | null>(null);
-  const [requests,setRequests] = useState<Array<{id:string;path:string;state:string}>>([]), [error,setError] = useState(""), [busy,setBusy] = useState(false);
+  const [requests,setRequests] = useState<Attempt[]>([]), [error,setError] = useState(""), [busy,setBusy] = useState(false);
   async function act(operation: string, id?: string) {
     setBusy(true);setError("");
     try {
@@ -45,9 +46,17 @@ export function AssurancePanel({ issueId, refreshEvidence }: { issueId: string; 
       {selected.id&&["pending","running","cancel_requested"].includes(selected.state??"")&&<button onClick={()=>void act("cancel",selected.id)}>Cancel verification</button>}
       {selected.result&&<pre style={pre}>{String(selected.result.stdout??"")}{String(selected.result.stderr??"")}</pre>}
       {artifacts.map(a=><details key={a.path}><summary>{a.path} · {a.bytes} bytes</summary>{a.encoding==="base64"&&a.mediaType==="image/png"?<img style={{maxWidth:"100%"}} alt={`Lens capture ${a.path}`} src={`data:image/png;base64,${a.content}`}/>:<pre style={pre}>{a.content}</pre>}</details>)}
-      {selected.id && ["uncertain","cancelled","failed"].includes(selected.state??"") && <button disabled={busy} onClick={()=>void act("recover",selected.id)}>Recover owned resources</button>}
+      {selected.id && (selected.plan?.assurance?.kind === "workcell" || (selected.plan?.assurance?.kind === "muzzle" && selected.plan.assurance.target)) && ["uncertain","cancelled","failed"].includes(selected.state??"") && <button disabled={busy} onClick={()=>void act("recover",selected.id)}>Recover owned resources</button>}
       <details><summary>Execution receipt</summary><pre style={pre}>{JSON.stringify(selected,null,2)}</pre></details></>}
-    {!!requests.length&&<ul>{requests.map(r=><li key={r.id}>{r.path} · {r.state} <button disabled={busy} onClick={()=>void act("status",r.id)}>Inspect {r.id.slice(-8)}</button></li>)}</ul>}
+    <section aria-label="Verification attempts"><h4>Verification attempts</h4>
+      <p>Retained execution requests, oldest first. Queued time is not observed process start. Requester identity is not independent verification.</p>
+      {!requests.length?<p>No attempts loaded. Refresh verification to inspect retained requests.</p>:<ol>{[...requests].sort((a,b)=>a.createdAt.localeCompare(b.createdAt)||a.id.localeCompare(b.id)).map(r=><li key={r.id} style={{overflowWrap:"anywhere",marginBottom:12}}>
+        <strong>{r.path} · {r.state}</strong><p>Outcome: {r.classification??"unavailable"} · Requested by {r.requester.kind} {r.requester.id}{r.requester.runId?` · Run ${r.requester.runId}`:""}</p>
+        <p>Human approval: {r.approvedBy??"not recorded"}</p>
+        <dl><dt>Requested</dt><dd><time dateTime={r.createdAt}>{r.createdAt}</time></dd><dt>Queued</dt><dd>{r.startRequestedAt??"not recorded"}</dd><dt>Finished</dt><dd>{r.finishedAt??"not recorded"}</dd></dl>
+        <button disabled={busy} onClick={()=>void act("status",r.id)}>Inspect {r.id.slice(-8)}</button>
+      </li>)}</ol>}
+    </section>
   </section>;
 }
 

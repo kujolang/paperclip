@@ -105,6 +105,7 @@ export function createAssuranceService(ctx: PluginContext) {
     async recover(scope: ExecutionScope, id: string) {
       const record = await coordinator.status(scope, id);
       if (["preparing", "pending", "running", "cancel_requested"].includes(record.state) || !record.request.plan.assurance) throw new Error("Only terminal assurance operations may recover owned resources");
+      if (record.request.plan.assurance.kind !== "workcell" && !(record.request.plan.assurance.kind === "muzzle" && record.request.plan.assurance.target)) throw new Error("This operation has no Workcell resources to recover; inspect retained evidence instead");
       const storage = await resolveWorkflowStorage(ctx, scope);
       if (storage.storageDigest !== record.request.plan.assurance.storageDigest) throw new Error("Restore original storage before recovery");
       const { nativeRoot } = await storage.store.recover({ ...scope, installationId: storage.installationId, executionId: id, requestDigest: record.requestDigest });

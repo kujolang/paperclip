@@ -6,6 +6,9 @@ export type PluginDetailTabProps = {
 
 declare global {
   interface Window {
+    __KUJO_ASSURANCE_REQUESTS__?: Array<Record<string, unknown>>;
+    __KUJO_DELAY_ASSURANCE__?: boolean;
+    __KUJO_RESOLVE_ASSURANCE__?: () => void;
     __KUJO_DELAY_REFRESH__?: boolean;
     __KUJO_RESOLVE_REFRESH__?: () => void;
     __KUJO_KNOWLEDGE__?: any;
@@ -72,6 +75,12 @@ export function usePluginAction(action: string) {
   return async (input: unknown) => {
     window.__KUJO_ACTIONS__ ??= [];
     window.__KUJO_ACTIONS__.push({ action, input });
+    if (action === "manage-kujo-assurance") {
+      if(window.__KUJO_DELAY_ASSURANCE__)await new Promise<void>(resolve=>{window.__KUJO_RESOLVE_ASSURANCE__=resolve;});
+      const params=input as {operation:string;id?:string};
+      if(params.operation==="list")return {requests:window.__KUJO_ASSURANCE_REQUESTS__??[]};
+      return window.__KUJO_ASSURANCE_REQUESTS__?.find(r=>r.id===params.id)??{};
+    }
     if (action === "manage-project-knowledge") {
       if (window.__KUJO_DELAY_KNOWLEDGE__) { await new Promise<void>(resolve => { window.__KUJO_RESOLVE_KNOWLEDGE__ = resolve; }); throw new Error("private delayed knowledge result"); }
       const params = input as { operation: string };

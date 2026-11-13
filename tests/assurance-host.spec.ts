@@ -61,3 +61,29 @@ it("rejects acceptance policy references outside the native issue subtree",async
  f.h.ctx.issues.summaries.getOrchestration=async()=>({companyId:"company",issueId:"issue",subtreeIssueIds:[],runs:[]} as never);
  await expect(f.policy()).rejects.toThrow(/native descendants/);
 },60000);
+
+it("retains failed Muzzle logs and cancels a running workflow without replay",async()=>{
+ const f=await fixture();
+ const script=join(f.cwd,'.muzzle/workflows/check.sh');
+ await writeFile(script,'#!/bin/sh\nprintf "observed failure log\\n"\nexit 7\n');
+ const failed=await f.action('prepare',{selection:{kind:'muzzle',path:'check'},submissionId:'failure'});f.accept(failed.interactionId);
+ await f.action('start',{id:failed.id});await f.service.drainQueued();
+ const failure=await f.action('status',{id:failed.id});
+ await expect(f.action('recover',{id:failed.id})).rejects.toThrow(/no Workcell resources/);
+ expect(failure.result.classification).toBe('failed');expect(JSON.stringify(failure.result.artifacts)).toContain('observed failure log');expect(failure.history.status).toBe('retained');
+ await writeFile(script,'#!/bin/sh\nprintf "observed running log\\n"\nsleep 9\n');
+ const slow=await f.action('prepare',{selection:{kind:'muzzle',path:'check'},submissionId:'running-cancel'});f.accept(slow.interactionId);
+ await f.action('start',{id:slow.id});const draining=f.service.drainQueued();
+ try {
+  await vi.waitFor(async()=>{const entries=await import('node:fs/promises').then(fs=>fs.readdir(join(f.root,'storage'),{recursive:true}));
+   const logs=entries.filter(p=>p.endsWith('.log'));let observed=false;
+   for(const log of logs){const text=await import('node:fs/promises').then(fs=>fs.readFile(join(f.root,'storage',log),'utf8'));if(text.includes('observed running log'))observed=true;}
+   expect(observed).toBe(true);
+  },{timeout:20000,interval:100});
+  await f.action('cancel',{id:slow.id});
+ } finally { await draining; }
+ const cancelled=await f.action('status',{id:slow.id});
+ expect(cancelled.state).toBe('cancelled');expect(cancelled.result.classification).toBe('incomplete');expect(JSON.stringify(cancelled.result.artifacts)).toContain('observed running log');expect(cancelled.history.status).toBe('retained');
+ expect((await f.action('status',{id:failed.id})).result).toEqual(failure.result);
+ expect((await f.action('list')).requests.find((r:any)=>r.id===failed.id).approvedBy).toBe('board');
+},90000);

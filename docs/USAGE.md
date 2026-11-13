@@ -421,3 +421,15 @@ workflow storage, native human approvals, container/browser limits, acceptance
 policies and Watchdog metadata. The [real demo](../examples/assurance/README.md)
 provides setup commands and a four-agent native delegation scenario. Existing
 source, Eval and Dispatch controls retain their own admission contracts.
+
+## Review verification attempts
+
+On an issue, enable only the needed assurance integrations and configure the
+private workflow-state folder as described in [Accountability](ACCOUNTABILITY.md).
+In **Verification Center**, use **Refresh verification** to load retained attempts.
+They appear oldest first with requester/run identity, recorded human approval,
+requested/queued/finished times and the observed classification. Queue time is
+not process start, and missing observations display as unavailable or not recorded.
+Select **Inspect** to open the immutable result, reports, screenshots and logs.
+Use the existing Evidence history to compare or export attempts. A failed attempt
+remains inspectable after later work succeeds; retention limits still apply.

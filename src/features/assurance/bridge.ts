@@ -21,7 +21,7 @@ export const assuranceInput = z.discriminatedUnion("operation", [
 ]);
 export function assuranceSummary(record: ExecutionRecord) {
   return { id: record.id, state: record.state, mode: record.request.plan.operation.replace("assurance.", ""), path: record.request.plan.suite,
-    requester: record.request.requester, interactionId: record.interactionId, createdAt: record.createdAt, expiresAt: record.expiresAt,
+    requester: record.request.requester, approvedBy: record.approvedBy, interactionId: record.interactionId, createdAt: record.createdAt, expiresAt: record.expiresAt,
     startRequestedAt: record.startRequestedAt, finishedAt: record.finishedAt, diagnostic: record.diagnostic, classification: record.result?.classification ?? null };
 }
 export function assuranceView(scope: ExecutionScope, record: ExecutionRecord) {

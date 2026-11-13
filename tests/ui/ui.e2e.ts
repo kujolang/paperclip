@@ -776,3 +776,33 @@ test("RunLedger imports remain unverified and cannot cross company navigation", 
   await expect(section.getByLabel("RunLedger record JSON")).toHaveValue("");
   await expect(section.getByText("Verification: unverified", { exact: true })).toHaveCount(0);
 });
+
+test("assurance attempts show chronological attribution and honest missing observations", async ({page})=>{
+ await page.setViewportSize({width:390,height:1200});
+ await page.goto('/?surface=task&entity=issue&assurance=1');
+ const panel=page.getByRole('region',{name:'Verification Center',exact:true});
+ await expect(panel.getByText('No attempts loaded. Refresh verification to inspect retained requests.')).toBeVisible();
+ await page.evaluate(()=>{window.__KUJO_ASSURANCE_REQUESTS__=[
+  {id:'execution-second',path:'muzzle:check',state:'pending',requester:{kind:'agent',id:'tester',runId:'run-two'},approvedBy:null,createdAt:'2026-11-12T12:01:00Z',startRequestedAt:null,finishedAt:null,classification:null},
+  {id:'execution-first',path:'muzzle:check',state:'failed',plan:{assurance:{kind:'muzzle',path:'check'}},requester:{kind:'agent',id:'builder',runId:'run-one'},approvedBy:'reviewer',createdAt:'2026-11-12T12:00:00Z',startRequestedAt:'2026-11-12T12:00:01Z',finishedAt:'2026-11-12T12:00:03Z',classification:'failed'}];});
+ await panel.getByRole('button',{name:'Refresh verification',exact:true}).click();
+ const attempts=panel.getByRole('region',{name:'Verification attempts'}).getByRole('listitem');
+ await expect(attempts).toHaveCount(2);await expect(attempts.nth(0)).toContainText('Run run-one');
+ await expect(attempts.nth(0)).toContainText('Human approval: reviewer');
+ await expect(attempts.nth(1)).toContainText('Outcome: unavailable');
+ await expect(attempts.nth(1)).toContainText('Human approval: not recorded');
+ await expect.poll(()=>page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth)).toBe(true);
+ await attempts.nth(0).getByRole('button').click();
+ await expect.poll(()=>page.evaluate(()=>window.__KUJO_ACTIONS__?.some(a=>a.action==='manage-kujo-assurance'&&(a.input as any).operation==='status'&&(a.input as any).id==='execution-first'))).toBe(true);
+ await expect(panel.getByRole('button',{name:'Recover owned resources'})).toHaveCount(0);
+});
+
+test("late assurance attempts cannot appear after company navigation",async({page})=>{
+ await page.goto('/?surface=task&entity=issue&assurance=1');
+ await page.evaluate(()=>{window.__KUJO_DELAY_ASSURANCE__=true;window.__KUJO_ASSURANCE_REQUESTS__=[{id:'private-attempt',path:'private-workflow',state:'failed',createdAt:'2026-11-12',requester:{kind:'human',id:'private-owner'},approvedBy:null}];});
+ await page.getByRole('button',{name:'Refresh verification',exact:true}).click();
+ await expect.poll(()=>page.evaluate(()=>Boolean(window.__KUJO_RESOLVE_ASSURANCE__))).toBe(true);
+ await page.evaluate(()=>window.__KUJO_NAVIGATE__?.('different-company'));
+ await page.evaluate(()=>window.__KUJO_RESOLVE_ASSURANCE__?.());
+ await expect(page.getByText('private-workflow',{exact:false})).toHaveCount(0);
+});
