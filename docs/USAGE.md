@@ -433,3 +433,12 @@ not process start, and missing observations display as unavailable or not record
 Select **Inspect** to open the immutable result, reports, screenshots and logs.
 Use the existing Evidence history to compare or export attempts. A failed attempt
 remains inspectable after later work succeeds; retention limits still apply.
+
+### Inspect larger delegated task trees
+
+Choose **Inspect delegated evidence** to load the first 50 readable assignments.
+Use **Next assignments** for another bounded page and **First assignments** to
+restart. Page ranges refer to the current native task tree. If the tree changes,
+the cursor is rejected: inspect again from the first page. Each page rechecks
+access and shows only that page's related native runs; paging does not copy or
+reassign evidence. Status and evidence can change between reads.

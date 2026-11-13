@@ -1,0 +1,89 @@
+{
+  "schemaVersion": 1,
+  "scope": "Paperclip remaining limitations: delegated evidence pagination",
+  "baseCommit": "25abb1ca83d451326f0762a5a0c3c81bf79b1d0f",
+  "change": "Replace first-50-only view with bounded, access-checked pages and scope/membership-bound cursors.",
+  "units": {
+    "total": 352,
+    "platformSkipped": 2,
+    "distinctPassedAcrossFullRunAndRerun": 350,
+    "fullRun": {
+      "passed": 346,
+      "failed": 4
+    },
+    "rerun": {
+      "files": 3,
+      "passed": 26,
+      "failed": 0
+    },
+    "note": "Three initial tests exceeded 5-second test deadlines; an existing Eval capacity test observed failed execution. All affected files passed unchanged on focused rerun. No assertions or execution limits were relaxed."
+  },
+  "ui": {
+    "passed": 64,
+    "failed": 0
+  },
+  "paginationContract": {
+    "fixtureAssignments": 121,
+    "pageSizes": [
+      50,
+      50,
+      21
+    ],
+    "maxIssueReadsPerPage": 51,
+    "negativeCases": [
+      "stale membership",
+      "malformed offset",
+      "wrong digest",
+      "different root",
+      "different company",
+      "later-page access failure",
+      "host scope mismatch",
+      "late browser response after company navigation"
+    ]
+  },
+  "packagedHost": {
+    "status": "passed",
+    "hostStopped": true,
+    "hostPackage": {
+      "name": "@paperclipai/server",
+      "version": "2026.1106.0",
+      "entrySha256": "cde8cd927214edb31edf173aec7667dd86b174799a58c822f6abf41089786480"
+    },
+    "package": {
+      "mode": "npm-installed local archive with separately installed dependencies",
+      "version": "0.2.1",
+      "workerSha256": "f39287fc1d83bd102d0004fb0224a9b501f12266153bb1abf250096492065ebd",
+      "manifestSha256": "036bf911aa6fc826978e5dc9de72584835d00fdea0067eb969457102c6c60fc5"
+    },
+    "checks": [
+      "previous plugin 0.2.1 evidence survives packaged upgrade, capability admission and full host restart",
+      "Four real process agents: native reportsTo/parentId/checkout/run attribution, PackWrite plan, Workcell implementation proof, Lens interaction, Eval review, child evidence aggregation and human approval",
+      "Native delegated evidence: 52 actual issues across bounded 50/2 API and browser pages, no omissions/duplicates, stale cursor rejected after membership change",
+      "Real authenticated Paperclip: PackWrite, Muzzle, Workcell, Lens fail/corrected pass, stale acceptance, explicit native human waiver, cancellation, metadata import, delegation and restart persistence"
+    ]
+  },
+  "realHostPagination": {
+    "assignments": 52,
+    "pageSizes": [
+      50,
+      2
+    ],
+    "apiAndBrowser": true,
+    "staleCursorRejectedAfterMembershipChange": true
+  },
+  "initialHostAttempt": "Native execution hit its unchanged deadline and reported incomplete; fresh isolated retry passed.",
+  "checks": [
+    "repository conventions",
+    "canonical Ability and verification contracts",
+    "typecheck",
+    "19 component checksums",
+    "supply-chain audit: 0 vulnerabilities; 165 locked packages; 68 SBOM components",
+    "build and npm package verification"
+  ],
+  "limitations": [
+    "Pages bound plugin issue/evidence reads, not full native orchestration query cost.",
+    "Host summary exposes at most 100 recent tree-wide runs; use native issue history for complete run inspection.",
+    "Remaining provider, platform, authenticated-browser, release and operator-retention boundaries remain documented; no production change."
+  ],
+  "distributionNote": "Runtime worker in the tested archive matches final build; documentation evidence finalized afterward."
+}

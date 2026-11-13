@@ -347,3 +347,5 @@ includes company-scoped host admission, bounded suite previews, durable request 
 and an opt-in authenticated host acceptance harness. Public Eval and separately enabled run/test controls are available on issues; offline Dispatch examples have separate durable job controls; live-provider Dispatch workflows remain outside the offline adapter. The optional Verification Center adds native Muzzle/Workcell/Lens/PackWrite checks and separate acceptance metadata.
 
 For requirement coverage and current limitations, see the [original assignment review](docs/ATTACHMENT_REVIEW.md). Verification Center shows chronological attempts with recorded requester/run identity, human approval, timing and outcomes.
+
+Delegated evidence supports larger native task trees through bounded 50-assignment pages, with access checks on every page and explicit restart when tree membership changes.

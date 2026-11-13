@@ -236,3 +236,28 @@ issues, inspect evidence across native delegated assignments, and distinguish
 verified current work from submitted claims.** No release or protected merge is
 part of this work. See [the verification report](ACCOUNTABILITY_TESTS.md) for actual
 qualification results and remaining platform limits.
+
+## Delegation pages and remaining limits
+
+The delegated evidence view now reads all assignments exposed by the native
+orchestration summary through pages of at most 50. **Next assignments** replaces
+the current page; **First assignments** restarts inspection. Every page rechecks
+company, root, child and project access. Stable root-first/ID ordering and a
+company/root/membership-bound cursor prevent offsets from silently crossing trees.
+The cursor is a consistency marker, not an access token.
+If membership changes, reload the first page. Evidence and status remain live
+observations, not an atomic historical snapshot. Each page reads at most 50 issue
+evidence lists; the host still computes its full orchestration summary, so this
+is not a bound on the host's aggregate query cost. Native run references are
+filtered to the displayed assignments. Official host 2026.1106.0 supplies only
+the 100 most recent runs across the tree in that summary; a page count is not
+complete run history. Open the native assignment for its full history.
+
+The remaining documented boundaries were rechecked: the installed official host
+still requires the separate run-tab repair; Podman is absent; no live remote
+provider or authenticated external browser qualification is supplied. Enabling
+provider traffic, broader execution or a release would change the authorized
+operating boundary. Private reservations remain intentionally operator-owned;
+automatic deletion would discard recovery/evidence files without a retention
+policy. These are not treated as passing support claims. The local first-50-only
+view was removable without changing those boundaries and is now paginated.

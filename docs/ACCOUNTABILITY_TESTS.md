@@ -89,3 +89,20 @@ restart checks. Earlier mixed-revision runs are documented separately in the
 [review receipt](verification/attachment-review-2026-11-12.json), not substituted
 for final verification. The new coverage does not expand live provider or platform
 claims.
+
+## Remaining-limits follow-up
+
+Delegated evidence now supports bounded pages beyond the prior first-50-only view.
+The 121-assignment integration fixture verifies 50/50/21 pages, at most 51 issue
+reads per request (root plus page), scope/membership cursors and later-page access
+checks. All 64 UI tests passed. The official packaged-host rehearsal verifies
+52 actual issues across 50/2 API and browser pages, a return to the first page,
+and rejection after membership changes, alongside the existing upgrade and
+four-agent workflows.
+
+The full unit run had 346 passes, two platform skips and four failures in existing
+execution tests. All 26 tests in those three files passed on focused rerun without
+changing assertions or deadlines, covering all 350 non-skipped cases. The initial
+host run hit a native execution deadline; its fresh retry passed all four checks.
+Component, audit, build and package checks passed separately after the initial
+unit failure stopped the aggregate command. See the [exact review receipt](verification/limitations-review-2026-11-12.json).

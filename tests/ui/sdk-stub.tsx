@@ -6,6 +6,7 @@ export type PluginDetailTabProps = {
 
 declare global {
   interface Window {
+    __KUJO_DELEGATION_PAGES__?: Array<Record<string, any>>;
     __KUJO_ASSURANCE_REQUESTS__?: Array<Record<string, unknown>>;
     __KUJO_DELAY_ASSURANCE__?: boolean;
     __KUJO_RESOLVE_ASSURANCE__?: () => void;
@@ -75,6 +76,13 @@ export function usePluginAction(action: string) {
   return async (input: unknown) => {
     window.__KUJO_ACTIONS__ ??= [];
     window.__KUJO_ACTIONS__.push({ action, input });
+    if (action === "kujo-delegation") {
+      if(window.__KUJO_DELAY_ASSURANCE__)await new Promise<void>(resolve=>{window.__KUJO_RESOLVE_ASSURANCE__=resolve;});
+      const params=input as {cursor?:{offset:number}};
+      const found=window.__KUJO_DELEGATION_PAGES__?.find(p=>p.page.offset===(params.cursor?.offset??0));
+      if(found?.error)throw new Error(found.error);
+      return found??{issues:[],runs:[],page:{offset:0,total:0},nextCursor:null};
+    }
     if (action === "manage-kujo-assurance") {
       if(window.__KUJO_DELAY_ASSURANCE__)await new Promise<void>(resolve=>{window.__KUJO_RESOLVE_ASSURANCE__=resolve;});
       const params=input as {operation:string;id?:string};

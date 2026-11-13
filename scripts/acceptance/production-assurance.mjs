@@ -34,7 +34,7 @@ export async function qualifyAssurance({call,companyId,projectId,issueId,root,no
   const jobs=(await call('/plugins/kujolang.paperclip/jobs')).data,job=jobs.find(x=>x.jobKey==='assurance-workflows');assert.ok(job);
   await call(`/plugins/kujolang.paperclip/jobs/${job.id}/trigger`,{method:'POST',body:{}}).catch(error=>{if(!String(error).includes('400 !== 200'))throw error;});
   let result;await waitUntil(async()=>{result=await action('manage-kujo-assurance',{operation:'status',id:prepared.id});return !['preparing','pending','running','cancel_requested'].includes(result.state);},120000);
-  assert.equal(result.result?.classification,expected,JSON.stringify({state:result.state,result:result.result?.stdout,stderr:result.result?.stderr,diagnostic:result.diagnostic}));assert.equal(result.history.status,'retained');records.push({kind,label,result});return result;
+  assert.equal(result.result?.classification,expected,JSON.stringify({kind,label,state:result.state,result:result.result?.stdout,stderr:result.result?.stderr,diagnostic:result.diagnostic}));assert.equal(result.history.status,'retained');records.push({kind,label,result});return result;
  };
  await run('packwrite','agent','plan','plan-valid');await run('muzzle','check','workflow');
  await writeFile(join(workspace,'.muzzle/workflows/check.sh'),'#!/bin/sh\nprintf "retained failed workflow\\n"\nexit 7\n');
@@ -58,6 +58,16 @@ export async function qualifyAssurance({call,companyId,projectId,issueId,root,no
  for(const record of records){const restored=await action('manage-kujo-assurance',{operation:'status',id:record.result.id});assert.deepEqual(restored.result,record.result.result);}
  assert.equal((await action('kujo-acceptance',{issueId:teamResult.parentIssueId,operation:'status'})).digest,teamResult.acceptanceDigest);
  for(const entry of teamResult.team){const restored=await action(entry.role==='review'?'manage-evaluation':'manage-kujo-assurance',{issueId:entry.issueId,operation:'status',id:entry.execution.id});assert.deepEqual(restored.result,entry.execution.result);const detail=(await call('/plugins/kujolang.paperclip/bridge/data',{method:'POST',body:{companyId,key:'detail',params:{entityType:'issue',entityId:entry.issueId}}})).data.data;assert.ok(detail.history.some(r=>r.artifactId===entry.runledger.id));}
+ const paginationRoot=(await call(`/companies/${companyId}/issues`,{method:'POST',status:201,body:{title:'Delegation pagination fixture',projectId,status:'backlog'}})).data.id;
+ const childIds=[];
+ for(let i=0;i<51;i++)childIds.push((await call(`/companies/${companyId}/issues`,{method:'POST',status:201,body:{title:`Pagination child ${i}`,projectId,parentId:paginationRoot,status:'backlog'}})).data.id);
+ const firstPage=await action('kujo-delegation',{issueId:paginationRoot});assert.equal(firstPage.issues.length,50);assert.equal(firstPage.page.total,52);assert.ok(firstPage.nextCursor);
+ const secondPage=await action('kujo-delegation',{issueId:paginationRoot,cursor:firstPage.nextCursor});assert.equal(secondPage.issues.length,2);assert.equal(secondPage.nextCursor,null);
+ assert.deepEqual(new Set([...firstPage.issues,...secondPage.issues].map(i=>i.id)),new Set([paginationRoot,...childIds]));
+ const {verifyDelegationPages}=await import('./assurance-ui.mjs');await verifyDelegationPages({base,cookie,issueId:paginationRoot});
+ await call(`/companies/${companyId}/issues`,{method:'POST',status:201,body:{title:'Changed pagination membership',projectId,parentId:paginationRoot,status:'backlog'}});
+ await action('kujo-delegation',{issueId:paginationRoot,cursor:firstPage.nextCursor},{status:502});
+ checks.push('Native delegated evidence: 52 actual issues across bounded 50/2 API and browser pages, no omissions/duplicates, stale cursor rejected after membership change');
  checks.push('Real authenticated Paperclip: PackWrite, Muzzle, Workcell, Lens fail/corrected pass, stale acceptance, explicit native human waiver, cancellation, metadata import, delegation and restart persistence');
  await json('assurance.json',{schemaVersion:1,records,readiness,waiver:waived.interactionId});
  }finally{server.close();}

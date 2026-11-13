@@ -17,3 +17,20 @@ export async function captureAssuranceUi({base,cookie,issueId,root}){
  await panel.getByRole('region',{name:'Verification attempts'}).screenshot({path:join(root,'verification-attempts.png')});
  }catch(error){await page?.screenshot({path:join(root,'verification-center-failure.png'),fullPage:true}).catch(()=>{});throw error;}finally{await browser.close();}
 }
+
+export async function verifyDelegationPages({base,cookie,issueId}){
+ const browser=await chromium.launch();try{
+  const context=await browser.newContext();
+  await context.addCookies(cookie.split('; ').map(item=>{const i=item.indexOf('=');return {name:item.slice(0,i),value:item.slice(i+1),url:base};}));
+  await context.route('**/*',route=>new URL(route.request().url()).origin===base?route.continue():route.abort());
+  const page=await context.newPage();await page.goto(`${base}/issues/${issueId}`);
+  const panel=page.getByRole('region',{name:'Verification Center',exact:true});await expect(panel).toBeVisible({timeout:30000});
+  await panel.getByRole('button',{name:'Inspect delegated evidence',exact:true}).click();
+  const team=panel.getByLabel('Native delegated evidence');
+  await expect(team).toContainText('Assignments 1–50 of 52',{timeout:30000});await expect(team.getByRole('row')).toHaveCount(51);
+  await team.getByRole('button',{name:'Next assignments',exact:true}).click();
+  await expect(team).toContainText('Assignments 51–52 of 52',{timeout:30000});await expect(team.getByRole('row')).toHaveCount(3);
+  await expect(team.getByRole('button',{name:'Next assignments',exact:true})).toHaveCount(0);
+  await team.getByRole('button',{name:'First assignments',exact:true}).click();await expect(team).toContainText('Assignments 1–50 of 52',{timeout:30000});
+ }finally{await browser.close();}
+}

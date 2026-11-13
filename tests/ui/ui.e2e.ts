@@ -806,3 +806,25 @@ test("late assurance attempts cannot appear after company navigation",async({pag
  await page.evaluate(()=>window.__KUJO_RESOLVE_ASSURANCE__?.());
  await expect(page.getByText('private-workflow',{exact:false})).toHaveCount(0);
 });
+
+test('delegation pages remain bounded and can restart after a stale cursor',async({page})=>{
+ await page.goto('/?surface=task&entity=issue&assurance=1');
+ await page.evaluate(()=>{window.__KUJO_DELEGATION_PAGES__=[
+  {page:{offset:0,total:51},issues:[{id:'root',title:'First assignment',status:'backlog',evidence:[]}],runs:[],nextCursor:{offset:50,digest:'a'.repeat(64)}},
+  {page:{offset:50,total:51},issues:[{id:'last',title:'Last assignment',status:'backlog',evidence:[]}],runs:[],nextCursor:null}];});
+ await page.getByRole('button',{name:'Inspect delegated evidence',exact:true}).click();
+ const panel=page.getByLabel('Native delegated evidence');await expect(panel).toContainText('First assignment');
+ await panel.getByRole('button',{name:'Next assignments'}).click();await expect(panel).toContainText('Assignments 51–51 of 51');
+ await expect(panel.getByText('First assignment',{exact:true})).toHaveCount(0);await expect(panel.getByRole('button',{name:'Next assignments'})).toHaveCount(0);
+ await panel.getByRole('button',{name:'First assignments'}).click();
+ await page.evaluate(()=>{window.__KUJO_DELEGATION_PAGES__![1]!.error='Delegated assignments changed; inspect delegated evidence again from the first page';});
+ await panel.getByRole('button',{name:'Next assignments'}).click();await expect(page.getByRole('alert')).toContainText('assignments changed');await expect(panel).toContainText('First assignment');
+});
+test('late delegation page cannot cross company navigation',async({page})=>{
+ await page.goto('/?surface=task&entity=issue&assurance=1');
+ await page.evaluate(()=>{window.__KUJO_DELAY_ASSURANCE__=true;window.__KUJO_DELEGATION_PAGES__=[{page:{offset:0,total:1},issues:[{id:'private',title:'Private delegated task',status:'backlog',evidence:[]}],runs:[],nextCursor:null}];});
+ await page.getByRole('button',{name:'Inspect delegated evidence',exact:true}).click();
+ await expect.poll(()=>page.evaluate(()=>!!window.__KUJO_RESOLVE_ASSURANCE__)).toBe(true);
+ await page.evaluate(()=>window.__KUJO_NAVIGATE__?.('different-company'));await page.evaluate(()=>window.__KUJO_RESOLVE_ASSURANCE__?.());
+ await expect(page.getByText('Private delegated task',{exact:true})).toHaveCount(0);
+});

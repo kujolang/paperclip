@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Remove the first-50-only delegated evidence limitation with bounded pages, scope/membership-bound cursors, per-page access checks and UI restart controls. Verify complete multi-page coverage and reject stale or cross-scope cursors.
+
 - Review original accountability requirements; expose chronological verification attempts with native attribution, recorded approval and honest missing observations. Verify retained Muzzle failure logs and cancellation during execution, plus cross-company UI isolation. Reject misleading resource recovery for operations without Workcell resources.
 
 - Refresh bundle 0.13.1 to Workcell 6f5445b (dependency audit and bounded E2B pagination fixes) and Lens 7f3ee8b (explicit page-selector evidence and unsupported-selector rejection). Remote Workcell adapters remain unbundled. Add native selector admission and failure regressions.
