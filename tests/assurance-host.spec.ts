@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { afterEach, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { createTestHarness } from "./helpers/harness.js";
 import manifest from "../src/manifest.js";
@@ -31,6 +31,7 @@ async function fixture(){
  const policy=(operation="status",reason?:string)=>h.performAction<any>("kujo-acceptance",{issueId:"issue",operation,...(reason?{reason}:{})},human);
  return {root,cwd,h,service,action,accept,cards,policy};
 }
+describe.skipIf(!["darwin", "linux"].includes(process.platform))("POSIX assurance execution", () => {
 it("executes only exact approved native workflows, retains logs and gates human acceptance against current inputs",async()=>{
  const f=await fixture();expect((await f.policy()).status).toBe("incomplete");
  const request=await f.action("prepare",{selection:{kind:"muzzle",path:"check"},submissionId:"one"});expect(request.state).toBe("pending");
@@ -87,3 +88,22 @@ it("retains failed Muzzle logs and cancels a running workflow without replay",as
  expect((await f.action('status',{id:failed.id})).result).toEqual(failure.result);
  expect((await f.action('list')).requests.find((r:any)=>r.id===failed.id).approvedBy).toBe('board');
 },90000);
+
+});
+
+it("rejects unsupported platforms before reading config or preparing execution", async () => {
+ const descriptor = Object.getOwnPropertyDescriptor(process, "platform")!;
+ const h = createTestHarness({ manifest });
+ const configRead = vi.spyOn(h.ctx.config, "get");
+ const { createAssuranceService } = await import("../src/features/assurance/service.js");
+ const service = createAssuranceService(h.ctx);
+ try {
+  Object.defineProperty(process, "platform", { ...descriptor, value: "win32" });
+  await expect(service.inspect({ companyId: "company", issueId: "issue" }, { kind: "muzzle", path: "check" })).rejects.toThrow("requires macOS or Linux");
+  expect(configRead).not.toHaveBeenCalled();
+ } finally {
+  Object.defineProperty(process, "platform", descriptor);
+  configRead.mockRestore();
+  await service.shutdown();
+ }
+});

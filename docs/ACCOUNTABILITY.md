@@ -261,3 +261,5 @@ operating boundary. Private reservations remain intentionally operator-owned;
 automatic deletion would discard recovery/evidence files without a retention
 policy. These are not treated as passing support claims. The local first-50-only
 view was removable without changing those boundaries and is now paginated.
+
+Assurance execution is admitted only on macOS and Linux. Windows retains the existing compatible tools and receipt imports; its assurance requests fail before preparation. CI exercises that rejection on every platform and runs the native assurance execution fixtures only on supported platforms.
