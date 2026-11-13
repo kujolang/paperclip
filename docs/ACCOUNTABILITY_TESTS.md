@@ -74,3 +74,18 @@ The first host UI wait timed out; a fresh run passed unchanged assertions.
 Historical receipts above remain intact; see the [refresh evidence](verification/upstream-repin-2026-11-12.json)
 for pins, hashes, checks, and scope limits. Remote Workcell adapters remain outside
 the plugin bundle; their upstream audit/pagination tests are distinct evidence.
+
+## Original assignment follow-up review
+
+The [requirement coverage review](ATTACHMENT_REVIEW.md) maps the original
+attachment to implementation, observed evidence and explicit boundaries. It closes
+attempt-attribution/chronology presentation and non-container recovery reporting
+gaps, and adds retained Muzzle failure and running-cancellation proof.
+The final stable-source `npm run verify` passed 347 tests with two existing platform
+skips; 62 UI tests passed, followed by both changed-surface cases on the final
+recovery guard. All 11 native scenarios passed. The final archive passed official
+host upgrade, failed/corrected execution, four-agent delegation, acceptance and
+restart checks. Earlier mixed-revision runs are documented separately in the
+[review receipt](verification/attachment-review-2026-11-12.json), not substituted
+for final verification. The new coverage does not expand live provider or platform
+claims.

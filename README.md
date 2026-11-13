@@ -345,3 +345,5 @@ provenance.
 Development status: the [approved execution workflow](docs/EXECUTION.md)
 includes company-scoped host admission, bounded suite previews, durable request limits
 and an opt-in authenticated host acceptance harness. Public Eval and separately enabled run/test controls are available on issues; offline Dispatch examples have separate durable job controls; live-provider Dispatch workflows remain outside the offline adapter. The optional Verification Center adds native Muzzle/Workcell/Lens/PackWrite checks and separate acceptance metadata.
+
+For requirement coverage and current limitations, see the [original assignment review](docs/ATTACHMENT_REVIEW.md). Verification Center shows chronological attempts with recorded requester/run identity, human approval, timing and outcomes.
