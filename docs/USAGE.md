@@ -388,7 +388,7 @@ There are twenty retained started workflows per company, separate from the
 ordinary active-request limit. Parents are not pruned with thirty-day command
 receipts because they own native state. Never-started cancellation/expiry releases
 its reservation allowance. Automated archive/retirement, live providers, Muzzle,
-Workcell and definitive lost-decision reconciliation are still expansion work;
+Workcell is available through the separate opt-in assurance adapter; definitive lost-decision reconciliation remains expansion work;
 do not treat this slice as the complete durable workflow pack.
 
 
@@ -412,3 +412,12 @@ The original host command receipt remains unchanged, including an **uncertain**
 outcome. Inspection does not resume the workflow, repair state, rewrite history,
 or authorize replay. Both company settings and the original storage identity must
 still match. Agent inspection requires the currently assigned issue and run.
+
+
+## Verification Center and acceptance
+
+See [Accountability](ACCOUNTABILITY.md) for opt-in company configuration, private
+workflow storage, native human approvals, container/browser limits, acceptance
+policies and Watchdog metadata. The [real demo](../examples/assurance/README.md)
+provides setup commands and a four-agent native delegation scenario. Existing
+source, Eval and Dispatch controls retain their own admission contracts.

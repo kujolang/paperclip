@@ -2,7 +2,12 @@
 
 ## Unreleased
 
-- Add optional RunLedger receipt imports through the existing verification tool and UI, with assigned-issue/current-run attribution, conservative classifications, retained comparison/export, bounded redaction and no new execution dependencies. Add native receipt and isolated host correlation demonstrations; Workcell/Lens and policy enforcement remain deferred.
+- Add opt-in approved native Workcell, Lens, Muzzle and PackWrite workflows through the existing execution coordinator, host jobs and immutable evidence store. Preserve all 21 prior tools; add `manage-kujo-assurance`.
+- Add current-source advisory/required/human-review acceptance metadata, explicit human waivers and native descendant issue evidence. Observe handoff events without granting execution authority or overriding native issue status.
+- Add metadata-only Watchdog imports, real browser artifacts and a Verification Center. Bundle four checksum-pinned producers; keep browser dependencies optional.
+- Add real native failure/cancellation/recovery checks and an authenticated four-process-agent demonstration, with retained failures, human review and restart inspection. Workcell patch collection uses the separately committed upstream no-external-diff fix.
+
+- Add optional RunLedger receipt imports through the existing verification tool and UI, with assigned-issue/current-run attribution, conservative classifications, retained comparison/export, bounded redaction and no new execution dependencies. Add native receipt and isolated host correlation demonstrations; the subsequent opt-in assurance adapters extend this evidence foundation.
 
 - Extend live run-tab acceptance to cancellation/reload and cross-run evidence isolation; verify a separate host UI repair against official 2026.1106.0. Add a read-only, disposable-copy verifier for the recovered empty plugin prefix. See the run-tab/recovery follow-up for deployment and historical-restoration limits.
 - Pin the Paperclip SDK to official stable 2026.1106.0 and update its affected lockfile entries, including the fast-uri 3.1.9 security patch.
@@ -95,6 +100,11 @@
 - Keep the four pinned components and existing Context Pack, Review Pack, and Failure Evidence contracts unchanged; broader Kujo feature expansion is a separate release.
 
 ## Unreleased
+
+- Add opt-in approved native Workcell, Lens, Muzzle and PackWrite workflows through the existing execution coordinator, host jobs and immutable evidence store. Preserve all 21 prior tools; add `manage-kujo-assurance`.
+- Add current-source advisory/required/human-review acceptance metadata, explicit human waivers and native descendant issue evidence. Observe handoff events without granting execution authority or overriding native issue status.
+- Add metadata-only Watchdog imports, real browser artifacts and a Verification Center. Bundle four checksum-pinned producers; keep browser dependencies optional.
+- Add real native failure/cancellation/recovery checks and an authenticated four-process-agent demonstration, with retained failures, human review and restart inspection. Workcell patch collection uses the separately committed upstream no-external-diff fix.
 
 - Add the opt-in Dispatch issue journey: preview shipped offline examples, request human confirmation, explicitly queue jobs, inspect retained native state, and submit exact revision-bound human checkpoint decisions. Company-configured private storage, bounded ownership, cancellation, canonical receipts and linked history are included; live providers and automated uncertain-effect reconciliation remain unsupported.
 

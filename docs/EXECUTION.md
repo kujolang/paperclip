@@ -499,7 +499,7 @@ host/database restart. It uses a fresh host job context, not an orphaned promise
 with an expired action invocation ID. Existing 27-second public limits and
 company quotas remain unchanged for existing immediate-start tools. The offline
 Dispatch controls described below use a declared production job with a separate
-120-second budget. Broader Dispatch/Muzzle/Workcell adapters still require canonical
+120-second budget. Live-provider Dispatch extensions still require canonical
 lifecycle and replay reconciliation and their own qualified public controls. This
 foundation does not implement a second workflow replay engine.
 
@@ -679,3 +679,8 @@ without rebuilding them. It records worker/manifest hashes. Runtime dependencies
 are the repository's existing pinned installation; this is packaged-host evidence,
 not a fresh public-registry dependency installation or an old-host compatibility
 claim. Use only an extracted archive produced and verified for the target commit.
+
+
+## Assurance operations
+
+The separate opt-in `assurance.run` adapter reuses this coordinator for Lens, Workcell, Muzzle and PackWrite. Its exact reviewed definition, source snapshot, component/runtime digests and storage/endpoint binding are immutable request inputs. See [the adapter contract and demonstration](ACCOUNTABILITY.md).

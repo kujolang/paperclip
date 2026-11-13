@@ -1,8 +1,8 @@
 # Accountability implementation and engineering audit
 
-Status: partial implementation, 2026-11-12. This increment delivers RunLedger
-receipt correlation through the existing Verification and Evidence history
-surfaces. It does **not** complete the proposed execution and browser platform.
+Status: opt-in assurance integration, 2026-11-12. RunLedger correlation is now
+joined by approved native Workcell, Lens, Muzzle and PackWrite execution,
+acceptance metadata, delegated evidence and Watchdog metadata imports.
 No release is published and no protected branch is merged.
 
 ## Baseline and source authority
@@ -25,7 +25,7 @@ page; no branding claims or invented assets are used.
 Host contracts:
 
 - [SDK types](https://github.com/paperclipai/paperclip/blob/edc9bbbba12029a9f055d94d58c5a545bb2aaaba/packages/plugins/sdk/src/types.ts): issue parents, assignments, checkout/run identity, documents, interactions, jobs, database namespace, UI slots and orchestration summaries.
-- [Host services](https://github.com/paperclipai/paperclip/blob/edc9bbbba12029a9f055d94d58c5a545bb2aaaba/server/src/services/plugin-host-services.ts): company-scoped access and capability enforcement. Orchestration summaries require `issues.orchestration.read`; this change does not request that additional privilege.
+- [Host services](https://github.com/paperclipai/paperclip/blob/edc9bbbba12029a9f055d94d58c5a545bb2aaaba/server/src/services/plugin-host-services.ts): company-scoped access and capability enforcement. Orchestration summaries require `issues.orchestration.read`; the delegation view requests that explicit additional privilege.
 - [Plugin manifest](../src/manifest.ts), [workspace access](../src/paperclip/workspace.ts), [agent assignment check](../src/features/eval/bridge.ts): existing least-privilege boundary reused.
 - [Compatibility evidence](COMPATIBILITY_SWEEP_2026_11_11.md) and [run-tab repair](RUN_TAB_RECOVERY_2026_11_12.md): official stable host does not mount the declared run tab. The separately tested host repair is not shipped by this increment.
 
@@ -39,7 +39,7 @@ agent hierarchy, execution scheduler or artifact service is introduced.
 The definitions and strict inputs are generated from
 [projections](../src/abilities/projections.json); handlers are registered by
 [the worker](../src/worker.ts) and feature bridges. The complete existing inventory
-remains 21 tools:
+preserves all 21 tools below and adds `manage-kujo-assurance`:
 
 | Tools | Implementation / regression contract |
 | --- | --- |
@@ -65,158 +65,171 @@ company feature/profile gates and history permissions continue to apply.
 
 ## Capability matrix
 
-“Available” means upstream implementation exists, not that this plugin invokes it.
-“Deferred” identifies remaining engineering, not an unsupported host API.
+| Capability | Native Paperclip / previous plugin | Current integration | Priority |
+| --- | --- | --- | --- |
+| Agent hierarchy | Native agents, reportsTo, parentId, checkout and runs | Read native orchestration; link child-owned evidence without a second hierarchy | P0 |
+| RunLedger | Existing evidence namespace | Validated imported claims, issue/run importer correlation, attempt comparison, export, restart persistence | P0 |
+| Workcell | Trusted plugin processes, no implicit sandbox | Approved local Docker definition; pinned image, offline container, bounded resources, disposable worktree, native receipts/artifacts, cancellation and scoped recovery | P0 |
+| Lens | No previous native browser adapter | Approved loopback page checks or restricted executed flows; reports, accessibility/link checks for page mode, screenshots, intentional failure retained | P1 |
+| ShipCheck/Eval | Existing metadata inspection and approved native Eval | Current-source acceptance policies consume retained native outcomes; imported claims cannot satisfy them | P1 |
+| PackWrite | Native issues, existing Spec inspection | Validate existing agent/ packs or compile a supplied native manifest to a private reviewable pack; no provider invocation or automatic delegation | P1 |
+| Muzzle | Native jobs and confirmation cards | Named reviewed workflow, retained full bounded logs, trusted host mode or Workcell containment | P2 |
+| Watchdog | Native run/cost records | Optional kujo.telemetry.v1 metadata import, correlated importer identity, missing metrics remain unknown; no traffic proxy or prompt retention | P2 |
+| Dispatch/Kennel/CaseFile | Existing offline orchestration, package inspection and supplied failure logs | Reused unchanged; no duplicate scheduler or package installer | P2 |
+| Verification Center | Existing issue detail extension and evidence history | Approval preview, status/cancel/recovery, artifacts, acceptance and delegated evidence | P1 |
+| Automatic handoff | Native issue.updated event and human interactions | Optional policy recomputation on in_review/done; never executes unapproved code from an event | P1 |
 
-| Capability | Paperclip support | Plugin before | Kujo source inspected | Enhancement / disposition | Priority |
-| --- | --- | --- | --- | --- | --- |
-| Agent hierarchy/delegation | Native agents, reportsTo, parent issues, checkout | Host-owned | PackWrite `src/validate.kujo` at `b846753` | Reuse host; retain parent issue and importing agent/run in receipts. Automated planning/delegation deferred | P0 |
-| Receipt correlation | Native issue/run identity and DB namespaces | Persistent scoped evidence, no RunLedger import | RunLedger `src/record.kujo`, `src/cli.kujo` at `ab0ec5d` | Implemented bounded receipt import, comparison, export; provenance remains imported | P0 |
-| Container execution | Plugins may run trusted processes; not inherently sandboxed | Host Eval/source execution, explicitly unsandboxed | Workcell `src/receipts/receipt.kujo`, `src/domain/definition.kujo` at `189d7ab` | Available upstream; adapter deferred. Local Docker daemon unavailable; no container qualification | P0 |
-| Browser checks/artifacts | Host browser facilities are not a documented Lens execution contract | No Lens execution | Lens `src/runner.kujo`, `src/validate.kujo`, `src/flow_exec.kujo` at `9104964` | Available upstream; approved target/session/artifact adapter deferred | P1 |
-| Release checks | Native completion is not external verification | ShipCheck metadata + approved Eval already implemented | Bundled ShipCheck/Eval lock and native tests | Reuse existing explicit classifications. No imported pass grants verified completion | P1 |
-| Acceptance policy | Native issue permissions and interactions | No separate required/human-review policy engine | Spec native validation and Eval receipts | Advisory information only; required policy and waiver controls deferred | P1 |
-| Planning/handoff | Native parent-child issues | Spec criteria inspection; no PackWrite import | PackWrite validation/summary, reviewed generation commands | Available, not integrated; preserve native `/agent` validator before adding import/generation | P1 |
-| Workflow operations | Durable plugin jobs, confirmation cards | Offline Dispatch with retained ownership | Muzzle `src/runner.kujo` at `2d508d3` | Timeout/cancel-file upstream, trusted local code; approval-bound adapter deferred | P2 |
-| Telemetry | Native run/cost records | Native receipts, no Watchdog collector | Watchdog `schemas/telemetry-trace-v1.schema.json` at `7a0bd9a` | RunLedger Watchdog IDs retained as unresolved correlation; routing/exporter integration deferred | P2 |
-| Orchestration/retries | Native scheduler plus plugin jobs | Pinned offline Dispatch with exact checkpoint receipts | Dispatch source `18b5c73`, bundled pin separately retained | Reuse; no automatic retry of uncertain work or generic replay engine | P2 |
-| Packages | Host plugin installation | Kennel read-only inspect | Kennel source `6e2fc20` | Existing implementation retained; no implicit installs | P2 |
-| Failure evidence | Native run logs, issue documents | CaseFile bounded redacted supplied logs | CaseFile `92e1d9b` | Reuse; no duplicate logs store | P1 |
-| Agent Black Box | Native run inspection | No adapter | README and source project at `7e2701d` | Demo/application, not required infrastructure; deferred | P2 |
-| Verification Center | Detail/task extension slots; official run-tab limitation | Verification controls and Evidence history | Existing `src/ui/index.tsx` | Add RunLedger accountability panel to same surface; dedicated cross-issue dashboard deferred | P1 |
+Exact component provenance is in [the checksum lock](../bundled/kujo-components.lock.json).
+The original 15 components remain; four optional producer snapshots are added.
+Workcell's scoped upstream patch `3a624b0` disables external Git diff/textconv
+callbacks when collecting a binary patch. The plugin bundles that committed
+source, not a private fork. Remote Workcell adapters are not bundled or invoked.
 
-Upstream Workcell implements Docker/Podman resource and network policy,
-container/workspace ownership cleanup and receipts. Temporary copied inputs in
-the existing plugin are **not** Workcell containment. A future adapter must bind
-image identity, reviewed definition, input commit, secret/environment allowlist,
-network policy and resource budget to human approval, and reconcile interruption
-before retry. It must never fall back silently to host commands. Remote backends
-were not qualified.
-
-Lens has real browser/spec/flow, link, accessibility and screenshot/report
-interfaces; its runner performs URL/auth/artifact validation. Integrating it
-requires approval for exact targets/actions, explicit authenticated-session
-handling and bounded artifact retrieval. Browser instructions cannot change
-policy. This increment executes no Lens workflow and retains no browser secrets.
-
-## Evidence architecture
-
-The new [adapter schema](../src/features/runledger/import.ts) is
-`schemaVersion: 1`. It reads RunLedger's current unversioned record format; it
-is not a new upstream RunLedger standard. It bounds input to 64 KiB UTF-8,
-32 nesting levels and 1,000 tests/changed-file entries. Unsupported shapes,
-invalid dates, reversed timestamps, unsafe token counts and invalid costs fail
-explicitly before persistence. Missing optional metrics stay null, never zero.
+## Evidence architecture and trust
 
 ```mermaid
 flowchart LR
-  R[RunLedger JSON: supplied claims] --> V[Bounded validation and redaction]
-  H[Authenticated Paperclip context] --> B[Importer and issue binding]
-  V --> E[Existing company/entity evidence table]
-  B --> E
-  E --> U[RunLedger panel and Evidence history]
-  E --> X[Compare / export / explicit issue attachment]
-  N[Native Paperclip runs and approvals] --> H
+  P[Native issue and agent checkout] --> R[Reviewed frozen request]
+  R --> A[Native human-only confirmation]
+  A --> J[Existing durable execution coordinator and host job]
+  J --> K[Native Kujo producer]
+  K --> E[Immutable plan and result in existing evidence table]
+  K --> F[Owned private artifacts and native receipts]
+  E --> V[Current-source acceptance metadata]
+  C[Native child issues and runs] --> V
+  I[RunLedger and Watchdog imports] --> U[Imported unverified evidence]
+  V --> UI[Issue Verification Center]
+  E --> UI
+  U --> UI
 ```
 
-Each immutable retained payload includes adapter version, import time, originating
-tool, source-byte SHA-256, selected record fields, host company/project/issue,
-parent issue, importing agent/run when supplied by the authenticated tool context,
-validation method and explicit limitations. Source repository paths, prompt
-paths, commands, arbitrary notes/extensions and raw logs are discarded. Selected
-strings use the existing redactor. Correlation IDs are plain text, never fetched.
-The record's provider/model describes a claim; host agent identity identifies
-**the importer**, not authorship or independent verification.
+`assurance.run` extends the existing durable execution ledger. A request binds
+company/issue, host requester/run, source head/fingerprint, admitted input bytes,
+component/runtime digests, configuration, output limits and private storage.
+Only the current native human-only confirmation authorizes that exact request.
+Changes invalidate approval. The existing coordinator owns pending, preparing,
+running, failed, succeeded, cancelled, stale and uncertain states. Queuing requires
+an explicit start; a scheduled job only drains already-authorized queued requests.
+There is no automatic retry. Restart reconciliation does not replay uncertain work.
 
-Classification precedence: any claimed failed test or failed status is `failed`;
-non-pass statuses, no tests or skipped tests are `incomplete`; remaining passes
-are `unverified`. Contradictory pass/failed-test input remains a visible failed
-claim. The adapter never claims to have observed a test execution. Neither a
-checksum nor another agent's import authenticates the producer.
+Plans and outcomes use the existing SQL namespace and evidence parent links.
+No new database is introduced. History has a shared **20 records per entity,
+30-day** retention budget across kinds; export or explicitly attach valuable
+records before pruning. Existing clear controls remove plugin evidence, not
+native host runs. The execution ledger preserves durable request state separately.
+Private workflow reservations retain input/output files for diagnosis and recovery;
+these are operator-owned and have no automatic disk GC. Stop the plugin and back
+up/export needed records before removing a terminal reservation administratively.
+Never remove a reservation belonging to active work. Database backups must include
+the plugin namespace; private-folder backups are separate. Native RunLedger files
+remain producer-owned. Lost artifacts are unavailable, never fabricated by replay.
 
-The existing SQL table stores kind `runledger-import`, source kind `imported`.
-No new database or migration is needed because kind is text and source kind
-already permits imported evidence. Existing IDs address retained observations;
-RunLedger IDs remain external IDs inside them. Importing the same producer record
-again creates a new observation, preserving revisions and earlier failures.
-Comparisons include host attribution, start/end commits, changed files, tests,
-manual usage, currency and correlation without synthesizing duration, totals or
-success scores. Different currencies are never added together.
+Artifact collection rejects symlinks, nonregular files, invalid UTF-8, more than
+80 files, individual files over 1 MB or total bytes over 2 MB. Text is redacted;
+PNG pixels cannot be reliably redacted, so Lens is limited to non-sensitive local
+fixtures without saved authentication. Original-byte SHA-256 describes integrity,
+not authenticity, and differs from redacted content. Evidence overflow produces
+incomplete/uncertain results rather than silent success. Same-OS-user compromise
+is outside this boundary; private copies do not isolate host commands.
 
-Persistence ownership, access and retention remain those of
-[Evidence history](../src/storage/history.ts): 20 records per entity for 30 days,
-immutable collision checks, payload digests, company/entity scope and explicit
-clear. Retention is shared across kinds, so new imports can evict older records.
-This is bounded operational history, not permanent archival storage. Export or
-explicitly attach important evidence before pruning. Back up the Paperclip
-plugin database namespace with the host database; original RunLedger files
-remain producer-owned and must be backed up separately. Clear does not alter
-native Paperclip history or the producer's ledger. Missing/pruned records remain
-unavailable; import never reruns the producer to reconstruct them. If persistence
-fails, the call fails; after an ambiguous response inspect history before retry.
+RunLedger and Watchdog importers accept at most 64 KiB. Host identity is derived
+from authenticated context, never supplied JSON. Importer identity does not prove
+producer authorship. Watchdog strips prompts, responses, arguments and arbitrary
+attributes. Neither import contributes a passing acceptance check. Unknown costs,
+tokens, models and providers stay unknown; no synthetic totals or scores exist.
 
-## Access and lifecycle
+## Containment and browser limits
 
-Enable `features.verification`; Installed, Review, Ship or Full admits imports.
-Build/Essentials do not. No local runtime or workspace is needed for imports.
-Tools accept optional `issueId`, and verify current company, project, assignee
-and checkout/execution run before issue writes. Host identity cannot be provided
-through JSON arguments. Human RunLedger actions require authenticated user/company
-context and readable entity access. Read/export/compare/attachment reuse existing
-checks and feature/profile filtering. Receipts cannot overwrite earlier agents'
-records. There is no policy-changing or waiver operation.
+Workcell requires an explicit local Unix Docker endpoint and an already-present
+immutable `sha256:` image ID. No pull/build, remote daemon, Podman, secrets, environment
+injection, host mount, custom engine runtime or network access is admitted.
+Limits are 2 CPUs, 1 GiB memory, 256 processes and 10 seconds of workload time.
+The root filesystem is read-only, /tmp is ephemeral, and /workspace is a writable
+disposable worktree of the bounded text snapshot. The source repository is not
+mounted. Container isolation is not a VM or a guarantee against kernel compromise.
+Recovery removes only exact private Workcell labels and native ownership-marked
+workspaces; the original storage and endpoint binding must match. It never reruns
+commands or changes the original outcome.
 
-The import lifecycle is validate → redact → persist → audit. It creates no
-background process. Existing approved execution remains governed by its durable
-request/owner/cancel/uncertain states in [Execution](EXECUTION.md), not by an
-imported receipt. No new approval bypass, execution policy or provider route is
-introduced. A human import has no host run link; arbitrary historical-run lookup
-is deliberately not inferred from producer text.
+Muzzle defaults to explicitly reviewed **trusted host execution**. To contain it,
+set selection.target to a reviewed Workcell JSON definition whose command is
+`["sh", "/workspace/.muzzle/workflows/NAME.sh"]`. Workcell must also be enabled.
+Only bash manifests are accepted for this route, without arguments. Native Muzzle
+supervises a fixed wrapper around native Workcell; the original reviewed workflow
+runs inside the container. Both sets of receipts/logs are retained. There is no
+silent host fallback. Manifest name/script must select the exact displayed script.
 
-## Use and upgrade
+Lens accepts HTTP loopback targets without credentials, query or fragment. Page
+mode uses native quick checks, accessibility and bounded link checks. Native page
+spec selectors other than main/body are not executed by the pinned producer; any
+skipped assertion makes the plugin verdict incomplete. Use an executed flow for
+CSS assertions and interactions. Flows must start with the reviewed URL, contain
+an assertion, stay on the reviewed origin, and disable external/destructive options.
+At most 12 steps, a 5-second per-step budget and one desktop viewport are admitted.
+The overall coordinator deadline is 27 seconds. No saved sessions/auth are supplied.
+Page content cannot change policy. These restrictions are not general browser
+network sandboxing or proof that a user-labelled safe click has no side effects.
 
-Build/install the branch with the existing installation process, enable
-Verification and open an issue or project. In **RunLedger accountability**, paste
-one `runledger show RUN_ID --json` record. The panel shows classification, commits,
-importer/run, parent issue and available metrics. Evidence history provides
-inspection, comparison, export and human issue attachment.
+## Acceptance and native delegation
 
-Agent example (the issue must be assigned to the authenticated current run):
+Configure one matching project policy (optionally scoped to an issue). Conflicting
+policies produce unavailable. Checks select the latest native suite attempt, and
+require a current source fingerprint and observed approved pass. Legacy outcomes
+without a source binding cannot qualify. ShipCheck passes mean metadata readiness,
+not execution of tests. PackWrite validation is `plan-valid`, never implementation.
 
-```json
-{"format":"runledger","issueId":"HOST_ISSUE_ID","json":"<RunLedger JSON text>"}
-```
+Modes: advisory shows results; required withholds the separate verified-complete
+metadata until checks pass; human-approval additionally requires a native human
+review card bound to that exact evidence. Waivers require enabled policy, a reason
+and a human-only decision; **waived is not passed**. Paperclip's native status and
+permissions are never overridden. Agents cannot change policies or self-approve.
+Checks may point to native descendant issue IDs in the same project/workspace.
+The parent view reads their retained evidence; it does not copy ownership or trust
+another agent's opinion as a test. Source fingerprinting covers Git-visible input,
+not a running server's mutable external state; rerun checks when that state changes.
 
-Pass this to `kujolang.paperclip:import-verification`. Omit `issueId` for current
-project scope. Omit `format` for the unchanged evaluation-result import contract.
-Use `list-evidence` / `get-evidence` with `scope: "issue"` and the same issue ID.
-The human panel binds the selected entity and cannot choose an arbitrary run.
-Disable Verification to disable the imports and their evidence surfaces.
-No runtime dependency, migration or mandatory ecosystem installation is added.
+`observeHandoffs` evaluates existing evidence on native in_review/done events.
+It does not grant execution authority. A human still approves/starts missing checks.
+This is the supported alternative to automatic unreviewed repository execution.
 
-Troubleshooting: malformed/oversized JSON fails without retention; unavailable
-records may have expired or been cleared; a stale assigned agent must use its
-current host assignment/run; importing without the feature/profile is rejected.
-A reported pass with no tests is incomplete. A failed supplied check wins over a
-reported pass. Missing usage stays unknown. The official host's unavailable run
-tab is a host limitation, not evidence loss.
+## Configuration and use
 
-## Demonstration and release boundary
+See [the runnable demo](../examples/assurance/README.md) for complete configuration,
+fixtures and commands. Enable only the adapters needed, and configure the existing
+`workflow-state` private local-folder slot with read/write access. All are off by
+default. Optional Lens dependencies are exact pinned Playwright Core and axe-core;
+install its matching Chromium headless shell separately. `npm install --omit=optional`
+keeps receipt imports available. It also omits optional platform runtime packages,
+so execution then needs an explicitly configured or supported system Kujo binary. A Docker daemon is
+needed only for Workcell and contained Muzzle. Unsupported platform/dependency
+errors remain explicit; no privileged fallback occurs.
 
-[Demo instructions and artifacts](../examples/accountability-evidence/README.md)
-distinguish real local producer checks, isolated unit/UI fixtures and live host
-qualification. The host scenario uses actual agents, hierarchy, child issues,
-checkout/run identity and authenticated imports. It imports retained native
-producer output; it is not autonomous software delivery or Workcell/Lens execution.
-The [test report](ACCOUNTABILITY_TESTS.md) records actual outcomes and limitations.
+Use issue **Verification Center** to discover input names, inspect effects,
+request native approval, resolve the issue card, queue and refresh. Inspect retained
+artifacts without rerunning. Cancel active work or recover terminal owned resources.
+Use acceptance review/waiver controls and delegated links to inspect child evidence.
+Existing Evidence history provides export, comparison and explicit attachments.
+Watchdog imports use the existing `import-verification` tool with format `watchdog`;
+RunLedger uses format `runledger`. Existing evaluation imports remain unchanged.
 
-Accurate feature summary: “Correlate RunLedger attempts with Paperclip work,
-compare supplied outcomes and available usage, and retain inspectable evidence
-without treating an agent's reported pass as verified completion.”
+Upgrade using the existing install/upgrade flow, explicitly acknowledging new
+`issues.orchestration.read` and `events.subscribe` capabilities. No SQL migration is
+required. Existing requests without the new source/endpoint bindings remain readable
+but cannot become current acceptance or be silently rebound for recovery. Turning
+features off prevents new execution; cancellation and bounded recovery remain available.
 
-Remaining scope: approved Workcell and Lens execution; PackWrite import/generation;
-Muzzle lifecycle; direct Watchdog telemetry; required/human acceptance policies and
-waivers; cross-issue evidence aggregation; permanent artifact retention; automatic
-run-page navigation on the official host; and the complete autonomous multi-agent
-software-delivery scenario. These are deferred, not claimed complete or supported
-by mocks. There is no release-readiness or production-isolation certification.
+## Supported limits and distribution
+
+The official host's declared run-tab mount remains a separately documented host
+limitation; issue navigation and retained run IDs are the supported inspection path.
+Remote sandbox backends, browser credential reuse, live Watchdog proxy routing,
+provider-driven PackWrite generation and autonomous LLM staffing are not claimed.
+The reproducible demo uses real deterministic process agents and native tools,
+not mocked execution or fabricated token usage. Supplied PackWrite manifests can
+be compiled and reviewed without provider credentials.
+
+Feature summary: **Review approved container and browser checks from Paperclip
+issues, inspect evidence across native delegated assignments, and distinguish
+verified current work from submitted claims.** No release or protected merge is
+part of this work. See [the verification report](ACCOUNTABILITY_TESTS.md) for actual
+qualification results and remaining platform limits.

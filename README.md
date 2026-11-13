@@ -75,7 +75,7 @@ Kujo retains up to 20 results per company/entity for 30 days in its Paperclip da
 | **Review Pack** | Measures change size, explains risk signals, and prepares a review handoff. | ChangeBucket and PatchBrief |
 | **Failure Evidence** | Turns supplied command details and logs into a bounded, redacted record. | CaseFile |
 
-The fifteen component snapshots are pinned, checksummed, and shipped with the plugin. The
+The nineteen component snapshots are pinned, checksummed, and shipped with the plugin. The
 plugin does not download component code while installing or running. The Eval snapshot
 provides human-approved execution on issue workspaces. The separately enabled
 Dispatch workflow panel runs shipped offline examples through durable host jobs,
@@ -170,6 +170,18 @@ Agents use `manage-evaluation` with an issue ID verified against their host-owne
 assignment and current run. They can request approval but cannot accept it, and
 can start/cancel only their own run's requests. See [Approved execution](docs/EXECUTION.md)
 for inputs, limits and recovery behavior.
+
+## Verification Center
+
+Opt into approved native Workcell containers, Lens browser checks, Muzzle workflows
+and PackWrite pack validation/compilation from an issue. Inspect artifacts, cancel
+work, recover owned resources and review current-source acceptance across native
+child assignments. Watchdog metadata imports retain only available usage and
+correlation fields. All 21 previous tools remain; `manage-kujo-assurance` is new.
+
+[Configuration and guarantees](docs/ACCOUNTABILITY.md) ·
+[Reproducible four-agent demo](examples/assurance/README.md) ·
+[Test evidence](docs/ACCOUNTABILITY_TESTS.md).
 
 ## RunLedger accountability
 
@@ -332,4 +344,4 @@ provenance.
 
 Development status: the [approved execution workflow](docs/EXECUTION.md)
 includes company-scoped host admission, bounded suite previews, durable request limits
-and an opt-in authenticated host acceptance harness. Public Eval and separately enabled run/test controls are available on issues; offline Dispatch examples have separate durable job controls; live-provider workflows, Muzzle/Workcell and broader lifecycle acceptance remain unfinished.
+and an opt-in authenticated host acceptance harness. Public Eval and separately enabled run/test controls are available on issues; offline Dispatch examples have separate durable job controls; live-provider Dispatch workflows remain outside the offline adapter. The optional Verification Center adds native Muzzle/Workcell/Lens/PackWrite checks and separate acceptance metadata.

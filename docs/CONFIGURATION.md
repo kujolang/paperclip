@@ -79,3 +79,8 @@ select `manage-project-knowledge`. Users explicitly choose eligible files before
 indexing; queries use that retained snapshot. Listing and deletion remain available
 when disabled. No external provider is used. See [Knowledge](KNOWLEDGE.md) for
 content limits, retention, revision checks and the unpublished acceptance status.
+
+
+## Optional assurance adapters
+
+`features.assurance` enables the issue Verification Center; each `assurance.lens`, `assurance.muzzle`, `assurance.workcell` and `assurance.packwrite` switch is also false by default. Workcell requires `assurance.dockerHost`, an explicit local Unix socket, and a configured private workflow-state folder. `acceptancePolicies` is a top-level array, separate from features. See [the exact configuration example](../examples/assurance/README.md) and [permissions, modes and limitations](ACCOUNTABILITY.md).

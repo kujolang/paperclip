@@ -26,7 +26,7 @@ stop for review. The remaining ecosystem roadmap is deferred, not completed.
 users. Public 0.1.9 is the maintenance release. Do not overwrite it, move its tag,
 or publish the development tree as 0.1.9. Choose the next version after review.
 
-The package contains fifteen pinned canonical component snapshots. It does not
+The package contains nineteen pinned canonical component snapshots. It does not
 resolve those components from the user's separately installed CLI tools. Updating
 a standalone tool therefore neither updates nor substitutes the plugin's snapshot.
 The runtime dependency is pinned to published `@kujolang/kujo-runtime` 1.8.1;
@@ -97,3 +97,6 @@ minimum) passes the knowledge journey with fresh plugin dependencies. PR73 recor
 the broader workflow results. Prepared-fork checks are supplementary; a fork is
 not a user requirement. The normal local Paperclip
 instance has not been modified by these isolated acceptance runs.
+
+
+The subsequent opt-in assurance increment is documented in [Accountability](ACCOUNTABILITY.md) and its [verification report](ACCOUNTABILITY_TESTS.md). It adds approved local Workcell/Lens/Muzzle/PackWrite operations, metadata-only Watchdog imports and separate acceptance policies; no native issue status override or automatic command retry.
