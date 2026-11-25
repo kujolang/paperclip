@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Pin the Paperclip SDK to stable 2026.1117.0 and qualify the current 22-tool integration against the official host. Document storage migration rollback constraints and retained host limitations.
+- Compare the live capability catalog with the manifest instead of a stale 21-tool count. Support explicitly partial assurance qualification when Docker is unavailable, with blocked container checks recorded in results; honor the configured browser in assurance UI checks. Add real handoff-event and default/Classic UI regression checks.
+
 ## 0.3.0 — 2026-11-13
 
 - Preserve interrupted Muzzle logs without retaining its temporary execution snapshots; verify cancellation with an explicit running marker across supported platforms.

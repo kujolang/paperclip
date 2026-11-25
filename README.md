@@ -20,10 +20,10 @@ npx paperclipai plugin install @kujolang/paperclip
 
 Restart Paperclip if it is already running, then open an issue. The Kujo workspace
 appears in the task view. You can also open the **Kujo** tab on project and issue
-detail pages where the host exposes detail tabs. Paperclip `2026.1106.0` does not
+detail pages where the host exposes detail tabs. Paperclip `2026.1117.0` does not
 mount plugin tabs on its run page, so the run evidence panel is unavailable there.
 The plugin retains its read-only run component and agent run-evidence tools; see
-[the observed host limitation](docs/COMPATIBILITY_SWEEP_2026_11_11.md).
+[the observed host limitation](docs/COMPATIBILITY_SWEEP_2026_11_25.md).
 An independently tested host repair is available in a fork branch; see
 [run-tab repair and prefix recovery](docs/RUN_TAB_RECOVERY_2026_11_12.md).
 It has not been released upstream or deployed to an existing host.
@@ -260,8 +260,8 @@ recommended agent sequence.
 
 | Package | Version |
 | --- | --- |
-| Paperclip host | Minimum `2026.1012.0`; stable `2026.1106.0` tested in isolated authenticated hosts; see the [sweep results and limits](docs/COMPATIBILITY_SWEEP_2026_11_11.md) |
-| `@paperclipai/plugin-sdk` | `2026.1106.0` |
+| Paperclip host | Minimum `2026.1012.0`; stable `2026.1117.0` tested in isolated authenticated hosts; see the [sweep results and limits](docs/COMPATIBILITY_SWEEP_2026_11_25.md) |
+| `@paperclipai/plugin-sdk` | `2026.1117.0` |
 | `@kujolang/kujo-runtime` | `1.8.1` |
 | Node.js | `>=24.22.1 <25` or `>=26.12.1` |
 
