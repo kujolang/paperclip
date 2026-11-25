@@ -30,15 +30,15 @@ export async function qualifyProductionInstall({ call, companyId, root, host, no
   };
   try {
     await call("/plugins/kujolang.paperclip", { method: "DELETE" });
-    const separate = await run(["@kujolang/paperclip", "--version", "0.2.1"]);
+    const separate = await run(["@kujolang/paperclip", "--version", "0.3.0"]);
     assert.equal(separate.exitCode, 0, "CLI separate-version install failed; inspect sanitized probe outcome");
     const installed = (await call("/plugins/kujolang.paperclip")).data;
-    assert.equal(installed.version, "0.2.1"); assert.equal(installed.pluginKey, "kujolang.paperclip");
+    assert.equal(installed.version, "0.3.0"); assert.equal(installed.pluginKey, "kujolang.paperclip");
     const npmPackage = JSON.parse(await readFile(join(root, "home/.paperclip/plugins/node_modules/@kujolang/paperclip/package.json"), "utf8"));
-    assert.equal(npmPackage.version, "0.2.1", "Registry package must be present under the disposable host HOME");
-    checks.push("official target CLI scoped package plus separate --version installs registry plugin 0.2.1 and host reports exact version");
+    assert.equal(npmPackage.version, "0.3.0", "Registry package must be present under the disposable host HOME");
+    checks.push("official target CLI scoped package plus separate --version installs registry plugin 0.3.0 and host reports exact version");
     await call("/plugins/kujolang.paperclip", { method: "DELETE" });
-    const suffixed = await run(["@kujolang/paperclip@0.2.1"]);
+    const suffixed = await run(["@kujolang/paperclip@0.3.0"]);
     const missingDirectory = /package\.json|ENOENT|not found|Cannot find|could not find/i.test(suffixed.output + suffixed.diagnostic);
     await json("install-probe.json", { cliVersion: cliPackage.version, example: { output: JSON.parse(example.output), runtimeVersion: example.runtimeVersion },
       separateVersion: { exitCode: separate.exitCode, observedVersion: installed.version, status: installed.status, isolatedPackageVersion: npmPackage.version },

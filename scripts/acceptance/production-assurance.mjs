@@ -5,11 +5,14 @@ import { createServer } from 'node:http';
 import { join } from 'node:path';
 export async function qualifyAssurance({call,companyId,projectId,issueId,root,node,base,cookie,checks,json,stop,start,waitUntil}) {
  const workspace=join(root,'workspace'),folder=join(root,'assurance-state');await mkdir(folder,{mode:0o700});
- const dockerHost=process.env.KUJO_TEST_DOCKER_HOST;if(!dockerHost)throw new Error('Set an explicit local Docker Unix endpoint');
- const image=execFileSync('docker',['--host',dockerHost,'image','inspect',process.env.KUJO_TEST_IMAGE??'kujolang/workcell-base:local','--format','{{.Id}}'],{encoding:'utf8'}).trim();
+ const mode=process.env.KUJO_ACCEPTANCE_ASSURANCE_MODE??'full';
+ assert.ok(['full','without-containers'].includes(mode),'Unsupported assurance qualification mode');
+ const containers=mode==='full',blocked=containers?[]:['Workcell execution/recovery and container implementation agent: explicit without-containers qualification'];
+ const dockerHost=process.env.KUJO_TEST_DOCKER_HOST;if(containers&&!dockerHost)throw new Error('Set an explicit local Docker Unix endpoint');
+ const image=containers?execFileSync('docker',['--host',dockerHost,'image','inspect',process.env.KUJO_TEST_IMAGE??'kujolang/workcell-base:local','--format','{{.Id}}'],{encoding:'utf8'}).trim():null;
  const route='/plugins/kujolang.paperclip/bridge/action';
  const action=async(key,params,options={})=>(await call(route,{method:'POST',body:{companyId,key,params:key==='import-verification'?params:{issueId,...params}},...options})).data.data;
- const config={features:{assurance:true,verification:true,execution:true},assurance:{lens:true,muzzle:true,workcell:true,packwrite:true,dockerHost},acceptancePolicies:[{projectId,mode:'required',allowWaiver:true,checks:[{kind:'lens',suite:'browser.json'}]}]};
+ const config={features:{assurance:true,verification:true,execution:true},assurance:{lens:true,muzzle:true,workcell:containers,packwrite:true,...(dockerHost?{dockerHost}:{})},acceptancePolicies:[{projectId,mode:'required',allowWaiver:true,checks:[{kind:'lens',suite:'browser.json'}]}]};
  await call('/plugins/kujolang.paperclip/config',{method:'POST',body:{companyId,configJson:config}});
  await call(`/plugins/kujolang.paperclip/companies/${companyId}/local-folders/workflow-state`,{method:'PUT',body:{path:folder,access:'readWrite'}});
  await mkdir(join(workspace,'.muzzle/manifests'),{recursive:true});await mkdir(join(workspace,'.muzzle/workflows'),{recursive:true});
@@ -17,7 +20,7 @@ export async function qualifyAssurance({call,companyId,projectId,issueId,root,no
  await cp(new URL('../../examples/assurance/agent',import.meta.url),join(workspace,'agent'),{recursive:true});
  await writeFile(join(workspace,'.muzzle/manifests/check.json'),JSON.stringify({schema_version:'muzzle.manifest/v1',name:'check',summary:'Run fixture assertions',runner:'bash',script:'workflows/check.sh',args:[],quiet_by_default:true,safety:{require_git_repo:false,allow_dirty_tree:true,requires_network:false,human_approval_recommended:true}}));
  await writeFile(join(workspace,'.muzzle/workflows/check.sh'),'#!/bin/sh\nprintf "observed workflow check\\n"\n');
- await writeFile(join(workspace,'workcell.json'),JSON.stringify({version:1,name:'paperclip-acceptance',runtime:{backend:'docker',image},command:['sh','-c','printf "container verification\\n"; printf "observed proof\\n" > proof.txt'],workspace:{strategy:'git-worktree',mount_path:'/workspace'},network:{mode:'none'},resources:{cpus:1,memory:'256m',pids:64,timeout_ms:10000},filesystem:{read_only_root:true,tmpfs:['/tmp']},environment:{allow:[],set:{}},secrets:[],artifacts:{export:['proof.txt']},cleanup:{keep_failed:false},receipt:{path:'.workcell/runs'}}));
+ if(containers)await writeFile(join(workspace,'workcell.json'),JSON.stringify({version:1,name:'paperclip-acceptance',runtime:{backend:'docker',image},command:['sh','-c','printf "container verification\\n"; printf "observed proof\\n" > proof.txt'],workspace:{strategy:'git-worktree',mount_path:'/workspace'},network:{mode:'none'},resources:{cpus:1,memory:'256m',pids:64,timeout_ms:10000},filesystem:{read_only_root:true,tmpfs:['/tmp']},environment:{allow:[],set:{}},secrets:[],artifacts:{export:['proof.txt']},cleanup:{keep_failed:false},receipt:{path:'.workcell/runs'}}));
  await writeFile(join(workspace,'browser.json'),JSON.stringify({title:{contains:'Task list'},selectors:{exists:['main','input[type=search]']},text:{contains:['Tasks']}}));
  let broken=true;
  const server=createServer(async(req,res)=>{res.setHeader('Content-Type','text/html');res.end(await readFile(join(workspace,'index.html'),'utf8').catch(()=>`<!doctype html><html lang="en"><head><meta name="viewport" content="width=device-width, initial-scale=1"><title>Task list</title></head><body><main><h1>Tasks</h1>${broken?'':'<label>Search<input type="search" oninput="document.querySelectorAll(\'li\').forEach(x=>x.hidden=!x.textContent.includes(this.value))"></label>'}<ul><li>Implement search</li><li>Verify results</li></ul></main></body></html>`));});await new Promise(r=>server.listen(0,'127.0.0.1',r));
@@ -41,8 +44,8 @@ export async function qualifyAssurance({call,companyId,projectId,issueId,root,no
  const failedWorkflow=await run('muzzle','check','failed-workflow','failed');assert.ok(failedWorkflow.result.artifacts.some(a=>a.content?.includes('retained failed workflow')));
  await action('manage-kujo-assurance',{operation:'recover',id:failedWorkflow.id},{status:502});
  await writeFile(join(workspace,'.muzzle/workflows/check.sh'),'#!/bin/sh\nprintf "observed workflow check\\n"\n');
- const contained=await run('workcell','workcell.json','contained-check');
- for(let attempt=0;attempt<2;attempt++){const recovery=await action('manage-kujo-assurance',{operation:'recover',id:contained.id});assert.equal(recovery.cleanup,'owned-containers-removed');assert.deepEqual((await action('manage-kujo-assurance',{operation:'status',id:contained.id})).result,contained.result);}
+ if(containers){const contained=await run('workcell','workcell.json','contained-check');
+ for(let attempt=0;attempt<2;attempt++){const recovery=await action('manage-kujo-assurance',{operation:'recover',id:contained.id});assert.equal(recovery.cleanup,'owned-containers-removed');assert.deepEqual((await action('manage-kujo-assurance',{operation:'status',id:contained.id})).result,contained.result);}}
  await run('lens','browser.json','intentional-browser-failure','failed');assert.equal((await action('kujo-acceptance',{operation:'status'})).status,'failed');
  broken=false;await run('lens','browser.json','corrected-browser');assert.equal((await action('kujo-acceptance',{operation:'status'})).status,'passed');
  await writeFile(join(workspace,'submission.txt'),'changed submission');assert.equal((await action('kujo-acceptance',{operation:'status'})).status,'incomplete');
@@ -53,7 +56,7 @@ export async function qualifyAssurance({call,companyId,projectId,issueId,root,no
  const readiness=(await call(route,{method:'POST',body:{companyId,key:'inspect-release-readiness',params:{entityType:'issue',entityId:issueId}}})).data.data;assert.ok(['passed','warnings','failed'].includes(readiness.status));
  const delegated=await action('kujo-delegation',{});assert.ok(delegated.issues.some(x=>x.id===issueId));
  const {qualifyAssuranceTeam}=await import('./assurance-team.mjs');
- const teamResult=await qualifyAssuranceTeam({call,companyId,projectId,root,node,base,cookie,config,checks,json,waitUntil,target});
+ const teamResult=await qualifyAssuranceTeam({call,companyId,projectId,root,node,base,cookie,config,checks,json,waitUntil,target,containers});
  await stop();await start();await waitUntil(async()=>{try{return (await action('manage-kujo-assurance',{operation:'list'})).requests.length>=records.length;}catch{return false;}},60000);
  for(const record of records){const restored=await action('manage-kujo-assurance',{operation:'status',id:record.result.id});assert.deepEqual(restored.result,record.result.result);}
  assert.equal((await action('kujo-acceptance',{issueId:teamResult.parentIssueId,operation:'status'})).digest,teamResult.acceptanceDigest);
@@ -68,7 +71,8 @@ export async function qualifyAssurance({call,companyId,projectId,issueId,root,no
  await call(`/companies/${companyId}/issues`,{method:'POST',status:201,body:{title:'Changed pagination membership',projectId,parentId:paginationRoot,status:'backlog'}});
  await action('kujo-delegation',{issueId:paginationRoot,cursor:firstPage.nextCursor},{status:502});
  checks.push('Native delegated evidence: 52 actual issues across bounded 50/2 API and browser pages, no omissions/duplicates, stale cursor rejected after membership change');
- checks.push('Real authenticated Paperclip: PackWrite, Muzzle, Workcell, Lens fail/corrected pass, stale acceptance, explicit native human waiver, cancellation, metadata import, delegation and restart persistence');
- await json('assurance.json',{schemaVersion:1,records,readiness,waiver:waived.interactionId});
+ checks.push(`Real authenticated Paperclip: PackWrite, Muzzle, ${containers?'Workcell, ':''}Lens fail/corrected pass, stale acceptance, explicit native human waiver, cancellation, metadata import, delegation and restart persistence`);
+ if(blocked.length)checks.push(`PARTIAL qualification; blocked: ${blocked.join('; ')}`);
+ await json('assurance.json',{schemaVersion:1,mode,status:blocked.length?'partial':'passed',blocked,records,readiness,waiver:waived.interactionId});
  }finally{server.close();}
 }

@@ -4,11 +4,11 @@ import {join,resolve} from 'node:path';
 import {resolveKujoBinary} from '@kujolang/kujo-runtime';
 // Real process-adapter agents execute the tools. The board harness provisions
 // native assignments and resolves human-only approvals; it never impersonates tools.
-export async function qualifyAssuranceTeam({call,companyId,projectId,root,node,base,cookie,config,checks,json,waitUntil,target}) {
- const roles=['lead','implementation','testing','review'],team=[],runs=[];
+export async function qualifyAssuranceTeam({call,companyId,projectId,root,node,base,cookie,config,checks,json,waitUntil,target,containers=true}) {
+ const roles=containers?['lead','implementation','testing','review']:['lead','testing','review'],team=[],runs=[];
  const script=join(root,'assurance-agent.mjs');await cp(new URL('./assurance-agent.mjs',import.meta.url),script);
  const html='< !doctype html>'.replace(' ','')+'<html lang="en"><head><title>Task list</title></head><body><main><h1>Tasks</h1><label>Search<input type="search" oninput="document.querySelectorAll(\'li\').forEach(x=>x.hidden=!x.textContent.includes(this.value))"></label><ul><li>Implement search</li><li>Verify results</li></ul></main></body></html>';
- const definition=JSON.parse(await readFile(join(root,'workspace/workcell.json'),'utf8'));definition.command=['sh','-c','test -f index.html && grep -q querySelectorAll index.html && cp index.html proof.txt'];await writeFile(join(root,'workspace/workcell.json'),JSON.stringify(definition));
+ if(containers){const definition=JSON.parse(await readFile(join(root,'workspace/workcell.json'),'utf8'));definition.command=['sh','-c','test -f index.html && grep -q querySelectorAll index.html && cp index.html proof.txt'];await writeFile(join(root,'workspace/workcell.json'),JSON.stringify(definition));}else await writeFile(join(root,'workspace/index.html'),html);
  await writeFile(join(root,'workspace/eval.json'),JSON.stringify({name:'Independent search implementation review',tests:[{name:'Search control',check:'file_contains',params:{path:'index.html',expected:'type="search"'}},{name:'Filter handler',check:'file_contains',params:{path:'index.html',expected:'querySelectorAll'}}]}));
  const parent=(await call(`/companies/${companyId}/issues`,{method:'POST',status:201,body:{title:'Deliver a searchable task list',projectId,status:'backlog'}})).data;
  try {
@@ -47,10 +47,10 @@ export async function qualifyAssuranceTeam({call,companyId,projectId,root,node,b
  let status;await waitUntil(async()=>{try{status=await action('kujo-acceptance',{operation:'status'});return status.status==='awaiting-human-review';}catch{return false;}},60000);
  const approval=await action('kujo-acceptance',{operation:'approve'});await call(`/issues/${parent.id}/interactions/${approval.interactionId}/accept`,{method:'POST',body:{}});
  status=await action('kujo-acceptance',{operation:'status'});assert.equal(status.status,'passed');
- const delegation=await action('kujo-delegation');assert.equal(delegation.issues.length,4);assert.ok(team.every(t=>delegation.issues.some(i=>i.id===t.issueId&&i.assigneeAgentId===t.agentId&&i.evidence.length)));
+ const delegation=await action('kujo-delegation');assert.equal(delegation.issues.length,roles.length);assert.ok(team.every(t=>delegation.issues.some(i=>i.id===t.issueId&&i.assigneeAgentId===t.agentId&&i.evidence.length)));
  const {captureAssuranceUi}=await import('./assurance-ui.mjs');await captureAssuranceUi({base,cookie,issueId:parent.id,root});
- await json('assurance-team.json',{schemaVersion:1,producer:'four real deterministic Paperclip process agents; no LLM or invented usage',parentIssueId:parent.id,team:team.map(({keyId,token,contextPath,exchangePath,...t})=>t),acceptance:status,delegation});
- checks.push('Four real process agents: native reportsTo/parentId/checkout/run attribution, PackWrite plan, Workcell implementation proof, Lens interaction, Eval review, child evidence aggregation and human approval');
+ await json('assurance-team.json',{schemaVersion:1,producer:`${roles.length} real deterministic Paperclip process agents; ${containers?'container implementation':'pre-provided implementation fixture; container agent blocked'}; no LLM or invented usage`,parentIssueId:parent.id,team:team.map(({keyId,token,contextPath,exchangePath,...t})=>t),acceptance:status,delegation});
+ checks.push(`${roles.length} real process agents: native reportsTo/parentId/checkout/run attribution, PackWrite plan, ${containers?'Workcell implementation proof, ':''}Lens interaction, Eval review, child evidence aggregation and human approval`);
  return {parentIssueId:parent.id,acceptanceDigest:status.digest,team:team.map(({keyId,token,contextPath,exchangePath,...t})=>t)};
  }finally{for(const run of runs)await call(`/heartbeat-runs/${run}/cancel`,{method:'POST',body:{}}).catch(()=>{});for(const t of team)await call(`/agents/${t.agentId}/keys/${t.keyId}`,{method:'DELETE'});}
 }

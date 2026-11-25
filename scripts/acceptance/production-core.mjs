@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import manifest from "../../dist/manifest.js";
 
 /** Core public tools and board actions, using only this harness's disposable state. */
 export async function qualifyProductionCore({ call, companyId, projectId, issueId, root, node, checks, json, stop, start, waitUntil }) {
@@ -119,7 +120,8 @@ export async function qualifyProductionCore({ call, companyId, projectId, issueI
     await call(`/issues/${agentIssue.id}/checkout`, { method: "POST", token, runId, body: { agentId: agent.id, expectedStatuses: ["backlog"] } });
     const tool = async (name, parameters = {}) => (await call("/plugins/tools/execute", { method: "POST", token, runId, body: { tool: `kujolang.paperclip:${name}`, parameters, runContext: { companyId, projectId, agentId: agent.id, runId } } })).data.result;
     const ok = async (name, parameters = {}) => { const result = await tool(name, parameters); assert.equal(result.error, undefined, `${name}: ${result.error}`); assert.ok(result.data); return result.data; };
-    const catalog = await ok("list-capabilities"); assert.equal(catalog.capabilities.length, 21);
+    const catalog = await ok("list-capabilities");
+    assert.deepEqual(catalog.capabilities.map(entry => entry.tool).sort(), manifest.tools.map(tool => tool.name).sort());
     assert.equal((await ok("review-changes")).filesChanged, 1);
     const pack = await ok("get-context", { task: "Review OAuth callback handling", depth: "minimal" });
     const content = await ok("get-context-content", { contextPackId: pack.contextPackId, paths: ["oauth.ts"] });
