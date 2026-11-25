@@ -252,6 +252,10 @@ try {
     checks.push("official host upgrade preserves company/project/issue identity, login session and plugin evidence through migrations and another restart");
   }
   if (production) {
+    if (process.env.KUJO_ACCEPTANCE_PACK === "events") {
+      const { qualifyProductionEvents } = await import("./production-events.mjs");
+      await qualifyProductionEvents({ call, companyId, projectId, issueId, root, checks, json, stop, start, waitUntil });
+    }
     if (process.env.KUJO_ACCEPTANCE_PACK === "assurance") {
       const { qualifyAssurance } = await import("./production-assurance.mjs");
       await qualifyAssurance({ call, companyId, projectId, issueId, root, node, base, cookie, checks, json, stop, start, waitUntil });
@@ -272,7 +276,7 @@ try {
       const { qualifyProductionCore } = await import("./production-core.mjs");
       await qualifyProductionCore({ call, companyId, projectId, issueId, root, node, checks, json, stop, start, waitUntil });
     }
-    if (!["core", "ui", "install", "accountability", "assurance"].includes(process.env.KUJO_ACCEPTANCE_PACK)) {
+    if (!["core", "ui", "install", "accountability", "assurance", "events"].includes(process.env.KUJO_ACCEPTANCE_PACK)) {
     if (!["workflows", "knowledge"].includes(process.env.KUJO_ACCEPTANCE_PACK)) {
     const { qualifyProductionEvaluation } = await import("./production-eval.mjs");
     await qualifyProductionEvaluation({ call, companyId, projectId, issueId, userId, root, node, checks, json, stop, start, waitUntil });
@@ -467,7 +471,9 @@ try {
   checks.push("real PostgreSQL admits two running owners and keeps a third approved request pending");
   await json("receipts.json", { hostReceipt, succeeded, nativeReceipts, cancelled: await status(slow.id), afterRestart: await status(restartPending.id) });
   }
-  evidence.status = "passed";
+  const partialAssurance = process.env.KUJO_ACCEPTANCE_PACK === "assurance" && process.env.KUJO_ACCEPTANCE_ASSURANCE_MODE === "without-containers";
+  evidence.status = partialAssurance ? "partial" : "passed";
+  if (partialAssurance) evidence.blocked = ["Workcell execution/recovery and container implementation agent were explicitly excluded; see assurance.json"];
 } catch (error) {
   evidence.status = "failed";
   // Error bodies may contain credentials; store only the assertion/operation message.

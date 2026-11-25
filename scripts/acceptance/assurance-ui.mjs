@@ -1,7 +1,7 @@
 import {chromium,expect} from '@playwright/test';
 import {join} from 'node:path';
 export async function captureAssuranceUi({base,cookie,issueId,root}){
- const browser=await chromium.launch();let page;try{
+ const browser=await chromium.launch({...(process.env.KUJO_ACCEPTANCE_BROWSER?{executablePath:process.env.KUJO_ACCEPTANCE_BROWSER}:{})});let page;try{
  const context=await browser.newContext({viewport:{width:1440,height:1100}});
  await context.addCookies(cookie.split('; ').map(item=>{const i=item.indexOf('=');return {name:item.slice(0,i),value:item.slice(i+1),url:base};}));
  await context.route('**/*',route=>new URL(route.request().url()).origin===base?route.continue():route.abort());
@@ -19,7 +19,7 @@ export async function captureAssuranceUi({base,cookie,issueId,root}){
 }
 
 export async function verifyDelegationPages({base,cookie,issueId}){
- const browser=await chromium.launch();try{
+ const browser=await chromium.launch({...(process.env.KUJO_ACCEPTANCE_BROWSER?{executablePath:process.env.KUJO_ACCEPTANCE_BROWSER}:{})});try{
   const context=await browser.newContext();
   await context.addCookies(cookie.split('; ').map(item=>{const i=item.indexOf('=');return {name:item.slice(0,i),value:item.slice(i+1),url:base};}));
   await context.route('**/*',route=>new URL(route.request().url()).origin===base?route.continue():route.abort());

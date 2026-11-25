@@ -35,6 +35,20 @@ export async function qualifyProductionUi({ call, companyId, projectId, issueId,
     })).data;
     assert.ok(JSON.stringify(retained).includes(title));
     checks.push("actual host task UI action retains failure evidence and displays its returned result");
+    const preferences = (await call("/workspace-preferences/me")).data;
+    const experimental = (await call("/instance/settings/experimental")).data;
+    try {
+      await call(`/companies/${companyId}/workspace-preferences/me`, { method: "PUT", body: { coordinatorWorkspaceEnabled: false } });
+      await call("/instance/settings/experimental", { method: "PATCH", body: { enableClassicTaskInterface: true } });
+      await page.reload();
+      await page.getByRole("tab", { name: "Kujo", exact: true }).click();
+      await expect(page.getByRole("button", { name: /Generate Review Pack/ }).first()).toBeVisible({ timeout: 30_000 });
+      await expect(page.getByText(title, { exact: true }).first()).toBeVisible();
+      checks.push("Classic task interface Kujo detail tab preserves issue-scoped evidence");
+    } finally {
+      await call("/instance/settings/experimental", { method: "PATCH", body: { enableClassicTaskInterface: experimental.enableClassicTaskInterface } });
+      await call(`/companies/${companyId}/workspace-preferences/me`, { method: "PUT", body: { coordinatorWorkspaceEnabled: preferences.coordinatorWorkspaceEnabled } });
+    }
     await page.goto(`${base}/projects/${projectId}`);
     await page.getByRole("tab", { name: "Kujo", exact: true }).click();
     await expect(page.getByRole("button", { name: /Generate Review Pack/ }).first()).toBeVisible({ timeout: 30_000 });
