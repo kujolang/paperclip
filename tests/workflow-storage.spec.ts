@@ -80,6 +80,13 @@ describe.skipIf(!posix)("persistent native workflow storage", () => {
     await rename(f.storageRoot, join(f.root, "previous")); await mkdir(f.storageRoot, { mode: 0o700 });
     await expect(f.store.recover(binding)).rejects.toMatchObject({ code: "root_changed" });
   });
+  it("rejects a nonregular owner receipt without waiting for a writer", async () => {
+    const f = await fixture(); const p = await f.store.reserve(binding);
+    const owner = join(dirname(p.nativeRoot), "owner.json");
+    await rm(owner);
+    execFileSync("mkfifo", [owner]);
+    await expect(f.store.recover(binding)).rejects.toMatchObject({ code: "invalid_binding" });
+  });
   it("rejects invalid inputs and returns bounded errors without filesystem details", async () => {
     const f = await fixture();
     await expect(openWorkflowStorage("relative")).rejects.toMatchObject({ code: "invalid_root" });

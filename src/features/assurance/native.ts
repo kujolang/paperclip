@@ -32,10 +32,11 @@ export async function artifacts(root: string): Promise<Artifact[]> {
       if (entry.isDirectory()) { await walk(filename, depth + 1); continue; }
       if (!entry.isFile()) throw new Error("Artifact must be a regular file");
       if (result.length >= 80) throw new Error("Artifact count exceeds retention limit");
-      const file = await open(filename, constants.O_RDONLY | constants.O_NOFOLLOW);
+      const file = await open(filename, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
       try {
         const stat = await file.stat();
-        if (!stat.isFile() || stat.size > 1_000_000 || charged + stat.size > 2_000_000) throw new Error("Artifact bytes exceed retention limit; evidence is incomplete");
+        if (!stat.isFile() || stat.nlink !== 1) throw new Error("Artifact must be a private regular file");
+        if (stat.size > 1_000_000 || charged + stat.size > 2_000_000) throw new Error("Artifact bytes exceed retention limit; evidence is incomplete");
         const bytes = Buffer.alloc(stat.size + 1), read = await file.read(bytes, 0, bytes.length, 0);
         if (read.bytesRead !== stat.size) throw new Error("Artifact changed while collecting");
         const data = bytes.subarray(0, stat.size); charged += data.length;
