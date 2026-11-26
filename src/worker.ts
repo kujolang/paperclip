@@ -438,7 +438,11 @@ function registerTools(ctx: PluginContext) {
       await audit(ctx, { companyId: runCtx.companyId, operation: "context.generated", entityType: "project", entityId: runCtx.projectId, artifactId: pack.id });
       const data = compactContext(pack);
       if (params.includeContent) {
-        Object.assign(data, { content: await getContextContent({ workspacePath: workspace.path, pack, maxTokens: pack.budget }) });
+        const content = await getContextContent({ workspacePath: workspace.path, pack, maxTokens: pack.budget, config });
+        if (pack.stale || !(await isSnapshotCurrent(workspace.path, pack.snapshot))) {
+          throw new Error("Context Pack is stale for the current workspace; generate a new pack");
+        }
+        Object.assign(data, { content });
         await audit(ctx, { companyId: runCtx.companyId, operation: "context.content-read", entityType: "project", entityId: runCtx.projectId, artifactId: pack.id });
       }
       return { content: JSON.stringify(data), data };
@@ -464,7 +468,11 @@ function registerTools(ctx: PluginContext) {
         pack,
         ...(params.paths ? { paths: params.paths } : {}),
         maxTokens: params.maxTokens,
+        config,
       });
+      if (!(await isSnapshotCurrent(workspace.path, pack.snapshot))) {
+        throw new Error("Context Pack is stale for the current workspace; generate a new pack");
+      }
       await audit(ctx, { companyId: runCtx.companyId, operation: "context.content-read", entityType: "project", entityId: runCtx.projectId, artifactId: pack.id });
       return { content: JSON.stringify(data), data };
     } catch (error) {

@@ -62,8 +62,10 @@ export async function executeKujo(input: ExecuteKujoInput): Promise<ExecuteKujoR
       detached: process.platform !== "win32",
     });
 
-    let stdout: Buffer = Buffer.alloc(0);
-    let stderr: Buffer = Buffer.alloc(0);
+    const stdout: Buffer[] = [];
+    const stderr: Buffer[] = [];
+    let stdoutBytes = 0;
+    let stderrBytes = 0;
     let timedOut = false;
     let outputExceeded = false;
     let cancelled = false;
@@ -118,19 +120,21 @@ export async function executeKujo(input: ExecuteKujoInput): Promise<ExecuteKujoR
       input.signal?.removeEventListener("abort", terminateAndWait);
     };
 
-    const append = (current: Buffer, chunk: Buffer, limit: number): Buffer => {
-      const remaining = Math.max(0, limit - current.byteLength);
-      if (chunk.byteLength > remaining) outputExceeded = true;
-      return remaining === 0 ? current : Buffer.concat([current, chunk.subarray(0, remaining)]);
+    const append = (chunks: Buffer[], length: number, chunk: Buffer, limit: number): number => {
+      const accepted = Math.min(chunk.byteLength, Math.max(0, limit - length));
+      if (accepted < chunk.byteLength && !outputExceeded) {
+        outputExceeded = true;
+        terminate();
+      }
+      if (accepted > 0) chunks.push(chunk.subarray(0, accepted));
+      return length + accepted;
     };
 
     child.stdout.on("data", (chunk: Buffer) => {
-      stdout = append(stdout, chunk, input.maxStdoutBytes);
-      if (outputExceeded) terminate();
+      stdoutBytes = append(stdout, stdoutBytes, chunk, input.maxStdoutBytes);
     });
     child.stderr.on("data", (chunk: Buffer) => {
-      stderr = append(stderr, chunk, input.maxStderrBytes);
-      if (outputExceeded) terminate();
+      stderrBytes = append(stderr, stderrBytes, chunk, input.maxStderrBytes);
     });
 
     const timer = setTimeout(() => {
@@ -153,8 +157,8 @@ export async function executeKujo(input: ExecuteKujoInput): Promise<ExecuteKujoR
       const details = {
         executable: input.executable,
         exitCode: code ?? -1,
-        stdout: stdout.toString("utf8"),
-        stderr: stderr.toString("utf8"),
+        stdout: Buffer.concat(stdout, stdoutBytes).toString("utf8"),
+        stderr: Buffer.concat(stderr, stderrBytes).toString("utf8"),
         durationMs: Math.round(performance.now() - start),
         timedOut,
       };

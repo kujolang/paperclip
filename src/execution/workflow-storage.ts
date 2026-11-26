@@ -24,7 +24,7 @@ async function privateDirectory(path: string) {
   return stat;
 }
 async function syncDirectory(path: string) {
-  const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_DIRECTORY | constants.O_NONBLOCK);
   try { await handle.sync(); } finally { await handle.close(); }
 }
 async function sanitized<T>(work: () => Promise<T>): Promise<T> {
@@ -90,7 +90,7 @@ export async function openWorkflowStorage(rawRoot: string) {
             await privateDirectory(p.installation);
             await privateDirectory(p.reservation);
             await privateDirectory(p.nativeRoot);
-            const handle = await open(join(p.reservation, "owner.json"), constants.O_RDONLY | constants.O_NOFOLLOW);
+            const handle = await open(join(p.reservation, "owner.json"), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
             try {
               const stat = await handle.stat();
               if (!stat.isFile() || stat.nlink !== 1 || stat.uid !== process.getuid!() || (stat.mode & 0o777) !== 0o600 || stat.size > 256) fail("invalid_binding");

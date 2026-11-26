@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { promisify } from "node:util";
@@ -10,6 +10,7 @@ import { captureFailure } from "../src/features/failure/capture.js";
 import { generateContextPack } from "../src/features/context/generate.js";
 import { getContextContent } from "../src/features/context/content.js";
 import { isSnapshotCurrent } from "../src/paperclip/git.js";
+import { prepareContextWorkspace } from "../src/paperclip/workspace-guard.js";
 import { parsePluginConfig } from "../src/config/schema.js";
 
 const execFileAsync = promisify(execFile);
@@ -71,5 +72,45 @@ describe("real Kujo component bridge", () => {
     expect(selected).toBeDefined();
     const content = await getContextContent({ workspacePath: cwd, pack, paths: [selected!.path], maxTokens: pack.budget });
     expect(content.files[0]?.content).toContain("'after'");
+  }, 90_000);
+
+  it.skipIf(process.platform === "win32")("excludes linked workspace parents from both Context Pack stages", async () => {
+    const cwd = await fixture();
+    const outside = await mkdtemp(join(tmpdir(), "kujo-paperclip-context-fixture-"));
+    try {
+      await mkdir(join(cwd, "src"));
+      await writeFile(join(cwd, "src", "callback.md"), "A valid project file");
+      await execFileAsync("git", ["-C", cwd, "add", "src/callback.md"]);
+      const pack = await generateContextPack({ cwd, workspaceId: "ws", projectId: "project", task: "callback", depth: "broad", config });
+      expect(pack.files.map((file) => file.path)).toContain("src/callback.md");
+
+      await writeFile(join(outside, "callback.md"), "A distinct fixture outside the workspace");
+      await rm(join(cwd, "src"), { recursive: true });
+      await symlink(outside, join(cwd, "src"));
+      const mirror = await prepareContextWorkspace(cwd, "callback", config);
+      try {
+        expect(mirror.selectedPaths).not.toContain("src/callback.md");
+        await expect(readFile(join(mirror.path, "src", "callback.md"))).rejects.toMatchObject({ code: "ENOENT" });
+      } finally { await mirror.cleanup(); }
+      await expect(getContextContent({ workspacePath: cwd, pack, paths: ["src/callback.md"], maxTokens: 256, config }))
+        .rejects.toMatchObject({ code: "KUJO_WORKSPACE_OUTSIDE_ALLOWED_ROOT" });
+    } finally {
+      await Promise.all([cwd, outside].map((path) => rm(path, { recursive: true, force: true })));
+    }
+  }, 90_000);
+
+  it("caps revealed context after redaction without splitting UTF-8", async () => {
+    const cwd = await fixture();
+    try {
+      const pack = await generateContextPack({ cwd, workspaceId: "ws", projectId: "project", task: "oauth", depth: "broad", config });
+      expect(pack.files.map(file => file.path)).toContain("oauth.ts");
+      await writeFile(join(cwd, "oauth.ts"), "API_KEY=fixture-value\n" + "é😀".repeat(300));
+      const result = await getContextContent({ workspacePath: cwd, pack, paths: ["oauth.ts", "oauth.ts"], maxTokens: 256, config });
+      expect(result.files).toHaveLength(1);
+      expect(result.estimatedTokens).toBeLessThanOrEqual(256);
+      expect(result.files[0]?.content).not.toContain("fixture-value");
+      expect(result.files[0]?.content).not.toContain("�");
+      expect(result.truncated).toBe(true);
+    } finally { await rm(cwd, { recursive: true, force: true }); }
   }, 90_000);
 });

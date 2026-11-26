@@ -31,12 +31,12 @@ export async function generateContextPack(input: {
   depth: ContextDepth;
   config: PluginConfig;
 }): Promise<ContextPack> {
-  await assertBoundedWorkspaceInputs(input.cwd);
+  const visiblePaths = await assertBoundedWorkspaceInputs(input.cwd);
   const task = input.task.trim().slice(0, 10_000);
   if (!task) throw new Error("Task is required");
   const snapshot = await captureWorkspaceSnapshot(input.cwd);
   const budget = CONTEXT_BUDGETS[input.depth];
-  const workspace = await prepareContextWorkspace(input.cwd, task);
+  const workspace = await prepareContextWorkspace(input.cwd, task, input.config, visiblePaths);
   try {
     const args = [
       "pack", "--task", task, "--target", "generic", "--budget", String(budget),
@@ -78,8 +78,9 @@ export async function generateContextPack(input: {
         warnings: ["Canonical context selection exceeded its bounded execution window"],
       };
     }
+    const copied = new Set(workspace.selectedPaths);
     const files = (output.selected_files ?? []).flatMap((file) => {
-      if (typeof file.path !== "string") return [];
+      if (typeof file.path !== "string" || !copied.has(file.path)) return [];
       return [{
         path: file.path,
         reason: typeof file.reason === "string" ? file.reason : "Selected by canonical context scoring",

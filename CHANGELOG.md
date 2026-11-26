@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Root Context Pack selection and reveal beneath the approved workspace, retain only copied paths, and verify snapshot freshness after reveal. Preserve a strict UTF-8 byte budget after redaction.
+- Collect bounded child output in one pass and avoid blocking on nonregular artifact or workflow ownership files.
+
 - Pin the Paperclip SDK to stable 2026.1117.0 and qualify the current 22-tool integration against the official host. Document storage migration rollback constraints and retained host limitations.
 - Compare the live capability catalog with the manifest instead of a stale 21-tool count. Support explicitly partial assurance qualification when Docker is unavailable, with blocked container checks recorded in results; honor the configured browser in assurance UI checks. Add real handoff-event and default/Classic UI regression checks.
 
@@ -113,6 +116,9 @@
 - Keep the four pinned components and existing Context Pack, Review Pack, and Failure Evidence contracts unchanged; broader Kujo feature expansion is a separate release.
 
 ## Unreleased
+
+- Root Context Pack selection and reveal beneath the approved workspace, retain only copied paths, and verify snapshot freshness after reveal. Preserve a strict UTF-8 byte budget after redaction.
+- Collect bounded child output in one pass and avoid blocking on nonregular artifact or workflow ownership files.
 
 - Add opt-in approved native Workcell, Lens, Muzzle and PackWrite workflows through the existing execution coordinator, host jobs and immutable evidence store. Preserve all 21 prior tools; add `manage-kujo-assurance`.
 - Add current-source advisory/required/human-review acceptance metadata, explicit human waivers and native descendant issue evidence. Observe handoff events without granting execution authority or overriding native issue status.
